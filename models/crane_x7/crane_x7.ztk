@@ -1,0 +1,518 @@
+[roki::chain]
+name: crane_x7
+[zeo::optic]
+name: black
+ambient: 0.5 0.5 0.5
+diffuse: 0.200000003 0.200000003 0.200000003
+specular: 1 1 1
+alpha: 1
+[zeo::optic]
+name: white
+ambient: 0.5 0.5 0.5
+diffuse: 0.9499999881 0.9499999881 0.9499999881
+specular: 1 1 1
+alpha: 1
+[zeo::optic]
+name: silver
+ambient: 0.5 0.5 0.5
+diffuse: 0.75 0.75 0.75
+specular: 1 1 1
+alpha: 1
+[zeo::optic]
+name: red
+ambient: 0.5 0.5 0.5
+diffuse: 1 0.3000000119 0.3000000119
+specular: 1 1 1
+alpha: 1
+[zeo::optic]
+name: green
+ambient: 0.5 0.5 0.5
+diffuse: 0.3000000119 1 0.3000000119
+specular: 1 1 1
+alpha: 1
+[zeo::optic]
+name: blue
+ambient: 0.5 0.5 0.5
+diffuse: 0.3000000119 0.3000000119 1
+specular: 1 1 1
+alpha: 1
+[zeo::shape]
+name: crane_x7_mounting_plate_link_0
+optic: black
+import: models/crane_x7/meshes/visual/mounting_plate.stl 1 1 1
+[zeo::shape]
+name: crane_x7_shoulder_fixed_part_link_0
+optic: red
+import: models/crane_x7/meshes/visual/base_fixed_part.stl 1 1 1
+[zeo::shape]
+name: crane_x7_shoulder_revolute_part_link_0
+att: {
+ -1, -2.653589793e-06, 0
+ 2.653589793e-06, -1, 0
+ 0, 0, 1
+}
+optic: white
+import: models/crane_x7/meshes/visual/base_revolute_part.stl 1 1 1
+[zeo::shape]
+name: crane_x7_upper_arm_fixed_part_link_0
+att: {
+ 1, 0, 0
+ 0, 1, 1.326794897e-06
+ 0, -1.326794897e-06, 1
+}
+optic: white
+import: models/crane_x7/meshes/visual/rotating_link_type_1_fixed_part.stl 1 1 1
+[zeo::shape]
+name: crane_x7_upper_arm_fixed_part_joint_cover_l_link_0
+att: {
+ 1, 0, 0
+ 0, 1.326794897e-06, 1
+ 0, -1, 1.326794897e-06
+}
+optic: red
+import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+[zeo::shape]
+name: crane_x7_upper_arm_fixed_part_joint_cover_r_link_0
+att: {
+ 1, 0, 0
+ 0, 1.326794897e-06, -1
+ 0, 1, 1.326794897e-06
+}
+optic: red
+import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+[zeo::shape]
+name: crane_x7_upper_arm_revolute_part_link_0
+optic: white
+import: models/crane_x7/meshes/visual/rotating_link_type_1_revolute_part.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_fixed_part_link_0
+att: {
+ 1, 0, 0
+ 0, 1, 1.326794897e-06
+ 0, -1.326794897e-06, 1
+}
+optic: white
+import: models/crane_x7/meshes/visual/rotating_link_type_2_fixed_part.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_fixed_part_joint_cover_l_link_0
+att: {
+ 1, 0, 0
+ 0, 1.326794897e-06, 1
+ 0, -1, 1.326794897e-06
+}
+optic: red
+import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_fixed_part_joint_cover_r_link_0
+att: {
+ 1, 0, 0
+ 0, 1.326794897e-06, -1
+ 0, 1, 1.326794897e-06
+}
+optic: red
+import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_revolute_part_link_0
+optic: white
+import: models/crane_x7/meshes/visual/rotating_link_type_2_revolute_part.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_revolute_part_logo_text_l_link_0
+att: {
+ 1.326794897e-06, -1, 1.326794897e-06
+ 0, 1.326794897e-06, 1
+ -1, -1.326794897e-06, 1.760384698e-12
+}
+optic: black
+import: models/crane_x7/meshes/visual/rtcorp_logo_name.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_revolute_part_logo_symbol_l_link_0
+att: {
+ 1.326794897e-06, -1, 1.326794897e-06
+ 0, 1.326794897e-06, 1
+ -1, -1.326794897e-06, 1.760384698e-12
+}
+optic: red
+import: models/crane_x7/meshes/visual/rtcorp_logo_rabbit.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_revolute_part_logo_text_r_link_0
+att: {
+ 1.326794897e-06, -1, -1.326794897e-06
+ 0, 1.326794897e-06, -1
+ 1, 1.326794897e-06, 1.760384698e-12
+}
+optic: black
+import: models/crane_x7/meshes/visual/rtcorp_logo_name.stl 1 1 1
+[zeo::shape]
+name: crane_x7_lower_arm_revolute_part_logo_symbol_r_link_0
+att: {
+ 1.326794897e-06, -1, -1.326794897e-06
+ 0, 1.326794897e-06, -1
+ 1, 1.326794897e-06, 1.760384698e-12
+}
+optic: red
+import: models/crane_x7/meshes/visual/rtcorp_logo_rabbit.stl 1 1 1
+[zeo::shape]
+name: crane_x7_wrist_link_0
+att: {
+ 1, 0, 0
+ 0, 1, 1.326794897e-06
+ 0, -1.326794897e-06, 1
+}
+optic: white
+import: models/crane_x7/meshes/visual/wrist.stl 1 1 1
+[zeo::shape]
+name: crane_x7_gripper_base_link_0
+optic: red
+import: models/crane_x7/meshes/visual/wide_two_finger_gripper_actuator.stl 1 1 1
+[zeo::shape]
+name: crane_x7_gripper_finger_a_link_0
+att: {
+ 1, 0, 0
+ 0, 1, 1.326794897e-06
+ 0, -1.326794897e-06, 1
+}
+optic: red
+import: models/crane_x7/meshes/visual/wide_two_finger_gripper_finger_a.stl 1 1 1
+[zeo::shape]
+name: crane_x7_gripper_finger_b_link_0
+att: {
+ 1, 0, 0
+ 0, -1, -1.326794897e-06
+ 0, 1.326794897e-06, -1
+}
+optic: red
+import: models/crane_x7/meshes/visual/wide_two_finger_gripper_finger_b.stl 1 1 1
+[roki::link]
+name: base_link
+jointtype: fixed
+parent: world
+[roki::link]
+name: world
+[roki::link]
+name: crane_x7_mounting_plate_link
+jointtype: fixed
+shape: crane_x7_mounting_plate_link_0
+parent: base_link
+[roki::link]
+name: crane_x7_shoulder_fixed_part_link
+jointtype: fixed
+pos: ( 0, 0, 0.005 )
+mass: 0.388
+COM: ( -0.00673, -1e-06, 0.0179 )
+inertia: {
+ 0.000325, 1.2e-09, -4.71e-05
+ 1.2e-09, 0.000483, 1.95e-08
+ -4.71e-05, 1.95e-08, 0.000586
+}
+shape: crane_x7_shoulder_fixed_part_link_0
+parent: crane_x7_mounting_plate_link
+[roki::link]
+name: crane_x7_shoulder_revolute_part_link
+jointtype: revolute
+motor: crane_x7_shoulder_fixed_part_pan_joint_motor
+min: -157
+max: 157
+pos: ( 0, 0, 0.036 )
+mass: 0.253
+COM: ( 0.000243, -0.000105, 0.047 )
+inertia: {
+ 0.000179, -7.32e-08, 8.89e-07
+ -7.32e-08, 0.000176, 6.23e-07
+ 8.89e-07, 6.23e-07, 8.96e-05
+}
+shape: crane_x7_shoulder_revolute_part_link_0
+parent: crane_x7_shoulder_fixed_part_link
+[roki::link]
+name: crane_x7_upper_arm_fixed_part_link
+jointtype: revolute
+motor: crane_x7_shoulder_revolute_part_tilt_joint_motor
+min: -92
+max: 92
+pos: ( 0, 0, 0.064 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, -1
+ 0, 1, 1.110223025e-16
+}
+mass: 0.136
+COM: ( 3.1e-05, 0.0342, -1.9e-05 )
+inertia: {
+ 0.000168, 2.049946928e-08, -4.000000272e-07
+ 2.049946928e-08, 9.620000017e-05, 6.245015285e-08
+ -4.000000272e-07, 6.245015285e-08, 0.0001339999998
+}
+shape: crane_x7_upper_arm_fixed_part_link_0
+parent: crane_x7_shoulder_revolute_part_link
+[roki::link]
+name: crane_x7_upper_arm_fixed_part_joint_cover_l_link
+jointtype: fixed
+pos: ( 0, 3.508304758e-18, -0.0316 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+shape: crane_x7_upper_arm_fixed_part_joint_cover_l_link_0
+parent: crane_x7_upper_arm_fixed_part_link
+[roki::link]
+name: crane_x7_upper_arm_fixed_part_joint_cover_r_link
+jointtype: fixed
+pos: ( 0, -3.508304758e-18, 0.0316 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+shape: crane_x7_upper_arm_fixed_part_joint_cover_r_link_0
+parent: crane_x7_upper_arm_fixed_part_link
+[roki::link]
+name: crane_x7_upper_arm_revolute_part_link
+jointtype: revolute
+motor: crane_x7_upper_arm_revolute_part_twist_joint_motor
+min: -157
+max: 157
+pos: ( 0, 0.065, 7.21644966e-18 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+mass: 0.321
+COM: ( -0.0137, -8.1e-05, 0.0952 )
+inertia: {
+ 0.00182, 7.54e-07, -3.73e-05
+ 7.54e-07, 0.00188, 4.15e-06
+ -3.73e-05, 4.15e-06, 0.000159
+}
+shape: crane_x7_upper_arm_revolute_part_link_0
+parent: crane_x7_upper_arm_fixed_part_link
+[roki::link]
+name: crane_x7_lower_arm_fixed_part_link
+jointtype: revolute
+motor: crane_x7_upper_arm_revolute_part_rotate_joint_motor
+min: -161
+max: 0.001
+pos: ( 0, 0, 0.185 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, -1
+ 0, 1, 1.110223025e-16
+}
+mass: 0.222
+COM: ( -0.00939, 0.0804, -6.4e-05 )
+inertia: {
+ 0.000489, -3.89999989e-06, 8.29051745e-08
+ -3.89999989e-06, 0.0001140000075, 2.820516123e-06
+ 8.29051745e-08, 2.820516123e-06, 0.0005029999925
+}
+shape: crane_x7_lower_arm_fixed_part_link_0
+parent: crane_x7_upper_arm_revolute_part_link
+[roki::link]
+name: crane_x7_lower_arm_fixed_part_joint_cover_l_link
+jointtype: fixed
+pos: ( 0, 2.775557562e-18, -0.025 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+shape: crane_x7_lower_arm_fixed_part_joint_cover_l_link_0
+parent: crane_x7_lower_arm_fixed_part_link
+[roki::link]
+name: crane_x7_lower_arm_fixed_part_joint_cover_r_link
+jointtype: fixed
+pos: ( 0, -2.775557562e-18, 0.025 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+shape: crane_x7_lower_arm_fixed_part_joint_cover_r_link_0
+parent: crane_x7_lower_arm_fixed_part_link
+[roki::link]
+name: crane_x7_lower_arm_revolute_part_link
+jointtype: revolute
+motor: crane_x7_lower_arm_fixed_part_joint_motor
+min: -157
+max: 157
+pos: ( 0, 0.121, 1.34336986e-17 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+mass: 0.207
+COM: ( -8.4e-05, 0.000462, 0.0637 )
+inertia: {
+ 0.00029, 1e-07, -4.77e-07
+ 1e-07, 0.000257, -1.69e-05
+ -4.77e-07, -1.69e-05, 8.75e-05
+}
+shape: crane_x7_lower_arm_revolute_part_link_0
+parent: crane_x7_lower_arm_fixed_part_link
+[roki::link]
+name: crane_x7_lower_arm_revolute_part_logo_text_l_link
+jointtype: fixed
+pos: ( 0, 0.0345, 0.095 )
+shape: crane_x7_lower_arm_revolute_part_logo_text_l_link_0
+parent: crane_x7_lower_arm_revolute_part_link
+[roki::link]
+name: crane_x7_lower_arm_revolute_part_logo_symbol_l_link
+jointtype: fixed
+pos: ( 0, 0.0345, 0.132 )
+shape: crane_x7_lower_arm_revolute_part_logo_symbol_l_link_0
+parent: crane_x7_lower_arm_revolute_part_link
+[roki::link]
+name: crane_x7_lower_arm_revolute_part_logo_text_r_link
+jointtype: fixed
+pos: ( 0, -0.0345, 0.104 )
+shape: crane_x7_lower_arm_revolute_part_logo_text_r_link_0
+parent: crane_x7_lower_arm_revolute_part_link
+[roki::link]
+name: crane_x7_lower_arm_revolute_part_logo_symbol_r_link
+jointtype: fixed
+pos: ( 0, -0.0345, 0.065 )
+shape: crane_x7_lower_arm_revolute_part_logo_symbol_r_link_0
+parent: crane_x7_lower_arm_revolute_part_link
+[roki::link]
+name: crane_x7_wrist_link
+jointtype: revolute
+motor: crane_x7_lower_arm_revolute_part_joint_motor
+min: -90
+max: 90
+pos: ( 0, 0, 0.129 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, -1
+ 0, 1, 1.110223025e-16
+}
+mass: 0.14
+COM: ( 0.0061, -0.00355, -0.000826 )
+inertia: {
+ 4.01e-05, -2.909999152e-06, 6.39003861e-07
+ -2.909999152e-06, 6.12999987e-05, -4.899838131e-07
+ 6.39003861e-07, -4.899838131e-07, 7.35000013e-05
+}
+shape: crane_x7_wrist_link_0
+parent: crane_x7_lower_arm_revolute_part_link
+[roki::link]
+name: crane_x7_gripper_base_link
+jointtype: revolute
+motor: crane_x7_wrist_joint_motor
+min: -167
+max: 167
+pos: ( 0, 0.019, 2.109423747e-18 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+mass: 0.121
+COM: ( 0.000108, -0.00103, 0.0208 )
+inertia: {
+ 3.2e-05, -9.45e-08, 2.61e-07
+ -9.45e-08, 4.14e-05, 3.88e-07
+ 2.61e-07, 3.88e-07, 4.29e-05
+}
+shape: crane_x7_gripper_base_link_0
+parent: crane_x7_wrist_link
+[roki::link]
+name: crane_x7_gripper_finger_a_link
+jointtype: revolute
+motor: crane_x7_gripper_finger_a_joint_motor
+min: -5
+max: 90
+pos: ( -0.012, 0, 0.024 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, -1
+ 0, 1, 1.110223025e-16
+}
+mass: 0.0158
+COM: ( -0.00265, 0.0269, -0.00354 )
+inertia: {
+ 1.01e-05, -1.970001312e-07, -9.889973862e-08
+ -1.970001312e-07, 4.950001425e-06, 5.370017116e-07
+ -9.889973862e-08, 5.370017116e-07, 6.239998575e-06
+}
+shape: crane_x7_gripper_finger_a_link_0
+parent: crane_x7_gripper_base_link
+[roki::link]
+name: crane_x7_gripper_finger_b_link
+jointtype: revolute
+motor: crane_x7_gripper_finger_b_joint_motor
+min: -5
+max: 90
+pos: ( 0.012, 0, 0.024 )
+att: {
+ 1, 0, 0
+ 0, 1.110223025e-16, 1
+ 0, -1, 1.110223025e-16
+}
+mass: 0.0139
+COM: ( 0.00301, -0.0309, 0.00285 )
+inertia: {
+ 7.48e-06, -3.610000841e-07, -6.339952103e-08
+ -3.610000841e-07, 4.090000605e-06, 2.280003715e-07
+ -6.339952103e-08, 2.280003715e-07, 4.369999395e-06
+}
+shape: crane_x7_gripper_finger_b_link_0
+parent: crane_x7_gripper_base_link
+
+[roki::motor]
+name: crane_x7_shoulder_fixed_part_pan_joint_motor
+type: trq
+max: 10.0
+min: -10.0
+
+[roki::motor]
+name: crane_x7_shoulder_revolute_part_tilt_joint_motor
+type: trq
+max: 10.0
+min: -10.0
+
+[roki::motor]
+name: crane_x7_upper_arm_revolute_part_twist_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+[roki::motor]
+name: crane_x7_upper_arm_revolute_part_rotate_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+[roki::motor]
+name: crane_x7_lower_arm_fixed_part_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+[roki::motor]
+name: crane_x7_lower_arm_revolute_part_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+[roki::motor]
+name: crane_x7_wrist_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+[roki::motor]
+name: crane_x7_gripper_finger_a_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+[roki::motor]
+name: crane_x7_gripper_finger_b_joint_motor
+type: trq
+max: 4.0
+min: -4.0
+
+# Hand-tuned overrides appended verbatim to the generated crane_x7.ztk.
+# Reserved for parameters that exist in no upstream source, e.g. joint
+# friction identified on the real robot (M7). Empty (comments only) until then.
