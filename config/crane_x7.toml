@@ -1,0 +1,94 @@
+# CRANE-X7 deployment configuration.
+#
+# Joints are listed in the project's canonical order: arm joints 1..7,
+# then the gripper (finger_a; finger_b mimics it and has no servo).
+# velocity/effort limits mirror the crane_x7_description URDF — urdf2ztk
+# drops them, so they are authored here and cross-checked against the
+# URDF-derived values by tests/unit/model_test.cpp.
+#
+# operating_mode uses raw Dynamixel values: 3 = position, 1 = velocity,
+# 0 = current (torque).
+
+[bus]
+port = "/dev/ttyUSB0"
+baudrate = 3000000
+
+[[joint]]
+name = "crane_x7_shoulder_fixed_part_pan_joint"
+id = 2
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873  # rad/s
+effort_limit = 10.0          # Nm
+pos_limit_margin = 0.0       # rad
+current_limit_margin = 0.5   # A
+
+[[joint]]
+name = "crane_x7_shoulder_revolute_part_tilt_joint"
+id = 3
+model = "XM540-W270"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 10.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5
+
+[[joint]]
+name = "crane_x7_upper_arm_revolute_part_twist_joint"
+id = 4
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 4.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5
+
+[[joint]]
+name = "crane_x7_upper_arm_revolute_part_rotate_joint"
+id = 5
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 4.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5
+
+[[joint]]
+name = "crane_x7_lower_arm_fixed_part_joint"
+id = 6
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 4.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5
+
+[[joint]]
+name = "crane_x7_lower_arm_revolute_part_joint"
+id = 7
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 4.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5
+
+[[joint]]
+name = "crane_x7_wrist_joint"
+id = 8
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 4.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5
+
+[[joint]]
+name = "crane_x7_gripper_finger_a_joint"
+id = 9
+model = "XM430-W350"
+operating_mode = 3
+velocity_limit = 4.81710873
+effort_limit = 4.0
+pos_limit_margin = 0.0
+current_limit_margin = 0.5

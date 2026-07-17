@@ -17,7 +17,9 @@ FetchContent_Declare(tomlplusplus
 FetchContent_MakeAvailable(tomlplusplus)
 
 add_library(rtctrl
-  src/version.cpp)
+  src/version.cpp
+  src/model/chain_model.cpp
+  src/model/joint_map.cpp)
 add_library(rtctrl::rtctrl ALIAS rtctrl)
 target_compile_features(rtctrl PUBLIC cxx_std_17)
 target_compile_definitions(rtctrl PRIVATE RTCTRL_VERSION="${PROJECT_VERSION}")
