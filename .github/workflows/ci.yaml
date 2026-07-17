@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Init required submodules
+        run: |
+          git submodule update --init --depth 1 \
+            third_party/zeda third_party/zm third_party/zeo third_party/dzco \
+            third_party/roki third_party/roki-fd third_party/liw \
+            third_party/DynamixelSDK third_party/crane_x7_description
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libxml2-dev liblzf-dev
+
+      - name: Bootstrap mi-lib
+        run: MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" ./tools/bootstrap_milib.sh
+
+      - name: Configure
+        run: PATH="$HOME/usr/bin:$PATH" cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test (unit)
+        run: LD_LIBRARY_PATH="$HOME/usr/lib:$LD_LIBRARY_PATH" ctest --test-dir build --output-on-failure -L unit
