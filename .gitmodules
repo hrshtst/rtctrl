@@ -13,30 +13,39 @@
 [submodule "third_party/zeda"]
 	path = third_party/zeda
 	url = https://github.com/mi-lib/zeda.git
+	ignore = untracked
 [submodule "third_party/zm"]
 	path = third_party/zm
 	url = https://github.com/mi-lib/zm.git
+	ignore = untracked
 [submodule "third_party/zeo"]
 	path = third_party/zeo
 	url = https://github.com/mi-lib/zeo.git
+	ignore = untracked
 [submodule "third_party/roki"]
 	path = third_party/roki
 	url = https://github.com/mi-lib/roki
+	ignore = untracked
 [submodule "third_party/roki-fd"]
 	path = third_party/roki-fd
 	url = https://github.com/mi-lib/roki-fd.git
+	ignore = untracked
 [submodule "third_party/roki-gl"]
 	path = third_party/roki-gl
 	url = https://github.com/mi-lib/roki-gl.git
+	ignore = untracked
 [submodule "mi-lib-tutorial"]
 	path = mi-lib-tutorial
 	url = https://github.com/mi-lib/mi-lib-tutorial
 [submodule "third_party/zx11"]
 	path = third_party/zx11
 	url = https://github.com/mi-lib/zx11.git
+	ignore = untracked
 [submodule "third_party/liw"]
 	path = third_party/liw
 	url = https://github.com/mi-lib/liw.git
+	ignore = untracked
 [submodule "third_party/dzco"]
 	path = third_party/dzco
 	url = https://github.com/mi-lib/dzco.git
+	ignore = untracked
