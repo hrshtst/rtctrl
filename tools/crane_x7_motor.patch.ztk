@@ -1,0 +1,3 @@
+# Hand-tuned overrides appended verbatim to the generated crane_x7.ztk.
+# Reserved for parameters that exist in no upstream source, e.g. joint
+# friction identified on the real robot (M7). Empty (comments only) until then.

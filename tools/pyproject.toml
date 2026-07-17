@@ -1,0 +1,12 @@
+[project]
+name = "rtctrl-tools"
+version = "0.1.0"
+description = "Utility scripts for the rtctrl CRANE-X7 control library"
+requires-python = ">=3.10"
+dependencies = [
+    "xacro>=1.14",
+    "rospkg>=1.5",
+]
+
+[tool.uv]
+package = false
