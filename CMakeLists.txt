@@ -24,7 +24,10 @@ add_library(rtctrl
   src/model/trajectory.cpp
   src/model/zvs_writer.cpp
   src/model/ik_solver.cpp
-  src/arm/sim_arm.cpp)
+  src/arm/sim_arm.cpp
+  src/dxl/sync_group.cpp
+  src/emu/motor_emulator.cpp
+  src/emu/fake_packet_io.cpp)
 add_library(rtctrl::rtctrl ALIAS rtctrl)
 target_compile_features(rtctrl PUBLIC cxx_std_17)
 target_compile_definitions(rtctrl PRIVATE RTCTRL_VERSION="${PROJECT_VERSION}")
