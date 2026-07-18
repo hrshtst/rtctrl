@@ -44,7 +44,10 @@ foreach(_milib_component IN LISTS MiLib_FIND_COMPONENTS)
     OUTPUT_VARIABLE _milib_cflags
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE _milib_rc_cflags)
-  execute_process(COMMAND ${MILIB_${_milib_component}_CONFIG} -l
+  # C++ consumers link the _cpp variants (same C ABI plus the C++-only
+  # static-member definitions the headers reference under __cplusplus);
+  # this mirrors mi-lib's own build rule for .cpp programs.
+  execute_process(COMMAND ${MILIB_${_milib_component}_CONFIG} -lcpp
     OUTPUT_VARIABLE _milib_libs
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE _milib_rc_libs)
