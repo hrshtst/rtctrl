@@ -238,7 +238,7 @@ Runner), `contactinfo.ztk`. All four acceptance tests pass.
   damped stiff spring into a bang-bang limit cycle otherwise. Static divergence matches
   the constraint analysis (0.0084 rad at 0.5 Nm asymmetric load).
 
-**M4 — DXL comm layer + emulator + inspection tool.** `dxl/` layer (PacketIO, Port,
+**M4 — DXL comm layer + emulator + inspection tool (DONE).** `dxl/` layer (PacketIO, Port,
 ControlTable, SyncGroup with indirect addressing: one FastSyncRead covering
 pos/vel/current/voltage/temp, one SyncWrite); `MotorEmulator` + FakePacketIO; pty
 `dxl_emu`; `dxl_inspect` (bus scan, read/write named or raw registers, dump-all,
