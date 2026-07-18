@@ -304,8 +304,9 @@ with the feature it tests, `test:` type reserved for test-only changes).
 
 ## Risks / open questions
 
-1. **Mesh paths CWD-relative** in zeo `fopen` — verify at M1 whether newer zeo resolves
-   relative to the ztk; else document run-from-repo-root or generate absolute-path variant.
+1. ~~Mesh paths CWD-relative~~ **Resolved at M1:** mi-lib viewers (rk_pen/rk_anim/rk_view)
+   chdir into the model's directory before reading, so imports are written relative to the
+   .ztk itself (`meshes/...`) and `ChainModel` mirrors the same chdir convention on load.
 2. **urdf2ztk inertia fidelity** (URDF inertial origin rpy → roki tensor) — numeric
    comparison test at M1. Mimic tag silently dropped — handled by penalty coupling (M3).
 3. **xacro standalone**: if pip xacro rejects `$(find …)` + ROS_PACKAGE_PATH, fallback is a

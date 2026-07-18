@@ -11,9 +11,10 @@ namespace rtctrl::model {
 // for direct roki calls.
 class ChainModel {
  public:
-  // Shape import paths inside the .ztk are resolved by zeo against the
-  // current working directory, so load from the directory the paths were
-  // generated for (the repo root, for models/crane_x7/crane_x7.ztk).
+  // Shape import paths inside the .ztk are relative to the model file;
+  // loading temporarily switches the working directory to the model's
+  // directory (the mi-lib tool convention, cf. rk_pen), so construction
+  // is not thread-safe against concurrent working-directory users.
   explicit ChainModel(const std::string& ztk_path);
   ~ChainModel();
 

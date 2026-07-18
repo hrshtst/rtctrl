@@ -38,8 +38,9 @@ PATCH = REPO / "tools" / "crane_x7_motor.patch.ztk"
 
 XACRO_ARGS = ["use_gazebo:=false", "use_d435:=false", "use_mock_components:=true"]
 MESH_URI_PREFIX = "package://crane_x7_description/meshes"
-MESH_REL_PATH = "models/crane_x7/meshes"  # relative to the repo root (zeo
-# resolves shape import paths against the current working directory)
+MESH_REL_PATH = "meshes"  # relative to the .ztk itself: mi-lib viewers
+# (rk_pen/rk_anim) chdir into the model's directory before reading, and
+# ChainModel mirrors that convention
 
 
 def expand_xacro() -> str:
@@ -159,7 +160,7 @@ def main() -> None:
     out = OUT_DIR / "crane_x7.ztk"
     out.write_text(ztk_text)
     print(f"wrote {out.relative_to(REPO)}")
-    print("verify with:  rk_pen models/crane_x7/crane_x7.ztk  (from the repo root)")
+    print("verify with:  rk_pen models/crane_x7/crane_x7.ztk")
 
 
 if __name__ == "__main__":

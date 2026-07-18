@@ -39,11 +39,11 @@ alpha: 1
 [zeo::shape]
 name: crane_x7_mounting_plate_link_0
 optic: black
-import: models/crane_x7/meshes/visual/mounting_plate.stl 1 1 1
+import: meshes/visual/mounting_plate.stl 1 1 1
 [zeo::shape]
 name: crane_x7_shoulder_fixed_part_link_0
 optic: red
-import: models/crane_x7/meshes/visual/base_fixed_part.stl 1 1 1
+import: meshes/visual/base_fixed_part.stl 1 1 1
 [zeo::shape]
 name: crane_x7_shoulder_revolute_part_link_0
 att: {
@@ -52,7 +52,7 @@ att: {
  0, 0, 1
 }
 optic: white
-import: models/crane_x7/meshes/visual/base_revolute_part.stl 1 1 1
+import: meshes/visual/base_revolute_part.stl 1 1 1
 [zeo::shape]
 name: crane_x7_upper_arm_fixed_part_link_0
 att: {
@@ -61,7 +61,7 @@ att: {
  0, -1.326794897e-06, 1
 }
 optic: white
-import: models/crane_x7/meshes/visual/rotating_link_type_1_fixed_part.stl 1 1 1
+import: meshes/visual/rotating_link_type_1_fixed_part.stl 1 1 1
 [zeo::shape]
 name: crane_x7_upper_arm_fixed_part_joint_cover_l_link_0
 att: {
@@ -70,7 +70,7 @@ att: {
  0, -1, 1.326794897e-06
 }
 optic: red
-import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+import: meshes/visual/joint_cover.stl 1 1 1
 [zeo::shape]
 name: crane_x7_upper_arm_fixed_part_joint_cover_r_link_0
 att: {
@@ -79,11 +79,11 @@ att: {
  0, 1, 1.326794897e-06
 }
 optic: red
-import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+import: meshes/visual/joint_cover.stl 1 1 1
 [zeo::shape]
 name: crane_x7_upper_arm_revolute_part_link_0
 optic: white
-import: models/crane_x7/meshes/visual/rotating_link_type_1_revolute_part.stl 1 1 1
+import: meshes/visual/rotating_link_type_1_revolute_part.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_fixed_part_link_0
 att: {
@@ -92,7 +92,7 @@ att: {
  0, -1.326794897e-06, 1
 }
 optic: white
-import: models/crane_x7/meshes/visual/rotating_link_type_2_fixed_part.stl 1 1 1
+import: meshes/visual/rotating_link_type_2_fixed_part.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_fixed_part_joint_cover_l_link_0
 att: {
@@ -101,7 +101,7 @@ att: {
  0, -1, 1.326794897e-06
 }
 optic: red
-import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+import: meshes/visual/joint_cover.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_fixed_part_joint_cover_r_link_0
 att: {
@@ -110,11 +110,11 @@ att: {
  0, 1, 1.326794897e-06
 }
 optic: red
-import: models/crane_x7/meshes/visual/joint_cover.stl 1 1 1
+import: meshes/visual/joint_cover.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_revolute_part_link_0
 optic: white
-import: models/crane_x7/meshes/visual/rotating_link_type_2_revolute_part.stl 1 1 1
+import: meshes/visual/rotating_link_type_2_revolute_part.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_revolute_part_logo_text_l_link_0
 att: {
@@ -123,7 +123,7 @@ att: {
  -1, -1.326794897e-06, 1.760384698e-12
 }
 optic: black
-import: models/crane_x7/meshes/visual/rtcorp_logo_name.stl 1 1 1
+import: meshes/visual/rtcorp_logo_name.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_revolute_part_logo_symbol_l_link_0
 att: {
@@ -132,7 +132,7 @@ att: {
  -1, -1.326794897e-06, 1.760384698e-12
 }
 optic: red
-import: models/crane_x7/meshes/visual/rtcorp_logo_rabbit.stl 1 1 1
+import: meshes/visual/rtcorp_logo_rabbit.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_revolute_part_logo_text_r_link_0
 att: {
@@ -141,7 +141,7 @@ att: {
  1, 1.326794897e-06, 1.760384698e-12
 }
 optic: black
-import: models/crane_x7/meshes/visual/rtcorp_logo_name.stl 1 1 1
+import: meshes/visual/rtcorp_logo_name.stl 1 1 1
 [zeo::shape]
 name: crane_x7_lower_arm_revolute_part_logo_symbol_r_link_0
 att: {
@@ -150,7 +150,7 @@ att: {
  1, 1.326794897e-06, 1.760384698e-12
 }
 optic: red
-import: models/crane_x7/meshes/visual/rtcorp_logo_rabbit.stl 1 1 1
+import: meshes/visual/rtcorp_logo_rabbit.stl 1 1 1
 [zeo::shape]
 name: crane_x7_wrist_link_0
 att: {
@@ -159,11 +159,11 @@ att: {
  0, -1.326794897e-06, 1
 }
 optic: white
-import: models/crane_x7/meshes/visual/wrist.stl 1 1 1
+import: meshes/visual/wrist.stl 1 1 1
 [zeo::shape]
 name: crane_x7_gripper_base_link_0
 optic: red
-import: models/crane_x7/meshes/visual/wide_two_finger_gripper_actuator.stl 1 1 1
+import: meshes/visual/wide_two_finger_gripper_actuator.stl 1 1 1
 [zeo::shape]
 name: crane_x7_gripper_finger_a_link_0
 att: {
@@ -172,7 +172,7 @@ att: {
  0, -1.326794897e-06, 1
 }
 optic: red
-import: models/crane_x7/meshes/visual/wide_two_finger_gripper_finger_a.stl 1 1 1
+import: meshes/visual/wide_two_finger_gripper_finger_a.stl 1 1 1
 [zeo::shape]
 name: crane_x7_gripper_finger_b_link_0
 att: {
@@ -181,7 +181,7 @@ att: {
  0, 1.326794897e-06, -1
 }
 optic: red
-import: models/crane_x7/meshes/visual/wide_two_finger_gripper_finger_b.stl 1 1 1
+import: meshes/visual/wide_two_finger_gripper_finger_b.stl 1 1 1
 [roki::link]
 name: base_link
 jointtype: fixed

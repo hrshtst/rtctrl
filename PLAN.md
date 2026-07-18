@@ -132,3 +132,19 @@ The update plausibly resolves most earlier findings, but four issues remain.
 - **[P2] The friction-source statement is factually wrong.** M1 now says the URDF carries no friction parameters ([IMPLEMENTATION_PLAN.md:190](/home/atsuta/develop/rtctrl/docs/IMPLEMENTATION_PLAN.md:190)), but the arm URDF contains damping and friction values ([crane_x7_arm.xacro:110](/home/atsuta/develop/rtctrl/third_party/crane_x7_description/urdf/crane_x7_arm.xacro:110)) and the gripper does too. Starting with zero friction pending identification is reasonable; say that the converter drops or does not preserve those nominal values, rather than claiming they do not exist.
 
 The previous clean-build, null-vector, coordinate-order, model-limit, emergency-stop, and mimic-dynamics concerns are otherwise plausibly addressed. The penalty coupling is acceptable for a first simulation model, though implementation should state explicitly that its constraint torques are equal and opposite. No files were changed.
+
+The previous four findings are plausibly resolved. One safety gap remains.
+
+### Finding
+
+- **[P1] Reads-alive/writes-stalled recovery can still defeat both watchdog layers.** The servo watchdog remains fed by reads, while the host response—zero commands and `deactivate()`—also requires successful writes ([IMPLEMENTATION_PLAN.md:243](/home/atsuta/develop/rtctrl/docs/IMPLEMENTATION_PLAN.md:243)). If those safety writes fail, the servo continues receiving reads and never times out. After best-effort zero/torque-off, the host must stop all bus traffic or close the port so the servo watchdog necessarily fires. The trap-case test should verify that the emulated motor actually stops or enters Bus Watchdog error, not merely that the host watchdog triggers.
+
+Otherwise:
+
+- Firmware-v38 gating and watchdog semantics are corrected.
+- Canonical 8↔9 coordinate and force mappings are explicit.
+- Reachable singular IK and unreachable-target behavior are correctly separated.
+- URDF friction provenance is now accurate.
+- Mimic coupling torque signs are explicit.
+
+The mapping tests would be clearest if they separately verify coordinate projection and the force/virtual-work identity, but that is a refinement rather than a blocker. No files were changed.

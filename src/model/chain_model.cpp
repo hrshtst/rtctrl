@@ -1,19 +1,34 @@
 #include "rtctrl/model/chain_model.hpp"
 
+#include <filesystem>
 #include <stdexcept>
 #include <utility>
 
 namespace rtctrl::model {
 
+namespace fs = std::filesystem;
+
 ChainModel::ChainModel(const std::string& ztk_path) {
+  const fs::path path(ztk_path);
   rkChainInit(&chain_);
   owns_ = true;
-  if (!rkChainReadZTK(&chain_, ztk_path.c_str())) {
+
+  // mi-lib convention (cf. rk_pen): shape imports are relative to the
+  // model file, so read it from its own directory.
+  bool loaded = false;
+  if (path.has_parent_path()) {
+    const fs::path previous = fs::current_path();
+    fs::current_path(path.parent_path());
+    loaded = rkChainReadZTK(&chain_, path.filename().c_str()) != nullptr;
+    fs::current_path(previous);
+  } else {
+    loaded = rkChainReadZTK(&chain_, ztk_path.c_str()) != nullptr;
+  }
+
+  if (!loaded) {
     rkChainDestroy(&chain_);
     owns_ = false;
-    throw std::runtime_error("ChainModel: failed to load '" + ztk_path +
-                             "' (note: shape imports resolve against the "
-                             "current working directory)");
+    throw std::runtime_error("ChainModel: failed to load '" + ztk_path + "'");
   }
 }
 
