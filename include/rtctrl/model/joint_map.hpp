@@ -1,5 +1,6 @@
 #pragma once
 
+#include <roki/rk_chain.h>
 #include <zm/zm.h>
 
 #include <array>
@@ -34,9 +35,12 @@ const char* fingerBLink();
 class JointMap {
  public:
   explicit JointMap(const ChainModel& model);  // throws on missing links
+  explicit JointMap(rkChain* chain);           // e.g. a roki-fd cell chain
 
   int rokiOffset(int canonical) const { return offsets_[canonical]; }
   int rokiOffsetFingerB() const { return offset_finger_b_; }
+  int linkId(int canonical) const { return link_ids_[canonical]; }
+  int linkIdFingerB() const { return link_id_finger_b_; }
   std::uint8_t dxlId(int canonical) const;
   std::optional<int> canonicalOf(std::uint8_t dxl_id) const;
 
@@ -50,7 +54,9 @@ class JointMap {
 
  private:
   std::array<int, kCanonicalDof> offsets_{};
+  std::array<int, kCanonicalDof> link_ids_{};
   int offset_finger_b_ = -1;
+  int link_id_finger_b_ = -1;
 };
 
 }  // namespace rtctrl::model

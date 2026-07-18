@@ -40,19 +40,27 @@ void requireSize(const zVec vec, int size, const char* what) {
 
 }  // namespace
 
-JointMap::JointMap(const ChainModel& model) {
+JointMap::JointMap(rkChain* chain) {
   std::string missing;
   const auto& joints = canonicalJoints();
   for (int i = 0; i < kCanonicalDof; ++i) {
-    offsets_[i] = model.jointOffset(joints[i].link);
-    if (offsets_[i] < 0) missing += std::string(" ") + joints[i].link;
+    offsets_[i] = rkChainFindLinkJointIDOffset(chain, joints[i].link);
+    link_ids_[i] = rkChainFindLinkID(chain, joints[i].link);
+    if (offsets_[i] < 0 || link_ids_[i] < 0) {
+      missing += std::string(" ") + joints[i].link;
+    }
   }
-  offset_finger_b_ = model.jointOffset(fingerBLink());
-  if (offset_finger_b_ < 0) missing += std::string(" ") + fingerBLink();
+  offset_finger_b_ = rkChainFindLinkJointIDOffset(chain, fingerBLink());
+  link_id_finger_b_ = rkChainFindLinkID(chain, fingerBLink());
+  if (offset_finger_b_ < 0 || link_id_finger_b_ < 0) {
+    missing += std::string(" ") + fingerBLink();
+  }
   if (!missing.empty()) {
     throw std::runtime_error("JointMap: model lacks expected links:" + missing);
   }
 }
+
+JointMap::JointMap(const ChainModel& model) : JointMap(model.chain()) {}
 
 std::uint8_t JointMap::dxlId(int canonical) const {
   return canonicalJoints()[canonical].dxl_id;
