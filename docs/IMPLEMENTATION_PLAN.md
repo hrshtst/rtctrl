@@ -218,12 +218,25 @@ limits; unreachable targets or incompatible constraints → explicit non-converg
 ✓ Manual: `rk_anim models/crane_x7/crane_x7.ztk build/motion.zvs`. Catch2: trajectory
 boundary conditions, velocity-limit property, zvs re-parse.
 
-**M3 — roki-fd sim + sim side of bridge.** `arm/` layer (types, Arm, SimArm, Runner),
-`contactinfo.ztk`.
-✓ Catch2 integration: zero-torque gravity drop stays finite (no NaN, 5 s); PD-hold via
-Runner holds q₀ within 0.05 rad; determinism (two runs identical); finger-coupling
-acceptance — asymmetric contact on one finger keeps |q_b−q_a| under the documented
-threshold. Manual: SimArm .zvs → rk_anim.
+**M3 — sim side of bridge (DONE, with deviations).** `arm/` layer (types, Arm, SimArm,
+Runner), `contactinfo.ztk`. All four acceptance tests pass.
+*Deviations found necessary during implementation:*
+- **SimArm uses plain roki `rkChainFD` + semi-implicit Euler, not roki-fd.** For this
+  contact-free chain, roki-fd left the chain's per-joint dis/vel as solver-stage workspace
+  (reads after `rkFDUpdate` were inconsistent with committed state) and its cell state
+  showed unphysical finger velocities. Plain FD keeps state committed by construction.
+  roki-fd returns when contact-rich scenes arrive (grasping/tables); `contactinfo.ztk`
+  is retained for that.
+- **Reflected motor inertia (gear²·J_rotor ≈ 0.05 kg·m², estimate) is added to the
+  mass-matrix diagonal** via `rkChainInertiaMatBiasVecG` + own Gauss solve. Without it the
+  bare finger inertia (~3e-5 kg·m²) under the ±4 Nm effort clamp produces kHz chatter no
+  real geared servo exhibits. Value refined at M7 identification.
+- ztk Coulomb friction is NOT emitted by the port (roki-fd applies joint friction only to
+  dc motors; with trq motors the value leaks as a constant torque); a small inertia-scaled
+  viscous term stands in until M7.
+- Finger coupling overdamped (couple_c dominates) — the effort clamp turns a lightly
+  damped stiff spring into a bang-bang limit cycle otherwise. Static divergence matches
+  the constraint analysis (0.0084 rad at 0.5 Nm asymmetric load).
 
 **M4 — DXL comm layer + emulator + inspection tool.** `dxl/` layer (PacketIO, Port,
 ControlTable, SyncGroup with indirect addressing: one FastSyncRead covering
@@ -320,9 +333,13 @@ with the feature it tests, `test:` type reserved for test-only changes).
    latency validation stays on hardware (M5).
 7. **XM540 vs XM430 deltas** (CurrentLimit defaults, stall ratings) — encode per-model in
    ControlTable, cross-check `.model` files at M4.
-8. **Finger penalty coupling is a stiff term** — K/C must be tuned against the sim dt to
-   avoid integrator instability; the M3 determinism/finite checks and the coupling
-   acceptance test bound it, thresholds documented with the chosen gains.
+8. ~~Finger penalty coupling is a stiff term~~ **Resolved at M3:** reflected motor inertia
+   on the mass-matrix diagonal plus overdamped coupling; thresholds documented in the
+   SimArm options and the acceptance test.
+9. **mi-lib C++ (`_cpp`) library variants miscompile the zm/roki-fd ODE path** (stock
+   roki-fd example heap-corrupts against them, zm 1.14.5) — rtctrl links the C libraries
+   and defines the C++-only static class members in `src/milib_cpp_compat.cpp`. Worth an
+   upstream report.
 
 ## Key reference files (for implementation)
 
