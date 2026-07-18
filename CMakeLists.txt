@@ -19,7 +19,10 @@ FetchContent_MakeAvailable(tomlplusplus)
 add_library(rtctrl
   src/version.cpp
   src/model/chain_model.cpp
-  src/model/joint_map.cpp)
+  src/model/joint_map.cpp
+  src/model/trajectory.cpp
+  src/model/zvs_writer.cpp
+  src/model/ik_solver.cpp)
 add_library(rtctrl::rtctrl ALIAS rtctrl)
 target_compile_features(rtctrl PUBLIC cxx_std_17)
 target_compile_definitions(rtctrl PRIVATE RTCTRL_VERSION="${PROJECT_VERSION}")
@@ -39,6 +42,8 @@ target_link_libraries(rtctrl PUBLIC
 # CONTROL_TABLE_PATH (which is invalid when the SDK is not installed).
 set(RTCTRL_DXL_MODEL_DIR
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/DynamixelSDK/control_table")
+
+add_subdirectory(examples)
 
 if(RTCTRL_BUILD_TESTS)
   enable_testing()
