@@ -29,6 +29,7 @@ dxl::IoResult FakePacketIO::write(std::uint8_t id, std::uint16_t addr,
                                   const std::uint8_t* data,
                                   std::uint16_t len) {
   if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
+  if (forced_write_comm_ != 0) return {forced_write_comm_, dxl::kErrNone};
   MotorEmulator* motor = bus_.find(id);
   if (motor == nullptr) return {kCommRxTimeout, dxl::kErrNone};
   motor->touch();
@@ -55,6 +56,7 @@ dxl::IoResult FakePacketIO::syncWrite(std::uint16_t addr, std::uint16_t len,
                                       const std::vector<std::uint8_t>& ids,
                                       const std::vector<std::uint8_t>& data) {
   if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
+  if (forced_write_comm_ != 0) return {forced_write_comm_, dxl::kErrNone};
   dxl::IoResult result;
   for (std::size_t i = 0; i < ids.size(); ++i) {
     MotorEmulator* motor = bus_.find(ids[i]);

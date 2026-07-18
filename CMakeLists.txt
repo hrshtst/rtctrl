@@ -29,7 +29,9 @@ add_library(rtctrl
   src/dxl/port.cpp
   src/emu/motor_emulator.cpp
   src/emu/fake_packet_io.cpp
-  src/emu/pty_bus.cpp)
+  src/emu/pty_bus.cpp
+  src/hw/config.cpp
+  src/hw/crane_x7.cpp)
 add_library(rtctrl::rtctrl ALIAS rtctrl)
 target_compile_features(rtctrl PUBLIC cxx_std_17)
 target_compile_definitions(rtctrl PRIVATE RTCTRL_VERSION="${PROJECT_VERSION}")

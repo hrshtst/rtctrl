@@ -26,12 +26,17 @@ class FakePacketIO : public dxl::PacketIO {
                           const std::vector<std::uint8_t>& ids,
                           const std::vector<std::uint8_t>& data) override;
 
-  // Fault injection: transactions fail with this comm code until reset.
+  // Fault injection: all transactions fail with this comm code.
   void setCommFailure(int comm_code) { forced_comm_ = comm_code; }
+  // Fault injection: only write/syncWrite fail — reads stay healthy.
+  // This is the trap case for the two-layer watchdog: chatty reads keep
+  // the servo-side Bus Watchdog fed while commands go nowhere.
+  void setWriteFailure(int comm_code) { forced_write_comm_ = comm_code; }
 
  private:
   MotorBus& bus_;
   int forced_comm_ = 0;
+  int forced_write_comm_ = 0;
 };
 
 }  // namespace rtctrl::emu
