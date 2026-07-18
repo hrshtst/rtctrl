@@ -29,8 +29,13 @@ for lib in $LIBS; do
   fi
   echo "=== building $lib ==="
   # The generated makefile does `include ../config`; seed it from the
-  # template with our PREFIX.
-  sed "s|^PREFIX=.*|PREFIX=$PREFIX|" "$dir/config.org" > "$dir/config"
+  # template with our PREFIX. tools/milib_config/<lib>.conf overrides the
+  # template where the upstream defaults don't build on this system.
+  template="$dir/config.org"
+  if [ -f "$REPO_ROOT/tools/milib_config/$lib.conf" ]; then
+    template="$REPO_ROOT/tools/milib_config/$lib.conf"
+  fi
+  sed "s|^PREFIX=.*|PREFIX=$PREFIX|" "$template" > "$dir/config"
   make -C "$dir"
   make -C "$dir" install
 done
