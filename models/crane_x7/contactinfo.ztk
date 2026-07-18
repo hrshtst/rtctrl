@@ -1,0 +1,18 @@
+# Contact parameters for roki-fd simulations involving the CRANE-X7.
+# Values follow the roki-fd example set (compensation-type contact).
+# Link `stuff:` labels bind to these pairs as scenes gain objects
+# (e.g. a table under stuff name "ground", grasped items as "body").
+
+[roki::contact]
+bind: ground body
+staticfriction: 0.5
+kineticfriction: 0.3
+compensation: 1000.0
+relaxation: 0.0001
+
+[roki::contact]
+bind: body body
+staticfriction: 0.5
+kineticfriction: 0.3
+compensation: 1000.0
+relaxation: 0.05
