@@ -36,16 +36,12 @@ for lib in $LIBS; do
     template="$REPO_ROOT/tools/milib_config/$lib.conf"
   fi
   sed "s|^PREFIX=.*|PREFIX=$PREFIX|" "$template" > "$dir/config"
-  # Build the C library, then rebuild the same sources as C++ to produce
-  # lib<name>_cpp.so — it carries the C++-only definitions (static class
-  # members behind the headers' __cplusplus branches) that C++ programs
-  # link against via `<lib>-config -lcpp`. Objects are shared filenames,
-  # so wipe them between the two compilations.
+  # Only the C libraries are built. The _cpp variants (same sources
+  # rebuilt with CC=g++) miscompile the roki-fd/zm ODE path as of
+  # zm 1.14.5 — rtctrl links the C libs and supplies the C++-only
+  # static-member definitions itself (src/milib_cpp_compat.cpp).
   make -C "$dir"
-  find "$dir/src" -name '*.o' -delete
-  make -C "$dir" CC=g++
   make -C "$dir" install
-  find "$dir/src" -name '*.o' -delete
 done
 
 echo ""

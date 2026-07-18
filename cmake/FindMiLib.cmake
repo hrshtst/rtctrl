@@ -44,10 +44,12 @@ foreach(_milib_component IN LISTS MiLib_FIND_COMPONENTS)
     OUTPUT_VARIABLE _milib_cflags
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE _milib_rc_cflags)
-  # C++ consumers link the _cpp variants (same C ABI plus the C++-only
-  # static-member definitions the headers reference under __cplusplus);
-  # this mirrors mi-lib's own build rule for .cpp programs.
-  execute_process(COMMAND ${MILIB_${_milib_component}_CONFIG} -lcpp
+  # Link the plain C libraries. The _cpp variants (same sources rebuilt
+  # with g++) miscompile the roki-fd/zm ODE path — the stock roki-fd
+  # example heap-corrupts when built against them — so rtctrl links the
+  # C libs and defines the few C++-only static class members mi-lib
+  # headers declare in src/milib_cpp_compat.cpp instead.
+  execute_process(COMMAND ${MILIB_${_milib_component}_CONFIG} -l
     OUTPUT_VARIABLE _milib_libs
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE _milib_rc_libs)
