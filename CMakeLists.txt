@@ -26,8 +26,10 @@ add_library(rtctrl
   src/model/ik_solver.cpp
   src/arm/sim_arm.cpp
   src/dxl/sync_group.cpp
+  src/dxl/port.cpp
   src/emu/motor_emulator.cpp
-  src/emu/fake_packet_io.cpp)
+  src/emu/fake_packet_io.cpp
+  src/emu/pty_bus.cpp)
 add_library(rtctrl::rtctrl ALIAS rtctrl)
 target_compile_features(rtctrl PUBLIC cxx_std_17)
 target_compile_definitions(rtctrl PRIVATE RTCTRL_VERSION="${PROJECT_VERSION}")
@@ -48,6 +50,7 @@ target_link_libraries(rtctrl PUBLIC
 set(RTCTRL_DXL_MODEL_DIR
   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/DynamixelSDK/control_table")
 
+add_subdirectory(apps)
 add_subdirectory(examples)
 
 if(RTCTRL_BUILD_TESTS)
