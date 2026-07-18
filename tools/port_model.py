@@ -83,6 +83,7 @@ def driven_joints(urdf_text: str) -> list[dict]:
         name = joint.get("name")
         limit = joint.find("limit")
         child = joint.find("child")
+        dynamics = joint.find("dynamics")
         if name is None or limit is None or child is None:
             sys.exit(f"error: revolute joint {name!r} lacks <limit> or <child>")
         joints.append(
@@ -93,6 +94,12 @@ def driven_joints(urdf_text: str) -> list[dict]:
                 "velocity": float(limit.get("velocity", "nan")),
                 "lower": float(limit.get("lower", "nan")),
                 "upper": float(limit.get("upper", "nan")),
+                "damping": float(dynamics.get("damping", "0"))
+                if dynamics is not None
+                else 0.0,
+                "friction": float(dynamics.get("friction", "0"))
+                if dynamics is not None
+                else 0.0,
             }
         )
     return joints
@@ -121,8 +128,15 @@ def merge_motors(ztk_text: str, joints: list[dict]) -> str:
             f"min: {-j['effort']}\n"
         )
 
-    # insert `motor:` after the jointtype line of each driven link section
-    child_to_motor = {j["child"]: f"{j['name']}_motor" for j in joints}
+    # After the jointtype line of each driven link section, insert the
+    # motor reference and the viscous damping from the URDF <dynamics>
+    # element (urdf2ztk drops it). Coulomb friction is deliberately NOT
+    # emitted: roki-fd's friction-pivot handling only runs for dc-type
+    # motors (rkfd_util.c), and with trq motors a nonzero coulomb value
+    # leaks into the dynamics as a constant torque that hurls the
+    # low-inertia fingers between their limits. Revisit with the M7
+    # friction identification.
+    child_to_joint = {j["child"]: j for j in joints}
     lines = ztk_text.splitlines(keepends=True)
     out: list[str] = []
     current_link = None
@@ -136,8 +150,10 @@ def merge_motors(ztk_text: str, joints: list[dict]) -> str:
                     current_link = m.group(1)
                     break
         m = re.match(r"\s*jointtype\s*:", line)
-        if m and current_link in child_to_motor:
-            out.append(f"motor: {child_to_motor[current_link]}\n")
+        if m and current_link in child_to_joint:
+            j = child_to_joint[current_link]
+            out.append(f"motor: {j['name']}_motor\n")
+            out.append(f"viscosity: {j['damping']}\n")
     merged = "".join(out) + "".join(motor_sections)
 
     if PATCH.exists() and PATCH.read_text().strip():

@@ -210,6 +210,7 @@ parent: crane_x7_mounting_plate_link
 name: crane_x7_shoulder_revolute_part_link
 jointtype: revolute
 motor: crane_x7_shoulder_fixed_part_pan_joint_motor
+viscosity: 1e-06
 min: -157
 max: 157
 pos: ( 0, 0, 0.036 )
@@ -226,6 +227,7 @@ parent: crane_x7_shoulder_fixed_part_link
 name: crane_x7_upper_arm_fixed_part_link
 jointtype: revolute
 motor: crane_x7_shoulder_revolute_part_tilt_joint_motor
+viscosity: 1e-06
 min: -92
 max: 92
 pos: ( 0, 0, 0.064 )
@@ -269,6 +271,7 @@ parent: crane_x7_upper_arm_fixed_part_link
 name: crane_x7_upper_arm_revolute_part_link
 jointtype: revolute
 motor: crane_x7_upper_arm_revolute_part_twist_joint_motor
+viscosity: 1e-06
 min: -157
 max: 157
 pos: ( 0, 0.065, 7.21644966e-18 )
@@ -290,6 +293,7 @@ parent: crane_x7_upper_arm_fixed_part_link
 name: crane_x7_lower_arm_fixed_part_link
 jointtype: revolute
 motor: crane_x7_upper_arm_revolute_part_rotate_joint_motor
+viscosity: 1e-06
 min: -161
 max: 0.001
 pos: ( 0, 0, 0.185 )
@@ -333,6 +337,7 @@ parent: crane_x7_lower_arm_fixed_part_link
 name: crane_x7_lower_arm_revolute_part_link
 jointtype: revolute
 motor: crane_x7_lower_arm_fixed_part_joint_motor
+viscosity: 1e-06
 min: -157
 max: 157
 pos: ( 0, 0.121, 1.34336986e-17 )
@@ -378,6 +383,7 @@ parent: crane_x7_lower_arm_revolute_part_link
 name: crane_x7_wrist_link
 jointtype: revolute
 motor: crane_x7_lower_arm_revolute_part_joint_motor
+viscosity: 1e-06
 min: -90
 max: 90
 pos: ( 0, 0, 0.129 )
@@ -399,6 +405,7 @@ parent: crane_x7_lower_arm_revolute_part_link
 name: crane_x7_gripper_base_link
 jointtype: revolute
 motor: crane_x7_wrist_joint_motor
+viscosity: 1e-06
 min: -167
 max: 167
 pos: ( 0, 0.019, 2.109423747e-18 )
@@ -420,6 +427,7 @@ parent: crane_x7_wrist_link
 name: crane_x7_gripper_finger_a_link
 jointtype: revolute
 motor: crane_x7_gripper_finger_a_joint_motor
+viscosity: 1e-06
 min: -5
 max: 90
 pos: ( -0.012, 0, 0.024 )
@@ -441,6 +449,7 @@ parent: crane_x7_gripper_base_link
 name: crane_x7_gripper_finger_b_link
 jointtype: revolute
 motor: crane_x7_gripper_finger_b_joint_motor
+viscosity: 1e-06
 min: -5
 max: 90
 pos: ( 0.012, 0, 0.024 )
