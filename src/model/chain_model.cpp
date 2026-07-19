@@ -39,6 +39,8 @@ ChainModel::~ChainModel() {
   zVecFree(tau9_);
   zVecFree(zero_vel9_);
   zVecFree(zero_acc9_);
+  zVecFree(vel9_);
+  zVecFree(acc9_);
   if (owns_) rkChainDestroy(&chain_);
 }
 
@@ -49,8 +51,10 @@ void ChainModel::allocScratch() {
   tau9_ = zVecAlloc(n);
   zero_vel9_ = zVecAlloc(n);
   zero_acc9_ = zVecAlloc(n);
+  vel9_ = zVecAlloc(n);
+  acc9_ = zVecAlloc(n);
   if (q9_ == nullptr || tau9_ == nullptr || zero_vel9_ == nullptr ||
-      zero_acc9_ == nullptr) {
+      zero_acc9_ == nullptr || vel9_ == nullptr || acc9_ == nullptr) {
     throw std::bad_alloc();
   }
   zVecZero(zero_vel9_);
@@ -62,6 +66,17 @@ void ChainModel::gravityTorque(const JointMap& map, const zVec q8,
   allocScratch();
   map.expand(q8, q9_);
   rkChainID_G(&chain_, q9_, zero_vel9_, zero_acc9_, RK_GRAVITY6D, tau9_);
+  map.reduceTorque(tau9_, tau8);
+}
+
+void ChainModel::inverseDynamics(const JointMap& map, const zVec q8,
+                                 const zVec dq8, const zVec ddq8,
+                                 zVec tau8) {
+  allocScratch();
+  map.expand(q8, q9_);
+  map.expand(dq8, vel9_);
+  map.expand(ddq8, acc9_);
+  rkChainID_G(&chain_, q9_, vel9_, acc9_, RK_GRAVITY6D, tau9_);
   map.reduceTorque(tau9_, tau8);
 }
 

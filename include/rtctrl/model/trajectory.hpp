@@ -22,8 +22,10 @@ class MinJerkTrajectory {
   double duration() const { return duration_; }
   int size() const { return q0_.size(); }
 
-  // q must match the trajectory size; dq may be null when not needed.
-  void sample(double t, zVec q, zVec dq = nullptr) const;
+  // q must match the trajectory size; dq/ddq may be null when not
+  // needed.
+  void sample(double t, zVec q, zVec dq = nullptr,
+              zVec ddq = nullptr) const;
 
  private:
   ZVector q0_;

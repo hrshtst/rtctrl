@@ -53,16 +53,24 @@ class ChainModel {
   // Jacobian (gripper torque = finger_a + finger_b, virtual work).
   void gravityTorque(const JointMap& map, const zVec q8, zVec tau8);
 
+  // Full inverse dynamics in canonical coordinates: the torques
+  // realizing (q8, dq8, ddq8) under gravity. Same expansion/reduction
+  // as gravityTorque.
+  void inverseDynamics(const JointMap& map, const zVec q8, const zVec dq8,
+                       const zVec ddq8, zVec tau8);
+
  private:
   void allocScratch();
 
   mutable rkChain chain_{};  // the roki C API takes non-const rkChain*
   bool owns_{false};
-  // ID scratch, allocated on first gravityTorque call
+  // ID scratch, allocated on first use
   zVec q9_ = nullptr;
   zVec tau9_ = nullptr;
-  zVec zero_vel9_ = nullptr;
-  zVec zero_acc9_ = nullptr;
+  zVec zero_vel9_ = nullptr;  // stays zero — gravityTorque only
+  zVec zero_acc9_ = nullptr;  // stays zero — gravityTorque only
+  zVec vel9_ = nullptr;
+  zVec acc9_ = nullptr;
 };
 
 }  // namespace rtctrl::model

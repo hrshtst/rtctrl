@@ -19,7 +19,8 @@ add_executable(integration_tests
   integration/sim_arm_test.cpp
   integration/pty_test.cpp
   integration/thread_test.cpp
-  integration/gravity_sim_test.cpp)
+  integration/gravity_sim_test.cpp
+  integration/tracking_sim_test.cpp)
 target_link_libraries(integration_tests PRIVATE rtctrl::rtctrl
   Catch2::Catch2WithMain)
 catch_discover_tests(integration_tests

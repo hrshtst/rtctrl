@@ -50,19 +50,24 @@ MinJerkTrajectory MinJerkTrajectory::withVelocityLimit(const zVec q0,
   return MinJerkTrajectory(q0, qf, duration);
 }
 
-void MinJerkTrajectory::sample(double t, zVec q, zVec dq) const {
+void MinJerkTrajectory::sample(double t, zVec q, zVec dq, zVec ddq) const {
   requireMatch(q, q0_.get(), "sample");
   if (dq != nullptr) requireMatch(dq, q0_.get(), "sample dq");
+  if (ddq != nullptr) requireMatch(ddq, q0_.get(), "sample ddq");
 
   const double tau = std::clamp(t / duration_, 0.0, 1.0);
   const double s = tau * tau * tau * (10.0 + tau * (-15.0 + 6.0 * tau));
   const double sq = tau * (1.0 - tau);
   const double ds = 30.0 * sq * sq / duration_;
+  const double dds =
+      (60.0 * tau - 180.0 * tau * tau + 120.0 * tau * tau * tau) /
+      (duration_ * duration_);
 
   for (int i = 0; i < q0_.size(); ++i) {
     const double delta = qf_[i] - q0_[i];
     zVecElemNC(q, i) = q0_[i] + delta * s;
     if (dq != nullptr) zVecElemNC(dq, i) = delta * ds;
+    if (ddq != nullptr) zVecElemNC(ddq, i) = delta * dds;
   }
 }
 
