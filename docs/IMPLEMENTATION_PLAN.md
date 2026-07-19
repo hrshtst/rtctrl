@@ -248,7 +248,12 @@ Integration (pty): real PortHandler @3 Mbps scan finds IDs 2–9, one-transactio
 read, fault injection → SDK timeout surfaced. Manual: `dxl_emu & dxl_inspect --port
 /tmp/ttyDXL scan|dump` offline.
 
-**M5 — Hardware bring-up (ON/OFF → params → sensory read → simple motion).**
+**M5 — Hardware bring-up (DONE — all checklist steps confirmed on the real arm).**
+*Hardware findings:* DynamixelSDK leaves the port at a garbage speed on glibc ≥ 2.42
+(setupPort never calls cfsetispeed/ospeed) — dxl::Port reasserts the line settings; the
+Bus Watchdog freezes the arm with torque ON (it does not go limp) and activation now
+clears tripped watchdogs before its goal snap; dialout membership is mandatory (session
+ACLs do not survive the drill's replug). Servos: fw v47, ids/models exactly per config.
 `hw/config.hpp` + `config/crane_x7.toml`, `hw/safety.hpp`, minimal `crane_x7.cpp`; apps
 in order: `x7_onoff` (soft P=800 on activate / P=5 on deactivate, clamp goal to present),
 `x7_read` (stream all present values), `x7_set_param` (gains, profiles, return-delay),
@@ -273,7 +278,9 @@ Watchdog error (not merely "host watchdog triggered"); then physical checklist o
 bus traffic (USB unplug) → servo stops autonomously via Bus Watchdog, confirmed by state
 read-back after reconnect.
 
-**M6 — Position-control parity with rt_manipulators.** Full `CraneX7Hardware`: TOML joint
+**M6 — Position-control parity with rt_manipulators (DONE; on-robot spot check of
+`examples/x7_wave` pending the next powered session — see docs/PARITY.md for the full
+feature mapping).** Full `CraneX7Hardware`: TOML joint
 groups, background read→limit→write thread (liwPAction or timerfd), all getters/setters,
 gain/profile writers, validation rule (writing velocity/current requires reading position),
 zero-on-stop, `Arm` adapter. Port vendor samples01–03 to `examples/`.
