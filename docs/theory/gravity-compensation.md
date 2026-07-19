@@ -58,7 +58,7 @@ the gravity term:
 \mathrm{ID}(q, 0, 0) = M(q)\cdot 0 + C(q,0)\cdot 0 + g(q) = g(q).
 ```
 
-`ChainModel::gravityTorque(map, q_8, \tau_8)` does precisely this, with
+`ChainModel::gravityTorque(map, q8, tau8)` does precisely this, with
 the canonical↔model bookkeeping made explicit:
 
 ```math

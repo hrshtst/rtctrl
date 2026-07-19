@@ -102,10 +102,10 @@ class Arm {
 ```
 
 One cycle is `readState → Controller::update → writeCommand → step`
-(`arm::run`). `SimArm` integrates plain-roki forward dynamics
-(`(M + \mathrm{diag}\,J_r)\ddot q = \tau - b` with reflected motor
-inertia, semi-implicit Euler, inelastic joint stops, overdamped
-equal-and-opposite finger coupling). `RealArm` rides `CraneX7`'s
+(`arm::run`). `SimArm` integrates plain-roki forward dynamics,
+$(M + \mathrm{diag}\,J_r)\,\ddot q = \tau - b$, with reflected motor
+inertia $J_r$, semi-implicit Euler, inelastic joint stops, and an
+overdamped equal-and-opposite finger coupling. `RealArm` rides `CraneX7`'s
 background thread: `step()` blocks on the next completed
 read→limit→write cycle.
 
