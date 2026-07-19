@@ -6,10 +6,9 @@ site_name: rtctrl
 site_description: >-
   Control library for the CRANE-X7 7-DOF arm — robust IK, dynamics-based
   control, and a sim-real bridge on mi-lib and DynamixelSDK.
-# Fill in once the GitHub repository exists:
-# site_url: https://<user>.github.io/rtctrl/
-# repo_url: https://github.com/<user>/rtctrl
-# repo_name: <user>/rtctrl
+site_url: https://hrshtst.github.io/rtctrl/
+repo_url: https://github.com/hrshtst/rtctrl
+repo_name: hrshtst/rtctrl
 
 docs_dir: docs
 
