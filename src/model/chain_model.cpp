@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "rtctrl/model/joint_map.hpp"
+
 namespace rtctrl::model {
 
 namespace fs = std::filesystem;
@@ -33,7 +35,34 @@ ChainModel::ChainModel(const std::string& ztk_path) {
 }
 
 ChainModel::~ChainModel() {
+  zVecFree(q9_);
+  zVecFree(tau9_);
+  zVecFree(zero_vel9_);
+  zVecFree(zero_acc9_);
   if (owns_) rkChainDestroy(&chain_);
+}
+
+void ChainModel::allocScratch() {
+  if (q9_ != nullptr) return;
+  const int n = jointSize();
+  q9_ = zVecAlloc(n);
+  tau9_ = zVecAlloc(n);
+  zero_vel9_ = zVecAlloc(n);
+  zero_acc9_ = zVecAlloc(n);
+  if (q9_ == nullptr || tau9_ == nullptr || zero_vel9_ == nullptr ||
+      zero_acc9_ == nullptr) {
+    throw std::bad_alloc();
+  }
+  zVecZero(zero_vel9_);
+  zVecZero(zero_acc9_);
+}
+
+void ChainModel::gravityTorque(const JointMap& map, const zVec q8,
+                               zVec tau8) {
+  allocScratch();
+  map.expand(q8, q9_);
+  rkChainID_G(&chain_, q9_, zero_vel9_, zero_acc9_, RK_GRAVITY6D, tau9_);
+  map.reduceTorque(tau9_, tau8);
 }
 
 ChainModel::ChainModel(ChainModel&& other) noexcept

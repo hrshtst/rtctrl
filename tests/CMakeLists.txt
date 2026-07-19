@@ -7,7 +7,8 @@ add_executable(unit_tests
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/hw_test.cpp
-  unit/hw_modes_test.cpp)
+  unit/hw_modes_test.cpp
+  unit/gravity_test.cpp)
 target_link_libraries(unit_tests PRIVATE rtctrl::rtctrl Catch2::Catch2WithMain)
 # Test code refers to models/ and config/ by repo-root-relative paths.
 catch_discover_tests(unit_tests
@@ -17,7 +18,8 @@ catch_discover_tests(unit_tests
 add_executable(integration_tests
   integration/sim_arm_test.cpp
   integration/pty_test.cpp
-  integration/thread_test.cpp)
+  integration/thread_test.cpp
+  integration/gravity_sim_test.cpp)
 target_link_libraries(integration_tests PRIVATE rtctrl::rtctrl
   Catch2::Catch2WithMain)
 catch_discover_tests(integration_tests
