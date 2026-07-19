@@ -2,19 +2,29 @@
 // to run at any time, the arm can be moved by hand while watching.
 //
 // Usage: x7_read [--config path] [--port dev] [seconds]
+//   seconds <= 0 streams until Ctrl-C (default: 10)
 
 #include <unistd.h>
 
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
 #include "x7_common.hpp"
 
+namespace {
+volatile std::sig_atomic_t g_stop = 0;
+void onSignal(int) { g_stop = 1; }
+}  // namespace
+
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   const double duration_s =
       cli.argi < argc ? std::atof(argv[cli.argi]) : 10.0;
+  const bool forever = duration_s <= 0.0;
+  std::signal(SIGINT, onSignal);
+  std::signal(SIGTERM, onSignal);
 
   try {
     auto session = x7::openSession(cli);
@@ -32,7 +42,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::vector<rtctrl::dxl::Feedback> fb;
-    for (double t = 0.0; t < duration_s; t += 0.1) {
+    for (double t = 0.0; (forever || t < duration_s) && g_stop == 0;
+         t += 0.1) {
       if (!group.readAll(fb).ok()) {
         std::fprintf(stderr, "read failed\n");
         return 1;
