@@ -112,9 +112,10 @@ TEST_CASE("SyncGroup works end-to-end over the wire protocol", "[pty]") {
     REQUIRE(port.write8(id, reg::kTorqueEnable.addr, 1).ok());
   }
 
-  std::vector<double> currents(8, 0.0), positions(8, 0.0);
+  std::vector<double> currents(8, 0.0), velocities(8, 0.0);
+  std::vector<double> positions(8, 0.0);
   positions[3] = 0.7;
-  REQUIRE(group.writeGoals(currents, positions).ok());
+  REQUIRE(group.writeGoals(currents, velocities, positions).ok());
   std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
   std::vector<dxl::Feedback> fb;

@@ -199,9 +199,9 @@ TEST_CASE("SyncGroup reads all signals in one transaction and writes goals",
   }
 
   // Command distinct positions; run the motion sim to convergence.
-  std::vector<double> currents(8, 0.0), positions(8);
+  std::vector<double> currents(8, 0.0), velocities(8, 0.0), positions(8);
   for (int i = 0; i < 8; ++i) positions[i] = 0.1 * (i + 1);
-  REQUIRE(group.writeGoals(currents, positions).ok());
+  REQUIRE(group.writeGoals(currents, velocities, positions).ok());
   for (int i = 0; i < 200; ++i) bus.tick(0.05);
 
   std::vector<dxl::Feedback> fb;

@@ -38,23 +38,30 @@ class SyncGroup {
   // One syncRead of all feedback signals; `out` is resized to ids().
   IoResult readAll(std::vector<Feedback>& out);
 
-  // One syncWrite of goal current + goal position (the servo uses what
-  // its operating mode consumes). Sizes must equal ids().
+  // One syncWrite of all goal registers (the servo uses what its
+  // operating mode consumes). Sizes must equal ids().
   IoResult writeGoals(const std::vector<double>& current_amps,
+                      const std::vector<double>& velocity_rad_s,
                       const std::vector<double>& position_rad);
+  // Partial writes of a single goal signal (one syncWrite each).
+  IoResult writeGoalCurrents(const std::vector<double>& amps);
+  IoResult writeGoalVelocities(const std::vector<double>& rad_s);
+  IoResult writeGoalPositions(const std::vector<double>& rad);
 
  private:
   // Feedback window layout (13 bytes per servo, slots 0..12):
   //   [0..1]  PresentCurrent   [2..5] PresentVelocity
   //   [6..9]  PresentPosition  [10..11] PresentInputVoltage
   //   [12]    PresentTemperature
-  // Goal window layout (6 bytes per servo, slots 13..18):
-  //   [0..1]  GoalCurrent      [2..5] GoalPosition
+  // Goal window layout (10 bytes per servo, slots 13..22):
+  //   [0..1]  GoalCurrent  [2..5] GoalVelocity  [6..9] GoalPosition
   static constexpr int kFeedbackSlots = 13;
-  static constexpr int kGoalSlots = 6;
+  static constexpr int kGoalSlots = 10;
   static constexpr std::uint16_t kFeedbackAddr = reg::kIndirectDataBase;
   static constexpr std::uint16_t kGoalAddr =
       reg::kIndirectDataBase + kFeedbackSlots;
+  static constexpr std::uint16_t kGoalVelocityAddr = kGoalAddr + 2;
+  static constexpr std::uint16_t kGoalPositionAddr = kGoalAddr + 6;
 
   PacketIO& io_;
   std::vector<std::uint8_t> ids_;

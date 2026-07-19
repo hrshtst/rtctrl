@@ -1,9 +1,13 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "rtctrl/dxl/packet_io.hpp"
@@ -38,6 +42,12 @@ class CraneX7 {
     double host_command_timeout_s = 0.25;   // deadman bound on command writes
     std::uint16_t active_p_gain = 800;      // position P while active
     std::uint16_t limp_p_gain = 5;          // position P while going limp
+    double control_cycle_s = 0.01;          // background thread period
+  };
+
+  struct CycleStats {
+    std::uint64_t cycles = 0;
+    std::uint64_t overruns = 0;  // cycles that finished past their deadline
   };
 
   CraneX7(dxl::PacketIO& io, Config config);
@@ -59,13 +69,45 @@ class CraneX7 {
 
   bool activated() const { return activated_; }
   const Config& config() const { return config_; }
+  const Options& options() const { return options_; }
   const std::string& lastError() const { return last_error_; }
 
-  // Grouped IO in canonical joint order.
+  // Grouped IO in canonical joint order. readAll also refreshes the
+  // cached feedback used by the software limiters and lastFeedback().
   bool readAll(std::vector<dxl::Feedback>& out);
-  // Position command [rad], clamped to the servo position limits minus
-  // pos_limit_margin. Feeds the deadman on success.
+  std::vector<dxl::Feedback> lastFeedback() const;  // thread-safe copy
+
+  // Mode-checked command writers (every joint's configured operating
+  // mode must match, or the call is rejected). All feed the deadman on
+  // success.
+  // Position [rad]: clamped to the servo limits minus pos_limit_margin.
   bool writePositions(const std::vector<double>& rad);
+  // Velocity [rad/s]: requires fresh position feedback (the on-servo
+  // position limits are inactive outside position mode, so the host
+  // enforces them): commands driving a joint past a limit are zeroed,
+  // magnitudes clamp to the configured velocity_limit.
+  bool writeVelocities(const std::vector<double>& rad_s);
+  // Current [A]: same positional gating; magnitudes clamp to
+  // effort_limit/torque_constant minus current_limit_margin.
+  bool writeCurrents(const std::vector<double>& amps);
+
+  // Background read→limit→write thread at Options::control_cycle_s.
+  // Requires a homogeneous operating mode across the group. On each
+  // cycle: readAll → route the latest targets through the mode's
+  // limited writer → checkDeadman. stopThread() zeroes velocity/
+  // current targets first (torque state is left as-is).
+  bool startThread();
+  void stopThread();
+  bool threadRunning() const { return thread_.joinable(); }
+  CycleStats cycleStats() const;
+  // Blocks until a cycle newer than last_seen completes; returns its
+  // sequence number (0 if the thread is not running).
+  std::uint64_t waitCycle(std::uint64_t last_seen);
+
+  // Thread-safe command targets consumed by the background thread.
+  void setTargetPositions(const std::vector<double>& rad);
+  void setTargetVelocities(const std::vector<double>& rad_s);
+  void setTargetCurrents(const std::vector<double>& amps);
 
   // Deadman: escalates if the last successful command write is older
   // than host_command_timeout_s. Call once per control cycle. Returns
@@ -84,20 +126,35 @@ class CraneX7 {
 
  private:
   bool verifyServos();
+  bool requireMode(std::uint8_t mode, const char* what);
   std::vector<std::uint8_t> ids() const;
+  void threadLoop();
 
   dxl::PacketIO& io_;
   Config config_;
   Options options_;
   dxl::SyncGroup group_;
   bool activated_ = false;
-  bool escalated_ = false;
+  std::atomic<bool> escalated_{false};
   std::function<double()> now_;
-  double last_command_ = 0.0;
+  std::atomic<double> last_command_{0.0};
   std::string last_error_;
   std::function<void()> on_escalate_;
-  // position limits read from the servos at activation [rad]
-  std::vector<double> limit_lo_, limit_hi_;
+  // limits read from the servos at activation
+  std::vector<double> limit_lo_, limit_hi_;          // [rad], margin applied
+  std::vector<double> servo_current_limit_amps_;     // [A]
+
+  mutable std::mutex state_mutex_;
+  std::vector<dxl::Feedback> feedback_;     // last successful readAll
+  std::vector<double> targets_;             // canonical, unit per mode
+  bool have_targets_ = false;
+
+  std::thread thread_;
+  std::atomic<bool> thread_run_{false};
+  mutable std::mutex cycle_mutex_;
+  std::condition_variable cycle_cv_;
+  std::uint64_t cycle_seq_ = 0;
+  CycleStats stats_;
 };
 
 }  // namespace rtctrl::hw

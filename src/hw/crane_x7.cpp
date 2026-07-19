@@ -91,6 +91,7 @@ bool CraneX7::activate() {
   }
   limit_lo_.clear();
   limit_hi_.clear();
+  servo_current_limit_amps_.clear();
   for (const auto& joint : config_.joints) {
     if (!io_.write8(joint.id, reg::kOperatingMode.addr,
                     joint.operating_mode).ok()) {
@@ -108,6 +109,15 @@ bool CraneX7::activate() {
                         joint.pos_limit_margin);
     limit_hi_.push_back(dxl::pulseToRad(static_cast<std::int32_t>(hi)) -
                         joint.pos_limit_margin);
+    std::uint16_t current_limit_raw = 0;
+    if (!io_.read16(joint.id, reg::kCurrentLimit.addr,
+                    &current_limit_raw).ok()) {
+      last_error_ = "current-limit read failed on id " +
+                    std::to_string(joint.id);
+      return false;
+    }
+    servo_current_limit_amps_.push_back(
+        dxl::currentToAmps(static_cast<std::int16_t>(current_limit_raw)));
   }
 
   // Snap goals to the present posture so torque-on causes no motion.
@@ -121,7 +131,7 @@ bool CraneX7::activate() {
   for (std::size_t i = 0; i < present.size(); ++i) {
     positions[i] = present[i].position;
   }
-  if (!group_.writeGoals(zeros, positions).ok()) {
+  if (!group_.writeGoals(zeros, zeros, positions).ok()) {
     last_error_ = "goal snap failed";
     return false;
   }
@@ -152,6 +162,7 @@ bool CraneX7::activate() {
 }
 
 bool CraneX7::deactivate() {
+  stopThread();
   bool ok = true;
   ok &= writePositionPGain(options_.limp_p_gain);
   // zero goal currents (relevant in current mode; harmless otherwise)
@@ -167,19 +178,211 @@ bool CraneX7::deactivate() {
 }
 
 bool CraneX7::readAll(std::vector<dxl::Feedback>& out) {
-  return group_.readAll(out).ok();
+  if (!group_.readAll(out).ok()) return false;
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  feedback_ = out;
+  return true;
+}
+
+std::vector<dxl::Feedback> CraneX7::lastFeedback() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return feedback_;
+}
+
+bool CraneX7::requireMode(std::uint8_t mode, const char* what) {
+  for (const auto& joint : config_.joints) {
+    if (joint.operating_mode != mode) {
+      last_error_ = std::string(what) + " rejected: joint '" + joint.name +
+                    "' is configured for operating mode " +
+                    std::to_string(joint.operating_mode);
+      return false;
+    }
+  }
+  return true;
 }
 
 bool CraneX7::writePositions(const std::vector<double>& rad) {
   if (escalated_) return false;
+  if (!requireMode(3, "position command")) return false;
   std::vector<double> clamped(rad.size());
   for (std::size_t i = 0; i < rad.size(); ++i) {
     clamped[i] = std::clamp(rad[i], limit_lo_[i], limit_hi_[i]);
   }
-  std::vector<double> zeros(rad.size(), 0.0);
-  if (!group_.writeGoals(zeros, clamped).ok()) return false;
+  if (!group_.writeGoalPositions(clamped).ok()) return false;
   last_command_ = now_();
   return true;
+}
+
+bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
+  if (escalated_) return false;
+  if (!requireMode(1, "velocity command")) return false;
+  std::vector<dxl::Feedback> fb = lastFeedback();
+  if (fb.size() != config_.joints.size()) {
+    last_error_ = "velocity command rejected: no position feedback yet "
+                  "(software limits need it)";
+    return false;
+  }
+  std::vector<double> limited(rad_s.size());
+  for (std::size_t i = 0; i < rad_s.size(); ++i) {
+    const double vmax = config_.joints[i].velocity_limit;
+    double v = std::clamp(rad_s[i], -vmax, vmax);
+    // On-servo position limits are inactive outside position mode:
+    // zero any command that drives a joint past a limit.
+    if ((fb[i].position >= limit_hi_[i] && v > 0.0) ||
+        (fb[i].position <= limit_lo_[i] && v < 0.0)) {
+      v = 0.0;
+    }
+    limited[i] = v;
+  }
+  if (!group_.writeGoalVelocities(limited).ok()) return false;
+  last_command_ = now_();
+  return true;
+}
+
+bool CraneX7::writeCurrents(const std::vector<double>& amps) {
+  if (escalated_) return false;
+  if (!requireMode(0, "current command")) return false;
+  std::vector<dxl::Feedback> fb = lastFeedback();
+  if (fb.size() != config_.joints.size()) {
+    last_error_ = "current command rejected: no position feedback yet "
+                  "(software limits need it)";
+    return false;
+  }
+  std::vector<double> limited(amps.size());
+  for (std::size_t i = 0; i < amps.size(); ++i) {
+    const auto& joint = config_.joints[i];
+    // bound by both the URDF effort limit and the servo's own current
+    // limit (read at activation), minus the configured margin
+    const double imax = std::max(
+        0.0, std::min(joint.effort_limit /
+                          dxl::torqueConstant(joint.model_number),
+                      servo_current_limit_amps_[i]) -
+                 joint.current_limit_margin);
+    double a = std::clamp(amps[i], -imax, imax);
+    if ((fb[i].position >= limit_hi_[i] && a > 0.0) ||
+        (fb[i].position <= limit_lo_[i] && a < 0.0)) {
+      a = 0.0;
+    }
+    limited[i] = a;
+  }
+  if (!group_.writeGoalCurrents(limited).ok()) return false;
+  last_command_ = now_();
+  return true;
+}
+
+void CraneX7::setTargetPositions(const std::vector<double>& rad) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  targets_ = rad;
+  have_targets_ = true;
+}
+void CraneX7::setTargetVelocities(const std::vector<double>& rad_s) {
+  setTargetPositions(rad_s);  // same storage; units follow the mode
+}
+void CraneX7::setTargetCurrents(const std::vector<double>& amps) {
+  setTargetPositions(amps);
+}
+
+bool CraneX7::startThread() {
+  if (thread_.joinable()) return true;
+  if (!activated_) {
+    last_error_ = "startThread: activate first";
+    return false;
+  }
+  const auto mode = config_.joints.front().operating_mode;
+  for (const auto& joint : config_.joints) {
+    if (joint.operating_mode != mode) {
+      last_error_ = "startThread: mixed operating modes in the group";
+      return false;
+    }
+  }
+  {
+    // default target: hold the present state (positions) / stay still
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!have_targets_) {
+      targets_.assign(config_.joints.size(), 0.0);
+      if (mode == 3) {
+        for (std::size_t i = 0; i < feedback_.size(); ++i) {
+          targets_[i] = feedback_[i].position;
+        }
+      }
+      have_targets_ = true;
+    }
+  }
+  thread_run_.store(true);
+  thread_ = std::thread(&CraneX7::threadLoop, this);
+  return true;
+}
+
+void CraneX7::stopThread() {
+  if (!thread_.joinable()) return;
+  thread_run_.store(false);
+  if (std::this_thread::get_id() == thread_.get_id()) {
+    // called from the thread itself (deadman escalation path): just
+    // signal; the loop exits on its own and join happens later
+    return;
+  }
+  thread_.join();
+  // Safety on stop: zero motion-producing targets (vendor parity).
+  const auto mode = config_.joints.front().operating_mode;
+  const std::vector<double> zeros(config_.joints.size(), 0.0);
+  if (mode == 1) {
+    group_.writeGoalVelocities(zeros);
+  } else if (mode == 0) {
+    group_.writeGoalCurrents(zeros);
+  }
+}
+
+CraneX7::CycleStats CraneX7::cycleStats() const {
+  std::lock_guard<std::mutex> lock(cycle_mutex_);
+  return stats_;
+}
+
+std::uint64_t CraneX7::waitCycle(std::uint64_t last_seen) {
+  std::unique_lock<std::mutex> lock(cycle_mutex_);
+  if (!thread_run_.load()) return 0;
+  cycle_cv_.wait(lock, [this, last_seen] {
+    return cycle_seq_ > last_seen || !thread_run_.load();
+  });
+  return cycle_seq_;
+}
+
+void CraneX7::threadLoop() {
+  const auto cycle = std::chrono::duration_cast<
+      std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(options_.control_cycle_s));
+  const auto mode = config_.joints.front().operating_mode;
+  auto next = std::chrono::steady_clock::now() + cycle;
+
+  std::vector<dxl::Feedback> fb;
+  std::vector<double> targets;
+  while (thread_run_.load()) {
+    readAll(fb);
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      targets = targets_;
+    }
+    switch (mode) {
+      case 3: writePositions(targets); break;
+      case 1: writeVelocities(targets); break;
+      case 0: writeCurrents(targets); break;
+      default: break;
+    }
+    if (!checkDeadman()) {
+      thread_run_.store(false);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(cycle_mutex_);
+      ++cycle_seq_;
+      ++stats_.cycles;
+      if (std::chrono::steady_clock::now() > next) ++stats_.overruns;
+    }
+    cycle_cv_.notify_all();
+
+    std::this_thread::sleep_until(next);
+    next += cycle;
+  }
+  cycle_cv_.notify_all();
 }
 
 bool CraneX7::checkDeadman() {
