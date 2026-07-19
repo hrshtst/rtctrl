@@ -288,7 +288,9 @@ zero-on-stop, `Arm` adapter. Port vendor samples01–03 to `examples/`.
 watchdog, validation rejections. Parity checklist mapping every vendor feature to a
 test/example. Manual: examples reproduce vendor sample behavior on the real arm.
 
-**M7 — Current-based torque estimation + gravity compensation.** `conversions.hpp`
+**M7 — Current-based torque estimation + gravity compensation (sim half DONE:
+finite-difference gradient check, float acceptance <0.05 rad/10 s; hardware half =
+`apps/x7_float` on the next powered session).** `conversions.hpp`
 torque↔current (2.409 / 1.783 Nm/A); `JointState.tau` from PresentCurrent; gravity term via
 `ChainModel::gravityTorque(q8)`: expand canonical 8 → 9 model coordinates via JointMap
 (finger_b = finger_a), call `rkChainID_G(chain, q9, zeroVel9, zeroAcc9, RK_GRAVITY6D,
@@ -303,7 +305,9 @@ force mapping via the virtual-work identity τ₈ᵀδq₈ = τ₉ᵀδq₉ as s
 hardware — arm floats, back-drivable. Static-pose tau vs `rkChainID_G` prediction, document
 per-joint error (~20–30 % expected, friction unmodeled).
 
-**M8 — Torque control via inverse dynamics.** Computed-torque tracking
+**M8 — Torque control via inverse dynamics (sim half DONE: tracking RMS 0.0050 rad,
+3.1× tighter than bare PD, asserted by test; hardware half follows M7's).**
+Computed-torque tracking
 `tau = ID_G(q_d, dq_d, ddq_d) + Kp·e + Kd·ė`, current clamped to CurrentLimit − margin,
 optional dzco PID/filter blocks; runs through Runner unchanged sim→real.
 ✓ Sim: tracking RMS below threshold on the M2 trajectory, ID+PD vs PD-only comparison.
