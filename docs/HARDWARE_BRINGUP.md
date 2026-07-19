@@ -41,8 +41,11 @@ Power on the arm, connect USB, then:
 1. **Scan** (no torque, safe):
    `./build/apps/dxl_inspect --port /dev/ttyUSB0 scan`
    Expect ids 2–9; id 3 reports model 1120 (XM540-W270), the rest 1020.
-   Then `dump 8` and check `firmware_version >= 38` (Bus Watchdog
-   support — activation refuses older firmware).
+   Then dump each servo's registers by its bus id —
+   `./build/apps/dxl_inspect --port /dev/ttyUSB0 dump <id>` for ids 2–9
+   (id 2 = shoulder pan … id 8 = wrist rotate, id 9 = gripper) — and
+   check `firmware_version >= 38` on every one (Bus Watchdog support —
+   activation refuses older firmware).
 
 2. **Read streaming** (no torque, safe):
    `./build/apps/x7_read 20`
