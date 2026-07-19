@@ -1,0 +1,76 @@
+# rtctrl documentation site.
+#   preview locally:  uv run mkdocs serve
+#   build:            uv run mkdocs build
+# Deployed to GitHub Pages by .github/workflows/docs.yaml.
+site_name: rtctrl
+site_description: >-
+  Control library for the CRANE-X7 7-DOF arm — robust IK, dynamics-based
+  control, and a sim-real bridge on mi-lib and DynamixelSDK.
+# Fill in once the GitHub repository exists:
+# site_url: https://<user>.github.io/rtctrl/
+# repo_url: https://github.com/<user>/rtctrl
+# repo_name: <user>/rtctrl
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  # Math: keep the source files GitHub-compatible. GitHub renders
+  # ```math fences and $...$ natively; here superfences maps the same
+  # ```math fence into arithmatex, rendered by MathJax.
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: math
+          class: arithmatex
+          format: !!python/object/apply:pymdownx.arithmatex.arithmatex_fenced_format
+            kwds:
+              which: generic
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: README.md
+  - Guide:
+      - Overview & philosophy: guide/overview.md
+      - Getting started: guide/getting-started.md
+      - Architecture: guide/architecture.md
+      - Usage: guide/usage.md
+  - Theory:
+      - Dynamics foundations: theory/dynamics-foundations.md
+      - Gravity compensation: theory/gravity-compensation.md
+      - Computed torque: theory/computed-torque.md
+  - Hardware:
+      - Bring-up checklist: HARDWARE_BRINGUP.md
+  - Project records:
+      - Original brief: PLAN.md
+      - Implementation plan: IMPLEMENTATION_PLAN.md
+      - Vendor parity: PARITY.md
