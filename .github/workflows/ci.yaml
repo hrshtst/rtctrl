@@ -34,3 +34,7 @@ jobs:
 
       - name: Test (unit)
         run: LD_LIBRARY_PATH="$HOME/usr/lib:$LD_LIBRARY_PATH" ctest --test-dir build --output-on-failure -L unit
+
+      # pty wire-protocol emulator + roki dynamics sim — all headless.
+      - name: Test (integration)
+        run: LD_LIBRARY_PATH="$HOME/usr/lib:$LD_LIBRARY_PATH" ctest --test-dir build --output-on-failure -L integration
