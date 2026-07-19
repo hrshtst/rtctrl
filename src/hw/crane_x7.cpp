@@ -70,10 +70,18 @@ bool CraneX7::activate() {
 
   if (!verifyServos()) return false;
 
-  // EEPROM-side setup requires torque off.
+  // EEPROM-side setup requires torque off; a previously triggered Bus
+  // Watchdog (reads 0xFF, rejects goal writes) must be cleared before
+  // the goal snap below, so write 0 first — verified on hardware after
+  // a real USB-pull trip.
   for (const auto& joint : config_.joints) {
     if (!io_.write8(joint.id, reg::kTorqueEnable.addr, 0).ok()) {
       last_error_ = "torque-off failed on id " + std::to_string(joint.id);
+      return false;
+    }
+    if (!io_.write8(joint.id, reg::kBusWatchdog.addr, 0).ok()) {
+      last_error_ = "bus-watchdog clear failed on id " +
+                    std::to_string(joint.id);
       return false;
     }
   }
@@ -125,9 +133,7 @@ bool CraneX7::activate() {
                   dxl::kBusWatchdogUnitSeconds),
       1L, 127L));
   for (const auto& joint : config_.joints) {
-    // clear a previously triggered watchdog, then arm
-    if (!io_.write8(joint.id, reg::kBusWatchdog.addr, 0).ok() ||
-        !io_.write8(joint.id, reg::kBusWatchdog.addr, watchdog_units).ok()) {
+    if (!io_.write8(joint.id, reg::kBusWatchdog.addr, watchdog_units).ok()) {
       last_error_ = "bus-watchdog arm failed on id " +
                     std::to_string(joint.id);
       return false;

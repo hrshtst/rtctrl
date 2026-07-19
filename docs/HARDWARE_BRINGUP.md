@@ -32,7 +32,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # expect: 1
 ```
 
-Serial-port permission: `sudo usermod -aG dialout $USER` (re-login).
+Serial-port permission: `sudo usermod -aG dialout $USER` (then log out
+and back in — this must be done even if the port initially works: a
+desktop session grants a temporary device ACL that does NOT survive
+unplugging and replugging the adapter, which the watchdog drill does).
 
 ## Steps
 
@@ -64,9 +67,15 @@ Power on the arm, connect USB, then:
    Values must read back as written.
 
 5. **Watchdog drill** (recommended once, before any motion): run
-   `./build/apps/x7_onoff 30`, then pull the USB cable mid-hold. The
-   arm must go limp on its own within ~100 ms (servo Bus Watchdog).
-   Reconnect, power-cycle the servos, rerun `scan`.
+   `./build/apps/x7_onoff 30`, then pull the USB cable mid-hold.
+   Expected (verified on hardware): the arm **freezes in place with
+   torque still on** — the servo Bus Watchdog halts motion and locks
+   out goal commands (register 98 reads 255). It does NOT go limp;
+   freezing is the firmware's designed comm-loss response and the safer
+   one for a vertical arm. To release afterwards: reconnect USB (wait
+   ~10 s for the adapter to re-enumerate), then run
+   `./build/apps/x7_onoff 2` — activation clears the tripped watchdogs
+   and hands the arm back gently — or simply power-cycle the servos.
 
 6. **First motion** — wrist only, small and slow:
    `./build/apps/x7_move_simple 6 0.3`

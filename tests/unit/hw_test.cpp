@@ -177,6 +177,30 @@ TEST_CASE(
   CHECK_FALSE(arm.writePositions(target));
 }
 
+TEST_CASE("activation recovers from a previously triggered bus watchdog",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+
+  // Trip every watchdog the way a real USB pull does: armed, then
+  // silence past the timeout.
+  for (const auto& joint : config.joints) {
+    REQUIRE(io.write8(joint.id, reg::kBusWatchdog.addr, 5).ok());
+  }
+  bus.tick(0.2);
+  REQUIRE(bus.find(2)->watchdogTriggered());
+
+  // Goal writes are locked out — and activation must recover anyway
+  // (verified on hardware after a real cable-pull drill).
+  REQUIRE(arm.activate());
+  CHECK_FALSE(bus.find(2)->watchdogTriggered());
+  CHECK(bus.find(2)->peek(reg::kTorqueEnable) == 1);
+  CHECK(bus.find(2)->peek(reg::kBusWatchdog) == 5);  // re-armed
+  REQUIRE(arm.deactivate());
+}
+
 TEST_CASE("deadman does not fire while commands flow", "[hw][safety]") {
   const auto config = craneConfig();
   auto bus = busFor(config);
