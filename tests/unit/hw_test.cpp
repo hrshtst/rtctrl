@@ -269,3 +269,34 @@ TEST_CASE(
   CHECK_FALSE(arm.writePositions(zeros));
   arm.stopThread();  // join the exited loop
 }
+
+TEST_CASE("feedback wraps multi-turn present position to principal angle",
+          "[hw]") {
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 0;  // current
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.activate());
+
+  // In current/velocity modes the servo reports multi-turn position:
+  // hand-moving a limp joint across the encoder boundary leaves a 2*pi
+  // offset (2026-07-21 hardware: twist read +6.54 rad and its soft
+  // limit gate then blocked every positive current). 0.259 rad + one
+  // full turn = 6313 pulses.
+  const double physical = 0.2592;
+  bus.find(4)->poke(reg::kPresentPosition,
+                    static_cast<std::uint32_t>(dxl::radToPulse(physical) +
+                                               4096));
+
+  std::vector<dxl::Feedback> fb;
+  REQUIRE(arm.readAll(fb));
+  CHECK(fb[2].position == Approx(physical).margin(2e-3));
+  // and the soft limit gate sees the true angle: positive current on
+  // the twist (canonical 2, well inside its range) must pass through
+  std::vector<double> amps(config.joints.size(), 0.0);
+  amps[2] = 0.5;
+  REQUIRE(arm.writeCurrents(amps));
+  const auto goal = bus.find(4)->peek(reg::kGoalCurrent);
+  CHECK(static_cast<std::int16_t>(goal) > 0);
+}

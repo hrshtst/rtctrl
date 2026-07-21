@@ -19,6 +19,88 @@ namespace x7 {
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;
 
+// PD scale per canonical joint (see ComputedTorque::setGainScales):
+// proximal joints take the full gains; distal joints, whose link-side
+// inertia is a small fraction of the shoulder's, take a fraction to
+// stay clear of backlash limit cycles.
+constexpr double kGainScale[model::kCanonicalDof] = {1.0,  1.0, 0.7, 0.7,
+                                                     0.35, 0.3, 0.2, 0.2};
+
+// Gravity compensation plus light filtered damping: holds the arm AND
+// bleeds off swing, unlike pure GravityComp which floats. Used before
+// tracking so the trajectory anchors on a quiescent arm (the run-4 log
+// caught the twist entering the tracking loop at 2.6 rad/s after a
+// fixed 1 s undamped settle).
+struct SettleController : arm::Controller {
+  SettleController(model::ChainModel& chain, const model::JointMap& map,
+                   double kd)
+      : chain_(chain), map_(map), kd_(kd) {}
+
+  void update(const arm::JointState& state, arm::JointCommand& cmd,
+              double t) override {
+    cmd.mode = arm::ControlMode::Current;
+    chain_.gravityTorque(map_, state.q.get(), cmd.tau.get());
+    const double dt = t_prev_ < 0.0 ? -1.0 : t - t_prev_;
+    const double a_v = dt > 0.0 ? dt / (0.02 + dt) : 1.0;
+    const double a_d = dt > 0.0 ? dt / (0.05 + dt) : 1.0;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      const double q = zVecElemNC(state.q.get(), i);
+      const double raw = dt > 0.0 ? (q - q_prev_[i]) / dt
+                                  : zVecElemNC(state.dq.get(), i);
+      dq_est_[i] += a_v * (raw - dq_est_[i]);
+      d_filt_[i] += a_d * (-kd_ * kGainScale[i] * dq_est_[i] - d_filt_[i]);
+      zVecElemNC(cmd.tau.get(), i) += d_filt_[i];
+      // slow-filtered |speed| for the quiescence metric: the fast
+      // estimator hovers near the position-LSB noise floor (~0.05
+      // rad/s spikes) even on a perfectly still arm
+      const double a_m = dt > 0.0 ? dt / (0.15 + dt) : 1.0;
+      speed_[i] += a_m * (std::fabs(dq_est_[i]) - speed_[i]);
+      q_prev_[i] = q;
+    }
+    t_prev_ = t;
+  }
+
+  double maxSpeed() const {
+    double m = 0.0;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      m = std::max(m, speed_[i]);
+    }
+    return m;
+  }
+
+  model::ChainModel& chain_;
+  const model::JointMap& map_;
+  double kd_;
+  double t_prev_ = -1.0;
+  model::ZVector q_prev_{model::kCanonicalDof};
+  model::ZVector dq_est_{model::kCanonicalDof};
+  model::ZVector d_filt_{model::kCanonicalDof};
+  model::ZVector speed_{model::kCanonicalDof};
+};
+
+// Runs the settle controller until the arm is quiescent (max estimated
+// joint speed below 0.05 rad/s for 0.3 s), or timeout. Returns false if
+// the arm layer failed; quiescence itself is best-effort and reported.
+inline bool settleArm(arm::Arm& robot, SettleController& settle,
+                      double timeout_s) {
+  arm::JointState state;
+  arm::JointCommand cmd;
+  double quiet = 0.0;
+  double t = 0.0;
+  for (; t < timeout_s; t += robot.dt()) {
+    if (!robot.readState(state)) return false;
+    settle.update(state, cmd, t);
+    if (!robot.writeCommand(cmd)) return false;
+    if (!robot.step()) return false;
+    quiet = settle.maxSpeed() < 0.05 ? quiet + robot.dt() : 0.0;
+    if (t > 0.5 && quiet >= 0.3) break;
+  }
+  std::printf("settled in %.1f s (residual %.3f rad/s)%s\n", t,
+              settle.maxSpeed(),
+              settle.maxSpeed() < 0.05 ? "" : " — WARNING: still moving");
+  return true;
+}
+
 // Wraps ComputedTorque, accumulates per-joint tracking error, and
 // optionally logs every cycle to CSV.
 struct TrackingRun : arm::Controller {

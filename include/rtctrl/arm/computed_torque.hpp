@@ -38,7 +38,9 @@ class ComputedTorque : public Controller {
   ComputedTorque(model::ChainModel& chain, const model::JointMap& map,
                  const model::MinJerkTrajectory& trajectory, double kp,
                  double kd)
-      : chain_(chain), map_(map), trajectory_(trajectory), kp_(kp), kd_(kd) {}
+      : chain_(chain), map_(map), trajectory_(trajectory), kp_(kp), kd_(kd) {
+    for (int i = 0; i < model::kCanonicalDof; ++i) scale_[i] = 1.0;
+  }
 
   // true: damp on state.dq as-is (ideal sim, or a trusted velocity
   // source); false (default): host-side estimate from positions.
@@ -50,6 +52,14 @@ class ComputedTorque : public Controller {
   void setIntegral(double ki, double clamp_nm) {
     ki_ = ki;
     i_clamp_ = clamp_nm;
+  }
+  // Per-joint multiplier on the PD gains (not the integrator). Distal
+  // joints carry a fraction of the shoulder's link-side inertia and hit
+  // backlash limit cycles at gains the proximal joints need (~5 Hz on
+  // the wrist in the 2026-07-21 run-4 log); scale them down and let the
+  // feedforward plus integrator carry the tracking there.
+  void setGainScales(const double* scales) {
+    for (int i = 0; i < model::kCanonicalDof; ++i) scale_[i] = scales[i];
   }
 
   void update(const JointState& state, JointCommand& cmd,
@@ -65,7 +75,7 @@ class ComputedTorque : public Controller {
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double e = q_d_[i] - zVecElemNC(state.q.get(), i);
       const double de = dq_d_[i] - dq_est_[i];
-      const double pd = kp_ * e + kd_ * de;
+      const double pd = scale_[i] * (kp_ * e + kd_ * de);
       pd_filt_[i] += pd_alpha * (pd - pd_filt_[i]);
       if (ki_ > 0.0 && dt > 0.0) {
         i_term_[i] = std::clamp(i_term_[i] + ki_ * e * dt, -i_clamp_,
@@ -109,6 +119,7 @@ class ComputedTorque : public Controller {
   model::ZVector dq_est_{model::kCanonicalDof};
   model::ZVector pd_filt_{model::kCanonicalDof};
   model::ZVector i_term_{model::kCanonicalDof};
+  model::ZVector scale_{model::kCanonicalDof};
 };
 
 }  // namespace rtctrl::arm

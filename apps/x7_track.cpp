@@ -16,13 +16,21 @@
 //     do not trust them on it;
 //   * damping uses a host-side velocity estimate — the servo's own
 //     PresentVelocity lags ~50 ms with ~2x attenuation;
-//   * a 1 s gravity-comp settle phase before tracking, because
-//     current-mode torque-on starts from free fall and the tracking
-//     loop should not have to absorb that swing at t=0;
+//   * a DAMPED settle phase that runs until the arm is quiescent —
+//     current-mode torque-on starts from free fall, pure gravity comp
+//     never damps the resulting swing, and tracking must not anchor on
+//     a moving arm (run 4 entered tracking at 2.6 rad/s on the twist);
 //   * moderate stiffness — the filtered loop's crossover must stay
 //     below the filter pole, capping Kp around 6; the ~0.15 rad
 //     friction sag that such a Kp would leave is absorbed by the
-//     controller's slow clamped integrator instead.
+//     controller's slow clamped integrator instead;
+//   * per-joint PD scaling (track_common.hpp) — at uniform gains the
+//     low-inertia wrist joints limit-cycle through their backlash
+//     (~5 Hz in run 4's log);
+//   * hw-side: feedback positions wrap to the principal angle — the
+//     servo's multi-turn readout after hand-repositioning (run 4:
+//     twist = +6.54 rad) otherwise poisons the soft position limits,
+//     whose gate then silently blocks a whole torque direction.
 //
 // Usage: x7_track [--config path] [--port dev]
 //                 [--kp v] [--kd v] [--ki v] [--log out.csv] [scale]
@@ -35,7 +43,6 @@
 #include <cstring>
 #include <string>
 
-#include "rtctrl/arm/gravity_comp.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -97,15 +104,15 @@ int main(int argc, char* argv[]) {
 
     // Current-mode activation leaves goal currents at zero — the arm is
     // in free fall until the first controller command. Hold it with
-    // gravity compensation immediately, then let it settle: the
-    // 2026-07-21 logs show the arm entering the tracking loop already
-    // swinging, which the loop then had to absorb at t=0.
+    // gravity compensation immediately, then run the DAMPED settle
+    // until the arm is quiescent: tracking must not anchor on (or fight)
+    // a swinging arm.
     arm::JointCommand hold;
     hold.mode = arm::ControlMode::Current;
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
     robot.writeCommand(hold);
-    arm::GravityComp settle(chain, map);
-    if (!arm::run(robot, settle, 1.0)) {
+    x7::SettleController settle(chain, map, 0.8);
+    if (!x7::settleArm(robot, settle, 6.0)) {
       std::fprintf(stderr, "settle phase aborted\n");
       robot.deactivate();
       return 1;
@@ -132,12 +139,14 @@ int main(int argc, char* argv[]) {
 
     x7::TrackingRun leg1(chain, map, out, kp, kd, 0, log);
     leg1.inner.setIntegral(ki, 1.5);
+    leg1.inner.setGainScales(x7::kGainScale);
     bool ok = arm::run(robot, leg1, out.duration());
     leg1.report();
 
     if (ok) {
       x7::TrackingRun leg2(chain, map, back, kp, kd, 1, log);
       leg2.inner.setIntegral(ki, 1.5);
+      leg2.inner.setGainScales(x7::kGainScale);
       ok = arm::run(robot, leg2, back.duration());
       leg2.report();
     }

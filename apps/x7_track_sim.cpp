@@ -28,7 +28,6 @@
 #include <string>
 #include <vector>
 
-#include "rtctrl/arm/gravity_comp.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -195,8 +194,8 @@ int main(int argc, char* argv[]) {
 
     // same settle phase as x7_track, then anchor where the arm is
     // (with --disturb seeds it settles slightly off the start pose)
-    arm::GravityComp settle_ctl(chain, map);
-    arm::run(robot, settle_ctl, 1.0);
+    x7::SettleController settle_ctl(chain, map, 0.8);
+    x7::settleArm(robot, settle_ctl, 6.0);
     arm::JointState settled;
     robot.readState(settled);
 
@@ -223,12 +222,14 @@ int main(int argc, char* argv[]) {
 
     x7::TrackingRun leg1(chain, map, out, kp, kd, 0, log);
     leg1.inner.setIntegral(ki, 1.5);
+    leg1.inner.setGainScales(x7::kGainScale);
     bool ok = arm::run(robot, leg1, out.duration());
     leg1.report();
 
     if (ok) {
       x7::TrackingRun leg2(chain, map, back, kp, kd, 1, log);
       leg2.inner.setIntegral(ki, 1.5);
+      leg2.inner.setGainScales(x7::kGainScale);
       ok = arm::run(robot, leg2, back.duration());
       leg2.report();
     }

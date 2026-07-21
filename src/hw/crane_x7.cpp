@@ -179,6 +179,16 @@ bool CraneX7::deactivate() {
 
 bool CraneX7::readAll(std::vector<dxl::Feedback>& out) {
   if (!group_.readAll(out).ok()) return false;
+  // In current/velocity modes the servo reports MULTI-TURN position, so
+  // hand-moving a limp joint across the encoder boundary leaves a
+  // +/-2pi offset in every later reading (observed 2026-07-21: the
+  // twist read +6.54 rad after repositioning, which made its soft
+  // position limit gate block every positive current for a whole run).
+  // All CRANE-X7 joint ranges fit inside one turn, so the principal
+  // angle is the physical truth.
+  for (auto& fb : out) {
+    fb.position = std::remainder(fb.position, 2.0 * M_PI);
+  }
   std::lock_guard<std::mutex> lock(state_mutex_);
   feedback_ = out;
   return true;
