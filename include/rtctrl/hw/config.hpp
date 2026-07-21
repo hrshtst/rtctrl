@@ -25,6 +25,13 @@ struct Config {
   // Parses config/crane_x7.toml (throws std::runtime_error with context
   // on malformed input). Joint order in the file is the canonical order.
   static Config load(const std::string& toml_path);
+
+  // Throws std::runtime_error unless the joints vector is exactly the
+  // canonical CRANE-X7 deployment (count, order-by-name, ids, known
+  // models, valid modes, positive limits). load() calls this; the
+  // CraneX7 constructor re-checks it because this struct is plain data
+  // that callers can also build or mutate directly.
+  void validate() const;
 };
 
 }  // namespace rtctrl::hw

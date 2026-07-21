@@ -64,8 +64,9 @@ plan's post-completion review notes):
   covers the use case).
 - **FastSyncRead (0x8A)** — the port uses ordinary `GroupSyncRead`:
   measured at 3 Mbps it sustains the 100 Hz cycle over 8 servos with
-  zero overruns, so the fast variant remains an unneeded optimization
-  (the emulator understands both).
+  zero overruns, so the fast variant remains an unneeded optimization.
+  The wire-level emulator likewise implements only the ordinary
+  variant.
 - **SDK `.model` file parsing** — `dxl_inspect` ships its own register
   table (`control_table.hpp` is the single source of truth) rather
   than reading the DynamixelSDK's `.model` data files.

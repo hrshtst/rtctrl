@@ -165,7 +165,8 @@ One state-machine core `emu::MotorEmulator`, two transports:
 1. **FakePacketIO** (implements `dxl::PacketIO`) — in-process, for fast unit tests of
    SyncGroup/CraneX7Hardware logic.
 2. **Pty bus emulator** (`apps/dxl_emu.cpp`) — `posix_openpt`, parses Protocol 2.0 frames
-   (Ping/Read/Write/SyncRead 0x82/SyncWrite 0x83/FastSyncRead 0x8A, CRC-16 per
+   (Ping/Read/Write/SyncRead 0x82/SyncWrite 0x83 — FastSyncRead 0x8A was planned here but
+   never built, dropped with the M4 deviation; CRC-16 per
    `protocol2_packet_handler.cpp`), so the *unmodified* SDK PortHandler connects to it.
    Integration tests + offline demos of all apps.
 
@@ -248,7 +249,8 @@ cross-check against SDK `.model` files).
 *Deviations (intentional, per post-completion review):* the built layer uses ordinary
 `GroupSyncRead`, not FastSyncRead — one indirect-bank read still fetches all signals in a
 single transaction and sustains 100 Hz over 8 servos at 3 Mbps with zero overruns, so the
-fast variant stayed an unneeded optimization (the emulator parses 0x8A regardless). And
+fast variant stayed an unneeded optimization (and the wire-level emulator likewise
+implements only the ordinary variant). And
 `dxl_inspect` cross-checks against `control_table.hpp` (the project's single source of
 truth for the register map) rather than parsing SDK `.model` files; the CMake model-dir
 variable this planned for was removed as dead config.
@@ -288,13 +290,18 @@ bus traffic (USB unplug) → servo stops autonomously via Bus Watchdog, confirme
 read-back after reconnect.
 
 **M6 — Position-control parity with rt_manipulators (DONE; `examples/x7_wave` confirmed
-on the physical arm 2026-07-21 — see docs/PARITY.md for the full feature mapping).** Full `CraneX7Hardware`: TOML joint
+on the physical arm 2026-07-21 — see docs/PARITY.md for the capability mapping).** Full `CraneX7Hardware`: TOML joint
 groups, background read→limit→write thread (liwPAction or timerfd), all getters/setters,
 gain/profile writers, validation rule (writing velocity/current requires reading position),
 zero-on-stop, `Arm` adapter. Port vendor samples01–03 to `examples/`.
+*Deviation (intentional, per post-completion review):* the built layer exposes a single
+ordered all-joint group (the canonical order is the project's coordinate contract, now
+enforced by config validation) instead of the vendor's named multi-groups, and a subset of
+the getter/setter surface (position P gain + profiles) — see docs/PARITY.md "Consciously
+simplified or not ported".
 ✓ Catch2 (pty): 60 s thread loop with missed-deadline budget, limit-clamp properties,
-watchdog, validation rejections. Parity checklist mapping every vendor feature to a
-test/example. Manual: examples reproduce vendor sample behavior on the real arm.
+watchdog, validation rejections. Parity checklist mapping vendor capabilities to
+tests/examples. Manual: examples reproduce vendor sample behavior on the real arm.
 
 **M7 — Current-based torque estimation + gravity compensation (DONE — sim:
 finite-difference gradient check, float acceptance <0.05 rad/10 s; hardware 2026-07-21:
@@ -362,7 +369,12 @@ docs/PARITY.md):
 3. *Unvalidated boundaries* — `Config::load()` now rejects anything but the exact
    canonical deployment (count, order-by-name, ids, known models, valid modes, positive
    limits), and all command writers/target setters reject size-mismatched vectors instead
-   of indexing limit arrays out of bounds.
+   of indexing limit arrays out of bounds. A second review pass tightened this further:
+   raw TOML values are range-checked *before* the int→uint8 narrowing (id 258 no longer
+   wraps into a legal 2), the invariant lives in `Config::validate()` and is re-checked by
+   the `CraneX7` constructor (Config is plain data a caller can build by hand), and the
+   writers additionally reject pre-activation calls, whose limit arrays would otherwise
+   be indexed empty.
 4. *Emulator watchdog fidelity* — real XM firmware only monitors the bus interval while
    torque is enabled; the emulator now gates its Bus Watchdog on TorqueEnable and the
    watchdog tests torque up first (plus a regression that torque-off silence never trips).

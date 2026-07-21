@@ -27,7 +27,9 @@ CraneX7::CraneX7(dxl::PacketIO& io, Config config, Options options)
                    std::chrono::steady_clock::now().time_since_epoch())
             .count();
       }),
-      last_command_(now_()) {}
+      last_command_(now_()) {
+  config_.validate();  // Config is plain data — re-check the invariant
+}
 
 CraneX7::~CraneX7() { stopThread(); }
 
@@ -243,8 +245,17 @@ bool CraneX7::requireSize(std::size_t n, const char* what) {
   return false;
 }
 
+bool CraneX7::requireActive(const char* what) {
+  if (activated_) return true;
+  // The limit arrays are read from the servos during activation — a
+  // pre-activation command would index them empty.
+  last_error_ = std::string(what) + " rejected: not activated";
+  return false;
+}
+
 bool CraneX7::writePositions(const std::vector<double>& rad) {
   if (escalated_) return false;
+  if (!requireActive("position command")) return false;
   if (!requireMode(3, "position command")) return false;
   if (!requireSize(rad.size(), "position command")) return false;
   std::vector<double> clamped(rad.size());
@@ -258,6 +269,7 @@ bool CraneX7::writePositions(const std::vector<double>& rad) {
 
 bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
   if (escalated_) return false;
+  if (!requireActive("velocity command")) return false;
   if (!requireMode(1, "velocity command")) return false;
   if (!requireSize(rad_s.size(), "velocity command")) return false;
   std::vector<dxl::Feedback> fb = lastFeedback();
@@ -285,6 +297,7 @@ bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
 
 bool CraneX7::writeCurrents(const std::vector<double>& amps) {
   if (escalated_) return false;
+  if (!requireActive("current command")) return false;
   if (!requireMode(0, "current command")) return false;
   if (!requireSize(amps.size(), "current command")) return false;
   std::vector<dxl::Feedback> fb = lastFeedback();

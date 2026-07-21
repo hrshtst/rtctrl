@@ -114,8 +114,9 @@ TEST_CASE("velocity commands without feedback are rejected", "[hw][modes]") {
   hw::CraneX7 arm(io, config);
   REQUIRE(arm.activate());
   // activation itself reads feedback once — construct a fresh wrapper
-  // to model a caller that never read
+  // to model a caller that never read. Since the pre-activation guard
+  // was added it rejects even earlier: never activated, no limits.
   hw::CraneX7 fresh(io, config);
   CHECK_FALSE(fresh.writeVelocities(std::vector<double>(8, 0.1)));
-  CHECK(fresh.lastError().find("no position feedback") != std::string::npos);
+  CHECK(fresh.lastError().find("not activated") != std::string::npos);
 }

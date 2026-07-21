@@ -403,7 +403,7 @@ namespace {
 
 // A canonical-order TOML with one deliberate deviation per parameter.
 std::string configToml(std::size_t count, int bad_id_at = -1,
-                       bool swap_first_two = false,
+                       int bad_id_value = 42, bool swap_first_two = false,
                        const char* model_at_2 = nullptr, int mode = 3) {
   const auto& canonical = rtctrl::model::canonicalJoints();
   std::ostringstream out;
@@ -412,7 +412,7 @@ std::string configToml(std::size_t count, int bad_id_at = -1,
     std::size_t src = i;
     if (swap_first_two && i < 2) src = 1 - i;
     int id = canonical[i].dxl_id;
-    if (static_cast<int>(i) == bad_id_at) id = 42;
+    if (static_cast<int>(i) == bad_id_at) id = bad_id_value;
     const char* model = (i == 1) ? "XM540-W270" : "XM430-W350";
     if (model_at_2 != nullptr && i == 2) model = model_at_2;
     out << "[[joint]]\nname = \"" << canonical[src].urdf_joint << "\"\n"
@@ -439,10 +439,39 @@ TEST_CASE("config validation rejects non-canonical deployments", "[hw]") {
   CHECK_THROWS(hw::Config::load(writeTempConfig(configToml(7))));
   CHECK_THROWS(hw::Config::load(writeTempConfig(configToml(8, /*bad_id*/ 3))));
   CHECK_THROWS(hw::Config::load(
-      writeTempConfig(configToml(8, -1, /*swap*/ true))));
+      writeTempConfig(configToml(8, -1, 42, /*swap*/ true))));
   CHECK_THROWS(hw::Config::load(
-      writeTempConfig(configToml(8, -1, false, "XM999-W000"))));
+      writeTempConfig(configToml(8, -1, 42, false, "XM999-W000"))));
   CHECK_THROWS(hw::Config::load(
-      writeTempConfig(configToml(8, -1, false, nullptr, /*mode*/ 2))));
+      writeTempConfig(configToml(8, -1, 42, false, nullptr, /*mode*/ 2))));
+  // Out-of-range raw values must not wrap into valid ones during the
+  // int -> uint8 narrowing: id 258 would otherwise become a legal 2,
+  // mode 259 a legal 3.
+  CHECK_THROWS(hw::Config::load(
+      writeTempConfig(configToml(8, /*at*/ 0, /*id*/ 258))));
+  CHECK_THROWS(hw::Config::load(
+      writeTempConfig(configToml(8, -1, 42, false, nullptr, /*mode*/ 259))));
   CHECK_NOTHROW(hw::Config::load(writeTempConfig(configToml(8))));
+}
+
+TEST_CASE("CraneX7 re-validates a hand-built config", "[hw]") {
+  // Config is a plain struct: a caller can bypass load() entirely, so
+  // the constructor must enforce the same invariant.
+  auto config = craneConfig();
+  config.joints.pop_back();
+  emu::MotorBus bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  CHECK_THROWS(hw::CraneX7(io, config));
+}
+
+TEST_CASE("writers reject commands before activation", "[hw]") {
+  // The soft-limit arrays are read from the servos during activation:
+  // a pre-activation command would index them empty.
+  auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  std::vector<double> eight(8, 0.0);
+  CHECK_FALSE(arm.writePositions(eight));
+  CHECK(arm.lastError().find("not activated") != std::string::npos);
 }

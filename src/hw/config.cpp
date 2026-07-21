@@ -38,7 +38,20 @@ Config Config::load(const std::string& toml_path) {
     if (joint.name.empty() || !id) {
       throw std::runtime_error("Config: joint entry missing name or id");
     }
+    // Range-check BEFORE narrowing: id 258 must not wrap into a valid 2.
+    if (*id < 1 || *id > 252) {
+      throw std::runtime_error("Config: joint '" + joint.name +
+                               "' has out-of-range id " +
+                               std::to_string(*id));
+    }
     joint.id = static_cast<std::uint8_t>(*id);
+    const int mode = (*t)["operating_mode"].value_or(3);
+    if (mode != 0 && mode != 1 && mode != 3) {
+      throw std::runtime_error(
+          "Config: joint '" + joint.name + "' has invalid operating_mode " +
+          std::to_string(mode) + " (expected 0, 1 or 3)");
+    }
+    joint.operating_mode = static_cast<std::uint8_t>(mode);
     const auto model = (*t)["model"].value_or(std::string{"XM430-W350"});
     if (model == "XM430-W350") {
       joint.model_number = dxl::kModelXm430W350;
@@ -49,8 +62,6 @@ Config Config::load(const std::string& toml_path) {
                                "' on joint '" + joint.name +
                                "' (expected XM430-W350 or XM540-W270)");
     }
-    joint.operating_mode =
-        static_cast<std::uint8_t>((*t)["operating_mode"].value_or(3));
     joint.velocity_limit = (*t)["velocity_limit"].value_or(0.0);
     joint.effort_limit = (*t)["effort_limit"].value_or(0.0);
     joint.pos_limit_margin = (*t)["pos_limit_margin"].value_or(0.0);
@@ -58,19 +69,26 @@ Config Config::load(const std::string& toml_path) {
     config.joints.push_back(std::move(joint));
   }
 
-  // The [[joint]] array IS the canonical order, and every consumer
+  config.validate();
+  return config;
+}
+
+void Config::validate() const {
+  // The joints vector IS the canonical order, and every consumer
   // (JointMap, RealArm, the sync group, the limit arrays) assumes it.
   // A silently tolerated deviation would map controller outputs onto
-  // the wrong servos — reject loudly instead.
+  // the wrong servos — reject loudly instead. Called by load() and
+  // re-checked by the CraneX7 constructor, since Config is a plain
+  // struct that callers can also build or mutate by hand.
   const auto& canonical = model::canonicalJoints();
-  if (config.joints.size() != canonical.size()) {
+  if (joints.size() != canonical.size()) {
     throw std::runtime_error(
         "Config: expected " + std::to_string(canonical.size()) +
         " [[joint]] entries in canonical order, got " +
-        std::to_string(config.joints.size()));
+        std::to_string(joints.size()));
   }
   for (std::size_t i = 0; i < canonical.size(); ++i) {
-    const auto& joint = config.joints[i];
+    const auto& joint = joints[i];
     if (joint.name != canonical[i].urdf_joint) {
       throw std::runtime_error(
           "Config: joint " + std::to_string(i) + " is '" + joint.name +
@@ -100,7 +118,6 @@ Config Config::load(const std::string& toml_path) {
                                "' has a negative safety margin");
     }
   }
-  return config;
 }
 
 }  // namespace rtctrl::hw

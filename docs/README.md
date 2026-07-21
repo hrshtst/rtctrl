@@ -36,5 +36,6 @@ wire protocol.
   history)
 - [Implementation plan](IMPLEMENTATION_PLAN.md) — the approved
   milestone plan, updated with outcomes and hardware findings
-- [Vendor parity](PARITY.md) — every `rt_manipulators_cpp` feature
-  mapped to its rtctrl equivalent and proving test
+- [Vendor parity](PARITY.md) — `rt_manipulators_cpp` capabilities
+  mapped to their rtctrl equivalents and proving tests, plus the
+  consciously simplified vendor surface

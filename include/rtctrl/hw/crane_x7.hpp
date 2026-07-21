@@ -157,6 +157,7 @@ class CraneX7 {
   void bestEffortRelease();
   bool requireMode(std::uint8_t mode, const char* what);
   bool requireSize(std::size_t n, const char* what);
+  bool requireActive(const char* what);
   std::vector<std::uint8_t> ids() const;
   void threadLoop();
 

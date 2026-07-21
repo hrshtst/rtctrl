@@ -41,13 +41,19 @@
   sequence, mode-checked limited writers, background RW thread,
   deadman), consumed by `RealArm`.
 - **`emu/` — the test double.** One control-table state machine, two
-  transports. Not linked into controllers; linked into tests and the
-  standalone `dxl_emu`.
+  transports. Everything ships in the single `rtctrl` library for
+  build simplicity, so the emulator is *linked* everywhere — but no
+  controller or production header ever *includes* it; only tests and
+  the standalone `dxl_emu` do.
 
-Dependency rule: `dxl` and `model` are independent of each other;
-`arm` depends on `model`; `hw` depends on `dxl` + `model` + `arm`;
-`emu` depends only on `dxl` types. Controllers depend on `arm` (and
-`model` for dynamics) — never on `dxl`/`hw` directly.
+Include-dependency rule (what may `#include` what — the build is one
+library, so this, not linkage, is the real boundary): `dxl` and
+`model` are independent of each other; `hw` depends on `dxl` +
+`model`; `arm`'s bridge types and `SimArm` depend on `model`, and its
+`RealArm` adapter additionally on `hw` (the arm→hw edge exists solely
+there); `emu` depends only on `dxl` types. Controllers depend on
+`arm` (and `model` for dynamics) — never on `dxl`/`hw`/`emu`
+directly.
 
 ## Directory map
 
