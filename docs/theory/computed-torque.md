@@ -119,17 +119,91 @@ joint limit.
   (< 0.5 × PD-only) in `tests/integration/tracking_sim_test.cpp`.
   Note the sim adds reflected rotor inertia that the ID model does not
   include, so even in simulation the feedback carries a real residual.
-- **Hardware.** `apps/x7_track` runs the same controller and gains on
-  the robot: a reduced-speed (0.3 rad/s) excursion on tilt/elbow/wrist
-  and back, printing per-leg RMS.
+- **Hardware.** `apps/x7_track` runs the same controller on the robot:
+  a reduced-speed (0.3 rad/s) excursion on tilt/elbow/wrist and back,
+  printing per-leg and per-joint RMS. Accepted 2026-07-21 at
+  RMS 0.019/0.022 rad over the two legs — with the hardware-hardened
+  control law below, not the textbook one.
+
+## What the hardware taught us
+
+The boxed law above is **not stable on the real arm**. An eight-run
+campaign (2026-07-21, every failure captured in a per-cycle CSV log and
+diagnosed offline) reshaped the shipped controller into
+
+```math
+\tau \;=\; \mathrm{ID}\big(q_d, \dot q_d, \ddot q_d\big)
+\;+\; F_{lp}\!\Big( s_i \,\big(K_p e + K_d\, \dot e_{\text{host}}\big) \Big)
+\;+\; \operatorname{clamp}\!\Big(K_i \!\int\! e \, dt\Big),
+```
+
+where every non-textbook term answers a specific measured failure:
+
+- **Host-side velocity** $\dot e_{\text{host}}$: the servo's
+  PresentVelocity estimate lags ~50 ms with ~2× attenuation (measured
+  by cross-correlating it against the position derivative in the run
+  logs). A $K_d$ term fed with it stops damping and starts *driving*
+  near the arm's resonant modes. Velocity is instead estimated from the
+  fresh position feedback (backward difference + 20 ms low-pass).
+- **PD low-pass** $F_{lp}$ (50 ms): the gear trains resonate at
+  ~13 Hz — a *non-collocated* loop (output-shaft encoder, motor-side
+  torque, elastic gearing between) whose phase, after the 100 Hz bus
+  loop's ~2 cycles of delay, makes every feedback term pump that mode.
+  The filter removes loop gain there; the smooth feedforward passes
+  unfiltered. The filter pole also caps usable stiffness
+  ($\sqrt{K_p/J}$ must stay below it): $K_p \approx 6$, not the 20 an
+  ideal rigid sim happily tolerates.
+- **Clamped integrator**: ~1 Nm of unidentified friction sags the arm
+  by $\tau_f / K_p$, which the modest $K_p$ cannot hide. A slow
+  integrator absorbs it at DC while adding nothing at the resonances;
+  the clamp (1.5 Nm) bounds windup against the torque limits.
+- **Per-joint scales** $s_i$: the distal joints carry a small fraction
+  of the shoulder's link-side inertia and limit-cycle through their
+  gear backlash at gains the proximal joints need. The forearm twist is
+  the extreme case — the hand's mass sits nearly *on* its axis
+  ($J \sim 10^{-3}\,\mathrm{kg\,m^2}$) — and takes the smallest scale.
+- **Soft starts and settling**: the filter applies no PD on its first
+  cycle (a controller constructed at a leg boundary otherwise steps the
+  residual error straight into the torque), and tracking only starts
+  after a gravity-comp-plus-damping settle phase reports the arm
+  quiescent — current-mode torque-on begins in free fall, and pure
+  gravity compensation never damps the resulting swing.
+- **Position hygiene** (hardware layer): in current/velocity modes the
+  servos report *multi-turn* position, so hand-repositioning a limp
+  joint across the encoder boundary leaves a $\pm 2\pi$ offset that
+  silently turns the soft-limit gates into one-way walls. Feedback
+  wraps to the principal angle, and the app refuses to start with any
+  joint parked inside its limit-margin band.
+
+**The stability envelope.** Beyond excursion scale ≈ 0.6 the arm
+extends into configurations whose first structural mode (~4–5 Hz,
+shoulder gear compliance against the extended arm's inertia) is
+*actively pumped* by this loop — it grew even after the trajectory
+rates were held at proven levels, so it is a loop property, not input
+excitation. That frequency sits below the PD filter's protective
+corner and beyond the delay-eroded phase: a 100 Hz non-realtime bus
+loop can neither damp it nor be shielded from it by stronger
+filtering without giving up the loop entirely. `x7_track` caps its
+scale accordingly.
 
 ## Limitations and outlook
 
 - **Unmodeled effects** — joint friction, reflected rotor inertia,
   current-loop bandwidth — land in $\delta(t)$ and set the tracking
-  floor. Friction identification (M7 follow-up) can move friction from
-  $\delta$ into the feedforward.
-- The feedback is diagonal PD; model-based designs (operational-space
-  control, impedance control) can reuse the same
+  floor (the smooth tilt/elbow error humps in the accepted runs are
+  the integrator chasing kinetic friction). Friction identification
+  (M7 follow-up) can move friction from $\delta$ into the feedforward.
+- **Large fast motions**: lifting the scale cap needs identification
+  of the ~4–5 Hz structural mode plus a notch or input shaper — or
+  position-mode tracking (servo-internal kHz loops) for that regime,
+  keeping current mode for what it does best: gravity compensation,
+  hand-guiding, and moderate-envelope tracking.
+- The feedback is diagonal PID; model-based designs
+  (operational-space control, impedance control) can reuse the same
   `ChainModel::inverseDynamics` building block unchanged — that is
   precisely the extension surface the bridge was built for.
+- **Rigid-joint simulation cannot certify gains for an elastic-geared
+  arm.** Every sim-approved gain set failed on hardware until the
+  elastic-mode countermeasures existed; the sim twin
+  (`x7_track_sim`) earns its keep by *replaying logged failures*
+  (`--start`, `--disturb`, lag models), not by proving stability.

@@ -305,14 +305,33 @@ force mapping via the virtual-work identity τ₈ᵀδq₈ = τ₉ᵀδq₉ as s
 hardware — arm floats, back-drivable. Static-pose tau vs `rkChainID_G` prediction, document
 per-joint error (~20–30 % expected, friction unmodeled).
 
-**M8 — Torque control via inverse dynamics (sim half DONE: tracking RMS 0.0050 rad,
-3.1× tighter than bare PD, asserted by test; hardware half follows M7's).**
+**M8 — Torque control via inverse dynamics (DONE — sim: tracking RMS 0.0050 rad,
+3.1× tighter than bare PD, asserted by test; hardware: RMS 0.019/0.022 rad at the
+reduced-speed acceptance envelope, 2026-07-21).**
 Computed-torque tracking
 `tau = ID_G(q_d, dq_d, ddq_d) + Kp·e + Kd·ė`, current clamped to CurrentLimit − margin,
 optional dzco PID/filter blocks; runs through Runner unchanged sim→real.
 ✓ Sim: tracking RMS below threshold on the M2 trajectory, ID+PD vs PD-only comparison.
 Hardware: reduced speed, conservative clamps; safety = M5's two-layer watchdog plus the
 independent actuator-power cutoff (deactivate() is not an e-stop).
+*Hardware campaign notes (8 runs, 2026-07-21):* the textbook law above is NOT
+hardware-stable as written; the shipped controller became
+`tau = ID + LP(scale_i·(Kp e + Kd ė_host)) + clamp(Ki ∫e)` — every added term traces to
+a logged failure: the servo's PresentVelocity estimate (~50 ms lag, 2× attenuation)
+destabilizes Kd, so velocity is estimated host-side from positions; the ~13 Hz gear-train
+resonance forces the low-pass on the PD (and caps Kp ≈ 6); the resulting friction sag
+(~1 Nm) needs the clamped integrator; per-joint gain scales keep the low-inertia distal
+joints (forearm twist worst, hand mass on-axis) out of ~5 Hz backlash limit cycles; a
+damped, quiescence-gated settle phase precedes tracking; feedback positions wrap to the
+principal angle (multi-turn readout otherwise poisons the soft-limit gates). Also
+live-validated: read-failure escalation (frozen-feedback trap) and both watchdog layers.
+*Known limitation:* excursions beyond scale ≈ 0.6 extend the arm into configurations
+whose ~4–5 Hz structural mode (shoulder gear compliance vs arm inertia) the 100 Hz loop
+actively pumps — runs 7–8 oscillated coherently there even at matched trajectory rates.
+`x7_track` caps its scale accordingly. Lifting the cap requires mode identification plus
+a notch/input shaper (natural companion to the M7 friction-identification follow-up), or
+position-mode tracking for large fast motions. Full detail:
+`docs/theory/computed-torque.md` (hardware-reality section) and the apps' headers.
 
 ## Git workflow
 
