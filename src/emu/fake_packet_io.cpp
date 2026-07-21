@@ -19,6 +19,7 @@ dxl::IoResult FakePacketIO::ping(std::uint8_t id,
 dxl::IoResult FakePacketIO::read(std::uint8_t id, std::uint16_t addr,
                                  std::uint8_t* data, std::uint16_t len) {
   if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
+  if (forced_read_comm_ != 0) return {forced_read_comm_, dxl::kErrNone};
   MotorEmulator* motor = bus_.find(id);
   if (motor == nullptr) return {kCommRxTimeout, dxl::kErrNone};
   motor->touch();
@@ -40,6 +41,7 @@ dxl::IoResult FakePacketIO::syncRead(std::uint16_t addr, std::uint16_t len,
                                      const std::vector<std::uint8_t>& ids,
                                      std::vector<std::uint8_t>& out) {
   if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
+  if (forced_read_comm_ != 0) return {forced_read_comm_, dxl::kErrNone};
   out.assign(ids.size() * len, 0);
   dxl::IoResult result;
   for (std::size_t i = 0; i < ids.size(); ++i) {

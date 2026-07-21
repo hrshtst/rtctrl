@@ -43,11 +43,16 @@ class CraneX7 {
     std::uint16_t active_p_gain = 800;      // position P while active
     std::uint16_t limp_p_gain = 5;          // position P while going limp
     double control_cycle_s = 0.01;          // background thread period
+    // Consecutive failed cycle reads before escalation. A controller
+    // fed frozen feedback keeps commanding torques into a state it can
+    // no longer see — as dangerous as a stalled command stream.
+    int max_read_failures = 5;
   };
 
   struct CycleStats {
     std::uint64_t cycles = 0;
     std::uint64_t overruns = 0;  // cycles that finished past their deadline
+    std::uint64_t read_failures = 0;  // cycles whose feedback read failed
   };
 
   CraneX7(dxl::PacketIO& io, Config config);

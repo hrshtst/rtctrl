@@ -5,14 +5,17 @@
 //
 // SAFETY: current mode. Power cutoff in reach, workspace clear.
 //
-// Gains: the sim acceptance runs Kp=20/Kd=2 (tracking_sim_test, RMS
-// 0.0050 rad), but on the real arm those gains oscillate (2026-07-21:
-// RMS 0.07 rad at half scale). The x7_track_sim lag sweep pinned the
-// cause: the servo's slow PresentVelocity estimate (~0.1 s effective
-// lag) turns the Kd term destabilizing at Kp=20; the loop's ~1-cycle
-// command pipeline latency alone is harmless. The softer defaults
-// below survive a 0.2 s estimator lag in sim with margin; the
-// inverse-dynamics feedforward still carries the trajectory.
+// Gains: two hardware runs on 2026-07-21 (Kp20/Kd2, then Kp8/Kd1.2)
+// both oscillated. The logged data pinned the mechanism: the servo's
+// PresentVelocity estimate lags ~50 ms with ~2x attenuation, so the Kd
+// term stops damping right where the arm's coupled modes live
+// (~2-3 Hz), while ~1 Nm of unmodeled friction loads the PD until the
+// torque clamps turn the loop into a relay limit cycle — and LOW Kp
+// makes the friction sag worse, not better. ComputedTorque therefore
+// now damps on a host-side velocity estimate from the fresh position
+// feedback (~15 ms lag), and stiffness is back up. Defaults below were
+// verified in x7_track_sim at the logged pose under +/-0.8 Nm
+// unmodeled-torque seeds with the full lag model.
 //
 // Usage: x7_track [--config path] [--port dev]
 //                 [--kp v] [--kd v] [--log out.csv] [scale]
@@ -40,8 +43,8 @@ namespace model = rtctrl::model;
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   double scale = 1.0;
-  // Hardware defaults, softer than the sim-verified 20/2 — see header.
-  double kp = 8.0, kd = 1.2;
+  // Hardware defaults — see header for how they were chosen.
+  double kp = 12.0, kd = 1.6;
   std::string log_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--kp") == 0 && i + 1 < argc) {
@@ -81,6 +84,14 @@ int main(int argc, char* argv[]) {
     arm::JointState start;
     if (!robot.readState(start)) return 1;
 
+    // Current-mode activation leaves goal currents at zero — the arm is
+    // in free fall until the first controller command. Hold it with
+    // gravity compensation while the trajectories are prepared.
+    arm::JointCommand hold;
+    hold.mode = arm::ControlMode::Current;
+    chain.gravityTorque(map, start.q.get(), hold.tau.get());
+    robot.writeCommand(hold);
+
     model::ZVector q0(model::kCanonicalDof), qf(model::kCanonicalDof);
     zVecCopyNC(start.q.get(), q0.get());
     zVecCopyNC(start.q.get(), qf.get());
@@ -109,8 +120,13 @@ int main(int argc, char* argv[]) {
       leg2.report();
     }
 
+    const auto stats = session.arm->cycleStats();
     robot.deactivate();
     if (log) std::fclose(log);
+    std::printf("cycles %llu, overruns %llu, read failures %llu\n",
+                static_cast<unsigned long long>(stats.cycles),
+                static_cast<unsigned long long>(stats.overruns),
+                static_cast<unsigned long long>(stats.read_failures));
     std::printf("%s\n", ok ? "done" : "ABORTED");
     return ok ? 0 : 1;
   } catch (const std::exception& e) {

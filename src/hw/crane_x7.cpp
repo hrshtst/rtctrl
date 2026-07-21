@@ -355,8 +355,15 @@ void CraneX7::threadLoop() {
 
   std::vector<dxl::Feedback> fb;
   std::vector<double> targets;
+  int failed_reads_row = 0;
   while (thread_run_.load()) {
-    readAll(fb);
+    if (readAll(fb)) {
+      failed_reads_row = 0;
+    } else {
+      ++failed_reads_row;
+      std::lock_guard<std::mutex> lock(cycle_mutex_);
+      ++stats_.read_failures;
+    }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       targets = targets_;
@@ -367,7 +374,15 @@ void CraneX7::threadLoop() {
       case 0: writeCurrents(targets); break;
       default: break;
     }
-    if (!checkDeadman()) {
+    // Frozen feedback is the read-side trap: lastFeedback() keeps
+    // serving the last good state, the controller keeps commanding into
+    // a robot it can no longer see, and — sync writes being broadcast,
+    // hence always "successful" — the deadman never fires. Escalate
+    // exactly as a stale command stream would.
+    if (failed_reads_row >= options_.max_read_failures) {
+      escalate();
+      thread_run_.store(false);
+    } else if (!checkDeadman()) {
       thread_run_.store(false);
     }
 

@@ -13,8 +13,10 @@
 // tracking_sim_test.
 //
 // Usage: x7_track_sim [--kp v] [--kd v] [--vel-tau s] [--log out.csv]
-//                     [--zvs out.zvs] [--ideal] [scale]
+//                     [--zvs out.zvs] [--start q0,..,q7] [--ideal] [scale]
 //   scale in (0,1] shrinks the excursion (default 1.0 ≈ ±0.3 rad max)
+//   --start replays a hardware pose (e.g. the first q row of an
+//     x7_track --log CSV) instead of the default test pose
 //   --zvs writes the motion for: rk_anim models/crane_x7/crane_x7.ztk <file>
 
 #include <algorithm>
@@ -24,6 +26,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
@@ -44,6 +47,7 @@ namespace {
 // internal estimator) then quantized to the Dynamixel LSB.
 struct LaggedArm : arm::Arm {
   static constexpr double kVelLsb = 0.229 * 2.0 * M_PI / 60.0;  // [rad/s]
+  static constexpr double kPosLsb = 2.0 * M_PI / 4096.0;        // [rad]
 
   LaggedArm(arm::SimArm& inner, double vel_tau)
       : inner_(inner), vel_tau_(vel_tau) {}
@@ -63,6 +67,8 @@ struct LaggedArm : arm::Arm {
       dq_filt_[i] += alpha * (zVecElemNC(state.dq.get(), i) - dq_filt_[i]);
       zVecElemNC(state.dq.get(), i) =
           std::round(dq_filt_[i] / kVelLsb) * kVelLsb;
+      zVecElemNC(state.q.get(), i) =
+          std::round(zVecElemNC(state.q.get(), i) / kPosLsb) * kPosLsb;
     }
     return true;
   }
@@ -99,10 +105,12 @@ struct LaggedArm : arm::Arm {
 
 int main(int argc, char* argv[]) {
   double scale = 1.0;
-  double kp = 8.0, kd = 1.2;  // x7_track's hardware defaults
+  double kp = 12.0, kd = 1.6;  // x7_track's hardware defaults
   double vel_tau = 0.12;      // servo velocity-estimator lag [s]
   bool ideal = false;
-  std::string log_path, zvs_path;
+  std::string log_path, zvs_path, start_csv;
+  std::vector<int> disturb_joint;
+  std::vector<double> disturb_tau;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--kp") == 0 && i + 1 < argc) {
       kp = std::atof(argv[++i]);
@@ -114,6 +122,14 @@ int main(int argc, char* argv[]) {
       log_path = argv[++i];
     } else if (std::strcmp(argv[i], "--zvs") == 0 && i + 1 < argc) {
       zvs_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--start") == 0 && i + 1 < argc) {
+      start_csv = argv[++i];
+    } else if (std::strcmp(argv[i], "--disturb") == 0 && i + 2 < argc) {
+      // constant unmodeled torque on a canonical joint: --disturb j tau
+      // (stands in for stiction / model error, the seed the ideal-model
+      // sim otherwise lacks)
+      disturb_joint.push_back(std::atoi(argv[++i]));
+      disturb_tau.push_back(std::atof(argv[++i]));
     } else if (std::strcmp(argv[i], "--ideal") == 0) {
       ideal = true;
     } else {
@@ -138,9 +154,24 @@ int main(int argc, char* argv[]) {
     model::JointMap map(chain);
 
     // The gravity-loaded start pose of the sim acceptance test; the
-    // hardware app starts from wherever the arm is.
+    // hardware app starts from wherever the arm is (--start replays one).
     arm::SimArm::Options opt;
     opt.initial_q8 = {0.0, 0.2, 0.0, -0.4, 0.0, -0.2, 0.0, 0.1};
+    if (!start_csv.empty()) {
+      opt.initial_q8.clear();
+      const char* p = start_csv.c_str();
+      char* end = nullptr;
+      for (double v = std::strtod(p, &end); p != end;
+           v = std::strtod(p, &end)) {
+        opt.initial_q8.push_back(v);
+        p = *end == ',' ? end + 1 : end;
+      }
+      if (opt.initial_q8.size() != model::kCanonicalDof) {
+        std::fprintf(stderr, "--start needs %d comma-separated values\n",
+                     model::kCanonicalDof);
+        return 1;
+      }
+    }
     arm::SimArm sim(opt);
     sim.setMode(arm::ControlMode::Current);
 
@@ -148,6 +179,10 @@ int main(int argc, char* argv[]) {
     if (!zvs_path.empty()) {
       zvs = std::make_unique<model::ZvsWriter>(zvs_path);
       sim.logTo(zvs.get());
+    }
+
+    for (std::size_t i = 0; i < disturb_joint.size(); ++i) {
+      sim.setDisturbance(disturb_joint[i], disturb_tau[i]);
     }
 
     LaggedArm lagged(sim, vel_tau);

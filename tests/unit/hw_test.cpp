@@ -224,3 +224,48 @@ TEST_CASE("deadman does not fire while commands flow", "[hw][safety]") {
   }
   CHECK_FALSE(arm.escalated());
 }
+
+TEST_CASE(
+    "persistent read failure escalates instead of serving frozen feedback",
+    "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.001;  // fast loop, short test
+  hw::CraneX7 arm(io, config, options);
+
+  bool bus_silenced = false;
+  arm.onEscalate([&bus_silenced] { bus_silenced = true; });
+
+  REQUIRE(arm.activate());
+  REQUIRE(arm.startThread());
+
+  // healthy loop first: cycles advance, feedback flows
+  const auto seq = arm.waitCycle(0);
+  REQUIRE(seq > 0);
+  REQUIRE(arm.lastFeedback().size() == config.joints.size());
+
+  // Now the read path dies while writes stay "healthy" (sync writes are
+  // broadcast — they succeed with nobody listening). Observed on
+  // hardware 2026-07-21: feedback froze mid-run and the controller kept
+  // commanding torques blind for 3 s while the app reported success.
+  io.setReadFailure(-3001);
+
+  // the thread must escalate and stop within the failure budget
+  std::uint64_t last = seq;
+  for (int i = 0; i < 1000 && arm.waitCycle(last) != 0; ++i) {
+    last = arm.cycleStats().cycles;
+  }
+  CHECK(arm.escalated());
+  CHECK(bus_silenced);
+  CHECK(arm.cycleStats().read_failures >=
+        static_cast<std::uint64_t>(options.max_read_failures));
+  // waitCycle now reports the stopped thread: RealArm::step -> false,
+  // so a running controller aborts instead of finishing on stale state.
+  CHECK(arm.waitCycle(last) == 0);
+  // and the arm refuses further commands
+  std::vector<double> zeros(config.joints.size(), 0.0);
+  CHECK_FALSE(arm.writePositions(zeros));
+  arm.stopThread();  // join the exited loop
+}

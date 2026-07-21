@@ -32,11 +32,15 @@ class FakePacketIO : public dxl::PacketIO {
   // This is the trap case for the two-layer watchdog: chatty reads keep
   // the servo-side Bus Watchdog fed while commands go nowhere.
   void setWriteFailure(int comm_code) { forced_write_comm_ = comm_code; }
+  // Fault injection: only read/syncRead fail — the frozen-feedback
+  // trap: the controller would keep acting on stale state forever.
+  void setReadFailure(int comm_code) { forced_read_comm_ = comm_code; }
 
  private:
   MotorBus& bus_;
   int forced_comm_ = 0;
   int forced_write_comm_ = 0;
+  int forced_read_comm_ = 0;
 };
 
 }  // namespace rtctrl::emu
