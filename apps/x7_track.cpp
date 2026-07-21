@@ -158,10 +158,16 @@ int main(int argc, char* argv[]) {
     }
 
     constexpr double kVel = 0.3;  // rad/s — reduced speed
+    // Hold the peak acceleration at the half-scale-proven level: with
+    // the duration pinned at 2 s, full scale ran at DOUBLE the rates
+    // and pumped the arm's ~4 Hz structural mode (2026-07-21 run 7 —
+    // every proximal joint oscillating coherently). Min-jerk peak
+    // accel ~ A/T^2, so the duration grows with sqrt(amplitude).
+    const double min_T = 2.0 * std::sqrt(std::max(scale, 0.5) / 0.5);
     const auto out = model::MinJerkTrajectory::withVelocityLimit(
-        q0, qf, kVel, 2.0);
+        q0, qf, kVel, min_T);
     const auto back = model::MinJerkTrajectory::withVelocityLimit(
-        qf, q0, kVel, 2.0);
+        qf, q0, kVel, min_T);
 
     std::printf("computed-torque tracking: %.1f s out, %.1f s back "
                 "(scale %.2f, Kp %.1f, Kd %.2f, Ki %.1f)\n",

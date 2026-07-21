@@ -210,10 +210,12 @@ int main(int argc, char* argv[]) {
     qf[5] += 0.25 * scale;
 
     constexpr double kVel = 0.3;  // rad/s — reduced speed
+    // duration rule as x7_track: hold peak accel at the proven level
+    const double min_T = 2.0 * std::sqrt(std::max(scale, 0.5) / 0.5);
     const auto out = model::MinJerkTrajectory::withVelocityLimit(
-        q0, qf, kVel, 2.0);
+        q0, qf, kVel, min_T);
     const auto back = model::MinJerkTrajectory::withVelocityLimit(
-        qf, q0, kVel, 2.0);
+        qf, q0, kVel, min_T);
 
     std::printf("computed-torque tracking [sim, %s loop]: %.1f s out, "
                 "%.1f s back (scale %.2f, Kp %.1f, Kd %.2f, Ki %.1f)\n",
