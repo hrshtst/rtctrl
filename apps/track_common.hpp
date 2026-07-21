@@ -22,9 +22,11 @@ namespace model = rtctrl::model;
 // PD scale per canonical joint (see ComputedTorque::setGainScales):
 // proximal joints take the full gains; distal joints, whose link-side
 // inertia is a small fraction of the shoulder's, take a fraction to
-// stay clear of backlash limit cycles.
-constexpr double kGainScale[model::kCanonicalDof] = {1.0,  1.0, 0.7, 0.7,
-                                                     0.35, 0.3, 0.2, 0.2};
+// stay clear of backlash limit cycles. The forearm TWIST gets the
+// smallest scale of all: the hand's mass sits nearly on its axis
+// (J ~ 1e-3 kg m^2), and at 0.35 it rang at ~5 Hz (run-5 log).
+constexpr double kGainScale[model::kCanonicalDof] = {1.0, 1.0, 0.7, 0.7,
+                                                     0.1, 0.3, 0.2, 0.2};
 
 // Gravity compensation plus light filtered damping: holds the arm AND
 // bleeds off swing, unlike pure GravityComp which floats. Used before

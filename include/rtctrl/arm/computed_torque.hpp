@@ -70,8 +70,14 @@ class ComputedTorque : public Controller {
     cmd.mode = ControlMode::Current;
     const double dt = t_prev_ < 0.0 ? -1.0 : t - t_prev_;
     estimateVelocity(state, dt);
-    const double pd_alpha =
-        (pd_tau_ > 0.0 && dt > 0.0) ? dt / (pd_tau_ + dt) : 1.0;
+    // Soft start: with the filter enabled, the first cycle applies NO
+    // PD instead of passing it through unfiltered — a controller
+    // constructed at a leg boundary otherwise steps the residual error
+    // straight into the torque and kicks the backlash-prone joints
+    // (run 5: the forearm rang at 5 Hz from exactly this).
+    const double pd_alpha = pd_tau_ <= 0.0
+                                ? 1.0
+                                : (dt > 0.0 ? dt / (pd_tau_ + dt) : 0.0);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double e = q_d_[i] - zVecElemNC(state.q.get(), i);
       const double de = dq_d_[i] - dq_est_[i];
