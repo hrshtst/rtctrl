@@ -96,6 +96,15 @@ class CraneX7 {
   // effort_limit/torque_constant minus current_limit_margin.
   bool writeCurrents(const std::vector<double>& amps);
 
+  // Soft position limits [rad] enforced by the writers above (servo
+  // limits with pos_limit_margin applied); valid after activation. A
+  // joint PARKED inside the margin band turns the current-mode gate
+  // into a one-way wall — apps should refuse to control from there
+  // (observed 2026-07-21 run 5: forearm anchored at -2.60 next to its
+  // -2.64 soft limit bounced against the gate at ~6 Hz).
+  const std::vector<double>& softLimitLo() const { return limit_lo_; }
+  const std::vector<double>& softLimitHi() const { return limit_hi_; }
+
   // Background read→limit→write thread at Options::control_cycle_s.
   // Requires a homogeneous operating mode across the group. On each
   // cycle: readAll → route the latest targets through the mode's

@@ -119,13 +119,43 @@ int main(int argc, char* argv[]) {
     }
     if (!robot.readState(start)) return 1;
 
+    // Refuse to control a joint parked inside its soft-limit margin:
+    // the current gate blocks one whole torque direction there, and the
+    // loop bounces against that wall instead of tracking.
+    const auto& lo = session.arm->softLimitLo();
+    const auto& hi = session.arm->softLimitHi();
+    constexpr double kBuffer = 0.05;  // [rad] beyond the margin
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      const double q = zVecElemNC(start.q.get(), i);
+      if (q < lo[i] + kBuffer || q > hi[i] - kBuffer) {
+        std::fprintf(stderr,
+                     "joint %d (%s) is at %.3f rad, within its soft "
+                     "position limit band [%.3f, %.3f] — move it toward "
+                     "mid-range and rerun\n",
+                     i, model::canonicalJoints()[i].urdf_joint, q,
+                     lo[i], hi[i]);
+        robot.deactivate();
+        return 1;
+      }
+    }
+
     model::ZVector q0(model::kCanonicalDof), qf(model::kCanonicalDof);
     zVecCopyNC(start.q.get(), q0.get());
     zVecCopyNC(start.q.get(), qf.get());
-    // gentle excursion on tilt / elbow / wrist pitch
+    // gentle excursion on tilt / elbow / wrist pitch, kept clear of the
+    // soft-limit band
     qf[1] += 0.20 * scale;
     qf[3] -= 0.30 * scale;
     qf[5] += 0.25 * scale;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      const double clamped =
+          std::clamp(qf[i], lo[i] + kBuffer, hi[i] - kBuffer);
+      if (clamped != qf[i]) {
+        std::printf("excursion on joint %d clamped to %.3f rad (soft "
+                    "limit)\n", i, clamped);
+        qf[i] = clamped;
+      }
+    }
 
     constexpr double kVel = 0.3;  // rad/s — reduced speed
     const auto out = model::MinJerkTrajectory::withVelocityLimit(
