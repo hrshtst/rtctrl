@@ -5,20 +5,27 @@
 //
 // SAFETY: current mode. Power cutoff in reach, workspace clear.
 //
-// Gains: two hardware runs on 2026-07-21 (Kp20/Kd2, then Kp8/Kd1.2)
-// both oscillated. The logged data pinned the mechanism: the servo's
-// PresentVelocity estimate lags ~50 ms with ~2x attenuation, so the Kd
-// term stops damping right where the arm's coupled modes live
-// (~2-3 Hz), while ~1 Nm of unmodeled friction loads the PD until the
-// torque clamps turn the loop into a relay limit cycle — and LOW Kp
-// makes the friction sag worse, not better. ComputedTorque therefore
-// now damps on a host-side velocity estimate from the fresh position
-// feedback (~15 ms lag), and stiffness is back up. Defaults below were
-// verified in x7_track_sim at the logged pose under +/-0.8 Nm
-// unmodeled-torque seeds with the full lag model.
+// Stability, learned the hard way (three 2026-07-21 hardware runs):
+// the oscillation is a ~13 Hz gear-train structural resonance (output
+// encoder, motor-side torque, elastic gearing between — measured in
+// the run logs), which the host PD pumps because at 13 Hz the 100 Hz
+// bus loop's ~2-cycle delay puts every feedback term >90 degrees out
+// of phase. Countermeasures, all of which this app relies on:
+//   * ComputedTorque low-passes the PD correction (~3 Hz, 4x gain cut
+//     at the resonance) — rigid-joint sims cannot show this mode, so
+//     do not trust them on it;
+//   * damping uses a host-side velocity estimate — the servo's own
+//     PresentVelocity lags ~50 ms with ~2x attenuation;
+//   * a 1 s gravity-comp settle phase before tracking, because
+//     current-mode torque-on starts from free fall and the tracking
+//     loop should not have to absorb that swing at t=0;
+//   * moderate stiffness — the filtered loop's crossover must stay
+//     below the filter pole, capping Kp around 6; the ~0.15 rad
+//     friction sag that such a Kp would leave is absorbed by the
+//     controller's slow clamped integrator instead.
 //
 // Usage: x7_track [--config path] [--port dev]
-//                 [--kp v] [--kd v] [--log out.csv] [scale]
+//                 [--kp v] [--kd v] [--ki v] [--log out.csv] [scale]
 //   scale in (0,1] shrinks the excursion (default 1.0 ≈ ±0.3 rad max)
 //   --log writes t, q_d, q, dq_d, dq, tau per joint each cycle
 
@@ -28,6 +35,7 @@
 #include <cstring>
 #include <string>
 
+#include "rtctrl/arm/gravity_comp.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -44,13 +52,15 @@ int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   double scale = 1.0;
   // Hardware defaults — see header for how they were chosen.
-  double kp = 12.0, kd = 1.6;
+  double kp = 6.0, kd = 1.0, ki = 6.0;
   std::string log_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--kp") == 0 && i + 1 < argc) {
       kp = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--kd") == 0 && i + 1 < argc) {
       kd = std::atof(argv[++i]);
+    } else if (std::strcmp(argv[i], "--ki") == 0 && i + 1 < argc) {
+      ki = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
       log_path = argv[++i];
     } else {
@@ -60,6 +70,7 @@ int main(int argc, char* argv[]) {
   scale = std::clamp(scale, 0.05, 1.0);
   kp = std::clamp(kp, 0.0, 50.0);
   kd = std::clamp(kd, 0.0, 5.0);
+  ki = std::clamp(ki, 0.0, 20.0);
 
   std::FILE* log = nullptr;
   if (!log_path.empty()) {
@@ -86,11 +97,20 @@ int main(int argc, char* argv[]) {
 
     // Current-mode activation leaves goal currents at zero — the arm is
     // in free fall until the first controller command. Hold it with
-    // gravity compensation while the trajectories are prepared.
+    // gravity compensation immediately, then let it settle: the
+    // 2026-07-21 logs show the arm entering the tracking loop already
+    // swinging, which the loop then had to absorb at t=0.
     arm::JointCommand hold;
     hold.mode = arm::ControlMode::Current;
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
     robot.writeCommand(hold);
+    arm::GravityComp settle(chain, map);
+    if (!arm::run(robot, settle, 1.0)) {
+      std::fprintf(stderr, "settle phase aborted\n");
+      robot.deactivate();
+      return 1;
+    }
+    if (!robot.readState(start)) return 1;
 
     model::ZVector q0(model::kCanonicalDof), qf(model::kCanonicalDof);
     zVecCopyNC(start.q.get(), q0.get());
@@ -107,15 +127,17 @@ int main(int argc, char* argv[]) {
         qf, q0, kVel, 2.0);
 
     std::printf("computed-torque tracking: %.1f s out, %.1f s back "
-                "(scale %.2f, Kp %.1f, Kd %.2f)\n",
-                out.duration(), back.duration(), scale, kp, kd);
+                "(scale %.2f, Kp %.1f, Kd %.2f, Ki %.1f)\n",
+                out.duration(), back.duration(), scale, kp, kd, ki);
 
     x7::TrackingRun leg1(chain, map, out, kp, kd, 0, log);
+    leg1.inner.setIntegral(ki, 1.5);
     bool ok = arm::run(robot, leg1, out.duration());
     leg1.report();
 
     if (ok) {
       x7::TrackingRun leg2(chain, map, back, kp, kd, 1, log);
+      leg2.inner.setIntegral(ki, 1.5);
       ok = arm::run(robot, leg2, back.duration());
       leg2.report();
     }

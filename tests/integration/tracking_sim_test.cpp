@@ -100,6 +100,12 @@ TEST_CASE("computed torque tracks in sim and beats bare PD",
 
   constexpr double kKp = 20.0, kKd = 2.0;
   ComputedTorque computed(chain, map, trajectory, kKp, kKd);
+  // This test checks the computed-torque MATH in the ideal rigid sim,
+  // so the hardware countermeasures (PD low-pass sized for the gear
+  // resonance, friction integrator) are switched off; at Kp=20 the
+  // filter pole would sit on the loop crossover and dominate the RMS.
+  computed.setPdFilterTau(0.0);
+  computed.setIntegral(0.0, 0.0);
   PdOnly pd(trajectory, kKp, kKd);
 
   const double rms_computed = trackingRms(trajectory, computed, duration);

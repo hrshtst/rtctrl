@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "rtctrl/arm/gravity_comp.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -105,8 +106,8 @@ struct LaggedArm : arm::Arm {
 
 int main(int argc, char* argv[]) {
   double scale = 1.0;
-  double kp = 12.0, kd = 1.6;  // x7_track's hardware defaults
-  double vel_tau = 0.12;      // servo velocity-estimator lag [s]
+  double kp = 6.0, kd = 1.0, ki = 6.0;  // x7_track's hardware defaults
+  double vel_tau = 0.12;                // servo velocity-estimator lag [s]
   bool ideal = false;
   std::string log_path, zvs_path, start_csv;
   std::vector<int> disturb_joint;
@@ -116,6 +117,8 @@ int main(int argc, char* argv[]) {
       kp = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--kd") == 0 && i + 1 < argc) {
       kd = std::atof(argv[++i]);
+    } else if (std::strcmp(argv[i], "--ki") == 0 && i + 1 < argc) {
+      ki = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--vel-tau") == 0 && i + 1 < argc) {
       vel_tau = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
@@ -139,6 +142,7 @@ int main(int argc, char* argv[]) {
   scale = std::clamp(scale, 0.05, 1.0);
   kp = std::clamp(kp, 0.0, 50.0);
   kd = std::clamp(kd, 0.0, 5.0);
+  ki = std::clamp(ki, 0.0, 20.0);
 
   std::FILE* log = nullptr;
   if (!log_path.empty()) {
@@ -189,10 +193,17 @@ int main(int argc, char* argv[]) {
     arm::Arm& robot = ideal ? static_cast<arm::Arm&>(sim) : lagged;
     robot.activate();
 
+    // same settle phase as x7_track, then anchor where the arm is
+    // (with --disturb seeds it settles slightly off the start pose)
+    arm::GravityComp settle_ctl(chain, map);
+    arm::run(robot, settle_ctl, 1.0);
+    arm::JointState settled;
+    robot.readState(settled);
+
     model::ZVector q0(model::kCanonicalDof), qf(model::kCanonicalDof);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
-      q0[i] = opt.initial_q8[i];
-      qf[i] = opt.initial_q8[i];
+      q0[i] = zVecElemNC(settled.q.get(), i);
+      qf[i] = q0[i];
     }
     // gentle excursion on tilt / elbow / wrist pitch — as x7_track
     qf[1] += 0.20 * scale;
@@ -206,16 +217,18 @@ int main(int argc, char* argv[]) {
         qf, q0, kVel, 2.0);
 
     std::printf("computed-torque tracking [sim, %s loop]: %.1f s out, "
-                "%.1f s back (scale %.2f, Kp %.1f, Kd %.2f)\n",
+                "%.1f s back (scale %.2f, Kp %.1f, Kd %.2f, Ki %.1f)\n",
                 ideal ? "ideal" : "lagged", out.duration(),
-                back.duration(), scale, kp, kd);
+                back.duration(), scale, kp, kd, ki);
 
     x7::TrackingRun leg1(chain, map, out, kp, kd, 0, log);
+    leg1.inner.setIntegral(ki, 1.5);
     bool ok = arm::run(robot, leg1, out.duration());
     leg1.report();
 
     if (ok) {
       x7::TrackingRun leg2(chain, map, back, kp, kd, 1, log);
+      leg2.inner.setIntegral(ki, 1.5);
       ok = arm::run(robot, leg2, back.duration());
       leg2.report();
     }
