@@ -30,7 +30,12 @@
 //   * hw-side: feedback positions wrap to the principal angle — the
 //     servo's multi-turn readout after hand-repositioning (run 4:
 //     twist = +6.54 rad) otherwise poisons the soft position limits,
-//     whose gate then silently blocks a whole torque direction.
+//     whose gate then silently blocks a whole torque direction;
+//   * excursion scale capped at 0.6 and duration grown with
+//     sqrt(amplitude) — larger excursions extend the arm into
+//     configurations whose ~4-5 Hz structural mode this loop actively
+//     pumps (runs 7-8: coherent whole-arm oscillation, growing even at
+//     matched trajectory rates).
 //
 // Usage: x7_track [--config path] [--port dev]
 //                 [--kp v] [--kd v] [--ki v] [--log out.csv] [scale]
@@ -74,7 +79,17 @@ int main(int argc, char* argv[]) {
       scale = std::atof(argv[i]);
     }
   }
-  scale = std::clamp(scale, 0.05, 1.0);
+  // Beyond ~0.6 the excursion extends the arm into configurations
+  // where its ~4-5 Hz structural mode (shoulder gear compliance vs arm
+  // inertia) goes actively unstable under this 100 Hz loop — verified
+  // twice at scale 1.0 on 2026-07-21 (runs 7-8, both ended in manual
+  // power cuts). Raising the cap needs mode identification plus a
+  // notch/input shaper first; see docs/theory/computed-torque.md.
+  if (scale > 0.6) {
+    std::printf("scale %.2f capped to 0.60 — the stable envelope of the "
+                "current loop (see x7_track.cpp header)\n", scale);
+  }
+  scale = std::clamp(scale, 0.05, 0.6);
   kp = std::clamp(kp, 0.0, 50.0);
   kd = std::clamp(kd, 0.0, 5.0);
   ki = std::clamp(ki, 0.0, 20.0);
