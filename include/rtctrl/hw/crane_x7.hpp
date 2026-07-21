@@ -62,10 +62,18 @@ class CraneX7 {
   // clock; tests inject simulated time.
   void setTimeSource(std::function<double()> now) { now_ = std::move(now); }
 
+  // Joins the background thread if it is still running. Deliberately
+  // does NOT torque off: destruction without deactivate() usually means
+  // an abnormal exit, and a silent bus lets the servo watchdogs freeze
+  // the arm in place — safer than an uncommanded gravity drop.
+  ~CraneX7();
+
   // Verifies ids/models/firmware, programs indirect maps and operating
   // modes (torque off), snaps goals to present, sets the active gains,
   // arms the servo Bus Watchdogs, then enables torque. No motion
-  // results. Returns false (with lastError()) on any mismatch.
+  // results. Returns false (with lastError()) on any mismatch — and a
+  // mid-sequence failure best-effort releases every servo the sequence
+  // may already have touched (no partially torqued arm).
   bool activate();
 
   // Going limp gently: limp gains, zero goal currents, torque off,
@@ -119,12 +127,17 @@ class CraneX7 {
   std::uint64_t waitCycle(std::uint64_t last_seen);
 
   // Thread-safe command targets consumed by the background thread.
-  void setTargetPositions(const std::vector<double>& rad);
-  void setTargetVelocities(const std::vector<double>& rad_s);
-  void setTargetCurrents(const std::vector<double>& amps);
+  // False (with lastError()) on a size mismatch. Each successful
+  // submission also feeds the deadman's submission-freshness check.
+  bool setTargetPositions(const std::vector<double>& rad);
+  bool setTargetVelocities(const std::vector<double>& rad_s);
+  bool setTargetCurrents(const std::vector<double>& amps);
 
-  // Deadman: escalates if the last successful command write is older
-  // than host_command_timeout_s. Call once per control cycle. Returns
+  // Deadman: escalates if the last successful command write — or, once
+  // a controller has submitted targets, the last fresh submission — is
+  // older than host_command_timeout_s. (Write success alone is not
+  // liveness: the background thread's retransmissions succeed even
+  // when the controller is dead.) Call once per control cycle. Returns
   // false once escalated.
   bool checkDeadman();
   // The escalation path (also callable directly): best-effort zero +
@@ -140,7 +153,10 @@ class CraneX7 {
 
  private:
   bool verifyServos();
+  bool activateSteps();
+  void bestEffortRelease();
   bool requireMode(std::uint8_t mode, const char* what);
+  bool requireSize(std::size_t n, const char* what);
   std::vector<std::uint8_t> ids() const;
   void threadLoop();
 
@@ -162,6 +178,8 @@ class CraneX7 {
   std::vector<dxl::Feedback> feedback_;     // last successful readAll
   std::vector<double> targets_;             // canonical, unit per mode
   bool have_targets_ = false;
+  double last_submission_ = 0.0;   // last setTarget* call (deadman)
+  bool submission_armed_ = false;  // a controller has submitted targets
 
   std::thread thread_;
   std::atomic<bool> thread_run_{false};

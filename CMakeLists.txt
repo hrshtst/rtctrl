@@ -47,12 +47,6 @@ target_link_libraries(rtctrl PUBLIC
   tomlplusplus::tomlplusplus
   Threads::Threads)
 
-# DynamixelSDK ships per-model register data as .model files; dxl_inspect
-# reads them from the submodule, not from the SDK's install-time
-# CONTROL_TABLE_PATH (which is invalid when the SDK is not installed).
-set(RTCTRL_DXL_MODEL_DIR
-  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/DynamixelSDK/control_table")
-
 add_subdirectory(apps)
 add_subdirectory(examples)
 

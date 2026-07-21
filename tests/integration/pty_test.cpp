@@ -130,6 +130,9 @@ TEST_CASE("bus watchdog fires on real bus silence", "[pty]") {
   BusFixture fixture;
   dxl::Port port(fixture.path(), 3000000);
 
+  // Real XM firmware only monitors the bus interval while torque is
+  // enabled — arming without torque must never trip.
+  REQUIRE(port.write8(2, reg::kTorqueEnable.addr, 1).ok());
   REQUIRE(port.write8(2, reg::kBusWatchdog.addr, 5).ok());  // 100 ms
   // stay silent past the timeout while the emulator keeps ticking
   std::this_thread::sleep_for(std::chrono::milliseconds(300));

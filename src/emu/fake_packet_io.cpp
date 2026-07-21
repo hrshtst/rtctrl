@@ -31,6 +31,10 @@ dxl::IoResult FakePacketIO::write(std::uint8_t id, std::uint16_t addr,
                                   std::uint16_t len) {
   if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
   if (forced_write_comm_ != 0) return {forced_write_comm_, dxl::kErrNone};
+  if (fail_on_comm_ != 0 && id == fail_id_ && addr == fail_addr_ &&
+      len >= 1 && data[0] == fail_value_) {
+    return {fail_on_comm_, dxl::kErrNone};
+  }
   MotorEmulator* motor = bus_.find(id);
   if (motor == nullptr) return {kCommRxTimeout, dxl::kErrNone};
   motor->touch();

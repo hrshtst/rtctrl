@@ -20,7 +20,10 @@ double RealArm::dt() const { return hw_.options().control_cycle_s; }
 
 bool RealArm::activate() {
   if (!hw_.activate()) return false;
-  if (!hw_.startThread()) return false;
+  if (!hw_.startThread()) {
+    hw_.deactivate();  // never leave a torqued arm behind a failure
+    return false;
+  }
   t0_ = monotonicSeconds();
   return true;
 }
@@ -60,22 +63,19 @@ bool RealArm::writeCommand(const JointCommand& cmd) {
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.q.get(), i);
       }
-      hw_.setTargetPositions(values);
-      return true;
+      return hw_.setTargetPositions(values);
     case ControlMode::Velocity:
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.dq.get(), i);
       }
-      hw_.setTargetVelocities(values);
-      return true;
+      return hw_.setTargetVelocities(values);
     case ControlMode::Current:
       for (int i = 0; i < kCanonicalDof; ++i) {
         // torque command -> current through the per-model constant
         values[i] = zVecElemNC(cmd.tau.get(), i) /
                     dxl::torqueConstant(hw_.config().joints[i].model_number);
       }
-      hw_.setTargetCurrents(values);
-      return true;
+      return hw_.setTargetCurrents(values);
   }
   return false;
 }

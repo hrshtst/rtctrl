@@ -164,17 +164,23 @@ void MotorEmulator::onWrite(std::uint16_t addr) {
 }
 
 void MotorEmulator::tick(double dt) {
-  // Bus Watchdog.
+  const bool torque_on = table_[reg::kTorqueEnable.addr] != 0;
+
+  // Bus Watchdog. Real XM firmware only monitors the communication
+  // interval WHILE TORQUE IS ENABLED (e-manual, register 98): with
+  // torque off the counter must not advance.
   const std::uint8_t wd = table_[reg::kBusWatchdog.addr];
   if (wd != 0 && wd != dxl::kBusWatchdogTriggered && !watchdog_triggered_) {
-    watchdog_elapsed_ += dt;
-    if (watchdog_elapsed_ >= wd * dxl::kBusWatchdogUnitSeconds) {
-      watchdog_triggered_ = true;
-      table_[reg::kBusWatchdog.addr] = dxl::kBusWatchdogTriggered;
+    if (torque_on) {
+      watchdog_elapsed_ += dt;
+      if (watchdog_elapsed_ >= wd * dxl::kBusWatchdogUnitSeconds) {
+        watchdog_triggered_ = true;
+        table_[reg::kBusWatchdog.addr] = dxl::kBusWatchdogTriggered;
+      }
+    } else {
+      watchdog_elapsed_ = 0.0;
     }
   }
-
-  const bool torque_on = table_[reg::kTorqueEnable.addr] != 0;
   const bool halted = watchdog_triggered_ || !torque_on;
 
   const auto mode = static_cast<dxl::OperatingMode>(

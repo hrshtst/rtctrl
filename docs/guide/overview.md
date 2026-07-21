@@ -5,9 +5,10 @@
 two-finger gripper built from Dynamixel XM servos. It replaces the
 vendor software with a structured stack offering robust inverse
 kinematics, dynamics-based control (gravity compensation,
-computed-torque tracking), and a simulator bridge — while covering
-every feature of the original `rt_manipulators_cpp`
-(see the [parity checklist](../PARITY.md)).
+computed-torque tracking), and a simulator bridge — while functionally
+covering the capabilities of the original `rt_manipulators_cpp` for
+whole-arm control (see the [parity checklist](../PARITY.md), including
+its list of consciously simplified vendor surface).
 
 ## Design philosophy
 

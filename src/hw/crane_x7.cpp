@@ -29,6 +29,8 @@ CraneX7::CraneX7(dxl::PacketIO& io, Config config, Options options)
       }),
       last_command_(now_()) {}
 
+CraneX7::~CraneX7() { stopThread(); }
+
 std::vector<std::uint8_t> CraneX7::ids() const {
   std::vector<std::uint8_t> out;
   for (const auto& joint : config_.joints) out.push_back(joint.id);
@@ -67,7 +69,31 @@ bool CraneX7::verifyServos() {
 bool CraneX7::activate() {
   if (activated_) return true;
   escalated_ = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    submission_armed_ = false;  // fresh session for the deadman
+  }
+  if (!activateSteps()) {
+    // A mid-sequence failure must not leave a partially torqued arm:
+    // best-effort release of everything the sequence may have touched
+    // (preserves last_error_ from the failing step).
+    bestEffortRelease();
+    return false;
+  }
+  last_command_ = now_();
+  activated_ = true;
+  return true;
+}
 
+void CraneX7::bestEffortRelease() {
+  for (const auto& joint : config_.joints) {
+    io_.write16(joint.id, reg::kGoalCurrent.addr, 0);
+    io_.write8(joint.id, reg::kTorqueEnable.addr, 0);
+    io_.write8(joint.id, reg::kBusWatchdog.addr, 0);
+  }
+}
+
+bool CraneX7::activateSteps() {
   if (!verifyServos()) return false;
 
   // EEPROM-side setup requires torque off; a previously triggered Bus
@@ -156,8 +182,6 @@ bool CraneX7::activate() {
       return false;
     }
   }
-  last_command_ = now_();
-  activated_ = true;
   return true;
 }
 
@@ -211,9 +235,18 @@ bool CraneX7::requireMode(std::uint8_t mode, const char* what) {
   return true;
 }
 
+bool CraneX7::requireSize(std::size_t n, const char* what) {
+  if (n == config_.joints.size()) return true;
+  last_error_ = std::string(what) + " rejected: got " + std::to_string(n) +
+                " values for " + std::to_string(config_.joints.size()) +
+                " joints";
+  return false;
+}
+
 bool CraneX7::writePositions(const std::vector<double>& rad) {
   if (escalated_) return false;
   if (!requireMode(3, "position command")) return false;
+  if (!requireSize(rad.size(), "position command")) return false;
   std::vector<double> clamped(rad.size());
   for (std::size_t i = 0; i < rad.size(); ++i) {
     clamped[i] = std::clamp(rad[i], limit_lo_[i], limit_hi_[i]);
@@ -226,6 +259,7 @@ bool CraneX7::writePositions(const std::vector<double>& rad) {
 bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
   if (escalated_) return false;
   if (!requireMode(1, "velocity command")) return false;
+  if (!requireSize(rad_s.size(), "velocity command")) return false;
   std::vector<dxl::Feedback> fb = lastFeedback();
   if (fb.size() != config_.joints.size()) {
     last_error_ = "velocity command rejected: no position feedback yet "
@@ -252,6 +286,7 @@ bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
 bool CraneX7::writeCurrents(const std::vector<double>& amps) {
   if (escalated_) return false;
   if (!requireMode(0, "current command")) return false;
+  if (!requireSize(amps.size(), "current command")) return false;
   std::vector<dxl::Feedback> fb = lastFeedback();
   if (fb.size() != config_.joints.size()) {
     last_error_ = "current command rejected: no position feedback yet "
@@ -280,16 +315,24 @@ bool CraneX7::writeCurrents(const std::vector<double>& amps) {
   return true;
 }
 
-void CraneX7::setTargetPositions(const std::vector<double>& rad) {
+bool CraneX7::setTargetPositions(const std::vector<double>& rad) {
+  if (!requireSize(rad.size(), "target submission")) return false;
   std::lock_guard<std::mutex> lock(state_mutex_);
   targets_ = rad;
   have_targets_ = true;
+  // Submission freshness feeds the deadman: the background thread's own
+  // retransmissions refresh last_command_, so without this a frozen
+  // CONTROLLER would leave the last command active forever while both
+  // watchdog layers stay fed.
+  last_submission_ = now_();
+  submission_armed_ = true;
+  return true;
 }
-void CraneX7::setTargetVelocities(const std::vector<double>& rad_s) {
-  setTargetPositions(rad_s);  // same storage; units follow the mode
+bool CraneX7::setTargetVelocities(const std::vector<double>& rad_s) {
+  return setTargetPositions(rad_s);  // same storage; units follow the mode
 }
-void CraneX7::setTargetCurrents(const std::vector<double>& amps) {
-  setTargetPositions(amps);
+bool CraneX7::setTargetCurrents(const std::vector<double>& amps) {
+  return setTargetPositions(amps);
 }
 
 bool CraneX7::startThread() {
@@ -415,6 +458,21 @@ bool CraneX7::checkDeadman() {
   if (!activated_) return true;
   const double stale = now_() - last_command_;
   if (stale > options_.host_command_timeout_s) {
+    escalate();
+    return false;
+  }
+  // Once a controller has submitted targets, the submissions themselves
+  // must stay fresh: the thread's retransmissions keep last_command_
+  // alive even when the controller is dead. Monitor-only sessions that
+  // never submit stay exempt.
+  bool armed = false;
+  double last_sub = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    armed = submission_armed_;
+    last_sub = last_submission_;
+  }
+  if (armed && now_() - last_sub > options_.host_command_timeout_s) {
     escalate();
     return false;
   }

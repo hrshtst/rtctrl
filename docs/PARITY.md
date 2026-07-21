@@ -1,7 +1,9 @@
 # rt_manipulators_cpp feature parity
 
-Every feature of the vendor library mapped to its rtctrl equivalent and
-the test or example that proves it. (Vendor reference:
+The vendor library's *capabilities* mapped to their rtctrl equivalents
+and the test or example that proves each — functional coverage for
+whole-arm CRANE-X7 control, not a 1:1 API port. Consciously simplified
+or omitted vendor surface is listed at the end. (Vendor reference:
 `rt_manipulators_cpp/rt_manipulators_lib`, deleted after this project
 stabilizes.)
 
@@ -42,6 +44,31 @@ stabilizes.)
 | samples01 onoff / read_position / write_position / thread / read_present_values / write_velocity / write_current | `apps/x7_onoff`, `apps/x7_read`, `apps/x7_move_simple`, thread: `thread_test` + `examples/x7_wave`, velocity/current: `hw_modes_test` + `apps/x7_float`/`apps/x7_track` on hardware |
 | samples02 FK / IK | `examples/make_motion`, `ik_test` |
 | samples03 gravity comp / 3-DOF IK | `apps/x7_float` / not ported (see above) |
+
+## Consciously simplified or not ported
+
+Intentional design decisions, not gaps (recorded in the implementation
+plan's post-completion review notes):
+
+- **Named, multiple joint groups and per-ID/per-name accessors** — the
+  vendor's `Hardware` supports arbitrary group definitions; rtctrl
+  exposes exactly one ordered all-joint group, because the canonical
+  joint order *is* the project's coordinate contract (`Config::load`
+  now rejects any other ordering). Sub-group control has no CRANE-X7
+  use case here yet; add named groups if one appears.
+- **Full PID/feedforward gain writers** — only the position P gain and
+  the profile velocity/acceleration are exposed (the soft-start knobs
+  activation needs). rtctrl's dynamics controllers do their feedback
+  host-side in torque mode instead of tuning servo-internal loops.
+- **Analytic 3-DOF IK** — see the table above (robust numerical solver
+  covers the use case).
+- **FastSyncRead (0x8A)** — the port uses ordinary `GroupSyncRead`:
+  measured at 3 Mbps it sustains the 100 Hz cycle over 8 servos with
+  zero overruns, so the fast variant remains an unneeded optimization
+  (the emulator understands both).
+- **SDK `.model` file parsing** — `dxl_inspect` ships its own register
+  table (`control_table.hpp` is the single source of truth) rather
+  than reading the DynamixelSDK's `.model` data files.
 
 ## Beyond parity (rtctrl only)
 

@@ -35,12 +35,25 @@ class FakePacketIO : public dxl::PacketIO {
   // Fault injection: only read/syncRead fail — the frozen-feedback
   // trap: the controller would keep acting on stale state forever.
   void setReadFailure(int comm_code) { forced_read_comm_ = comm_code; }
+  // Fault injection: fail single-register writes matching id+addr+value
+  // (e.g. torque-ON for one servo, to exercise activation rollback).
+  void setWriteFailureOn(std::uint8_t id, std::uint16_t addr,
+                         std::uint8_t value, int comm_code) {
+    fail_id_ = id;
+    fail_addr_ = addr;
+    fail_value_ = value;
+    fail_on_comm_ = comm_code;
+  }
 
  private:
   MotorBus& bus_;
   int forced_comm_ = 0;
   int forced_write_comm_ = 0;
   int forced_read_comm_ = 0;
+  std::uint8_t fail_id_ = 0;
+  std::uint16_t fail_addr_ = 0;
+  std::uint8_t fail_value_ = 0;
+  int fail_on_comm_ = 0;
 };
 
 }  // namespace rtctrl::emu

@@ -1,12 +1,16 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <fstream>
+#include <sstream>
+
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/emu/fake_packet_io.hpp"
 #include "rtctrl/emu/motor_emulator.hpp"
 #include "rtctrl/hw/config.hpp"
 #include "rtctrl/hw/crane_x7.hpp"
+#include "rtctrl/model/joint_map.hpp"
 
 using Catch::Approx;
 namespace dxl = rtctrl::dxl;
@@ -184,9 +188,11 @@ TEST_CASE("activation recovers from a previously triggered bus watchdog",
   emu::FakePacketIO io(bus);
   hw::CraneX7 arm(io, config);
 
-  // Trip every watchdog the way a real USB pull does: armed, then
-  // silence past the timeout.
+  // Trip every watchdog the way a real USB pull does: torqued, armed,
+  // then silence past the timeout (the watchdog only counts while
+  // torque is enabled, as on the real servos).
   for (const auto& joint : config.joints) {
+    REQUIRE(io.write8(joint.id, reg::kTorqueEnable.addr, 1).ok());
     REQUIRE(io.write8(joint.id, reg::kBusWatchdog.addr, 5).ok());
   }
   bus.tick(0.2);
@@ -299,4 +305,144 @@ TEST_CASE("feedback wraps multi-turn present position to principal angle",
   REQUIRE(arm.writeCurrents(amps));
   const auto goal = bus.find(4)->peek(reg::kGoalCurrent);
   CHECK(static_cast<std::int16_t>(goal) > 0);
+}
+
+TEST_CASE("deadman escalates when the controller stops submitting targets",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.001;
+  options.host_command_timeout_s = 0.05;
+  hw::CraneX7 arm(io, config, options);
+
+  bool bus_silenced = false;
+  arm.onEscalate([&bus_silenced] { bus_silenced = true; });
+
+  REQUIRE(arm.activate());
+  REQUIRE(arm.startThread());
+
+  // A live controller: fresh submissions keep the deadman fed well past
+  // the timeout. (The thread's OWN retransmissions must not count —
+  // that was the trap: a frozen controller left the last command active
+  // forever while every write "succeeded".)
+  std::vector<double> hold(config.joints.size(), 0.0);
+  {
+    const auto fb = arm.lastFeedback();
+    for (std::size_t i = 0; i < fb.size(); ++i) hold[i] = fb[i].position;
+  }
+  for (int i = 0; i < 20; ++i) {
+    REQUIRE(arm.setTargetPositions(hold));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  CHECK_FALSE(arm.escalated());
+
+  // The controller dies; the thread keeps retransmitting successfully.
+  std::uint64_t last = 0;
+  for (int i = 0; i < 1000 && arm.waitCycle(last) != 0; ++i) {
+    last = arm.cycleStats().cycles;
+  }
+  CHECK(arm.escalated());
+  CHECK(bus_silenced);
+  arm.stopThread();
+}
+
+TEST_CASE("activation failure mid-torque-on releases every servo",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  // the LAST servo refuses torque-on: ids 2..8 are already torqued when
+  // the sequence fails
+  io.setWriteFailureOn(9, reg::kTorqueEnable.addr, 1, -3001);
+  hw::CraneX7 arm(io, config);
+
+  CHECK_FALSE(arm.activate());
+  CHECK(arm.lastError().find("torque-on") != std::string::npos);
+  for (const auto& joint : config.joints) {
+    auto* motor = bus.find(joint.id);
+    CHECK(motor->peek(reg::kTorqueEnable) == 0);   // rolled back
+    CHECK(motor->peek(reg::kBusWatchdog) == 0);    // disarmed
+  }
+  CHECK_FALSE(arm.activated());
+}
+
+TEST_CASE("destruction joins a still-running background thread", "[hw]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  {
+    hw::CraneX7 arm(io, config);
+    REQUIRE(arm.activate());
+    REQUIRE(arm.startThread());
+    // leaving scope without stopThread/deactivate must join, not
+    // std::terminate
+  }
+  SUCCEED("destructor joined the thread");
+}
+
+TEST_CASE("command vectors must match the joint count", "[hw]") {
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 0;  // current
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.activate());
+
+  std::vector<double> nine(9, 0.0), seven(7, 0.0);
+  CHECK_FALSE(arm.writeCurrents(nine));   // would index limits OOB
+  CHECK_FALSE(arm.writeCurrents(seven));
+  CHECK_FALSE(arm.setTargetCurrents(nine));
+  CHECK(arm.lastError().find("rejected") != std::string::npos);
+  std::vector<double> eight(8, 0.0);
+  CHECK(arm.writeCurrents(eight));
+}
+
+namespace {
+
+// A canonical-order TOML with one deliberate deviation per parameter.
+std::string configToml(std::size_t count, int bad_id_at = -1,
+                       bool swap_first_two = false,
+                       const char* model_at_2 = nullptr, int mode = 3) {
+  const auto& canonical = rtctrl::model::canonicalJoints();
+  std::ostringstream out;
+  out << "[bus]\nport = \"/dev/null\"\nbaudrate = 3000000\n";
+  for (std::size_t i = 0; i < count; ++i) {
+    std::size_t src = i;
+    if (swap_first_two && i < 2) src = 1 - i;
+    int id = canonical[i].dxl_id;
+    if (static_cast<int>(i) == bad_id_at) id = 42;
+    const char* model = (i == 1) ? "XM540-W270" : "XM430-W350";
+    if (model_at_2 != nullptr && i == 2) model = model_at_2;
+    out << "[[joint]]\nname = \"" << canonical[src].urdf_joint << "\"\n"
+        << "id = " << id << "\nmodel = \"" << model << "\"\n"
+        << "operating_mode = " << mode << "\nvelocity_limit = 4.8\n"
+        << "effort_limit = 4.0\npos_limit_margin = 0.0\n"
+        << "current_limit_margin = 0.5\n";
+  }
+  return out.str();
+}
+
+std::string writeTempConfig(const std::string& text) {
+  const std::string path = "build/hw_test_config.toml";
+  std::ofstream f(path);
+  f << text;
+  return path;
+}
+
+}  // namespace
+
+TEST_CASE("config validation rejects non-canonical deployments", "[hw]") {
+  // A misordered or mistyped config would silently map controller
+  // outputs onto the wrong servos — every deviation must throw.
+  CHECK_THROWS(hw::Config::load(writeTempConfig(configToml(7))));
+  CHECK_THROWS(hw::Config::load(writeTempConfig(configToml(8, /*bad_id*/ 3))));
+  CHECK_THROWS(hw::Config::load(
+      writeTempConfig(configToml(8, -1, /*swap*/ true))));
+  CHECK_THROWS(hw::Config::load(
+      writeTempConfig(configToml(8, -1, false, "XM999-W000"))));
+  CHECK_THROWS(hw::Config::load(
+      writeTempConfig(configToml(8, -1, false, nullptr, /*mode*/ 2))));
+  CHECK_NOTHROW(hw::Config::load(writeTempConfig(configToml(8))));
 }

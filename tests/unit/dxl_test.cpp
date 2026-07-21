@@ -142,6 +142,12 @@ TEST_CASE("bus watchdog triggers on silence and not on chatty reads",
 
   REQUIRE(io.write8(2, reg::kBusWatchdog.addr, 5).ok());  // 100 ms
 
+  // Torque off: real XM firmware does not monitor the bus interval —
+  // total silence must NOT trip (e-manual, register 98).
+  bus.tick(0.3);
+  CHECK_FALSE(motor->watchdogTriggered());
+  REQUIRE(io.write8(2, reg::kTorqueEnable.addr, 1).ok());
+
   // Chatty reads keep it fed even though nothing is written: the trap
   // case — the servo-side watchdog alone cannot catch a stalled writer.
   std::uint8_t v = 0;

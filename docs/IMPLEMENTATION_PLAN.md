@@ -135,8 +135,8 @@ documented as a model limitation. Finger joints get zero IK weight.
   `execute_process`, split into INTERFACE include dirs/definitions/link dirs/libs, create
   `MiLib::<lib>` INTERFACE IMPORTED target. The -config scripts are transitive already.
 - **DynamixelSDK:** `add_subdirectory(third_party/DynamixelSDK/c++ EXCLUDE_FROM_ALL)`, link
-  target `dynamixel_sdk`. Ignore its `CONTROL_TABLE_PATH` define (invalid un-installed);
-  define our own path to `third_party/DynamixelSDK/control_table/` for .model cross-checks.
+  target `dynamixel_sdk`. Ignore its `CONTROL_TABLE_PATH` define (invalid un-installed).
+  (Planned .model cross-check path dropped — see the M4 deviation note.)
   Avoid `dynamixel_easy_sdk` headers entirely.
 - **Config format: TOML** via **toml++ (tomlplusplus), pinned GIT_TAG v3.4.0** —
   decided, header-only C++17, FetchContent. Schema mirrors rt_manipulators' shape (joint groups,
@@ -239,11 +239,19 @@ Runner), `contactinfo.ztk`. All four acceptance tests pass.
   damped stiff spring into a bang-bang limit cycle otherwise. Static divergence matches
   the constraint analysis (0.0084 rad at 0.5 Nm asymmetric load).
 
-**M4 — DXL comm layer + emulator + inspection tool (DONE).** `dxl/` layer (PacketIO, Port,
+**M4 — DXL comm layer + emulator + inspection tool (DONE, two intentional deviations).**
+`dxl/` layer (PacketIO, Port,
 ControlTable, SyncGroup with indirect addressing: one FastSyncRead covering
 pos/vel/current/voltage/temp, one SyncWrite); `MotorEmulator` + FakePacketIO; pty
 `dxl_emu`; `dxl_inspect` (bus scan, read/write named or raw registers, dump-all,
 cross-check against SDK `.model` files).
+*Deviations (intentional, per post-completion review):* the built layer uses ordinary
+`GroupSyncRead`, not FastSyncRead — one indirect-bank read still fetches all signals in a
+single transaction and sustains 100 Hz over 8 servos at 3 Mbps with zero overruns, so the
+fast variant stayed an unneeded optimization (the emulator parses 0x8A regardless). And
+`dxl_inspect` cross-checks against `control_table.hpp` (the project's single source of
+truth for the register map) rather than parsing SDK `.model` files; the CMake model-dir
+variable this planned for was removed as dead config.
 ✓ Catch2 unit (Fake): torque gating, mode rules, indirect redirect, unit round-trips.
 Integration (pty): real PortHandler @3 Mbps scan finds IDs 2–9, one-transaction multi-signal
 read, fault injection → SDK timeout surfaced. Manual: `dxl_emu & dxl_inspect --port
@@ -334,6 +342,35 @@ actively pumps — runs 7–8 oscillated coherently there even at matched trajec
 a notch/input shaper (natural companion to the M7 friction-identification follow-up), or
 position-mode tracking for large fast motions. Full detail:
 `docs/theory/computed-torque.md` (hardware-reality section) and the apps' headers.
+
+## Post-completion hardening (2026-07-21 external review)
+
+An external review after plan completion found four defects, all fixed with regression
+tests, and two overclaims, resolved as intentional deviations (annotated at M4 and in
+docs/PARITY.md):
+
+1. *Deadman blind to a stalled controller* — the background thread's own successful
+   retransmissions refreshed the write timestamp, so a frozen controller left its last
+   velocity/current command active forever. `setTarget*` now stamps a submission time the
+   thread cannot refresh; once a controller has submitted, submissions must stay fresh or
+   the deadman escalates (monitor-only sessions that never submit are exempt).
+2. *Activation and lifetime not fail-safe* — a mid-sequence `activate()` failure now
+   best-effort releases every servo (no partially torqued arm), `RealArm::activate()`
+   deactivates if the thread fails to start, and `~CraneX7()` joins a still-running
+   thread (deliberately without torque-off: a silent bus lets the servo watchdogs freeze
+   the arm, which beats an uncommanded gravity drop).
+3. *Unvalidated boundaries* — `Config::load()` now rejects anything but the exact
+   canonical deployment (count, order-by-name, ids, known models, valid modes, positive
+   limits), and all command writers/target setters reject size-mismatched vectors instead
+   of indexing limit arrays out of bounds.
+4. *Emulator watchdog fidelity* — real XM firmware only monitors the bus interval while
+   torque is enabled; the emulator now gates its Bus Watchdog on TorqueEnable and the
+   watchdog tests torque up first (plus a regression that torque-off silence never trips).
+
+Intentional and recorded, not fixed: single ordered all-joint group (vs the vendor's
+named multi-groups), partial gain-writer surface, `GroupSyncRead` instead of
+FastSyncRead, and `dxl_inspect`'s built-in register table instead of `.model` parsing —
+see docs/PARITY.md "Consciously simplified or not ported".
 
 ## Git workflow
 

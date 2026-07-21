@@ -120,7 +120,10 @@ Two independent watchdog layers, because each alone has a blind spot:
    spot: *any* packet feeds it, so a host whose reads continue while
    command writes stall never trips it.
 2. **Host-side deadman**: tracks the time since the last *successful
-   command write*; on staleness it best-effort zeroes/torque-offs and
+   command write* — and, once a controller has submitted targets, the
+   last fresh *submission* (write success alone is not liveness: the
+   background thread's retransmissions succeed even when the controller
+   is dead). On staleness it best-effort zeroes/torque-offs and
    then **silences the bus entirely** (closes the port) — which
    guarantees layer 1 fires even if the safety writes themselves were
    failing. The same escalation fires after a few consecutive *failed
