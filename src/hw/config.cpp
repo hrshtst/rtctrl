@@ -101,6 +101,14 @@ void Config::validate() const {
           std::to_string(joint.id) + " but the canonical mapping requires " +
           std::to_string(canonical[i].dxl_id));
     }
+    if (joint.model_number != dxl::kModelXm430W350 &&
+        joint.model_number != dxl::kModelXm540W270) {
+      // torqueConstant() would otherwise silently treat an unknown
+      // model as an XM430 — wrong torque scaling on a hand-built config
+      throw std::runtime_error(
+          "Config: joint '" + joint.name + "' has unknown model_number " +
+          std::to_string(joint.model_number));
+    }
     if (joint.operating_mode != 0 && joint.operating_mode != 1 &&
         joint.operating_mode != 3) {
       throw std::runtime_error(

@@ -406,14 +406,19 @@ with the feature it tests, `test:` type reserved for test-only changes).
 3. **xacro standalone**: if pip xacro rejects `$(find …)` + ROS_PACKAGE_PATH, fallback is a
    thin top-level xacro including `crane_x7.xacro` by relative path (skips ros2_control/
    gazebo blocks — cleaner output anyway).
-4. **Realtime**: 9-servo FastSyncRead + SyncWrite ≪2 ms/cycle → 100–200 Hz safe; overrun
-   counters in M6; document `latency_timer=1` udev rule for ftdi_sio.
+4. ~~Realtime: 9-servo FastSyncRead + SyncWrite ≪2 ms/cycle~~ **Resolved at M6 with the
+   M4 deviation:** ordinary `GroupSyncRead` + SyncWrite sustains 100 Hz over 8 servos with
+   zero overruns (overrun counters in `CycleStats`; `latency_timer=1` udev rule documented
+   in the bring-up checklist). FastSyncRead never became necessary.
 5. **Current ≠ torque** (friction, gear efficiency): M7 measures the gap; per-joint
    friction feedforward later (params identified in M7, then stored in the ztk).
 6. **Pty emulator replies instantly** — inject artificial delays for watchdog tests; final
    latency validation stays on hardware (M5).
-7. **XM540 vs XM430 deltas** (CurrentLimit defaults, stall ratings) — encode per-model in
-   ControlTable, cross-check `.model` files at M4.
+7. ~~XM540 vs XM430 deltas~~ **Resolved at M4/M6:** per-model constants live in
+   `control_table.hpp`/`conversions.hpp` (single source of truth; the planned SDK
+   `.model` cross-check was dropped — see the M4 deviation note), and activation reads
+   each servo's actual CurrentLimit register, taking the min against the configured
+   effort limit.
 8. ~~Finger penalty coupling is a stiff term~~ **Resolved at M3:** reflected motor inertia
    on the mass-matrix diagonal plus overdamped coupling; thresholds documented in the
    SimArm options and the acceptance test.

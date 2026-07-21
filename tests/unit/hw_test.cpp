@@ -462,6 +462,14 @@ TEST_CASE("CraneX7 re-validates a hand-built config", "[hw]") {
   emu::MotorBus bus = busFor(config);
   emu::FakePacketIO io(bus);
   CHECK_THROWS(hw::CraneX7(io, config));
+
+  // unknown model_number would silently get XM430 torque scaling in
+  // torqueConstant() — must be rejected too
+  auto config2 = craneConfig();
+  config2.joints[4].model_number = 9999;
+  emu::MotorBus bus2 = busFor(config2);
+  emu::FakePacketIO io2(bus2);
+  CHECK_THROWS(hw::CraneX7(io2, config2));
 }
 
 TEST_CASE("writers reject commands before activation", "[hw]") {
