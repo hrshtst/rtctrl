@@ -18,7 +18,9 @@ servo's internal loop fights the arm's coupled inertia on its own.
 rtctrl implements the **inverse-dynamics feedforward** form of
 computed torque: the full inverse dynamics evaluated **along the
 desired trajectory**, plus PD feedback on the tracking error
-$e = q_d - q$:
+$e = q_d - q$ (this textbook form is what the theory below analyzes;
+the shipped controller hardens it — see
+[what the hardware taught us](#what-the-hardware-taught-us)):
 
 ```math
 \boxed{\;
@@ -117,6 +119,9 @@ joint limit.
   $1.59\times10^{-2}$ rad for the identical PD without it — asserted
   as both an absolute bound (< 0.02 rad) and a relative one
   (< 0.5 × PD-only) in `tests/integration/tracking_sim_test.cpp`.
+  The test runs with the hardware countermeasures below switched off —
+  it certifies the feedforward math and the coordinate mapping, not
+  the hardened loop.
   Note the sim adds reflected rotor inertia that the ID model does not
   include, so even in simulation the feedback carries a real residual.
 - **Hardware.** `apps/x7_track` runs the same controller on the robot:
@@ -127,8 +132,8 @@ joint limit.
 
 ## What the hardware taught us
 
-The boxed law above is **not stable on the real arm**. An eight-run
-campaign (2026-07-21, every failure captured in a per-cycle CSV log and
+The boxed law above is **not stable on the real arm**. A nine-run
+campaign (2026-07-21, eight runs logged as per-cycle CSVs and
 diagnosed offline) reshaped the shipped controller into
 
 ```math

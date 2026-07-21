@@ -104,4 +104,6 @@ Follow the [bring-up checklist](../HARDWARE_BRINGUP.md) **in order**
 the first time — it interleaves the apps above with physical checks
 (and a watchdog drill) and states the safety rules. After bring-up,
 the controller phases are `x7_float` (gravity compensation) and
-`x7_track` (computed-torque tracking).
+`x7_track` (computed-torque tracking); `x7_track_sim` previews the
+identical tracking run offline, including replay of logged hardware
+poses and disturbances.

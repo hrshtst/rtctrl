@@ -56,8 +56,8 @@ class ComputedTorque : public Controller {
   // Per-joint multiplier on the PD gains (not the integrator). Distal
   // joints carry a fraction of the shoulder's link-side inertia and hit
   // backlash limit cycles at gains the proximal joints need (~5 Hz on
-  // the wrist in the 2026-07-21 run-4 log); scale them down and let the
-  // feedforward plus integrator carry the tracking there.
+  // the wrist in the 2026-07-21 track3.csv log); scale them down and
+  // let the feedforward plus integrator carry the tracking there.
   void setGainScales(const double* scales) {
     for (int i = 0; i < model::kCanonicalDof; ++i) scale_[i] = scales[i];
   }
@@ -74,7 +74,7 @@ class ComputedTorque : public Controller {
     // PD instead of passing it through unfiltered — a controller
     // constructed at a leg boundary otherwise steps the residual error
     // straight into the torque and kicks the backlash-prone joints
-    // (run 5: the forearm rang at 5 Hz from exactly this).
+    // (track5.csv: the forearm rang at 5 Hz from exactly this).
     const double pd_alpha = pd_tau_ <= 0.0
                                 ? 1.0
                                 : (dt > 0.0 ? dt / (pd_tau_ + dt) : 0.0);

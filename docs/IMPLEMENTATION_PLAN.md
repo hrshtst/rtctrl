@@ -78,8 +78,8 @@ rtctrl/
 │   │   │                          #   — all vectors in canonical 8-DOF order (see below)
 │   │   ├── arm.hpp                #   abstract Arm: dof/dt/activate/deactivate/setMode/
 │   │   │                          #   readState/writeCommand/step
-│   │   ├── sim_arm.hpp            #   roki-fd backed Arm (Current→rkJointMotorSetInput;
-│   │   │                          #   Position/Velocity→internal PD emulating servo loop)
+│   │   ├── sim_arm.hpp            #   simulated Arm (planned roki-fd; BUILT on plain
+│   │   │                          #   rkChainFD — see the M3 deviation note)
 │   │   └── runner.hpp             #   run(Arm&, Controller&, T): read→update→write→step
 │   ├── hw/                        # L4: CRANE-X7 hardware
 │   │   ├── config.hpp             #   TOML config model (groups, ids, modes, margins)
@@ -104,7 +104,8 @@ rtctrl/
 
 **Bridge interface (the load-bearing design):** controllers implement
 `Controller::update(const JointState&, JointCommand&, double t)`; `Runner` drives any `Arm`.
-`SimArm` wraps roki-fd (pattern from `arm_box_trq_test.c`); `CraneX7Hardware` implements the
+`SimArm` wraps the roki dynamics (planned as roki-fd; built on plain `rkChainFD` — see the
+M3 deviation note); `CraneX7Hardware` implements the
 same interface on real hardware (`step()` blocks on the RW-thread cycle tick). Same
 controller binary verifies in sim, then runs on the robot — PLAN.md's bridge requirement.
 
@@ -278,9 +279,8 @@ Watchdog error (not merely "host watchdog triggered"); then physical checklist o
 bus traffic (USB unplug) → servo stops autonomously via Bus Watchdog, confirmed by state
 read-back after reconnect.
 
-**M6 — Position-control parity with rt_manipulators (DONE; on-robot spot check of
-`examples/x7_wave` pending the next powered session — see docs/PARITY.md for the full
-feature mapping).** Full `CraneX7Hardware`: TOML joint
+**M6 — Position-control parity with rt_manipulators (DONE; `examples/x7_wave` confirmed
+on the physical arm 2026-07-21 — see docs/PARITY.md for the full feature mapping).** Full `CraneX7Hardware`: TOML joint
 groups, background read→limit→write thread (liwPAction or timerfd), all getters/setters,
 gain/profile writers, validation rule (writing velocity/current requires reading position),
 zero-on-stop, `Arm` adapter. Port vendor samples01–03 to `examples/`.
@@ -288,9 +288,11 @@ zero-on-stop, `Arm` adapter. Port vendor samples01–03 to `examples/`.
 watchdog, validation rejections. Parity checklist mapping every vendor feature to a
 test/example. Manual: examples reproduce vendor sample behavior on the real arm.
 
-**M7 — Current-based torque estimation + gravity compensation (sim half DONE:
-finite-difference gradient check, float acceptance <0.05 rad/10 s; hardware half =
-`apps/x7_float` on the next powered session).** `conversions.hpp`
+**M7 — Current-based torque estimation + gravity compensation (DONE — sim:
+finite-difference gradient check, float acceptance <0.05 rad/10 s; hardware 2026-07-21:
+`apps/x7_float` floats and is back-drivable, measured vs predicted torque within
+~0.01–0.03 Nm per joint at static poses; friction identification remains the open
+follow-up).** `conversions.hpp`
 torque↔current (2.409 / 1.783 Nm/A); `JointState.tau` from PresentCurrent; gravity term via
 `ChainModel::gravityTorque(q8)`: expand canonical 8 → 9 model coordinates via JointMap
 (finger_b = finger_a), call `rkChainID_G(chain, q9, zeroVel9, zeroAcc9, RK_GRAVITY6D,
@@ -314,7 +316,7 @@ optional dzco PID/filter blocks; runs through Runner unchanged sim→real.
 ✓ Sim: tracking RMS below threshold on the M2 trajectory, ID+PD vs PD-only comparison.
 Hardware: reduced speed, conservative clamps; safety = M5's two-layer watchdog plus the
 independent actuator-power cutoff (deactivate() is not an e-stop).
-*Hardware campaign notes (8 runs, 2026-07-21):* the textbook law above is NOT
+*Hardware campaign notes (nine runs, 2026-07-21, eight logged as `trackN.csv`):* the textbook law above is NOT
 hardware-stable as written; the shipped controller became
 `tau = ID + LP(scale_i·(Kp e + Kd ė_host)) + clamp(Ki ∫e)` — every added term traces to
 a logged failure: the servo's PresentVelocity estimate (~50 ms lag, 2× attenuation)
@@ -388,6 +390,6 @@ with the feature it tests, `test:` type reserved for test-only changes).
 ## Verification summary
 
 Per milestone above; overall: `ctest -L unit` (fast, no devices), `ctest -L integration`
-(pty emulator + roki-fd sim), manual visual checks with `rk_pen`/`rk_anim`, and the staged
+(pty emulator + plain-roki dynamics sim), manual visual checks with `rk_pen`/`rk_anim`, and the staged
 hardware checklist (M5→M8) with safety gates (soft gains, clamps, Bus Watchdog + host
 watchdog, independent power cutoff) proven against the emulator before each hardware step.

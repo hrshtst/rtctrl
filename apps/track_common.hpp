@@ -24,15 +24,15 @@ namespace model = rtctrl::model;
 // inertia is a small fraction of the shoulder's, take a fraction to
 // stay clear of backlash limit cycles. The forearm TWIST gets the
 // smallest scale of all: the hand's mass sits nearly on its axis
-// (J ~ 1e-3 kg m^2), and at 0.35 it rang at ~5 Hz (run-5 log).
+// (J ~ 1e-3 kg m^2), and at 0.35 it rang at ~5 Hz (track5.csv log).
 constexpr double kGainScale[model::kCanonicalDof] = {1.0, 1.0, 0.7, 0.7,
                                                      0.1, 0.3, 0.2, 0.2};
 
 // Gravity compensation plus light filtered damping: holds the arm AND
 // bleeds off swing, unlike pure GravityComp which floats. Used before
-// tracking so the trajectory anchors on a quiescent arm (the run-4 log
-// caught the twist entering the tracking loop at 2.6 rad/s after a
-// fixed 1 s undamped settle).
+// tracking so the trajectory anchors on a quiescent arm (the
+// track3.csv log caught the twist entering the tracking loop at
+// 2.6 rad/s after a fixed 1 s undamped settle).
 struct SettleController : arm::Controller {
   SettleController(model::ChainModel& chain, const model::JointMap& map,
                    double kd)

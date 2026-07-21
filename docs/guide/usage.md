@@ -152,7 +152,10 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
   (fast) and, if it exercises new wire behavior, the pty fixture
   (`tests/integration/`).
 - Anything producing motion → acceptance test on `SimArm` first;
-  hardware only after (that ordering is the project's core rule).
+  hardware only after (that ordering is the project's core rule —
+  though sim passage is necessary, not sufficient: the rigid-joint sim
+  cannot certify gains against gear elasticity; see the
+  [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us)).
 - Line-speed/serial-timing behavior is invisible to pty tests
   (a lesson learned the hard way — see the implementation plan's
   hardware findings): budget a hardware check for it.

@@ -4,3 +4,4 @@ compile_commands.json
 __pycache__/
 .venv/
 site/
+docs/resume.md

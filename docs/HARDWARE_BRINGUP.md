@@ -12,9 +12,10 @@ Run the steps **in order**; do not skip ahead.
 - Two watchdog layers run during every powered app:
   the servo-side Bus Watchdog (100 ms — halts the servos if the host
   dies or the cable drops) and the host-side deadman (250 ms — silences
-  the bus if command writes stall, which forces the servo watchdogs to
-  fire). These protect against *communication* loss, not against wrong
-  commands: stay clear of the arm's envelope while it is torqued.
+  the bus if command writes stall *or feedback reads fail persistently*,
+  which forces the servo watchdogs to fire). These protect against
+  *communication* loss, not against wrong commands: stay clear of the
+  arm's envelope while it is torqued.
 - First motion is the **wrist (canonical joint 6, DXL id 8)** only,
   small and slow, before any multi-joint motion.
 
@@ -82,13 +83,28 @@ Power on the arm, connect USB, then:
    ~0.3 rad out and back at ≤0.5 rad/s. Then, if clean, try another
    single joint. Multi-joint motion belongs to M6.
 
+## After bring-up (M6–M8)
+
+The controller phases build on this checklist in order:
+`examples/x7_wave` (multi-joint position mode), `apps/x7_float`
+(gravity compensation — the arm floats and is hand-guidable), and
+`apps/x7_track` (computed-torque tracking; rehearse the identical run
+offline with `apps/x7_track_sim` first). `x7_track` settles the arm
+before moving, refuses to start from a joint parked at a soft limit,
+and caps its excursion at the verified stability envelope — the
+reasons live in the
+[computed-torque theory notes](theory/computed-torque.md#what-the-hardware-taught-us).
+Feature coverage is mapped in [PARITY.md](PARITY.md).
+
 ## Troubleshooting
 
 - `no response from id N`: check baud (3 Mbps), cabling, power.
 - `firmware vNN lacks Bus Watchdog`: update servo firmware with the
   ROBOTIS tools before proceeding — activation intentionally refuses.
-- `DEADMAN: command stream stale`: the host loop stalled; the bus was
-  silenced and the servos halted themselves. Investigate host timing
-  (latency_timer, CPU load) before retrying.
+- `DEADMAN: command stream stale`: the host silenced the bus and the
+  servos halted themselves. Two causes: the host command loop stalled
+  (investigate latency_timer, CPU load), or the feedback reads died —
+  e.g. servo power was cut mid-run — which apps report as a nonzero
+  `read failures` count.
 - Offline rehearsal of every step: `./build/apps/dxl_emu --link
   /tmp/ttyDXL &` then add `--port /tmp/ttyDXL` to any app.

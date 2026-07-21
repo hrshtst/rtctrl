@@ -1,22 +1,38 @@
 // Sim twin of x7_track: the identical computed-torque excursion run on
 // SimArm through the bridge — preview a hardware session here first.
 //
-// By default the loop also models the two lags the real loop has and
-// the ideal sim loop lacks: one control cycle of command pipeline
-// latency, and a servo-style velocity estimate (first-order lag +
-// one-LSB quantization) feeding the Kd term. Sweeping the estimator
-// lag against the 2026-07-21 hardware run showed the pipeline latency
-// alone is harmless; the velocity lag is what destabilizes — at
-// --vel-tau 0.12 the old gains (--kp 20 --kd 2) reproduce the observed
-// oscillation (RMS 0.067 vs 0.065-0.070 measured), so 0.12 s is the
-// default. --ideal strips the lag model back to the pristine loop of
-// tracking_sim_test.
+// By default the loop also models the lags and quantizations the real
+// loop has and the ideal sim loop lacks: one control cycle of command
+// pipeline latency, position readout quantized to the encoder LSB, and
+// a servo-style velocity estimate (first-order lag, --vel-tau, default
+// 0.12 s + one-LSB quantization) in state.dq. Historical note: with
+// the PRE-hardening controller (which damped on state.dq directly),
+// sweeping --vel-tau against the first hardware run (Kp20/Kd2)
+// reproduced its oscillation at 0.12 s (sim RMS 0.067 vs 0.065-0.070
+// measured) —
+// that sweep is what identified the servo velocity estimate as
+// unusable for damping. The shipped controller estimates velocity
+// host-side, so state.dq no longer reaches the Kd term; the lag model
+// now matters mainly through the quantized positions. --ideal strips
+// the lag model entirely (note: the hardware countermeasures in the
+// controller remain active here; tracking_sim_test additionally
+// disables those to certify the pure math).
 //
-// Usage: x7_track_sim [--kp v] [--kd v] [--vel-tau s] [--log out.csv]
-//                     [--zvs out.zvs] [--start q0,..,q7] [--ideal] [scale]
-//   scale in (0,1] shrinks the excursion (default 1.0 ≈ ±0.3 rad max)
+// A rigid-joint simulation cannot show the gear-elasticity modes that
+// dominated the hardware campaign — use this app to preview
+// trajectories and replay logged poses/disturbances, not to certify
+// gains (docs/theory/computed-torque.md).
+//
+// Usage: x7_track_sim [--kp v] [--kd v] [--ki v] [--vel-tau s]
+//                     [--log out.csv] [--zvs out.zvs]
+//                     [--start q0,..,q7] [--disturb j tau] [--ideal]
+//                     [scale]
+//   scale in (0,1] shrinks the excursion (default 1.0; the sim permits
+//     scales past x7_track's 0.6 hardware cap, for exploration)
 //   --start replays a hardware pose (e.g. the first q row of an
 //     x7_track --log CSV) instead of the default test pose
+//   --disturb j tau adds a constant unmodeled torque [Nm] on canonical
+//     joint j (repeatable) — stands in for stiction/model error
 //   --zvs writes the motion for: rk_anim models/crane_x7/crane_x7.ztk <file>
 
 #include <algorithm>

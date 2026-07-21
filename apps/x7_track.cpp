@@ -1,11 +1,14 @@
 // M8 hardware phase: computed-torque trajectory tracking on the real
-// arm — tau = ID(q_d, dq_d, ddq_d) + Kp e + Kd de in current mode,
-// a small minimum-jerk excursion from the present pose and back, at
+// arm in current mode, with the hardware-hardened law
+//   tau = ID(q_d, dq_d, ddq_d) + LP(s_i (Kp e + Kd de_host))
+//         + clamp(Ki int e)
+// — a small minimum-jerk excursion from the present pose and back, at
 // reduced speed. Preview the identical run with x7_track_sim first.
 //
 // SAFETY: current mode. Power cutoff in reach, workspace clear.
 //
-// Stability, learned the hard way (three 2026-07-21 hardware runs):
+// Stability, learned the hard way (nine 2026-07-21 hardware runs,
+// logged as track*.csv):
 // the oscillation is a ~13 Hz gear-train structural resonance (output
 // encoder, motor-side torque, elastic gearing between — measured in
 // the run logs), which the host PD pumps because at 13 Hz the 100 Hz
@@ -19,27 +22,30 @@
 //   * a DAMPED settle phase that runs until the arm is quiescent —
 //     current-mode torque-on starts from free fall, pure gravity comp
 //     never damps the resulting swing, and tracking must not anchor on
-//     a moving arm (run 4 entered tracking at 2.6 rad/s on the twist);
+//     a moving arm (track3.csv entered tracking at 2.6 rad/s on the
+//     twist);
 //   * moderate stiffness — the filtered loop's crossover must stay
 //     below the filter pole, capping Kp around 6; the ~0.15 rad
 //     friction sag that such a Kp would leave is absorbed by the
 //     controller's slow clamped integrator instead;
 //   * per-joint PD scaling (track_common.hpp) — at uniform gains the
 //     low-inertia wrist joints limit-cycle through their backlash
-//     (~5 Hz in run 4's log);
+//     (~5 Hz in the track3.csv log);
 //   * hw-side: feedback positions wrap to the principal angle — the
-//     servo's multi-turn readout after hand-repositioning (run 4:
+//     servo's multi-turn readout after hand-repositioning (track3.csv:
 //     twist = +6.54 rad) otherwise poisons the soft position limits,
 //     whose gate then silently blocks a whole torque direction;
 //   * excursion scale capped at 0.6 and duration grown with
 //     sqrt(amplitude) — larger excursions extend the arm into
 //     configurations whose ~4-5 Hz structural mode this loop actively
-//     pumps (runs 7-8: coherent whole-arm oscillation, growing even at
-//     matched trajectory rates).
+//     pumps (track7/track8.csv: coherent whole-arm oscillation,
+//     growing even at matched trajectory rates).
 //
 // Usage: x7_track [--config path] [--port dev]
 //                 [--kp v] [--kd v] [--ki v] [--log out.csv] [scale]
-//   scale in (0,1] shrinks the excursion (default 1.0 ≈ ±0.3 rad max)
+//   scale in (0, 0.6] shrinks the excursion (default 0.6 ≈ ±0.18 rad
+//     max); larger values are capped — the structural-mode stability
+//     envelope
 //   --log writes t, q_d, q, dq_d, dq, tau per joint each cycle
 
 #include <algorithm>
@@ -62,7 +68,7 @@ namespace model = rtctrl::model;
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
-  double scale = 1.0;
+  double scale = 0.6;
   // Hardware defaults — see header for how they were chosen.
   double kp = 6.0, kd = 1.0, ki = 6.0;
   std::string log_path;

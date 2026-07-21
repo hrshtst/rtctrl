@@ -53,7 +53,7 @@ Dependency rule: `dxl` and `model` are independent of each other;
 
 ```
 include/rtctrl/{dxl,model,arm,hw,emu}/   public headers (src/ mirrors)
-apps/         dxl_inspect, dxl_emu, x7_onoff/read/set_param/move_simple/float/track
+apps/         dxl_inspect, dxl_emu, x7_onoff/read/set_param/move_simple/float/track/track_sim
 examples/     make_motion (kinematic .zvs), x7_wave (bridge demo)
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed)
 config/crane_x7.toml   deployment config: bus, joints, limits, margins
@@ -123,7 +123,11 @@ Two independent watchdog layers, because each alone has a blind spot:
    command write*; on staleness it best-effort zeroes/torque-offs and
    then **silences the bus entirely** (closes the port) — which
    guarantees layer 1 fires even if the safety writes themselves were
-   failing.
+   failing. The same escalation fires after a few consecutive *failed
+   feedback reads*: frozen feedback would otherwise leave the
+   controller commanding into a robot it can no longer see, while
+   broadcast sync writes keep "succeeding" and never trip the
+   staleness check (`CycleStats::read_failures` counts these).
 
 The activation sequence additionally verifies servo models and
 firmware, clears previously tripped watchdogs, snaps goals to the

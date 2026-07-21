@@ -12,8 +12,9 @@ A C++17 control library for the
 - **Test-driven down to the wire**: an XM-servo emulator serves
   Protocol 2.0 over a pseudo-terminal, so the unmodified DynamixelSDK
   path is covered in CI — no robot required
-- **Layered safety**: servo-side Bus Watchdog plus a host deadman that
-  escalates to bus silence; activation cannot cause motion
+- **Layered safety**: servo-side Bus Watchdog plus a host deadman
+  (stale commands or frozen feedback) that escalates to bus silence;
+  activation cannot cause motion
 
 Robotics computation is delegated to
 [mi-lib](https://github.com/mi-lib), motor communication to

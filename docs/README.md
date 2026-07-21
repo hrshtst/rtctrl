@@ -23,7 +23,7 @@ wire protocol.
   arm: law, stability, verification
 - [Computed-torque control](theory/computed-torque.md) —
   inverse-dynamics feedforward tracking: law, error dynamics,
-  trajectories, results
+  trajectories, results, and what the hardware taught us
 
 ## Hardware
 

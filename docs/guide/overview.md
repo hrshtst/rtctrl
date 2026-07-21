@@ -24,7 +24,9 @@ abstraction is the `Arm` bridge: a controller written once against it
 runs unchanged on the roki-dynamics simulator (`SimArm`) and on the
 real robot (`RealArm`). Every dynamics controller in this repository
 passed its acceptance test in simulation before its first hardware
-run.
+run. Simulation is necessary, not sufficient: the rigid-joint sim
+cannot certify gains against the real arm's gear elasticity — see
+[what the hardware taught us](../theory/computed-torque.md#what-the-hardware-taught-us).
 
 **Testable without a robot, down to the wire.** A motor emulator
 implements the XM control-table state machine twice over: as an
@@ -58,9 +60,9 @@ finger (see [dynamics foundations](../theory/dynamics-foundations.md)).
 | Robust IK (`IkSolver`) | error-damped LM, structured results; converges at reachable singular poses, reports unreachable ones explicitly |
 | Dynamics simulator (`SimArm`) | plain-roki FD with reflected motor inertia; deterministic |
 | Motor comm layer + emulator | full XM register map, indirect-address sync IO, wire-level emulator |
-| Hardware layer (`CraneX7`, `RealArm`) | vendor parity + background RW thread + two-layer watchdog safety, verified on the physical arm |
+| Hardware layer (`CraneX7`, `RealArm`) | vendor parity + background RW thread + layered watchdog safety (servo bus watchdog; host deadman on stale commands or frozen feedback), verified on the physical arm |
 | Gravity compensation | proven by gradient tests, sim float, and hardware float |
-| Computed-torque tracking | sim RMS 0.005 rad (3× better than bare PD); hardware app ready |
+| Computed-torque tracking | sim RMS 0.005 rad (3× better than bare PD); hardware-accepted at RMS ≈ 0.02 rad within the reduced-speed envelope — see the [theory notes](../theory/computed-torque.md) for the hardware-hardened law and the scale cap |
 
 The development history, including every design decision and hardware
 finding, lives in the [implementation plan](../IMPLEMENTATION_PLAN.md);
