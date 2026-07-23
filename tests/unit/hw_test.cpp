@@ -775,3 +775,43 @@ TEST_CASE("quiesce landing mid-deactivate suppresses the remaining writes",
     CHECK(bus.find(joint.id)->peek(reg::kTorqueEnable) == 1);
   }
 }
+
+TEST_CASE("deactivate keeps the Bus Watchdog armed on a servo whose "
+          "stop writes failed",
+          "[hw][safety]") {
+  // The firmware watchdog is a servo's LAST protection: disarming it
+  // after a FAILED zero/torque-off would leave a torqued servo with no
+  // watchdog while the app reports an ordinary shutdown.
+  const auto config = craneConfig();
+  const auto failed_id = config.joints[3].id;
+
+  SECTION("zero-current write fails") {
+    auto bus = busFor(config);
+    emu::FakePacketIO io(bus);
+    hw::CraneX7 arm(io, config);
+    REQUIRE(arm.activate());
+    io.setWriteFailureOn(failed_id, reg::kGoalCurrent.addr, 0, -3001);
+    CHECK_FALSE(arm.deactivate());
+    for (const auto& joint : config.joints) {
+      auto* motor = bus.find(joint.id);
+      if (joint.id == failed_id) {
+        CHECK(motor->peek(reg::kBusWatchdog) == 5);  // still armed
+      } else {
+        CHECK(motor->peek(reg::kBusWatchdog) == 0);
+        CHECK(motor->peek(reg::kTorqueEnable) == 0);
+      }
+    }
+  }
+
+  SECTION("torque-off write fails") {
+    auto bus = busFor(config);
+    emu::FakePacketIO io(bus);
+    hw::CraneX7 arm(io, config);
+    REQUIRE(arm.activate());
+    io.setWriteFailureOn(failed_id, reg::kTorqueEnable.addr, 0, -3001);
+    CHECK_FALSE(arm.deactivate());
+    auto* motor = bus.find(failed_id);
+    CHECK(motor->peek(reg::kTorqueEnable) == 1);   // still torqued...
+    CHECK(motor->peek(reg::kBusWatchdog) == 5);    // ...watchdog armed
+  }
+}

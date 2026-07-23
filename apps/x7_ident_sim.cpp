@@ -45,7 +45,14 @@ int main(int argc, char* argv[]) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
       probe_joint = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--freqs") == 0 && i + 1 < argc) {
-      freqs = x7::parseFreqList(argv[++i]);
+      if (!x7::parseFreqList(argv[++i], &freqs)) {
+        std::fprintf(stderr,
+                     "--freqs rejected (nothing runs on a truncated "
+                     "schedule): every entry must be f or f@amp with "
+                     "finite values, f in [%.1f, %.1f] Hz, amp > 0\n",
+                     x7::kFreqMinHz, x7::kFreqMaxHz);
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
       a_cap = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {

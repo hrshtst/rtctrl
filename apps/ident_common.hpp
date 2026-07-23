@@ -184,29 +184,49 @@ inline std::vector<DwellSpec> buildSchedule(
 // optional per-dwell amplitude override is how the refinement up-sweep
 // carries its HALF-amplitude peak repeat (the linearity spot-check)
 // inside one invocation, e.g. "--freqs 3.9,4.2,4.5,4.8,4.5@0.075".
+// STRICT: any malformed entry, non-finite value, or frequency outside
+// [0.5, 30] Hz rejects the WHOLE list — a silently truncated schedule
+// (e.g. an unreplaced "<peak>@<half-amp>" placeholder) must refuse to
+// run, not proceed without its dwells (review finding).
 struct FreqSpec {
   double freq_hz = 0.0;
   double amp_override_nm = 0.0;  // <= 0: the amplitude rule applies
 };
 
-inline std::vector<FreqSpec> parseFreqList(const char* text) {
-  std::vector<FreqSpec> out;
+inline constexpr double kFreqMinHz = 0.5;
+inline constexpr double kFreqMaxHz = 30.0;  // 100 Hz loop: stay well
+                                            // under Nyquist
+
+inline bool parseFreqList(const char* text, std::vector<FreqSpec>* out) {
+  out->clear();
   const char* p = text;
   while (*p != '\0') {
     char* end = nullptr;
     const double f = std::strtod(p, &end);
-    if (end == p) break;
+    if (end == p || !std::isfinite(f) || f < kFreqMinHz ||
+        f > kFreqMaxHz) {
+      return false;
+    }
     FreqSpec spec;
     spec.freq_hz = f;
     p = end;
     if (*p == '@') {
       spec.amp_override_nm = std::strtod(p + 1, &end);
+      if (end == p + 1 || !std::isfinite(spec.amp_override_nm) ||
+          spec.amp_override_nm <= 0.0) {
+        return false;
+      }
       p = end;
     }
-    if (f > 0.0) out.push_back(spec);
-    if (*p == ',') ++p;
+    out->push_back(spec);
+    if (*p == ',') {
+      ++p;
+      if (*p == '\0') return false;  // trailing comma
+    } else if (*p != '\0') {
+      return false;  // trailing garbage
+    }
   }
-  return out;
+  return !out->empty();
 }
 
 // Schedule from CLI specs: the amplitude rule, then any per-dwell
@@ -297,49 +317,107 @@ inline bool scheduleFitsBudget(const std::vector<DwellSpec>& dwells,
 }
 
 // ---------------------------------------------------------------------------
-// Online demodulation: per-signal I/Q integrated over 1-period blocks
-// whose boundaries are the accumulated-phase 2*pi crossings. The block
-// estimate is Z = (2/T) * integral s(t) e^{-i phi} dt — the complex
-// amplitude of the probe-frequency component.
+// Online demodulation: per-signal dt-weighted least squares on the
+// regressors [1, t, sin phi, cos phi] over 1-period blocks bounded by
+// the accumulated-phase 2*pi crossings. The LS solve — not a plain
+// correlation — is essential: the constant and drift regressors absorb
+// the absolute joint position exactly, whereas correlating raw
+// positions lets the offset leak through the sampled (non-exact)
+// period boundary — at the P1 posture's q4 = -2.456 rad a still joint
+// read ~0.096 rad, three times the response cap (review finding).
 
 struct BlockEstimate {
-  double re = 0.0;
-  double im = 0.0;
+  double re = 0.0;  // sin-phase coefficient
+  double im = 0.0;  // cos-phase coefficient
   double abs() const { return std::hypot(re, im); }
+};
+
+// Accumulates the 4x4 normal equations; solve() extracts the complex
+// probe-frequency amplitude with offset and linear drift removed.
+class LsAccum {
+ public:
+  void reset() { *this = LsAccum(); }
+  void add(double t, double phase, double dt, double y) {
+    const double r[4] = {1.0, t, std::sin(phase), std::cos(phase)};
+    for (int i = 0; i < 4; ++i) {
+      for (int j = i; j < 4; ++j) m_[i][j] += r[i] * r[j] * dt;
+      b_[i] += r[i] * y * dt;
+    }
+    ++n_;
+  }
+  int samples() const { return n_; }
+  bool solve(BlockEstimate* z) const {
+    double a[4][5];
+    for (int i = 0; i < 4; ++i) {
+      for (int j = 0; j < 4; ++j) {
+        a[i][j] = m_[std::min(i, j)][std::max(i, j)];
+      }
+      a[i][4] = b_[i];
+    }
+    for (int col = 0; col < 4; ++col) {  // gaussian, partial pivoting
+      int piv = col;
+      for (int r = col + 1; r < 4; ++r) {
+        if (std::fabs(a[r][col]) > std::fabs(a[piv][col])) piv = r;
+      }
+      if (std::fabs(a[piv][col]) < 1e-15) return false;
+      for (int j = 0; j < 5; ++j) std::swap(a[col][j], a[piv][j]);
+      for (int r = col + 1; r < 4; ++r) {
+        const double f = a[r][col] / a[col][col];
+        for (int j = col; j < 5; ++j) a[r][j] -= f * a[col][j];
+      }
+    }
+    double x[4];
+    for (int i = 3; i >= 0; --i) {
+      double s = a[i][4];
+      for (int j = i + 1; j < 4; ++j) s -= a[i][j] * x[j];
+      x[i] = s / a[i][i];
+    }
+    *z = {x[2], x[3]};
+    return true;
+  }
+
+ private:
+  double m_[4][4] = {};
+  double b_[4] = {};
+  int n_ = 0;
 };
 
 class BlockDemod {
  public:
   void reset() { *this = BlockDemod(); }
-  // Accumulate one sample; returns true when a block just completed
-  // (phase advanced 2*pi past the first sample after reset — the
-  // reference latches on that sample, so a demod reset mid-dwell
-  // blocks correctly from wherever the phase happens to be).
+  // Accumulate one sample; returns true when a block just completed.
+  // Blocks are HALF-OPEN [start, next 2*pi crossing): the crossing
+  // sample closes the old block and opens the new one — it is counted
+  // exactly once (double-counting the boundary was part of the offset
+  // leak). The phase reference latches on the first sample after
+  // reset, so a demod reset mid-dwell blocks correctly from wherever
+  // the phase happens to be.
   bool add(double phase, double dt, double sample) {
     if (!primed_) {
       block_start_phase_ = phase;
       primed_ = true;
     }
-    i_ += sample * std::sin(phase) * dt;
-    q_ += sample * std::cos(phase) * dt;
-    span_ += dt;
+    bool completed = false;
     if (phase - block_start_phase_ >= 2.0 * M_PI) {
-      if (span_ > 0.0) {
-        last_ = {2.0 * i_ / span_, 2.0 * q_ / span_};
+      if (accum_.samples() >= 5 && accum_.solve(&last_)) {
         ++blocks_;
+        completed = true;
       }
-      i_ = q_ = span_ = 0.0;
+      accum_.reset();
+      t_rel_ = 0.0;
       block_start_phase_ += 2.0 * M_PI;
-      return true;
     }
-    return false;
+    t_rel_ += dt;
+    accum_.add(t_rel_, phase, dt, sample);
+    return completed;
   }
   int blocks() const { return blocks_; }
   const BlockEstimate& lastBlock() const { return last_; }
 
  private:
   bool primed_ = false;
-  double i_ = 0.0, q_ = 0.0, span_ = 0.0;
+  LsAccum accum_;
+  double t_rel_ = 0.0;
   double block_start_phase_ = 0.0;
   BlockEstimate last_;
   int blocks_ = 0;
@@ -374,8 +452,8 @@ struct DwellResult {
   int window_periods = 0;
   // window-aggregate probe-frequency estimates
   BlockEstimate resp[model::kCanonicalDof];  // q per joint [rad]
-  BlockEstimate tau_meas;                    // probe-joint torque [Nm]
-  BlockEstimate tau_cmd;                     // commanded probe torque [Nm]
+  BlockEstimate tau_meas;  // measured probe-joint torque [Nm]
+  BlockEstimate tau_cmd;   // SUBMITTED TOTAL probe-joint torque [Nm]
 };
 
 // ---------------------------------------------------------------------------
@@ -494,6 +572,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     }
     zVecElemNC(cmd.tau.get(), pj) = out;
     last_cmd_tau_ = out;
+    // the commanded-side window estimate demodulates the SUBMITTED
+    // total, available only here after the probe sum and re-clamp
+    if (phase_ == Phase::Measure) {
+      win_cmd_.add(t - measure_start_, phi_, dt, out);
+    }
   }
 
   // -- CycleObserver ---------------------------------------------------
@@ -752,13 +835,14 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         emitProbe(1.0);
         demodJoints(state, dt, /*growth_check=*/true);
         auto& res = results_[dwell_];
-        // block counter (period boundaries) + window-aggregate I/Q
+        // period counter + window-aggregate LS (offset/drift-immune)
         win_q_.add(phi_, dt, q_probe);
-        win_tau_i_ += tau_probe * std::sin(phi_) * dt;
-        win_tau_q_ += tau_probe * std::cos(phi_) * dt;
-        win_cmd_i_ += probe_tau_ * std::sin(phi_) * dt;
-        win_cmd_q_ += probe_tau_ * std::cos(phi_) * dt;
-        accumWindow(state, dt);
+        const double t_win = t - measure_start_;
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          win_joint_[i].add(t_win, phi_, dt,
+                            zVecElemNC(state.q.get(), i));
+        }
+        win_tau_.add(t_win, phi_, dt, tau_probe);
         if (softEventCheck(t)) break;
         if (win_q_.blocks() >= windowPeriods(res.spec) * window_mult_) {
           finishMeasure(t);
@@ -879,17 +963,6 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     }
   }
 
-  void accumWindow(const arm::JointState& state, double dt) {
-    // per-joint window-aggregate I/Q for the participation vectors
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      win_joint_i_[i] +=
-          zVecElemNC(state.q.get(), i) * std::sin(phi_) * dt;
-      win_joint_q_[i] +=
-          zVecElemNC(state.q.get(), i) * std::cos(phi_) * dt;
-    }
-    win_span_ += dt;
-  }
-
   // Returns true when a soft event fired and the phase switched.
   bool softEventCheck(double t) {
     if (clip_run_ >= kClipSoftCycles && pend_soft_.empty()) {
@@ -995,13 +1068,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     phase_ = Phase::Measure;
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       first_block_amp_[i] = -1.0;  // growth reference = first MEASURE block
+      win_joint_[i].reset();
     }
     win_q_.reset();
-    win_tau_i_ = win_tau_q_ = win_cmd_i_ = win_cmd_q_ = 0.0;
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      win_joint_i_[i] = win_joint_q_[i] = 0.0;
-    }
-    win_span_ = 0.0;
+    win_tau_.reset();
+    win_cmd_.reset();
   }
 
   void finishMeasure(double t) {
@@ -1009,18 +1080,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     res.completed = true;
     res.window_s = t - measure_start_;
     res.window_periods = win_q_.blocks();
-    if (win_span_ > 0.0) {
-      for (int i = 0; i < model::kCanonicalDof; ++i) {
-        res.resp[i] = {2.0 * win_joint_i_[i] / win_span_,
-                       2.0 * win_joint_q_[i] / win_span_};
-      }
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      win_joint_[i].solve(&res.resp[i]);
     }
-    if (win_span_ > 0.0) {
-      res.tau_meas = {2.0 * win_tau_i_ / win_span_,
-                      2.0 * win_tau_q_ / win_span_};
-      res.tau_cmd = {2.0 * win_cmd_i_ / win_span_,
-                     2.0 * win_cmd_q_ / win_span_};
-    }
+    win_tau_.solve(&res.tau_meas);
+    win_cmd_.solve(&res.tau_cmd);
     phase_ = Phase::RampOut;
     phase_start_ = t;
   }
@@ -1081,14 +1145,14 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         dwell_ >= 0 && dwell_ < static_cast<int>(options_.dwells.size())
             ? (retry_amp_ > 0.0 ? retry_amp_ : currentSpec().amp_nm)
             : 0.0;
-    std::fprintf(log_, ",%d,%d,%d,%.4f,%.4f,%.6f,%.5f,%d,%.6f", dwell_,
-                 static_cast<int>(phase_), options_.probe_joint,
+    std::fprintf(log_, ",%d,%d,%d,%.4f,%.4f,%.6f,%.5f,%.5f,%d,%.6f",
+                 dwell_, static_cast<int>(phase_), options_.probe_joint,
                  dwell_ >= 0 &&
                          dwell_ < static_cast<int>(options_.dwells.size())
                      ? currentSpec().freq_hz
                      : 0.0,
-                 amp, phi_, probe_tau_, probe_clipped_ ? 1 : 0,
-                 resp_amp_est_);
+                 amp, phi_, probe_tau_, last_cmd_tau_,
+                 probe_clipped_ ? 1 : 0, resp_amp_est_);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       std::fprintf(
           log_,
@@ -1143,13 +1207,13 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   BlockEstimate prev_q_, prev_tau_;
   bool have_prev_block_ = false;
 
-  // measurement-window state
-  BlockDemod win_q_;
-  double win_tau_i_ = 0.0, win_tau_q_ = 0.0;
-  double win_cmd_i_ = 0.0, win_cmd_q_ = 0.0;
-  double win_joint_i_[model::kCanonicalDof] = {};
-  double win_joint_q_[model::kCanonicalDof] = {};
-  double win_span_ = 0.0;
+  // measurement-window state (LS aggregates, offset/drift-immune)
+  BlockDemod win_q_;  // period counter + probe-joint blocks
+  LsAccum win_joint_[model::kCanonicalDof];
+  LsAccum win_tau_;  // measured probe-joint torque
+  LsAccum win_cmd_;  // SUBMITTED TOTAL probe-joint torque (not the
+                     // probe reference: the actuator-transfer variant
+                     // needs the actual command — review finding)
 
   // all-joint monitors
   BlockDemod joint_demod_[model::kCanonicalDof];
@@ -1185,7 +1249,9 @@ inline std::FILE* openIdentCsvLog(const std::string& path,
       "first_apply_* preserved across retransmissions). "
       "first_apply_delay = first_apply_time - MATCHED submission_time "
       "(receipt-map join; NaN for the pre-run baseline). probe_* "
-      "columns describe THIS cycle's excitation; resp_amp_est is the "
+      "columns describe THIS cycle's excitation; cmd_total is the "
+      "SUBMITTED total probe-joint torque (anchor + probe, post-clamp "
+      "— the actuator-transfer variant's input); resp_amp_est is the "
       "latest completed 1-period demod block on the probe joint. "
       "%s\n",
       meta.c_str());
@@ -1197,7 +1263,7 @@ inline std::FILE* openIdentCsvLog(const std::string& path,
                "feedback_minus_latest_apply,attempt_valid,attempt_seq,"
                "attempt_time,attempt_ok,dwell_id,dwell_phase,"
                "probe_joint,probe_hz,probe_amp,probe_phase,probe_tau,"
-               "probe_clipped,resp_amp_est");
+               "cmd_total,probe_clipped,resp_amp_est");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
     std::fprintf(log,
                  ",qd%d,q%d,dq%d,dqest%d,ff%d,pd%d,i%d,tauraw%d,"

@@ -55,10 +55,23 @@ void reassertLineSettings(const std::string& device, int baudrate) {
   }
 }
 
+// The SDK's PortHandlerLinux strcpy()s the device path into a fixed
+// 100-byte buffer — a longer path is a fortify abort deep inside
+// getPortHandler (observed with a 101-char pty path). Fail loudly and
+// name the limit instead.
+dynamixel::PortHandler* checkedPortHandler(const std::string& device) {
+  if (device.size() >= 100) {
+    throw std::runtime_error(
+        "Port: device path exceeds the DynamixelSDK's 100-character "
+        "limit (" + std::to_string(device.size()) + " chars): " + device);
+  }
+  return dynamixel::PortHandler::getPortHandler(device.c_str());
+}
+
 }  // namespace
 
 Port::Port(const std::string& device, int baudrate)
-    : port_(dynamixel::PortHandler::getPortHandler(device.c_str())),
+    : port_(checkedPortHandler(device)),
       packet_(dynamixel::PacketHandler::getPacketHandler(2.0)) {
   if (!port_->openPort()) {
     throw std::runtime_error("Port: cannot open " + device);

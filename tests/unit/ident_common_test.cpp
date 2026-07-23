@@ -170,14 +170,15 @@ TEST_CASE("ident adaptive hold accepts early on a settled response and "
   CHECK(r.hold_s < 2.0);
   // the window-aggregate demod recovers the scripted 5 mrad response
   CHECK(r.resp[1].abs() == Approx(0.005).epsilon(0.1));
-  // the commanded-probe demod recovers the probe amplitude exactly
-  CHECK(r.tau_cmd.abs() == Approx(0.15).epsilon(0.05));
-  // tau_meas is the TOTAL torque at the probe frequency: probe PLUS
-  // the anchor PD's reaction to the scripted motion (which is why the
-  // direct-ratio estimator uses total measured torque, never the probe
-  // reference) — bounded by |probe| +/- |reaction|, well above zero
+  // BOTH torque estimates demodulate the TOTAL actuator command —
+  // probe PLUS the anchor PD's reaction to the scripted motion (the
+  // actuator-transfer variant needs the actual command, and the
+  // direct-ratio primary needs total measured torque; the probe alone
+  // is only the excitation reference). With this echo mock the
+  // measured signal IS last cycle's command, so the two agree.
   CHECK(r.tau_meas.abs() > 0.05);
   CHECK(r.tau_meas.abs() < 0.25);
+  CHECK(r.tau_cmd.abs() == Approx(r.tau_meas.abs()).epsilon(0.05));
 }
 
 TEST_CASE("ident soft event on a NON-probe joint: kill ramp, re-settle, "
@@ -448,4 +449,101 @@ TEST_CASE("ident pre-run gates: health and anchor reference",
   CHECK_FALSE(x7::anchorWithinTolerance(settled, ref,
                                         x7::kAnchorToleranceRad, deltas));
   CHECK(deltas[2] == Approx(0.021));
+}
+
+TEST_CASE("ident block demod is immune to a large constant offset and "
+          "drift",
+          "[ident]") {
+  // The review repro: at the P1 posture q4 = -2.456 rad, the plain
+  // correlation's boundary quantization leaked ~0.096 rad into a
+  // still joint's estimate — over three times the response cap. The
+  // LS regressors [1, t, sin, cos] must absorb offset and drift.
+  const double dt = 0.01;
+
+  SECTION("still joint at the P1 offset reads ~zero") {
+    x7::BlockDemod demod;
+    double phi = 0.0;
+    double worst = 0.0;
+    int blocks = 0;
+    for (double t = 0.0; t < 3.0; t += dt) {
+      phi += 2.0 * M_PI * 2.0 * dt;  // the 2 Hz worst case
+      if (demod.add(phi, dt, -2.456 + 0.001 * t)) {
+        worst = std::max(worst, demod.lastBlock().abs());
+        ++blocks;
+      }
+    }
+    REQUIRE(blocks >= 4);
+    INFO("worst still-joint block amplitude " << worst);
+    CHECK(worst < 1e-9);
+  }
+
+  SECTION("a small sine riding the offset is recovered exactly") {
+    x7::BlockDemod demod;
+    double phi = 0.0;
+    int blocks = 0;
+    for (double t = 0.0; t < 3.0; t += dt) {
+      phi += 2.0 * M_PI * 2.0 * dt;
+      const double y =
+          -2.456 + 0.001 * t + 0.004 * std::sin(phi - 1.0);
+      if (demod.add(phi, dt, y)) ++blocks;
+    }
+    REQUIRE(blocks >= 4);
+    CHECK(demod.lastBlock().abs() == Approx(0.004).epsilon(0.01));
+  }
+}
+
+TEST_CASE("ident run at the P1 anchor: no false monitor trips",
+          "[ident]") {
+  Fixture fx;
+  const std::vector<double> p1 = {-0.357, -0.831, 2.126, -1.572,
+                                  -2.456, -0.106, 0.563, -0.014};
+
+  SECTION("still arm at P1 completes with zero soft events") {
+    auto opt = baseOptions({{2.0, 0.15, 1}});  // the 2 Hz worst case
+    opt.anchor = p1;
+    x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+    ScriptArm robot([p1](int i, double) { return p1[i]; });
+    CHECK_FALSE(arm::run(robot, run, 90.0, &run));
+    REQUIRE(run.finishedCleanly());
+    CHECK(run.outcome() == x7::IdentRun::Outcome::Completed);
+    const auto& r = run.results()[0];
+    CHECK(r.completed);
+    CHECK(r.soft_events == 0);  // the pre-fix demod tripped the cap here
+    CHECK(r.resp[4].abs() < 1e-6);  // the offset joint reads still
+  }
+
+  SECTION("slow drift on the probe joint does not leak into the demod") {
+    auto opt = baseOptions({{5.0, 0.15, 1}});
+    opt.anchor = p1;
+    x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+    ScriptArm robot([p1](int i, double t) {
+      return p1[i] + (i == 1 ? 0.0005 * t : 0.0);  // 0.5 mrad/s drift
+    });
+    CHECK_FALSE(arm::run(robot, run, 90.0, &run));
+    REQUIRE(run.finishedCleanly());
+    const auto& r = run.results()[0];
+    CHECK(r.completed);
+    CHECK(r.soft_events == 0);
+    CHECK(r.resp[1].abs() < 1e-5);  // drift absorbed, not demodulated
+  }
+}
+
+TEST_CASE("ident frequency list parsing is strict", "[ident]") {
+  std::vector<x7::FreqSpec> out;
+  CHECK(x7::parseFreqList("4.5,5.0@0.075", &out));
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].freq_hz == Approx(4.5));
+  CHECK(out[0].amp_override_nm == 0.0);
+  CHECK(out[1].amp_override_nm == Approx(0.075));
+  // an unreplaced campaign placeholder must refuse, not truncate
+  CHECK_FALSE(x7::parseFreqList("4.5,<peak>@<half-amp>", &out));
+  CHECK_FALSE(x7::parseFreqList("4.5,", &out));
+  CHECK_FALSE(x7::parseFreqList("", &out));
+  CHECK_FALSE(x7::parseFreqList("4.5x", &out));
+  CHECK_FALSE(x7::parseFreqList("0.1", &out));   // below 0.5 Hz
+  CHECK_FALSE(x7::parseFreqList("45", &out));    // above 30 Hz
+  CHECK_FALSE(x7::parseFreqList("nan", &out));
+  CHECK_FALSE(x7::parseFreqList("4.5@0", &out));
+  CHECK_FALSE(x7::parseFreqList("4.5@-1", &out));
+  CHECK_FALSE(x7::parseFreqList("4.5@nan", &out));
 }

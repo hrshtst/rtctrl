@@ -82,7 +82,14 @@ int main(int argc, char* argv[]) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
       probe_joint = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--freqs") == 0 && i + 1 < argc) {
-      freqs = x7::parseFreqList(argv[++i]);
+      if (!x7::parseFreqList(argv[++i], &freqs)) {
+        std::fprintf(stderr,
+                     "--freqs rejected (nothing runs on a truncated "
+                     "schedule): every entry must be f or f@amp with "
+                     "finite values, f in [%.1f, %.1f] Hz, amp > 0\n",
+                     x7::kFreqMinHz, x7::kFreqMaxHz);
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
       a_cap = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
@@ -166,9 +173,32 @@ int main(int argc, char* argv[]) {
                  std::chrono::steady_clock::now() - t_activate)
           .count();
     };
+    // Every post-activation exit funnels through this. A deactivation
+    // that could not CONFIRM zero + torque-off on every servo leaves
+    // the failed servos' Bus Watchdogs armed — silence the bus so they
+    // fire, and say so loudly; the run must then not report success.
+    // The session watchdog disarms only after the shutdown attempt
+    // (its deadline covers deactivation).
+    const auto shutdown = [&robot, hw, &watchdog]() -> bool {
+      const bool clean = robot.deactivate();
+      if (!clean) {
+        hw->requestQuiesce();
+        std::fprintf(stderr,
+                     "SHUTDOWN FAULT: deactivation incomplete — bus "
+                     "silenced, armed servo watchdogs will halt any "
+                     "still-torqued joint. Verify the arm is limp "
+                     "before approaching; power-cycle before the next "
+                     "run.\n");
+      }
+      watchdog.disarm();
+      return clean;
+    };
 
     arm::JointState start;
-    if (!robot.readState(start)) return 1;
+    if (!robot.readState(start)) {
+      shutdown();
+      return 1;
+    }
     arm::JointCommand hold;
     hold.mode = arm::ControlMode::Current;
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
@@ -186,10 +216,13 @@ int main(int argc, char* argv[]) {
     if (!settled.io_ok || !settled.quiescent) {
       std::fprintf(stderr, "settle phase %s — aborting\n",
                    settled.io_ok ? "did not reach quiescence" : "aborted");
-      robot.deactivate();
+      shutdown();
       return 1;
     }
-    if (!robot.readState(start)) return 1;
+    if (!robot.readState(start)) {
+      shutdown();
+      return 1;
+    }
 
     // Start guard: refuse to probe from inside the soft-limit band.
     const auto& lo = hw->softLimitLo();
@@ -204,7 +237,7 @@ int main(int argc, char* argv[]) {
                      "arm and rerun\n",
                      i, model::canonicalJoints()[i].urdf_joint, q, lo[i],
                      hi[i]);
-        robot.deactivate();
+        shutdown();
         return 1;
       }
     }
@@ -217,7 +250,7 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "pre-run health gate: %s — let the arm "
                              "cool / check supply, then rerun\n",
                      why.empty() ? "health read failed" : why.c_str());
-        robot.deactivate();
+        shutdown();
         return 1;
       }
     }
@@ -243,7 +276,7 @@ int main(int argc, char* argv[]) {
                            ? "  <-- out"
                            : "");
         }
-        robot.deactivate();
+        shutdown();
         return 1;
       }
     }
@@ -265,7 +298,7 @@ int main(int argc, char* argv[]) {
                    "T_stop %.1f s — split it (--freqs)\n",
                    x7::baseWorstSeconds(dwells), x7::kSetupAllowanceS,
                    x7::kTStopS);
-      robot.deactivate();
+      shutdown();
       return 1;
     }
     std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, lead-in "
@@ -285,7 +318,7 @@ int main(int argc, char* argv[]) {
                    "setup consumed %.1f s: the worst-case schedule no "
                    "longer fits T_stop — deactivating\n",
                    setup_elapsed);
-      robot.deactivate();
+      shutdown();
       return 1;
     }
 
@@ -313,7 +346,7 @@ int main(int argc, char* argv[]) {
       if (!log) {
         std::fprintf(stderr, "cannot open log file %s\n",
                      log_path.c_str());
-        robot.deactivate();
+        shutdown();
         return 1;
       }
     }
@@ -344,10 +377,9 @@ int main(int argc, char* argv[]) {
     const bool ran = arm::run(robot, ident,
                               x7::kTStopS - setup_elapsed, &ident);
     (void)ran;  // every path is judged by the run's own outcome below
-    // Safe transition FIRST, then disarm the watchdog (its deadline
-    // covers the deactivation), then report.
-    robot.deactivate();
-    watchdog.disarm();
+    // Safe transition FIRST (shutdown() escalates to bus silence if it
+    // cannot confirm every servo stopped), then report.
+    const bool clean_shutdown = shutdown();
     const auto stats = hw->cycleStats();
     if (log) std::fclose(log);
     if (!log_path.empty()) {
@@ -361,6 +393,13 @@ int main(int argc, char* argv[]) {
                 static_cast<unsigned long long>(stats.overruns),
                 static_cast<unsigned long long>(stats.read_failures),
                 static_cast<unsigned long long>(stats.write_failures));
+    if (!clean_shutdown) {
+      // never report an ordinary result over an unconfirmed shutdown
+      std::printf("SHUTDOWN FAULT (run outcome %d: %s)\n",
+                  static_cast<int>(ident.outcome()),
+                  ident.faultReason().c_str());
+      return 1;
+    }
     switch (ident.outcome()) {
       case x7::IdentRun::Outcome::Completed:
         std::printf("done\n");

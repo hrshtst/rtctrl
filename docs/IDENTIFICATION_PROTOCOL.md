@@ -37,10 +37,15 @@ within **±0.02 rad per joint** (`--anchor-ref`).
 
 | posture | description | canonical vector [rad] |
 |---|---|---|
-| P1 | pass-1 anchor (proven) | `-0.357, -0.831, 2.126, -1.572, -2.456, -0.106, 0.563, -0.014` |
-| P2 | track7/8 anchor (structural-mode posture) | `-0.377, -0.873, 2.174, -1.608, -2.264, 0.109, 0.561, 0.086` |
+| P1 | pass-1 anchor (proven) — `config/postures/p1.json` | `-0.357, -0.831, 2.126, -1.572, -2.456, -0.106, 0.563, -0.014` |
+| P2 | track7/8 anchor (structural-mode posture) — `config/postures/p2.json` | `-0.377, -0.873, 2.174, -1.608, -2.264, 0.109, 0.561, 0.086` |
 | P3 | extended endpoint region (nominal) | `0.00, -0.60, 0.00, -0.80, 0.00, -0.30, 0.00, 0.00` |
 | P4 | near-horizontal max extension (nominal) | `0.00, -1.30, 0.00, -0.35, 0.00, -0.15, 0.00, 0.00` |
+
+P1 and P2 have CHECKED-IN reference files: every P1/P2 run — including
+the very first survey — passes `--anchor-ref config/postures/p1.json`
+(resp. `p2.json`), so no run can silently establish an arbitrary
+posture as canonical.
 
 Work in the proven→new order P1 → P2 → P3 → P4. P3/P4 are nominal
 design targets: on the FIRST session at each, the actually-settled
@@ -83,11 +88,11 @@ per probe joint-posture, EXCLUDING cooldown and operator handling.
 Cross-invocation combination is legitimate through the anchor-reference
 gate.
 
-1. **Survey** — default grid:
+1. **Survey** — default grid, against the canonical reference:
 
    ```sh
-   ./build/apps/x7_ident --joint 1 --label p1-j1-survey \
-       --log p1_j1_survey.csv
+   ./build/apps/x7_ident --joint 1 --anchor-ref config/postures/p1.json \
+       --label p1-j1-survey --log p1_j1_survey.csv
    ```
 
    Analyze BEFORE refining: verify the achieved noise floor and dwell
@@ -146,12 +151,20 @@ uv run --project tools tools/ident_analysis.py \
 
 - Combines runs only when the recorded anchors agree within ±0.02 rad
   (the merge guard refuses otherwise) and all probe the same joint.
-- `p1_j1.mode_table.json` / `.md`: fitted mode frequency and damping
-  with grid confidence intervals, per-dwell FRF (τ_meas primary;
-  delay-corrected commanded secondary; their ratio = the actuator
-  transfer for the notch phase budget), all-joint participation
-  vector, fit residuals, and repeat / half-amplitude consistency
-  flags. Entries without refinement data are marked survey-only.
+  Dwell verdicts come from the `.dwells.json` sidecars: skipped or
+  incomplete dwells are dropped, low-confidence dwells are excluded
+  from the mode fits and flagged.
+- `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band
+  (both the 4–5 Hz and ~13 Hz peaks from a single survey) — fitted
+  frequency and damping with grid confidence intervals, per-dwell FRF
+  (τ_meas primary; the delay-corrected SUBMITTED TOTAL command
+  secondary; their ratio = the actuator transfer for the notch phase
+  budget), all-joint participation vector, fit residuals, and repeat /
+  half-amplitude consistency flags. A mode is marked **refined** only
+  with all three pieces of evidence — a grid fine enough for ζ ≈ 0.03,
+  visits from at least two invocations (up/down), and the
+  half-amplitude linearity point — otherwise survey-only, with the
+  missing evidence named.
 
 ## Preview first
 

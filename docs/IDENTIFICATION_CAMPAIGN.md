@@ -22,12 +22,16 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
       vector (the pass-1 anchor — "roughly where it sat for pass 1" is
       close enough; the settle gate and the ±0.02 rad tolerance do the
       verifying).
-- [ ] Run (~2.5 min worst case; the app refuses on its own — settle,
-      soft-limit band, temperature/voltage, budget — and names the
-      reason):
+- [ ] Run WITH the checked-in P1 reference — without `--anchor-ref`
+      nothing enforces the canonical posture and the first survey
+      would silently establish an arbitrary anchor as "P1"
+      (~2.5 min worst case; the app refuses on its own — settle,
+      soft-limit band, temperature/voltage, anchor, budget — and names
+      the reason):
 
   ```sh
-  ./build/apps/x7_ident --joint 1 --label p1-j1-survey --log p1_j1_survey.csv
+  ./build/apps/x7_ident --joint 1 --anchor-ref config/postures/p1.json \
+      --label p1-j1-survey --log p1_j1_survey.csv
   ```
 
 ## 3. Analyze BEFORE any refinement (the protocol's hard gate)

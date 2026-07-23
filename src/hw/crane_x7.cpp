@@ -198,15 +198,28 @@ bool CraneX7::deactivate() {
   bool ok = true;
   if (!quiesced_.load()) ok &= writePositionPGain(options_.limp_p_gain);
   // zero goal currents (relevant in current mode; harmless otherwise)
-  for (const auto& joint : config_.joints) {
+  std::vector<bool> zeroed(config_.joints.size(), false);
+  for (std::size_t i = 0; i < config_.joints.size(); ++i) {
     if (quiesced_.load()) break;
-    ok &= io_.write16(joint.id, reg::kGoalCurrent.addr, 0).ok();
+    zeroed[i] =
+        io_.write16(config_.joints[i].id, reg::kGoalCurrent.addr, 0).ok();
+    ok &= zeroed[i];
   }
-  for (const auto& joint : config_.joints) {
+  for (std::size_t i = 0; i < config_.joints.size(); ++i) {
     if (quiesced_.load()) break;
-    ok &= io_.write8(joint.id, reg::kTorqueEnable.addr, 0).ok();
+    const bool off =
+        io_.write8(config_.joints[i].id, reg::kTorqueEnable.addr, 0).ok();
+    // The firmware Bus Watchdog is a servo's LAST protection: disarm
+    // it only after a CONFIRMED zero + torque-off. A joint whose stop
+    // writes failed must keep its watchdog armed, so the caller's
+    // escalation (bus silence) still stops it — disarming first could
+    // leave a torqued servo with no watchdog (review finding).
+    if (!(zeroed[i] && off)) {
+      ok = false;
+      continue;
+    }
     if (quiesced_.load()) break;
-    ok &= io_.write8(joint.id, reg::kBusWatchdog.addr, 0).ok();
+    ok &= io_.write8(config_.joints[i].id, reg::kBusWatchdog.addr, 0).ok();
   }
   activated_ = false;
   return ok && !quiesced_.load();
