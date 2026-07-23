@@ -81,19 +81,20 @@ TEST_CASE("runner uses measured time and finishes on it", "[runner]") {
   ScriptedArm robot(script);
   CountingController ctl;
   CHECK(arm::run(robot, ctl, 0.05));
-  // t is relative to the first sample; the run ends when t >= 0.05
+  // the reference read is controlled at t = 0; the origin latches on
+  // the first FRESH sample, and the run ends when measured t >= 0.05
   CHECK(ctl.last_t == Approx(0.04));
-  CHECK(ctl.updates == 5);
+  CHECK(ctl.updates == 6);  // reference cycle + five measured cycles
 }
 
 TEST_CASE("runner skips duplicate samples but still steps", "[runner]") {
   std::vector<ScriptedArm::Sample> script = {
-      {100.00, 1}, {100.01, 2}, {100.01, 2}, {100.01, 2},
-      {100.02, 3}, {100.03, 4}, {100.04, 5}, {100.05, 6}};
+      {100.00, 1}, {100.01, 2}, {100.01, 2}, {100.01, 2}, {100.02, 3},
+      {100.03, 4}, {100.04, 5}, {100.05, 6}, {100.06, 7}};
   ScriptedArm robot(script);
   CountingController ctl;
   CHECK(arm::run(robot, ctl, 0.045));
-  CHECK(ctl.updates == 5);              // duplicates saw no update
+  CHECK(ctl.updates == 6);              // duplicates saw no update
   CHECK(robot.steps > robot.writes);    // but the arm still stepped
 }
 
@@ -109,7 +110,8 @@ TEST_CASE("runner tolerates one missed sample, aborts on more",
           "[runner]") {
   // gap of 2 (one missed sample) is fine
   std::vector<ScriptedArm::Sample> ok = {
-      {100.00, 1}, {100.01, 2}, {100.03, 4}, {100.04, 5}, {100.05, 6}};
+      {100.00, 1}, {100.01, 2}, {100.03, 4},
+      {100.04, 5}, {100.05, 6}, {100.06, 7}};
   ScriptedArm robot_ok(ok);
   CountingController ctl_ok;
   CHECK(arm::run(robot_ok, ctl_ok, 0.045));

@@ -46,7 +46,11 @@
 //   scale in (0, 0.6] shrinks the excursion (default 0.6 ≈ ±0.18 rad
 //     max); larger values are capped — the structural-mode stability
 //     envelope
-//   --log writes t, q_d, q, dq_d, dq, tau per joint each cycle
+//   --log writes the full loop telemetry per cycle (feedback stamp and
+//     sequence, submission receipts, applied-command record with
+//     first-vs-latest application, controller ff/pd/i components,
+//     controller and hardware saturation/gate flags, measured torque);
+//     the CSV's '#' header line documents the event semantics
 
 #include <algorithm>
 #include <cstdio>
@@ -56,6 +60,7 @@
 
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
+#include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
@@ -134,8 +139,13 @@ int main(int argc, char* argv[]) {
     robot.writeCommand(hold);
     x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
     const auto settled = x7::settleArm(robot, settle, 6.0);
-    if (!settled.io_ok) {
-      std::fprintf(stderr, "settle phase aborted\n");
+    if (!settled.io_ok || !settled.quiescent) {
+      // No override: a settle timeout means real residual motion or a
+      // broken quiescence metric — both grounds to stop. Tracking must
+      // not anchor on (or fight) a moving arm.
+      std::fprintf(stderr, "settle phase %s — aborting\n",
+                   settled.io_ok ? "did not reach quiescence"
+                                 : "aborted");
       robot.deactivate();
       return 1;
     }
@@ -186,36 +196,52 @@ int main(int argc, char* argv[]) {
     // every proximal joint oscillating coherently). Min-jerk peak
     // accel ~ A/T^2, so the duration grows with sqrt(amplitude).
     const double min_T = 2.0 * std::sqrt(std::max(scale, 0.5) / 0.5);
-    const auto out = model::MinJerkTrajectory::withVelocityLimit(
-        q0, qf, kVel, min_T);
-    const auto back = model::MinJerkTrajectory::withVelocityLimit(
-        qf, q0, kVel, min_T);
+    // ONE C2-continuous round trip driven by ONE controller: separate
+    // per-leg controllers reset the estimator/filter/integrator at the
+    // turnaround and stepped multi-Nm discontinuities into the arm
+    // (track8.csv).
+    const model::RoundTripTrajectory trip(
+        model::MinJerkTrajectory::withVelocityLimit(q0, qf, kVel, min_T),
+        model::MinJerkTrajectory::withVelocityLimit(qf, q0, kVel, min_T));
 
     std::printf("computed-torque tracking: %.1f s out, %.1f s back "
                 "(scale %.2f, Kp %.1f, Kd %.2f, Ki %.1f)\n",
-                out.duration(), back.duration(), scale, kp, kd, ki);
+                trip.outDuration(), trip.duration() - trip.outDuration(),
+                scale, kp, kd, ki);
 
-    x7::TrackingRun leg1(chain, map, out, kp, kd, 0, log);
-    leg1.inner.setIntegral(ki, 1.5);
-    leg1.inner.setGainScales(x7::kGainScale);
-    bool ok = arm::run(robot, leg1, out.duration());
-    leg1.report();
-
-    if (ok) {
-      x7::TrackingRun leg2(chain, map, back, kp, kd, 1, log);
-      leg2.inner.setIntegral(ki, 1.5);
-      leg2.inner.setGainScales(x7::kGainScale);
-      ok = arm::run(robot, leg2, back.duration());
-      leg2.report();
+    x7::TrackingRun tracking(chain, map, trip, kp, kd,
+                             trip.outDuration(), log);
+    tracking.inner.setIntegral(ki, x7::tuning::kIntegralClampNm);
+    tracking.inner.setGainScales(x7::kGainScale);
+    tracking.inner.setNominalDt(x7::tuning::kNominalDt);
+    // exact per-joint torque limits, mirroring writeCurrents: enables
+    // the direction-aware anti-windup and controller-side clamping
+    {
+      const auto& joints = session.config.joints;
+      const auto& servo_amps = session.arm->servoCurrentLimitAmps();
+      double tau_max[model::kCanonicalDof];
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        const double kt = rtctrl::dxl::torqueConstant(
+            joints[i].model_number);
+        tau_max[i] = std::max(
+            0.0, std::min(joints[i].effort_limit, kt * servo_amps[i]) -
+                     joints[i].current_limit_margin * kt);
+      }
+      tracking.inner.setTorqueLimits(tau_max);
     }
+
+    const bool ok = arm::run(robot, tracking, trip.duration(), &tracking);
+    tracking.report();
 
     const auto stats = session.arm->cycleStats();
     robot.deactivate();
     if (log) std::fclose(log);
-    std::printf("cycles %llu, overruns %llu, read failures %llu\n",
+    std::printf("cycles %llu, overruns %llu, read failures %llu, "
+                "write failures %llu\n",
                 static_cast<unsigned long long>(stats.cycles),
                 static_cast<unsigned long long>(stats.overruns),
-                static_cast<unsigned long long>(stats.read_failures));
+                static_cast<unsigned long long>(stats.read_failures),
+                static_cast<unsigned long long>(stats.write_failures));
     std::printf("%s\n", ok ? "done" : "ABORTED");
     return ok ? 0 : 1;
   } catch (const std::exception& e) {

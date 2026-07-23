@@ -146,6 +146,12 @@ class CraneX7 {
   // -2.64 soft limit bounced against the gate at ~6 Hz).
   const std::vector<double>& softLimitLo() const { return limit_lo_; }
   const std::vector<double>& softLimitHi() const { return limit_hi_; }
+  // Per-servo CurrentLimit registers [A], read at activation. Combined
+  // with the config effort limits this reproduces writeCurrents' exact
+  // torque clamp (e.g. for the controller's anti-windup limits).
+  const std::vector<double>& servoCurrentLimitAmps() const {
+    return servo_current_limit_amps_;
+  }
 
   // Background read→limit→write thread at Options::control_cycle_s.
   // Requires a homogeneous operating mode across the group. On each

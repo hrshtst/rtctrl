@@ -266,29 +266,32 @@ int main(int argc, char* argv[]) {
     constexpr double kVel = 0.3;  // rad/s — reduced speed
     // duration rule as x7_track: hold peak accel at the proven level
     const double min_T = 2.0 * std::sqrt(std::max(scale, 0.5) / 0.5);
-    const auto out = model::MinJerkTrajectory::withVelocityLimit(
-        q0, qf, kVel, min_T);
-    const auto back = model::MinJerkTrajectory::withVelocityLimit(
-        qf, q0, kVel, min_T);
+    // one continuous round trip, one controller — as x7_track
+    const model::RoundTripTrajectory trip(
+        model::MinJerkTrajectory::withVelocityLimit(q0, qf, kVel, min_T),
+        model::MinJerkTrajectory::withVelocityLimit(qf, q0, kVel, min_T));
 
     std::printf("computed-torque tracking [sim, %s loop]: %.1f s out, "
                 "%.1f s back (scale %.2f, Kp %.1f, Kd %.2f, Ki %.1f)\n",
-                ideal ? "ideal" : "lagged", out.duration(),
-                back.duration(), scale, kp, kd, ki);
+                ideal ? "ideal" : "lagged", trip.outDuration(),
+                trip.duration() - trip.outDuration(), scale, kp, kd, ki);
 
-    x7::TrackingRun leg1(chain, map, out, kp, kd, 0, log);
-    leg1.inner.setIntegral(ki, 1.5);
-    leg1.inner.setGainScales(x7::kGainScale);
-    bool ok = arm::run(robot, leg1, out.duration());
-    leg1.report();
-
-    if (ok) {
-      x7::TrackingRun leg2(chain, map, back, kp, kd, 1, log);
-      leg2.inner.setIntegral(ki, 1.5);
-      leg2.inner.setGainScales(x7::kGainScale);
-      ok = arm::run(robot, leg2, back.duration());
-      leg2.report();
+    x7::TrackingRun tracking(chain, map, trip, kp, kd,
+                             trip.outDuration(), log);
+    tracking.inner.setIntegral(ki, x7::tuning::kIntegralClampNm);
+    tracking.inner.setGainScales(x7::kGainScale);
+    tracking.inner.setNominalDt(x7::tuning::kNominalDt);
+    {
+      // sim-side torque-limit truth: SimArm's effort clamp
+      double tau_max[model::kCanonicalDof];
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        tau_max[i] = opt.effort_limit8[i];
+      }
+      tracking.inner.setTorqueLimits(tau_max);
     }
+
+    const bool ok = arm::run(robot, tracking, trip.duration(), &tracking);
+    tracking.report();
 
     robot.deactivate();
     if (log) std::fclose(log);

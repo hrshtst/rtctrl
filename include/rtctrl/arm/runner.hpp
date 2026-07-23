@@ -57,31 +57,43 @@ inline bool run(Arm& arm, Controller& controller, double duration,
   const double dt = arm.dt();
   const long max_cycles =
       static_cast<long>(4.0 * duration / (dt > 0.0 ? dt : 1e-3)) + 8;
+  // The very first read may carry an arbitrarily old sample (e.g. the
+  // activation-era read), so neither the time origin nor the interval
+  // policy may derive from it: it is controlled at t = 0 (commands must
+  // flow every cycle — an uncommanded step would free-fall a sim or
+  // leave stale goals active), and t0 latches on the first FRESH
+  // sample. Controllers handle the resulting duplicate t = 0 via their
+  // first-sample/duplicate branches.
+  bool have_ref = false;
   bool have_t0 = false;
   double t0 = 0.0;
   double t_prev = 0.0;
   std::uint64_t seq_prev = 0;
   for (long cycle = 0; cycle < max_cycles; ++cycle) {
     if (!arm.readState(state, &cmds)) return false;
-    if (!have_t0) {
+    double t = 0.0;
+    if (!have_ref) {
+      seq_prev = state.seq;
+      have_ref = true;
+    } else if (state.seq == seq_prev) {  // duplicate feedback
+      if (!arm.step()) return false;
+      continue;
+    } else if (!have_t0) {  // first fresh sample defines the origin
       t0 = t_prev = state.t;
       seq_prev = state.seq;
       have_t0 = true;
     } else {
       if (state.t < t_prev) return false;  // backward clock
-      if (state.seq == seq_prev) {         // duplicate feedback
-        if (!arm.step()) return false;
-        continue;
-      }
       if (state.seq - seq_prev > kMaxSeqGap) return false;
       if (state.t - t_prev > kMaxSampleInterval) return false;
       t_prev = state.t;
       seq_prev = state.seq;
+      t = state.t - t0;
     }
-    const double t = state.t - t0;
     if (t >= duration - 1e-9) return true;  // epsilon: FP-robust endpoint
     controller.update(state, cmd, t);
     if (!arm.writeCommand(cmd, &receipt)) return false;
+
     if (observer != nullptr &&
         !observer->observe(t, state, cmds, cmd, receipt)) {
       return false;
