@@ -73,8 +73,10 @@ class SimArm : public Arm {
   bool activate() override;
   bool deactivate() override;
   bool setMode(ControlMode mode) override;
-  bool readState(JointState& state) override;
-  bool writeCommand(const JointCommand& cmd) override;
+  bool readState(JointState& state,
+                 CommandSnapshot* cmds = nullptr) override;
+  bool writeCommand(const JointCommand& cmd,
+                    CommandReceipt* receipt = nullptr) override;
   bool step() override;
 
   // Test/diagnostic hooks.
@@ -98,6 +100,9 @@ class SimArm : public Arm {
   JointCommand cmd_;
   double time_ = 0.0;
   std::uint64_t seq_ = 0;  // control-step counter -> JointState::seq
+  std::uint64_t target_seq_ = 0;         // bumps per accepted command
+  AppliedTargetRecord applied_rec_;      // synchronous application
+  WriteAttemptRecord attempt_rec_;
 
   model::ZVector q9_{model::kModelDof};    // committed joint positions
   model::ZVector v9_{model::kModelDof};    // committed joint velocities

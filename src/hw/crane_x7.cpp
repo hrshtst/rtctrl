@@ -227,8 +227,13 @@ std::vector<dxl::Feedback> CraneX7::lastFeedback() const {
   return feedback_;
 }
 
-CraneX7::StampedFeedback CraneX7::lastFeedbackStamped() const {
+CraneX7::StampedFeedback CraneX7::lastFeedbackStamped(
+    arm::CommandSnapshot* cmds) const {
   std::lock_guard<std::mutex> lock(state_mutex_);
+  if (cmds != nullptr) {
+    cmds->applied = applied_rec_;
+    cmds->last_attempt = attempt_rec_;
+  }
   return {feedback_, feedback_time_, feedback_seq_};
 }
 
@@ -260,21 +265,29 @@ bool CraneX7::requireActive(const char* what) {
   return false;
 }
 
-bool CraneX7::writePositions(const std::vector<double>& rad) {
+bool CraneX7::writePositions(const std::vector<double>& rad,
+                             WriteOutcome* out) {
   if (escalated_) return false;
   if (!requireActive("position command")) return false;
   if (!requireMode(3, "position command")) return false;
   if (!requireSize(rad.size(), "position command")) return false;
   std::vector<double> clamped(rad.size());
+  std::vector<std::uint8_t> flags(rad.size(), 0);
   for (std::size_t i = 0; i < rad.size(); ++i) {
     clamped[i] = std::clamp(rad[i], limit_lo_[i], limit_hi_[i]);
+    if (clamped[i] != rad[i]) flags[i] |= arm::kCmdClamped;
   }
   if (!group_.writeGoalPositions(clamped).ok()) return false;
+  if (out != nullptr) {
+    out->values = std::move(clamped);
+    out->flags = std::move(flags);
+  }
   last_command_ = now_();
   return true;
 }
 
-bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
+bool CraneX7::writeVelocities(const std::vector<double>& rad_s,
+                              WriteOutcome* out) {
   if (escalated_) return false;
   if (!requireActive("velocity command")) return false;
   if (!requireMode(1, "velocity command")) return false;
@@ -286,23 +299,31 @@ bool CraneX7::writeVelocities(const std::vector<double>& rad_s) {
     return false;
   }
   std::vector<double> limited(rad_s.size());
+  std::vector<std::uint8_t> flags(rad_s.size(), 0);
   for (std::size_t i = 0; i < rad_s.size(); ++i) {
     const double vmax = config_.joints[i].velocity_limit;
     double v = std::clamp(rad_s[i], -vmax, vmax);
+    if (v != rad_s[i]) flags[i] |= arm::kCmdClamped;
     // On-servo position limits are inactive outside position mode:
     // zero any command that drives a joint past a limit.
     if ((fb[i].position >= limit_hi_[i] && v > 0.0) ||
         (fb[i].position <= limit_lo_[i] && v < 0.0)) {
       v = 0.0;
+      flags[i] |= arm::kCmdGated;
     }
     limited[i] = v;
   }
   if (!group_.writeGoalVelocities(limited).ok()) return false;
+  if (out != nullptr) {
+    out->values = std::move(limited);
+    out->flags = std::move(flags);
+  }
   last_command_ = now_();
   return true;
 }
 
-bool CraneX7::writeCurrents(const std::vector<double>& amps) {
+bool CraneX7::writeCurrents(const std::vector<double>& amps,
+                            WriteOutcome* out) {
   if (escalated_) return false;
   if (!requireActive("current command")) return false;
   if (!requireMode(0, "current command")) return false;
@@ -314,6 +335,7 @@ bool CraneX7::writeCurrents(const std::vector<double>& amps) {
     return false;
   }
   std::vector<double> limited(amps.size());
+  std::vector<std::uint8_t> flags(amps.size(), 0);
   for (std::size_t i = 0; i < amps.size(); ++i) {
     const auto& joint = config_.joints[i];
     // bound by both the URDF effort limit and the servo's own current
@@ -324,18 +346,25 @@ bool CraneX7::writeCurrents(const std::vector<double>& amps) {
                       servo_current_limit_amps_[i]) -
                  joint.current_limit_margin);
     double a = std::clamp(amps[i], -imax, imax);
+    if (a != amps[i]) flags[i] |= arm::kCmdClamped;
     if ((fb[i].position >= limit_hi_[i] && a > 0.0) ||
         (fb[i].position <= limit_lo_[i] && a < 0.0)) {
       a = 0.0;
+      flags[i] |= arm::kCmdGated;
     }
     limited[i] = a;
   }
   if (!group_.writeGoalCurrents(limited).ok()) return false;
+  if (out != nullptr) {
+    out->values = std::move(limited);
+    out->flags = std::move(flags);
+  }
   last_command_ = now_();
   return true;
 }
 
-bool CraneX7::setTargetPositions(const std::vector<double>& rad) {
+bool CraneX7::setTargetPositions(const std::vector<double>& rad,
+                                 std::uint64_t* seq, double* time) {
   if (!requireSize(rad.size(), "target submission")) return false;
   std::lock_guard<std::mutex> lock(state_mutex_);
   targets_ = rad;
@@ -346,13 +375,23 @@ bool CraneX7::setTargetPositions(const std::vector<double>& rad) {
   // watchdog layers stay fed.
   last_submission_ = now_();
   submission_armed_ = true;
+  // Sequence + timestamp stored atomically with the targets: the
+  // thread's write attempts carry this sequence, so requested-to-
+  // applied causality stays unambiguous.
+  ++target_seq_;
+  target_submit_time_ = last_submission_;
+  if (seq != nullptr) *seq = target_seq_;
+  if (time != nullptr) *time = target_submit_time_;
   return true;
 }
-bool CraneX7::setTargetVelocities(const std::vector<double>& rad_s) {
-  return setTargetPositions(rad_s);  // same storage; units follow the mode
+bool CraneX7::setTargetVelocities(const std::vector<double>& rad_s,
+                                  std::uint64_t* seq, double* time) {
+  return setTargetPositions(rad_s, seq, time);  // same storage; units
+                                                // follow the mode
 }
-bool CraneX7::setTargetCurrents(const std::vector<double>& amps) {
-  return setTargetPositions(amps);
+bool CraneX7::setTargetCurrents(const std::vector<double>& amps,
+                                std::uint64_t* seq, double* time) {
+  return setTargetPositions(amps, seq, time);
 }
 
 bool CraneX7::startThread() {
@@ -429,7 +468,10 @@ void CraneX7::threadLoop() {
   std::vector<dxl::Feedback> fb;
   std::vector<double> targets;
   int failed_reads_row = 0;
+  int failed_writes_row = 0;
+  std::uint64_t cycle_number = 0;
   while (thread_run_.load()) {
+    ++cycle_number;
     if (readAll(fb)) {
       failed_reads_row = 0;
     } else {
@@ -437,22 +479,70 @@ void CraneX7::threadLoop() {
       std::lock_guard<std::mutex> lock(cycle_mutex_);
       ++stats_.read_failures;
     }
+    std::uint64_t tseq = 0;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       targets = targets_;
+      tseq = target_seq_;
     }
+    WriteOutcome outcome;
+    bool wrote_ok = false;
     switch (mode) {
-      case 3: writePositions(targets); break;
-      case 1: writeVelocities(targets); break;
-      case 0: writeCurrents(targets); break;
+      case 3: wrote_ok = writePositions(targets, &outcome); break;
+      case 1: wrote_ok = writeVelocities(targets, &outcome); break;
+      case 0: wrote_ok = writeCurrents(targets, &outcome); break;
       default: break;
+    }
+    const double write_time = now_();
+    {
+      // Every attempt lands in the attempt record; only a SUCCESS may
+      // touch the applied record — and its first_-fields only on the
+      // first success of a NEW sequence, so retransmissions never
+      // rewrite first-application facts while the latest transmission
+      // owns the current limit/gate state (re-evaluated every write).
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      attempt_rec_ = {true, tseq, write_time, wrote_ok};
+      if (wrote_ok) {
+        auto& rec = applied_rec_;
+        if (!rec.valid || rec.target_seq != tseq) {
+          rec.target_seq = tseq;
+          rec.first_cycle = cycle_number;
+          rec.first_time = write_time;
+          rec.valid = true;
+        }
+        rec.latest_cycle = cycle_number;
+        rec.latest_time = write_time;
+        rec.mode = mode;
+        for (std::size_t i = 0; i < outcome.values.size() &&
+                                i < static_cast<std::size_t>(
+                                        model::kCanonicalDof);
+             ++i) {
+          // mode-native units: current mode converts A -> Nm
+          rec.applied[i] =
+              mode == 0 ? outcome.values[i] * dxl::torqueConstant(
+                                                  config_.joints[i]
+                                                      .model_number)
+                        : outcome.values[i];
+          rec.flags[i] = outcome.flags[i];
+        }
+      }
+    }
+    if (wrote_ok) {
+      failed_writes_row = 0;
+    } else {
+      ++failed_writes_row;
+      std::lock_guard<std::mutex> lock(cycle_mutex_);
+      ++stats_.write_failures;
     }
     // Frozen feedback is the read-side trap: lastFeedback() keeps
     // serving the last good state, the controller keeps commanding into
     // a robot it can no longer see, and — sync writes being broadcast,
-    // hence always "successful" — the deadman never fires. Escalate
-    // exactly as a stale command stream would.
-    if (failed_reads_row >= options_.max_read_failures) {
+    // hence always "successful" — the deadman never fires. Persistent
+    // write failure is the mirror trap (healthy reads, old actuator
+    // goal stuck active). Both escalate exactly as a stale command
+    // stream would.
+    if (failed_reads_row >= options_.max_read_failures ||
+        failed_writes_row >= options_.max_write_failures) {
       escalate();
       thread_run_.store(false);
     } else if (!checkDeadman()) {

@@ -31,8 +31,10 @@ bool RealArm::setMode(ControlMode mode) {
   return true;
 }
 
-bool RealArm::readState(JointState& state) {
-  const auto stamped = hw_.lastFeedbackStamped();
+bool RealArm::readState(JointState& state, CommandSnapshot* cmds) {
+  // One producer-side lock hold covers feedback AND command records —
+  // the background thread cannot advance between them.
+  const auto stamped = hw_.lastFeedbackStamped(cmds);
   const auto& fb = stamped.feedback;
   if (fb.size() != static_cast<std::size_t>(kCanonicalDof)) return false;
   for (int i = 0; i < kCanonicalDof; ++i) {
@@ -49,28 +51,36 @@ bool RealArm::readState(JointState& state) {
   return true;
 }
 
-bool RealArm::writeCommand(const JointCommand& cmd) {
+bool RealArm::writeCommand(const JointCommand& cmd,
+                           CommandReceipt* receipt) {
   std::vector<double> values(kCanonicalDof);
+  std::uint64_t seq = 0;
+  double time = 0.0;
+  bool ok = false;
   switch (cmd.mode) {
     case ControlMode::Position:
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.q.get(), i);
       }
-      return hw_.setTargetPositions(values);
+      ok = hw_.setTargetPositions(values, &seq, &time);
+      break;
     case ControlMode::Velocity:
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.dq.get(), i);
       }
-      return hw_.setTargetVelocities(values);
+      ok = hw_.setTargetVelocities(values, &seq, &time);
+      break;
     case ControlMode::Current:
       for (int i = 0; i < kCanonicalDof; ++i) {
         // torque command -> current through the per-model constant
         values[i] = zVecElemNC(cmd.tau.get(), i) /
                     dxl::torqueConstant(hw_.config().joints[i].model_number);
       }
-      return hw_.setTargetCurrents(values);
+      ok = hw_.setTargetCurrents(values, &seq, &time);
+      break;
   }
-  return false;
+  if (receipt != nullptr) *receipt = {ok, seq, time};
+  return ok;
 }
 
 bool RealArm::step() {

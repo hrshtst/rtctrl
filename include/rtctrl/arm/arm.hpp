@@ -23,8 +23,15 @@ class Arm {
   // Only while deactivated.
   virtual bool setMode(ControlMode mode) = 0;
 
-  virtual bool readState(JointState& state) = 0;
-  virtual bool writeCommand(const JointCommand& cmd) = 0;
+  // When `cmds` is non-null it is filled ATOMICALLY with the state
+  // (one producer-side lock hold): the applied-target and write-attempt
+  // records as of this feedback sample.
+  virtual bool readState(JointState& state,
+                         CommandSnapshot* cmds = nullptr) = 0;
+  // When `receipt` is non-null it reports the submission this call
+  // became (sequence + submission time on the producer's clock).
+  virtual bool writeCommand(const JointCommand& cmd,
+                            CommandReceipt* receipt = nullptr) = 0;
   // Advance one control period: sim integrates dt(); real HW blocks on
   // the read-write cycle tick.
   virtual bool step() = 0;

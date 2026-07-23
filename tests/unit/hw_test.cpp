@@ -515,3 +515,135 @@ TEST_CASE("feedback carries a coherent acquisition stamp and sequence",
   CHECK(s3.seq == s2.seq);
   CHECK(s3.time == Approx(101.51));
 }
+
+TEST_CASE("applied-target record: sequencing, retransmission, gating",
+          "[hw][telemetry]") {
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 0;  // current
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.001;
+  options.max_write_failures = 100000;  // observe failures w/o escalation
+  options.host_command_timeout_s = 1e6;  // sim-time jumps must not trip
+                                         // the deadman in this test
+  hw::CraneX7 arm(io, config, options);
+  std::atomic<double> sim_time{10.0};
+  arm.setTimeSource([&sim_time] { return sim_time.load(); });
+
+  REQUIRE(arm.activate());
+  // before the thread runs, no target was ever applied
+  {
+    rtctrl::arm::CommandSnapshot snap;
+    arm.lastFeedbackStamped(&snap);
+    CHECK_FALSE(snap.applied.valid);
+    CHECK_FALSE(snap.last_attempt.valid);
+  }
+  REQUIRE(arm.startThread());
+
+  auto waitApplied = [&](std::uint64_t seq) {
+    rtctrl::arm::CommandSnapshot snap;
+    for (int i = 0; i < 2000; ++i) {
+      arm.lastFeedbackStamped(&snap);
+      if (snap.applied.valid && snap.applied.target_seq == seq) return snap;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return snap;
+  };
+
+  // submit a modest current on joint 3; verify first application
+  std::vector<double> amps(8, 0.0);
+  amps[3] = 0.5;
+  std::uint64_t s1 = 0;
+  double t1 = 0.0;
+  REQUIRE(arm.setTargetCurrents(amps, &s1, &t1));
+  CHECK(t1 == Approx(10.0));
+  auto snap = waitApplied(s1);
+  REQUIRE(snap.applied.target_seq == s1);
+  const double first_time = snap.applied.first_time;
+  const auto first_cycle = snap.applied.first_cycle;
+  CHECK(first_time == Approx(10.0));
+  CHECK(snap.applied.mode == 0);
+  // Nm conversion: 0.5 A on an XM430 joint
+  CHECK(snap.applied.applied[3] ==
+        Approx(0.5 * dxl::torqueConstant(config.joints[3].model_number))
+            .margin(1e-6));
+  CHECK(snap.applied.flags[3] == 0);
+
+  // retransmissions must advance latest_* but preserve first_*
+  sim_time.store(10.5);
+  rtctrl::arm::CommandSnapshot later;
+  for (int i = 0; i < 2000; ++i) {
+    arm.lastFeedbackStamped(&later);
+    if (later.applied.latest_time == Approx(10.5).margin(1e-9)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(later.applied.target_seq == s1);
+  CHECK(later.applied.first_time == Approx(first_time));
+  CHECK(later.applied.first_cycle == first_cycle);
+  CHECK(later.applied.latest_cycle > first_cycle);
+
+  // a saturating command sets the clamp flag with the limited value
+  std::vector<double> huge(8, 0.0);
+  huge[3] = 99.0;
+  std::uint64_t s2 = 0;
+  REQUIRE(arm.setTargetCurrents(huge, &s2, nullptr));
+  snap = waitApplied(s2);
+  REQUIRE(snap.applied.target_seq == s2);
+  CHECK((snap.applied.flags[3] & rtctrl::arm::kCmdClamped) != 0);
+  CHECK(snap.applied.applied[3] < 99.0);
+
+  // failed writes land only in the attempt record; a later success of
+  // the NEW sequence becomes its first application
+  io.setWriteFailure(-3001);
+  std::vector<double> next(8, 0.0);
+  next[2] = 0.3;
+  std::uint64_t s3 = 0;
+  REQUIRE(arm.setTargetCurrents(next, &s3, nullptr));
+  rtctrl::arm::CommandSnapshot failed;
+  for (int i = 0; i < 2000; ++i) {
+    arm.lastFeedbackStamped(&failed);
+    if (failed.last_attempt.valid && failed.last_attempt.target_seq == s3 &&
+        !failed.last_attempt.ok) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(failed.last_attempt.target_seq == s3);
+  CHECK_FALSE(failed.last_attempt.ok);
+  CHECK(failed.applied.target_seq == s2);  // applied record untouched
+  sim_time.store(11.0);
+  io.setWriteFailure(0);
+  snap = waitApplied(s3);
+  REQUIRE(snap.applied.target_seq == s3);
+  CHECK(snap.applied.first_time == Approx(11.0));  // retry = first apply
+  CHECK(arm.cycleStats().write_failures > 0);
+  arm.stopThread();
+}
+
+TEST_CASE("persistent write failure escalates like the read path",
+          "[hw][safety]") {
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 0;
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.001;
+  hw::CraneX7 arm(io, config, options);
+  bool bus_silenced = false;
+  arm.onEscalate([&bus_silenced] { bus_silenced = true; });
+  REQUIRE(arm.activate());
+  REQUIRE(arm.startThread());
+  REQUIRE(arm.waitCycle(0) > 0);
+
+  io.setWriteFailure(-3001);  // reads stay healthy — the mirror trap
+  std::uint64_t last = 0;
+  for (int i = 0; i < 1000 && arm.waitCycle(last) != 0; ++i) {
+    last = arm.cycleStats().cycles;
+  }
+  CHECK(arm.escalated());
+  CHECK(bus_silenced);
+  CHECK(arm.cycleStats().write_failures >=
+        static_cast<std::uint64_t>(options.max_write_failures));
+  arm.stopThread();
+}

@@ -12,6 +12,7 @@
 
 #include "rtctrl/dxl/packet_io.hpp"
 #include "rtctrl/dxl/sync_group.hpp"
+#include "rtctrl/arm/types.hpp"  // shared bridge DATA types only
 #include "rtctrl/hw/config.hpp"
 
 namespace rtctrl::hw {
@@ -47,12 +48,18 @@ class CraneX7 {
     // fed frozen feedback keeps commanding torques into a state it can
     // no longer see — as dangerous as a stalled command stream.
     int max_read_failures = 5;
+    // Consecutive failed cycle WRITES before escalation — the mirror
+    // trap: reads stay healthy while writes fail, leaving an old
+    // actuator goal active. The 250 ms deadman would catch it late;
+    // this catches it in ~max_write_failures cycles.
+    int max_write_failures = 5;
   };
 
   struct CycleStats {
     std::uint64_t cycles = 0;
     std::uint64_t overruns = 0;  // cycles that finished past their deadline
-    std::uint64_t read_failures = 0;  // cycles whose feedback read failed
+    std::uint64_t read_failures = 0;   // cycles whose feedback read failed
+    std::uint64_t write_failures = 0;  // cycles whose target write failed
   };
 
   CraneX7(dxl::PacketIO& io, Config config);
@@ -93,27 +100,43 @@ class CraneX7 {
   // Mode-checked command writers (every joint's configured operating
   // mode must match, or the call is rejected). All feed the deadman on
   // success.
+  // Telemetry from one write: the post-limit values (in the write's
+  // native units) and per-joint arm::kCmdClamped/kCmdGated flags.
+  // Filled only on request; consumed by the background thread's
+  // applied-target record.
+  struct WriteOutcome {
+    std::vector<double> values;
+    std::vector<std::uint8_t> flags;
+  };
+
   // Position [rad]: clamped to the servo limits minus pos_limit_margin.
-  bool writePositions(const std::vector<double>& rad);
+  bool writePositions(const std::vector<double>& rad,
+                      WriteOutcome* out = nullptr);
   // Velocity [rad/s]: requires fresh position feedback (the on-servo
   // position limits are inactive outside position mode, so the host
   // enforces them): commands driving a joint past a limit are zeroed,
   // magnitudes clamp to the configured velocity_limit.
-  bool writeVelocities(const std::vector<double>& rad_s);
+  bool writeVelocities(const std::vector<double>& rad_s,
+                       WriteOutcome* out = nullptr);
   // Current [A]: same positional gating; magnitudes clamp to
   // effort_limit/torque_constant minus current_limit_margin.
-  bool writeCurrents(const std::vector<double>& amps);
+  bool writeCurrents(const std::vector<double>& amps,
+                     WriteOutcome* out = nullptr);
 
   // Feedback with its acquisition stamp: `time` is the injectable
   // now_() clock at the successful read, `seq` bumps once per
   // successful read (a failed read freezes both). One state_mutex_
-  // hold — time/seq/values are mutually coherent.
+  // hold — time/seq/values are mutually coherent. When `cmds` is
+  // non-null, the applied-target and write-attempt records are copied
+  // in the SAME hold (the background thread must not advance between
+  // the feedback and the command records of one snapshot).
   struct StampedFeedback {
     std::vector<dxl::Feedback> feedback;
     double time = 0.0;
     std::uint64_t seq = 0;
   };
-  StampedFeedback lastFeedbackStamped() const;
+  StampedFeedback lastFeedbackStamped(
+      arm::CommandSnapshot* cmds = nullptr) const;
 
   // Soft position limits [rad] enforced by the writers above (servo
   // limits with pos_limit_margin applied); valid after activation. A
@@ -139,10 +162,19 @@ class CraneX7 {
 
   // Thread-safe command targets consumed by the background thread.
   // False (with lastError()) on a size mismatch. Each successful
-  // submission also feeds the deadman's submission-freshness check.
-  bool setTargetPositions(const std::vector<double>& rad);
-  bool setTargetVelocities(const std::vector<double>& rad_s);
-  bool setTargetCurrents(const std::vector<double>& amps);
+  // submission also feeds the deadman's submission-freshness check and
+  // is sequenced: `seq`/`time` (optional) report the submission's
+  // sequence number and now_() timestamp, stored atomically with the
+  // targets.
+  bool setTargetPositions(const std::vector<double>& rad,
+                          std::uint64_t* seq = nullptr,
+                          double* time = nullptr);
+  bool setTargetVelocities(const std::vector<double>& rad_s,
+                           std::uint64_t* seq = nullptr,
+                           double* time = nullptr);
+  bool setTargetCurrents(const std::vector<double>& amps,
+                         std::uint64_t* seq = nullptr,
+                         double* time = nullptr);
 
   // Deadman: escalates if the last successful command write — or, once
   // a controller has submitted targets, the last fresh submission — is
@@ -194,6 +226,10 @@ class CraneX7 {
   bool have_targets_ = false;
   double last_submission_ = 0.0;   // last setTarget* call (deadman)
   bool submission_armed_ = false;  // a controller has submitted targets
+  std::uint64_t target_seq_ = 0;        // bumps per setTarget* call
+  double target_submit_time_ = 0.0;     // now_() at that call
+  arm::AppliedTargetRecord applied_rec_;   // first/latest application
+  arm::WriteAttemptRecord attempt_rec_;    // every transmission attempt
 
   std::thread thread_;
   std::atomic<bool> thread_run_{false};

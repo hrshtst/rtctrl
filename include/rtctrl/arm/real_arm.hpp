@@ -21,8 +21,10 @@ class RealArm : public Arm {
   bool activate() override;
   bool deactivate() override;
   bool setMode(ControlMode mode) override;
-  bool readState(JointState& state) override;
-  bool writeCommand(const JointCommand& cmd) override;
+  bool readState(JointState& state,
+                 CommandSnapshot* cmds = nullptr) override;
+  bool writeCommand(const JointCommand& cmd,
+                    CommandReceipt* receipt = nullptr) override;
   bool step() override;
 
  private:

@@ -91,7 +91,7 @@ bool SimArm::setMode(ControlMode mode) {
   return true;
 }
 
-bool SimArm::readState(JointState& state) {
+bool SimArm::readState(JointState& state, CommandSnapshot* cmds) {
   for (int i = 0; i < kCanonicalDof; ++i) {
     const int offset = map_.rokiOffset(i);
     zVecElemNC(state.q.get(), i) = q9_[offset];
@@ -100,15 +100,50 @@ bool SimArm::readState(JointState& state) {
   }
   state.t = time_;
   state.seq = seq_;
+  if (cmds != nullptr) {
+    cmds->applied = applied_rec_;
+    cmds->last_attempt = attempt_rec_;
+  }
   return true;
 }
 
-bool SimArm::writeCommand(const JointCommand& cmd) {
-  if (cmd.mode != mode_) return false;  // mode is fixed while active
+bool SimArm::writeCommand(const JointCommand& cmd, CommandReceipt* receipt) {
+  if (cmd.mode != mode_) {  // mode is fixed while active
+    if (receipt != nullptr) *receipt = {false, 0, time_};
+    return false;
+  }
   zVecCopyNC(cmd.q.get(), cmd_.q.get());
   zVecCopyNC(cmd.dq.get(), cmd_.dq.get());
   zVecCopyNC(cmd.tau.get(), cmd_.tau.get());
   cmd_.mode = cmd.mode;
+  // Synchronous application: the accepted command IS the actuator goal
+  // from the next step, so submit/attempt/apply coincide.
+  ++target_seq_;
+  attempt_rec_ = {true, target_seq_, time_, true};
+  auto& rec = applied_rec_;
+  rec.valid = true;
+  rec.target_seq = target_seq_;
+  rec.first_cycle = rec.latest_cycle = seq_;
+  rec.first_time = rec.latest_time = time_;
+  rec.mode = static_cast<std::uint8_t>(cmd.mode);
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    double v = 0.0;
+    std::uint8_t flag = 0;
+    switch (cmd.mode) {
+      case ControlMode::Position: v = zVecElemNC(cmd.q.get(), i); break;
+      case ControlMode::Velocity: v = zVecElemNC(cmd.dq.get(), i); break;
+      case ControlMode::Current: {
+        const double lim = options_.effort_limit8[i];
+        const double raw = zVecElemNC(cmd.tau.get(), i);
+        v = std::clamp(raw, -lim, lim);
+        if (v != raw) flag |= kCmdClamped;
+        break;
+      }
+    }
+    rec.applied[i] = v;
+    rec.flags[i] = flag;
+  }
+  if (receipt != nullptr) *receipt = {true, target_seq_, time_};
   return true;
 }
 
