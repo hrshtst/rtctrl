@@ -185,11 +185,26 @@ extends into configurations whose first structural mode (~4–5 Hz,
 shoulder gear compliance against the extended arm's inertia) is
 *actively pumped* by this loop — it grew even after the trajectory
 rates were held at proven levels, so it is a loop property, not input
-excitation. That frequency sits below the PD filter's protective
-corner and beyond the delay-eroded phase: a 100 Hz non-realtime bus
-loop can neither damp it nor be shielded from it by stronger
-filtering without giving up the loop entirely. `x7_track` caps its
-scale accordingly.
+excitation. The mechanism is phase, not gain: the mode sits ABOVE the
+PD filter's 3.2 Hz corner (1/(2π·0.05 s)) — inside its cut region —
+yet the D path accumulates roughly 117° of lag there (≈55° from the
+50 ms PD low-pass, ≈30° from the 20 ms velocity filter, ≈32° from the
+~2-cycle bus pipeline), so past 90° the nominal damping *injects*
+energy into the mode. Broad low-passing bought 13 Hz protection at the
+price of the 4–5 Hz phase margin; more of it makes this worse, not
+better. `x7_track` caps its scale accordingly.
+
+**Pass-1 remediation (instrumentation & hardening).** Following the
+post-completion review, the loop was made observable and its timing
+monitored and bounded — see [REMEDIATION_PLAN.md](../REMEDIATION_PLAN.md):
+measured-time control with an explicit stale-feedback abort policy,
+feedback and command sequencing with first-vs-latest application
+records and receipt-matched latency verification, one continuous
+round-trip controller (no turnaround state reset), a strict quiescence
+gate, direction-aware anti-windup against the exact actuator limits,
+and full-loop CSV telemetry. Pass 1 does NOT lift the scale cap; it
+gives pass 2 (mode identification, then a notch/phase-compensated
+D-path design) trustworthy data to work from.
 
 ## Limitations and outlook
 
@@ -199,10 +214,13 @@ scale accordingly.
   the integrator chasing kinetic friction). Friction identification
   (M7 follow-up) can move friction from $\delta$ into the feedforward.
 - **Large fast motions**: lifting the scale cap needs identification
-  of the ~4–5 Hz structural mode plus a notch or input shaper — or
-  position-mode tracking (servo-internal kHz loops) for that regime,
-  keeping current mode for what it does best: gravity compensation,
-  hand-guiding, and moderate-envelope tracking.
+  of the ~4–5 Hz structural mode followed by a notch or
+  phase-compensated redesign of the D path — or position-mode tracking
+  (servo-internal kHz loops) for that regime, keeping current mode for
+  what it does best: gravity compensation, hand-guiding, and
+  moderate-envelope tracking. Input shaping can only reduce REFERENCE
+  excitation; it cannot stabilize an internally unstable feedback
+  loop, so it is a supplement to the redesign, never a substitute.
 - The feedback is diagonal PID; model-based designs
   (operational-space control, impedance control) can reuse the same
   `ChainModel::inverseDynamics` building block unchanged — that is

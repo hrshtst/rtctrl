@@ -95,7 +95,8 @@ int main(int argc, char* argv[]) {
   // inertia) goes actively unstable under this 100 Hz loop — verified
   // twice at scale 1.0 on 2026-07-21 (runs 7-8, both ended in manual
   // power cuts). Raising the cap needs mode identification plus a
-  // notch/input shaper first; see docs/theory/computed-torque.md.
+  // notch/phase-compensated D-path design first (input shaping alone
+  // cannot stabilize it); see docs/theory/computed-torque.md.
   if (scale > 0.6) {
     std::printf("scale %.2f capped to 0.60 — the stable envelope of the "
                 "current loop (see x7_track.cpp header)\n", scale);

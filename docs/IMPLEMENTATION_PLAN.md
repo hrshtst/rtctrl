@@ -346,7 +346,9 @@ live-validated: read-failure escalation (frozen-feedback trap) and both watchdog
 whose ~4–5 Hz structural mode (shoulder gear compliance vs arm inertia) the 100 Hz loop
 actively pumps — runs 7–8 oscillated coherently there even at matched trajectory rates.
 `x7_track` caps its scale accordingly. Lifting the cap requires mode identification plus
-a notch/input shaper (natural companion to the M7 friction-identification follow-up), or
+a notch/phase-compensated D-path design (natural companion to the M7
+friction-identification follow-up; input shaping only reduces reference excitation and
+cannot stabilize an internally unstable loop), or
 position-mode tracking for large fast motions. Full detail:
 `docs/theory/computed-torque.md` (hardware-reality section) and the apps' headers.
 
@@ -383,6 +385,23 @@ Intentional and recorded, not fixed: single ordered all-joint group (vs the vend
 named multi-groups), partial gain-writer surface, `GroupSyncRead` instead of
 FastSyncRead, and `dxl_inspect`'s built-in register table instead of `.model` parsing —
 see docs/PARITY.md "Consciously simplified or not ported".
+
+## Sampled-feedback remediation (2026-07-23, pass 1 of 2)
+
+A dedicated review of the full-amplitude oscillation concluded the sampled feedback
+architecture — not torque algebra — was the cause (~117° of D-path phase at the 4–5 Hz
+mode; synthetic loop timing; turnaround state resets; a non-gating quiescence check;
+telemetry that hid the loop signals). Pass 1, planned in
+[REMEDIATION_PLAN.md](REMEDIATION_PLAN.md) through nine review rounds and implemented
+2026-07-23, delivers instrumentation and hardening: measured-time control with a
+stale-feedback abort policy, feedback and command sequencing with coherent snapshots,
+first-vs-latest application records, receipt-matched latency verification, one
+continuous round-trip controller, a strict settle gate, direction-aware anti-windup
+against exact actuator limits, write-failure escalation, the shipped tuning moved into
+the library and pinned by tests, and full-loop CSV telemetry. The 0.6 scale cap stands;
+pass 2 (identification, then a notch/phase-compensated D-path design) starts from the
+data pass 1 makes trustworthy. Note the architecture addendum: `hw` now includes
+`arm/types.hpp` for the shared bridge DATA types (types only, no behavior).
 
 ## Git workflow
 

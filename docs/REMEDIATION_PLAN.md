@@ -1,9 +1,13 @@
 # x7_track instrumentation & hardening — Pass 1 of 2
 
-> Pass 1 does NOT itself enable scale 1.0: it makes the loop observable, deterministic,
-> and continuous so that pass 2 (identification + D-path redesign) can.
+> Pass 1 does NOT itself enable scale 1.0: it makes the loop observable, its timing
+> monitored and bounded (abort on violation), and its controller state continuous, so
+> that pass 2 (identification + D-path redesign) can.
 
-*Status: planned (2026-07-21), revised after two plan-review rounds.*
+*Status: pass 1 IMPLEMENTED (2026-07-23; plan revised through nine
+review rounds beforehand). Awaiting the hardware instrumentation-
+validation run at scale 0.5; pass 2 (identification + D-path redesign)
+not started.*
 
 ## Context
 
@@ -43,10 +47,11 @@ to `const Trajectory&`: `ComputedTorque`, `TrackingRun`, tests' `PdOnly`/`tracki
 `state_mutex_`; `servoCurrentLimitAmps()` accessor. `JointState` gains
 `std::uint64_t seq = 0` (no brace-init/memcpy users exist).
 **Clock discipline**: `JointState::t` carries the ABSOLUTE stamped feedback time (same
-injectable `now_()` clock as everything in CraneX7); `AppliedRecord::time` (D3) uses the
-same absolute clock; the RUNNER alone subtracts the first `state.t` to produce the
-controller's relative `t`. RealArm therefore has NO time-origin latch of its own (the
-earlier H2 latch is superseded), and `feedback_time − apply_time` is well-defined.
+injectable `now_()` clock as everything in CraneX7); `AppliedTargetRecord`'s
+`first_time`/`latest_time` (D3) use the same absolute clock; the RUNNER alone subtracts
+the first `state.t` to produce the controller's relative `t`. RealArm therefore has NO
+time-origin latch of its own (the earlier H2 latch is superseded), and the D8 timing
+columns are well-defined.
 `SimArm` fills seq from its step counter and `state.t` from sim time (its own consistent
 clock/origin).
 
@@ -55,36 +60,87 @@ clock/origin).
 Commands must be as observable as feedback, the row that logs a command must know that
 command's own submission sequence, and feedback + applied-command data must come from
 ONE atomic snapshot (querying live hardware after the write is race-dependent):
-- `AppliedRecord` becomes a bridge-level type in `arm/types.hpp`:
-  `{ uint64_t target_seq; uint64_t cycle; double time; bool write_ok; uint8_t mode;
-  double applied[8]; uint8_t flags[8]; }` — `applied[]` is in the MODE'S NATIVE UNITS
-  (rad / rad·s⁻¹ / Nm; the Nm conversion applies in current mode only, which is what
-  x7_track logs), flags = {magnitude-clamped, position-gated}. `threadLoop` updates it
-  under `state_mutex_` — alongside `feedback_`/`feedback_time_`/`feedback_seq_` — after
-  EVERY write attempt; failed writes recorded with `write_ok = false` (distinguishable
-  from an old command intentionally repeated).
-- **Coherent snapshot**: `Arm::readState(JointState&, AppliedRecord* applied = nullptr)`
-  — RealArm fills BOTH from a single `CraneX7` accessor that copies feedback + stamp +
-  seq + the applied record under one `state_mutex_` hold. SimArm synthesizes (synchronous
-  application: applied = its last accepted command). The observer receives this
-  snapshot; it never queries hardware post-write.
-- `setTarget*` stores `++target_seq_` atomically with the targets and reports it via an
+- **One record cannot represent both first application and the current actuator goal
+  (round 8)**: the hardware re-evaluates limits and position gating on EVERY
+  retransmission of the same target, so the freshest applied values/flags and the
+  first-application time are different facts about the same `target_seq` (e.g. first
+  write ungated, joint later enters the soft-limit band, retransmission gated to
+  zero). The bridge-level record in `arm/types.hpp` therefore carries BOTH:
+  `AppliedTargetRecord { bool valid = false; uint64_t target_seq;
+  uint64_t first_cycle; double first_time;            // latency verification only
+  uint64_t latest_cycle; double latest_time; uint8_t mode;
+  double latest_applied[8]; uint8_t latest_flags[8];  // current sat/gate state }` —
+  `latest_applied[]` in the MODE'S NATIVE UNITS (rad / rad·s⁻¹ / Nm; the Nm
+  conversion applies in current mode, which is what x7_track logs), flags =
+  {magnitude-clamped, position-gated}.
+  **Update rule** (threadLoop, under `state_mutex_` alongside
+  `feedback_`/`feedback_time_`/`feedback_seq_`), on every write ATTEMPT:
+  `last_write_attempt = attempt;` and, only when `attempt.ok`:
+  `if (!rec.valid || attempt.target_seq != rec.target_seq) { rec.target_seq =
+  attempt.target_seq; rec.first_cycle = cycle; rec.first_time = attempt.time;
+  rec.valid = true; } rec.latest_cycle = cycle; rec.latest_time = attempt.time;
+  rec.latest_applied = attempt.limited_values; rec.latest_flags = attempt.flags;`
+  — first-application data is preserved across retransmissions (latency stays
+  correct), the latest successful transmission owns the current sat/gate state, a
+  failed attempt updates only `last_write_attempt` (leaving the latest successful
+  actuator goal intact), and a failed FIRST attempt for a new sequence keeps the
+  sequences different so the first successful retry correctly becomes that command's
+  initial application.
+  `WriteAttemptRecord { bool valid = false; uint64_t target_seq; double time;
+  bool ok; }` — updated on EVERY transmission and retransmission.
+  **Validity (round 7)**: both records start `valid = false` — startup defaults must
+  not read as a genuine sequence-zero application (the initial cached target may
+  itself be seq 0); latency verification ignores invalid records until the first
+  receipt has had a cycle to apply.
+  **Both records travel together**: `CommandSnapshot { AppliedTargetRecord applied;
+  WriteAttemptRecord last_attempt; }` is copied under the same `state_mutex_` hold as
+  the feedback — the API is `Arm::readState(JointState&, CommandSnapshot* = nullptr)`
+  and the observer receives the CommandSnapshot (this is the only path D8's
+  `attempt_*` columns can flow through).
+  **Write-failure escalation (round 7)**: consecutive background group-write failures
+  become a hardware-layer escalation condition symmetric to `max_read_failures`
+  (`Options::max_write_failures`, default 5) — bus reads can stay healthy while writes
+  fail, leaving an old actuator goal active; waiting for the 250 ms deadman is too
+  slow, and the settle phase (which runs without the latency observer) is otherwise
+  blind to it. Escalation stops the thread, so `step()` returns false and settling or
+  tracking aborts identically. `CycleStats` gains `write_failures` alongside
+  `read_failures`, and the apps' end-of-run stats line prints it.
+- **Coherent snapshot**: `Arm::readState(JointState&, CommandSnapshot* = nullptr)` —
+  RealArm fills state AND CommandSnapshot from a single `CraneX7` accessor that copies
+  feedback + stamp + seq + both command records under one `state_mutex_` hold. SimArm
+  synthesizes (synchronous application: applied = its last accepted command, attempt
+  mirrors it). The observer receives this snapshot; it never queries hardware
+  post-write.
+- `setTarget*` stores `++target_seq_` and `submission_time = now_()` atomically with
+  the targets (it already calls `now_()` for deadman freshness) and reports both via an
   optional out-param. `Arm::writeCommand(const JointCommand&, CommandReceipt* receipt =
-  nullptr)` — `CommandReceipt { bool accepted; uint64_t submitted_seq; }`.
+  nullptr)` — `CommandReceipt { bool accepted; uint64_t submitted_seq;
+  double submission_time; }` (same absolute clock as D2, so `apply_time −
+  submission_time` is well-defined and both enforced and logged).
 - **LaggedArm sequencing (round 4)**: the wrapper keeps its OWN sequence: the receipt
   identifies the newly accepted (pending) command; when the pending command is written
   to SimArm on the next cycle, its original wrapper sequence becomes the applied
-  sequence in the wrapper-synthesized AppliedRecord. A pass-through would associate the
+  sequence in the wrapper-synthesized AppliedTargetRecord. A pass-through would associate the
   current row's request with the previous command's sequence and corrupt the sim-twin
   latency verification.
 - `run()` gains an optional `CycleObserver` invoked AFTER writeCommand (before step):
-  `bool observe(t, state, applied_snapshot, cmd, receipt)` — **returning false aborts
+  `bool observe(t, state, command_snapshot, cmd, receipt)` — **returning false aborts
   the run** (run() returns false). `TrackingRun` implements Controller + CycleObserver;
   all CSV writing happens in `observe()`.
-- **Latency verification**: each cycle, using the coherent snapshot, verify the
-  PREVIOUS cycle's `submitted_seq` was applied within ≤ 2 cycles; abort on the FIRST
-  confirmed violation. Pass-1 timing is thereby "monitored and bounded, abort on
-  violation" — the honest formulation of the determinism claim.
+- **Latency verification with sequence-keyed receipts (round 9)**: the applied record
+  in a row belongs to a PREVIOUS submission, so its delay must use the MATCHING
+  historical receipt — never the receipt created in the same row. `TrackingRun` keeps
+  a small pending map `submitted_seq → submission_time`; in `observe()` it
+  (1) matches `snapshot.applied.target_seq` to its stored receipt,
+  (2) computes `first_apply_delay = applied.first_time − matched_submission_time`,
+  (3) removes completed older receipts,
+  (4) aborts if the applied sequence skips a pending sequence or any pending receipt
+  exceeds the 2-cycle deadline — an applied sequence NOT present in the map and older
+  than every pending entry (e.g. the settle phase's last command at tracking start) is
+  a pre-run baseline, not a violation — and
+  (5) adds the CURRENT receipt to the map after evaluating the pre-write snapshot.
+  Abort on the FIRST confirmed violation. Pass-1 timing is thereby "monitored and
+  bounded, abort on violation".
 
 ### D4 — Measured time base with an explicit stale-feedback policy (F3 + round 3)
 `run()` (runner.hpp): latch `t0` from the first `state.t`; each cycle compute
@@ -103,7 +159,10 @@ ONE atomic snapshot (querying live hardware after the write is race-dependent):
 `settleArm` uses the same pattern via a shared helper. Controllers therefore never see
 dt ≤ 0 or a multi-cycle dt beyond the policy limit; ComputedTorque's H3 clamp
 (`min(dt, 3 × nominal)` for filter/integrator alphas; raw dt for the backward
-difference) remains as defense-in-depth.
+difference) remains as defense-in-depth. **Nominal dt source (round 5)**: an explicit
+`ComputedTorque::setNominalDt(double)` configured by the application from
+`crane_x7_tuning.hpp`'s `kNominalDt` (= the 0.01 s control cycle); documented default
+0.01 so a reusable controller stays explicit rather than guessing `Arm::dt()`.
 
 ### D5 — ComputedTorque hardening (F2, F6 + H1/H3)
 - **First-sample init (F6)**: record `q_prev_`, set `dq_est_ = 0`, and enable the
@@ -116,14 +175,18 @@ difference) remains as defense-in-depth.
   joint, each cycle:
   (1) `i_cand = clamp(i + Ki·e·dt_clamped, −i_clamp, +i_clamp)` — the existing ±1.5 Nm
   integral-STATE clamp is retained explicitly;
-  (2) `τ_raw = ff + pd + i_cand`;
-  (3) COMMIT `i = i_cand` unless (`τ_raw > +τ_max` and `i_cand > i`) or
-  (`τ_raw < −τ_max` and `i_cand < i`) — rejection only when the update drives farther
+  (2) `τ_cand = ff + pd + i_cand` (decision quantity only);
+  (3) DECIDE: `accepted = !((τ_cand > +τ_max && i_cand > i) ||
+  (τ_cand < −τ_max && i_cand < i))` — rejection only when the update drives farther
   into saturation; the unwinding direction always commits;
-  (4) the emitted command `τ_commanded = clamp(τ_raw, ±τ_max)` uses exactly the
-  hardware's limits including the outer guard: `τ_max = max(0, min(effort_limit,
-  kt·servoCurrentLimitAmps()) − margin·kt)` per joint (mirrors `writeCurrents`; an
-  oversized margin cannot yield a negative limit). Sim twin uses `effort_limit8`.
+  (4) **the emitted command is recomputed from the COMMITTED state (round 5)**:
+  `i_next = accepted ? i_cand : i`; `τ_raw = ff + pd + i_next`;
+  `τ_commanded = clamp(τ_raw, ±τ_max)`; `i = i_next` — a rejected candidate never
+  leaks into the output (logged `ff + pd + i` always equals the logged `τ_raw`).
+  τ_max uses exactly the hardware's limits including the outer guard:
+  `τ_max = max(0, min(effort_limit, kt·servoCurrentLimitAmps()) − margin·kt)` per joint
+  (mirrors `writeCurrents`; an oversized margin cannot yield a negative limit). Sim
+  twin uses `effort_limit8`.
   **Position gating is deliberately outside the pass-1 anti-windup**: the start guard
   and the qf clamp keep compliant trajectories a buffer away from the soft limits, so
   the gate cannot engage in-envelope; the now-logged `gate` flag makes any engagement
@@ -142,7 +205,8 @@ timeout means real residual motion or a broken metric, both grounds to stop.
 
 ### D7 — Tuning constants to the library
 New `include/rtctrl/arm/crane_x7_tuning.hpp`: kGainScale + shipped Kp 6 / Kd 1 / Ki 6 /
-clamp 1.5 / filter taus. Apps and tests consume the same numbers (tests link only
+clamp 1.5 / filter taus / `kNominalDt` (0.01 s control cycle, consumed by
+`setNominalDt`). Apps and tests consume the same numbers (tests link only
 `rtctrl::rtctrl`; duplication is how the shipped config became untested).
 
 ### D8 — Widened CSV with explicit event semantics (rounds 3–4)
@@ -153,14 +217,30 @@ one absolute clock (D2), and the header comment documents the relationships:
 - **Feedback event** (this row's measurement, from the coherent snapshot):
   `feedback_seq`, `feedback_time`, per joint `q`, `dq_servo`, `tau_meas` (measured
   current × kt at the feedback event).
-- **This cycle's request** (computed now, applied later): `submitted_seq`, per joint
-  `qd`, `dqd`, `dq_est`, `ff`, `pd`, `i`, `tau_raw` (pre-controller-clamp),
-  `tau_commanded` (post-controller-clamp), `controller_sat`.
-- **Most recent APPLIED command IN the same snapshot** (belongs to a PREVIOUS
-  submission): `applied_seq`, `apply_time`, `apply_ok`, per joint `tau_applied`
-  (hardware post-limit, native units — Nm in current mode), `hardware_sat`, `gate`.
-  `apply_lag = feedback_time − apply_time` is SIGNED and documented (the background
-  cycle reads before it writes, so the latest apply can post-date this row's feedback).
+- **This cycle's request** (computed now, applied later): `submitted_seq`,
+  `submission_time`, per joint `qd`, `dqd`, `dq_est`, `ff`, `pd`, `i`, `tau_raw`
+  (pre-controller-clamp), `tau_commanded` (post-controller-clamp), `controller_sat`.
+  Offline analysis obtains an applied command's own submission time by joining
+  `applied_seq` to the earlier row whose `submitted_seq` matches (documented in the
+  CSV header; `first_apply_delay = first_apply_time − matched_submission_time` — the
+  current row's `submission_time` belongs to a NEWER command and must not be used).
+- **Applied-target record IN the same snapshot** (belongs to a PREVIOUS submission;
+  failed attempts never overwrite it): `applied_valid`, `applied_seq`,
+  `first_apply_time`, `first_apply_cycle` (latency facts, preserved across
+  retransmissions), `latest_apply_time`, `latest_apply_cycle`, per joint `tau_applied`
+  (hardware post-limit at the LATEST successful transmission, native units — Nm in
+  current mode), `hardware_sat`, `gate` (current state); plus the last write ATTEMPT:
+  `attempt_valid`, `attempt_seq`, `attempt_time`, `attempt_ok`. Derived timing columns
+  are named by the event they use: `first_apply_delay = first_apply_time −
+  matched_submission_time` (the latency metric; matched via the receipt map) and
+  `feedback_minus_latest_apply = feedback_time − latest_apply_time` (SIGNED and
+  documented: the background cycle reads before it writes, so the latest apply can
+  post-date this row's feedback). **Repeated snapshots of a completed sequence**: the
+  pending receipt is removed on first match, but the same applied sequence may stay
+  current across further rows while a newer command is in flight — the logger caches
+  the last matched `first_apply_delay` per applied sequence and re-emits the cached
+  value on those rows, so every row stays self-contained (offline analysis can always
+  re-derive it by joining `applied_seq` to the historical `submitted_seq`).
 `openCsvLog` header regenerated in the same commit.
 
 ## Steps (implementation order)
@@ -170,8 +250,10 @@ one absolute clock (D2), and the header comment documents the relationships:
 2. Feedback stamping + seq (D2) (`hw/crane_x7.{hpp,cpp}`, `arm/types.hpp`,
    `arm/real_arm.cpp`, `arm/sim_arm.{hpp,cpp}`; hw_test: stamp/seq advance, frozen on
    failed read, follows injected time).
-3. Command-side sequencing + applied record (D3) (`hw/crane_x7.{hpp,cpp}`; hw_test:
-   applied record matches submitted target seq, flags set under clamp/gate).
+3. Command-side sequencing + records (D3) (`hw/crane_x7.{hpp,cpp}`; hw_test: applied
+   record matches submitted target seq; flags set under clamp/gate; retransmission and
+   validity semantics; write-failure escalation stops the thread like the read-failure
+   path).
 4. Measured time base + stale-feedback policy (D4) (`arm/runner.hpp`,
    `apps/track_common.hpp` settleArm; new runner unit test with a scripted mock Arm
    emitting duplicate / skipped / backward / over-age samples; re-verify thread_test
@@ -210,12 +292,28 @@ perturbations, with defined abort thresholds).
 
 - `ctest --output-on-failure` (note: `-L unit -L integration` intersects labels and
   selects nothing here; use no label filter or `-L 'unit|integration'`).
-- New tests listed per step, all green; whole suite green. Round-4 additions:
+- New tests listed per step, all green; whole suite green. Rounds 4–6 additions:
   atomically coherent feedback/applied snapshots (thread advancing between reads must
-  not mix epochs); equal timestamp origins and correct SIGNED `apply_lag`; LaggedArm
-  request→application sequence mapping; observer-triggered abort propagates out of
-  `run()`; controller saturation vs hardware saturation distinguished in the record;
-  failed command writes recorded with `write_ok = false`.
+  not mix epochs); equal timestamp origins and correct SIGNED
+  `feedback_minus_latest_apply`; LaggedArm request→application sequence mapping;
+  observer-triggered abort propagates out of `run()`; controller saturation vs
+  hardware saturation distinguished in the record;
+  failed attempts land only in the attempt record and never overwrite the applied
+  record; retransmitting the same sequence does not change its
+  `first_apply_time`/`first_apply_cycle`; a failed first attempt followed by success records the
+  retry as the first application (asserting `first_apply_time`/`first_apply_cycle`);
+  latency verification uses first application, not latest retransmission, joined to
+  the sequence-matched historical receipt. Round-7 additions: applied and attempt records returned
+  atomically through one CommandSnapshot; startup records report invalid rather than a
+  sequence-zero application (and a genuine first seq-0 command can still become
+  valid); a failed background write triggers the hardware write-failure escalation and
+  aborts settling; rejected anti-windup candidates satisfy
+  `tau_raw == ff + pd + committed_i`. Round-8 addition: a target initially applied
+  ungated whose later retransmission becomes position-gated preserves its
+  first-application time/cycle while `tau_applied`/`latest_flags` reflect the gated
+  state. Round-9 addition: latency-queue startup — a snapshot already containing a
+  valid settle-phase command absent from the tracking receipt map is treated as the
+  pre-run baseline, not a skipped tracking command.
 - Sim twin end-to-end: `./build/apps/x7_track_sim 0.5` and `--start <track8 pose>`:
   widened CSV with sane fb_seq/applied_seq/t columns, no turnaround torque step.
 - Emulator smoke: `dxl_emu` + `x7_track --port <pty> 0.3`: settle gate enforced,
