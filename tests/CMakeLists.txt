@@ -9,7 +9,8 @@ add_executable(unit_tests
   unit/hw_test.cpp
   unit/hw_modes_test.cpp
   unit/gravity_test.cpp
-  unit/runner_test.cpp)
+  unit/runner_test.cpp
+  unit/computed_torque_test.cpp)
 target_link_libraries(unit_tests PRIVATE rtctrl::rtctrl Catch2::Catch2WithMain)
 # Test code refers to models/ and config/ by repo-root-relative paths.
 catch_discover_tests(unit_tests
