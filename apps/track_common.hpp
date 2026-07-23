@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
@@ -18,15 +19,11 @@ namespace x7 {
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;
+namespace tuning = rtctrl::arm::tuning;
 
-// PD scale per canonical joint (see ComputedTorque::setGainScales):
-// proximal joints take the full gains; distal joints, whose link-side
-// inertia is a small fraction of the shoulder's, take a fraction to
-// stay clear of backlash limit cycles. The forearm TWIST gets the
-// smallest scale of all: the hand's mass sits nearly on its axis
-// (J ~ 1e-3 kg m^2), and at 0.35 it rang at ~5 Hz (track5.csv log).
-constexpr double kGainScale[model::kCanonicalDof] = {1.0, 1.0, 0.7, 0.7,
-                                                     0.1, 0.3, 0.2, 0.2};
+// The shipped tuning lives in the library (one source of truth, also
+// exercised by the tests): rtctrl/arm/crane_x7_tuning.hpp.
+using tuning::kGainScale;
 
 // Gravity compensation plus light filtered damping: holds the arm AND
 // bleeds off swing, unlike pure GravityComp which floats. Used before

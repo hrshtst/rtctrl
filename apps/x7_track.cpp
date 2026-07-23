@@ -70,7 +70,7 @@ int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   double scale = 0.6;
   // Hardware defaults — see header for how they were chosen.
-  double kp = 6.0, kd = 1.0, ki = 6.0;
+  double kp = x7::tuning::kKp, kd = x7::tuning::kKd, ki = x7::tuning::kKi;
   std::string log_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--kp") == 0 && i + 1 < argc) {
@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
     hold.mode = arm::ControlMode::Current;
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
     robot.writeCommand(hold);
-    x7::SettleController settle(chain, map, 0.8);
+    x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
     const auto settled = x7::settleArm(robot, settle, 6.0);
     if (!settled.io_ok) {
       std::fprintf(stderr, "settle phase aborted\n");

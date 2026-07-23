@@ -158,7 +158,8 @@ struct LaggedArm : arm::Arm {
 
 int main(int argc, char* argv[]) {
   double scale = 1.0;
-  double kp = 6.0, kd = 1.0, ki = 6.0;  // x7_track's hardware defaults
+  double kp = x7::tuning::kKp, kd = x7::tuning::kKd,
+         ki = x7::tuning::kKi;  // the shipped library tuning
   double vel_tau = 0.12;                // servo velocity-estimator lag [s]
   bool ideal = false;
   std::string log_path, zvs_path, start_csv;
@@ -247,7 +248,7 @@ int main(int argc, char* argv[]) {
 
     // same settle phase as x7_track, then anchor where the arm is
     // (with --disturb seeds it settles slightly off the start pose)
-    x7::SettleController settle_ctl(chain, map, 0.8);
+    x7::SettleController settle_ctl(chain, map, x7::tuning::kSettleKd);
     x7::settleArm(robot, settle_ctl, 6.0);
     arm::JointState settled;
     robot.readState(settled);
