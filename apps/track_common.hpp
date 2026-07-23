@@ -127,6 +127,7 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
   std::uint64_t seq_prev = 0;
   double quiet = 0.0;
   double t = 0.0;
+  bool reached_quiet_window = false;
   for (long cycle = 0; cycle < max_cycles; ++cycle) {
     if (!robot.readState(state)) return res;
     if (!have_ref) {
@@ -154,12 +155,18 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
     settle.update(state, cmd, t);
     if (!robot.writeCommand(cmd)) return res;
     if (!robot.step()) return res;
-    if (t > 0.5 && quiet >= 0.3) break;
+    if (t > 0.5 && quiet >= 0.3) {
+      reached_quiet_window = true;
+      break;
+    }
   }
   res.io_ok = true;
   res.elapsed = t;
   res.residual = settle.maxSpeed();
-  res.quiescent = res.residual < 0.05;
+  // Quiescence means the SUSTAINED 0.3 s quiet window was reached — a
+  // timeout whose final sample merely dips below the threshold is NOT
+  // quiescent (that near-miss defeated the gate once in review).
+  res.quiescent = reached_quiet_window;
   std::printf("settled in %.1f s (residual %.3f rad/s)%s\n", res.elapsed,
               res.residual, res.quiescent ? "" : " — still moving");
   return res;

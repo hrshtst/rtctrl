@@ -232,10 +232,12 @@ int main(int argc, char* argv[]) {
     }
 
     const bool ok = arm::run(robot, tracking, trip.duration(), &tracking);
-    tracking.report();
-
-    const auto stats = session.arm->cycleStats();
+    // Safe transition FIRST: on an abort (observer veto included) the
+    // background thread is still healthily retransmitting the last
+    // torque command — reporting must not delay going limp.
     robot.deactivate();
+    const auto stats = session.arm->cycleStats();
+    tracking.report();
     if (log) std::fclose(log);
     std::printf("cycles %llu, overruns %llu, read failures %llu, "
                 "write failures %llu\n",

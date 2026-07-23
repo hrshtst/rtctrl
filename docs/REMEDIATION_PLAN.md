@@ -314,6 +314,14 @@ perturbations, with defined abort thresholds).
   state. Round-9 addition: latency-queue startup — a snapshot already containing a
   valid settle-phase command absent from the tracking receipt map is treated as the
   pre-run baseline, not a skipped tracking command.
+- Application-orchestration tests (`tests/unit/track_common_test.cpp`,
+  including `apps/track_common.hpp` directly): settle-gate sustained-
+  window semantics (accepted / final-low-sample-rejected / timeout-
+  rejected) and TrackingRun's receipt-map latency verification
+  (baseline, match, deadline, skipped sequence, delayed first
+  application). LaggedArm's request→application mapping is executable-
+  local and is validated through the sim twin's CSV
+  (`first_apply_delay` ≡ one cycle), not unit-tested.
 - Sim twin end-to-end: `./build/apps/x7_track_sim 0.5` and `--start <track8 pose>`:
   widened CSV with sane fb_seq/applied_seq/t columns, no turnaround torque step.
 - Emulator smoke: `dxl_emu` + `x7_track --port <pty> 0.3`: settle gate enforced,

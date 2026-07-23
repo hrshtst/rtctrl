@@ -291,9 +291,8 @@ int main(int argc, char* argv[]) {
     }
 
     const bool ok = arm::run(robot, tracking, trip.duration(), &tracking);
+    robot.deactivate();  // parity with x7_track: safe transition first
     tracking.report();
-
-    robot.deactivate();
     if (log) std::fclose(log);
     if (zvs) {
       std::printf("wrote %d frames — view with:  rk_anim "
