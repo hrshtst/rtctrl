@@ -133,7 +133,8 @@ int main(int argc, char* argv[]) {
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
     robot.writeCommand(hold);
     x7::SettleController settle(chain, map, 0.8);
-    if (!x7::settleArm(robot, settle, 6.0)) {
+    const auto settled = x7::settleArm(robot, settle, 6.0);
+    if (!settled.io_ok) {
       std::fprintf(stderr, "settle phase aborted\n");
       robot.deactivate();
       return 1;

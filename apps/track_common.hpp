@@ -42,20 +42,37 @@ struct SettleController : arm::Controller {
               double t) override {
     cmd.mode = arm::ControlMode::Current;
     chain_.gravityTorque(map_, state.q.get(), cmd.tau.get());
-    const double dt = t_prev_ < 0.0 ? -1.0 : t - t_prev_;
-    const double a_v = dt > 0.0 ? dt / (0.02 + dt) : 1.0;
-    const double a_d = dt > 0.0 ? dt / (0.05 + dt) : 1.0;
+    if (t_prev_ < 0.0) {
+      // First sample: record positions only. dq_est_ stays zero and no
+      // damping is emitted — the servo's lagged dq must never seed the
+      // estimator (it would contaminate the filtered samples after it).
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        q_prev_[i] = zVecElemNC(state.q.get(), i);
+      }
+      t_prev_ = t;
+      return;
+    }
+    const double dt = t - t_prev_;
+    if (dt <= 0.0) {
+      // Duplicate sample (defense in depth — the loop already skips
+      // these): hold every filter state, keep emitting the held damping.
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        zVecElemNC(cmd.tau.get(), i) += d_filt_[i];
+      }
+      return;
+    }
+    const double a_v = dt / (0.02 + dt);
+    const double a_d = dt / (0.05 + dt);
+    const double a_m = dt / (0.15 + dt);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double q = zVecElemNC(state.q.get(), i);
-      const double raw = dt > 0.0 ? (q - q_prev_[i]) / dt
-                                  : zVecElemNC(state.dq.get(), i);
+      const double raw = (q - q_prev_[i]) / dt;
       dq_est_[i] += a_v * (raw - dq_est_[i]);
       d_filt_[i] += a_d * (-kd_ * kGainScale[i] * dq_est_[i] - d_filt_[i]);
       zVecElemNC(cmd.tau.get(), i) += d_filt_[i];
       // slow-filtered |speed| for the quiescence metric: the fast
       // estimator hovers near the position-LSB noise floor (~0.05
       // rad/s spikes) even on a perfectly still arm
-      const double a_m = dt > 0.0 ? dt / (0.15 + dt) : 1.0;
       speed_[i] += a_m * (std::fabs(dq_est_[i]) - speed_[i]);
       q_prev_[i] = q;
     }
@@ -80,27 +97,65 @@ struct SettleController : arm::Controller {
   model::ZVector speed_{model::kCanonicalDof};
 };
 
+// Policy-free settle outcome — the CALLER decides whether a
+// non-quiescent timeout is fatal (hardware: yes; sim twin with
+// --disturb seeds: warn and continue).
+struct SettleResult {
+  bool io_ok = false;      // the arm layer stayed healthy
+  bool quiescent = false;  // residual below threshold at exit
+  double elapsed = 0.0;    // measured time spent settling [s]
+  double residual = 0.0;   // final slow-filtered max joint speed [rad/s]
+};
+
 // Runs the settle controller until the arm is quiescent (max estimated
-// joint speed below 0.05 rad/s for 0.3 s), or timeout. Returns false if
-// the arm layer failed; quiescence itself is best-effort and reported.
-inline bool settleArm(arm::Arm& robot, SettleController& settle,
-                      double timeout_s) {
+// joint speed below 0.05 rad/s for 0.3 s of measured time) or timeout,
+// under the same measured-time/stale-feedback policy as arm::run().
+inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
+                              double timeout_s) {
   arm::JointState state;
   arm::JointCommand cmd;
+  SettleResult res;
+  const double dt = robot.dt();
+  const long max_cycles =
+      static_cast<long>(4.0 * timeout_s / (dt > 0.0 ? dt : 1e-3)) + 8;
+  bool have_t0 = false;
+  double t0 = 0.0;
+  double t_prev = 0.0;
+  std::uint64_t seq_prev = 0;
   double quiet = 0.0;
   double t = 0.0;
-  for (; t < timeout_s; t += robot.dt()) {
-    if (!robot.readState(state)) return false;
+  for (long cycle = 0; cycle < max_cycles; ++cycle) {
+    if (!robot.readState(state)) return res;
+    if (!have_t0) {
+      t0 = t_prev = state.t;
+      seq_prev = state.seq;
+      have_t0 = true;
+    } else {
+      if (state.t < t_prev) return res;  // backward clock
+      if (state.seq == seq_prev) {       // duplicate feedback
+        if (!robot.step()) return res;
+        continue;
+      }
+      if (state.seq - seq_prev > arm::kMaxSeqGap) return res;
+      if (state.t - t_prev > arm::kMaxSampleInterval) return res;
+      quiet = settle.maxSpeed() < 0.05 ? quiet + (state.t - t_prev) : 0.0;
+      t_prev = state.t;
+      seq_prev = state.seq;
+    }
+    t = state.t - t0;
+    if (t >= timeout_s) break;
     settle.update(state, cmd, t);
-    if (!robot.writeCommand(cmd)) return false;
-    if (!robot.step()) return false;
-    quiet = settle.maxSpeed() < 0.05 ? quiet + robot.dt() : 0.0;
+    if (!robot.writeCommand(cmd)) return res;
+    if (!robot.step()) return res;
     if (t > 0.5 && quiet >= 0.3) break;
   }
-  std::printf("settled in %.1f s (residual %.3f rad/s)%s\n", t,
-              settle.maxSpeed(),
-              settle.maxSpeed() < 0.05 ? "" : " — WARNING: still moving");
-  return true;
+  res.io_ok = true;
+  res.elapsed = t;
+  res.residual = settle.maxSpeed();
+  res.quiescent = res.residual < 0.05;
+  std::printf("settled in %.1f s (residual %.3f rad/s)%s\n", res.elapsed,
+              res.residual, res.quiescent ? "" : " — still moving");
+  return res;
 }
 
 // Wraps ComputedTorque, accumulates per-joint tracking error, and
