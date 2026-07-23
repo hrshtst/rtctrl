@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -116,4 +117,97 @@ TEST_CASE("computed torque tracks in sim and beats bare PD",
                               << rms_pd << " rad");
   CHECK(rms_computed < 0.02);        // tracks tightly
   CHECK(rms_computed < 0.5 * rms_pd);  // and clearly beats bare PD
+}
+
+TEST_CASE("shipped configuration tracks the x7_track excursion",
+          "[tracking][sim]") {
+  // The exact numbers the hardware runs (crane_x7_tuning.hpp) on the
+  // exact excursion shape x7_track commands, over one continuous round
+  // trip — the configuration that once went untested. Rigid-joint sim:
+  // this pins the shipped loop's regression numbers; it cannot certify
+  // stability against gear elasticity.
+  namespace tuning = rtctrl::arm::tuning;
+  using rtctrl::model::RoundTripTrajectory;
+  ChainModel chain(kModelPath);
+  JointMap map(chain);
+
+  const double start[] = {0.0, 0.2, 0.0, -0.4, 0.0, -0.2, 0.0, 0.1};
+  ZVector q0(kCanonicalDof), qf(kCanonicalDof);
+  for (int i = 0; i < kCanonicalDof; ++i) q0[i] = qf[i] = start[i];
+  const double scale = 0.6;  // the hardware app's capped default
+  qf[1] += 0.20 * scale;
+  qf[3] -= 0.30 * scale;
+  qf[5] += 0.25 * scale;
+  const double min_T = 2.0 * std::sqrt(scale / 0.5);
+  const RoundTripTrajectory trip(
+      MinJerkTrajectory::withVelocityLimit(q0, qf, 0.3, min_T),
+      MinJerkTrajectory::withVelocityLimit(qf, q0, 0.3, min_T));
+
+  ComputedTorque ctl(chain, map, trip, tuning::kKp, tuning::kKd);
+  ctl.setIntegral(tuning::kKi, tuning::kIntegralClampNm);
+  ctl.setGainScales(tuning::kGainScale);
+  ctl.setNominalDt(tuning::kNominalDt);
+  double tau_max[kCanonicalDof] = {10.0, 10.0, 4.0, 4.0,
+                                   4.0,  4.0,  4.0, 4.0};
+  ctl.setTorqueLimits(tau_max);
+
+  // track error and the commanded-torque continuity across the split
+  struct Wrap : Controller {
+    Wrap(ComputedTorque& inner, const Trajectory& trip, double split)
+        : inner_(inner), trip_(trip), split_(split) {}
+    void update(const JointState& state, JointCommand& cmd,
+                double t) override {
+      inner_.update(state, cmd, t);
+      trip_.sample(t, q_d.get());
+      for (int i = 0; i < kCanonicalDof; ++i) {
+        const double e = q_d[i] - state.q[i];
+        sum_sq += e * e;
+        ++n;
+        const double tau = zVecElemNC(cmd.tau.get(), i);
+        if (have_prev) {
+          const double d = std::fabs(tau - prev_tau[i]);
+          if (!split_seen && t >= split_) {
+            split_delta[i] = d;
+          } else {
+            max_delta[i] = std::max(max_delta[i], d);
+          }
+        }
+        prev_tau[i] = tau;
+      }
+      if (!split_seen && t >= split_) split_seen = true;
+      have_prev = true;
+    }
+    ComputedTorque& inner_;
+    const Trajectory& trip_;
+    double split_;
+    ZVector q_d{kCanonicalDof};
+    double prev_tau[kCanonicalDof] = {};
+    double split_delta[kCanonicalDof] = {};
+    double max_delta[kCanonicalDof] = {};
+    double sum_sq = 0.0;
+    long n = 0;
+    bool have_prev = false;
+    bool split_seen = false;
+  } wrap(ctl, trip, trip.outDuration());
+
+  SimArm::Options opt;
+  opt.model_path = kModelPath;
+  opt.initial_q8 = {0.0, 0.2, 0.0, -0.4, 0.0, -0.2, 0.0, 0.1};
+  SimArm sim(opt);
+  sim.setMode(ControlMode::Current);
+  sim.activate();
+  REQUIRE(rtctrl::arm::run(sim, wrap, trip.duration()));
+
+  const double rms = std::sqrt(wrap.sum_sq / wrap.n);
+  INFO("shipped-config RMS " << rms << " rad");
+  CHECK(rms < 0.02);  // regression pin for the shipped numbers
+
+  // turnaround continuity: the torque step across the split must be of
+  // the same order as ordinary cycle-to-cycle deltas — separate
+  // per-leg controllers used to step multi-Nm discontinuities here
+  for (const int j : {1, 3, 5}) {
+    INFO("joint " << j << " split delta " << wrap.split_delta[j]
+                  << " vs max ordinary delta " << wrap.max_delta[j]);
+    CHECK(wrap.split_delta[j] < std::max(2.0 * wrap.max_delta[j], 0.05));
+  }
 }
