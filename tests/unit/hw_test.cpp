@@ -483,3 +483,35 @@ TEST_CASE("writers reject commands before activation", "[hw]") {
   CHECK_FALSE(arm.writePositions(eight));
   CHECK(arm.lastError().find("not activated") != std::string::npos);
 }
+
+TEST_CASE("feedback carries a coherent acquisition stamp and sequence",
+          "[hw]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  double sim_time = 100.0;
+  arm.setTimeSource([&sim_time] { return sim_time; });
+  REQUIRE(arm.activate());  // performs a readAll internally
+
+  std::vector<dxl::Feedback> fb;
+  sim_time = 101.5;
+  REQUIRE(arm.readAll(fb));
+  const auto s1 = arm.lastFeedbackStamped();
+  CHECK(s1.time == Approx(101.5));  // follows the injected clock
+  REQUIRE(s1.seq >= 1);
+
+  sim_time = 101.51;
+  REQUIRE(arm.readAll(fb));
+  const auto s2 = arm.lastFeedbackStamped();
+  CHECK(s2.seq == s1.seq + 1);
+  CHECK(s2.time == Approx(101.51));
+
+  // a failed read freezes stamp, sequence, and values alike
+  io.setReadFailure(-3001);
+  sim_time = 102.0;
+  CHECK_FALSE(arm.readAll(fb));
+  const auto s3 = arm.lastFeedbackStamped();
+  CHECK(s3.seq == s2.seq);
+  CHECK(s3.time == Approx(101.51));
+}

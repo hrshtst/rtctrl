@@ -104,6 +104,17 @@ class CraneX7 {
   // effort_limit/torque_constant minus current_limit_margin.
   bool writeCurrents(const std::vector<double>& amps);
 
+  // Feedback with its acquisition stamp: `time` is the injectable
+  // now_() clock at the successful read, `seq` bumps once per
+  // successful read (a failed read freezes both). One state_mutex_
+  // hold — time/seq/values are mutually coherent.
+  struct StampedFeedback {
+    std::vector<dxl::Feedback> feedback;
+    double time = 0.0;
+    std::uint64_t seq = 0;
+  };
+  StampedFeedback lastFeedbackStamped() const;
+
   // Soft position limits [rad] enforced by the writers above (servo
   // limits with pos_limit_margin applied); valid after activation. A
   // joint PARKED inside the margin band turns the current-mode gate
@@ -177,6 +188,8 @@ class CraneX7 {
 
   mutable std::mutex state_mutex_;
   std::vector<dxl::Feedback> feedback_;     // last successful readAll
+  double feedback_time_ = 0.0;              // now_() at acquisition
+  std::uint64_t feedback_seq_ = 0;          // bumps per successful read
   std::vector<double> targets_;             // canonical, unit per mode
   bool have_targets_ = false;
   double last_submission_ = 0.0;   // last setTarget* call (deadman)

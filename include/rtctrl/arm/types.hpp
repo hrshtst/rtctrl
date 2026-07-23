@@ -14,7 +14,12 @@ struct JointState {
   model::ZVector q{model::kCanonicalDof};
   model::ZVector dq{model::kCanonicalDof};
   model::ZVector tau{model::kCanonicalDof};  // real HW: estimated from current
+  // ABSOLUTE feedback-acquisition time on the producer's clock (real
+  // HW: CraneX7's injectable now_(); sim: sim time). The RUNNER alone
+  // subtracts the first sample's t to obtain the controller-relative
+  // time — no other layer keeps a time origin.
   double t = 0.0;
+  std::uint64_t seq = 0;  // bumps once per fresh feedback sample
 };
 
 struct JointCommand {

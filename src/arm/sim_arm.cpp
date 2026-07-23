@@ -99,6 +99,7 @@ bool SimArm::readState(JointState& state) {
     zVecElemNC(state.tau.get(), i) = zVecElemNC(cmd_.tau.get(), i);
   }
   state.t = time_;
+  state.seq = seq_;
   return true;
 }
 
@@ -205,6 +206,7 @@ bool SimArm::step() {
   if (log_ != nullptr) {
     log_->frame(options_.control_dt, q9_.get());
   }
+  ++seq_;  // one fresh feedback sample per control step
   return true;
 }
 

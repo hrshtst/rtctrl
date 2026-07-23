@@ -217,12 +217,19 @@ bool CraneX7::readAll(std::vector<dxl::Feedback>& out) {
   }
   std::lock_guard<std::mutex> lock(state_mutex_);
   feedback_ = out;
+  feedback_time_ = now_();
+  ++feedback_seq_;
   return true;
 }
 
 std::vector<dxl::Feedback> CraneX7::lastFeedback() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   return feedback_;
+}
+
+CraneX7::StampedFeedback CraneX7::lastFeedbackStamped() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return {feedback_, feedback_time_, feedback_seq_};
 }
 
 bool CraneX7::requireMode(std::uint8_t mode, const char* what) {

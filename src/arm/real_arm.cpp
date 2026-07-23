@@ -1,20 +1,10 @@
 #include "rtctrl/arm/real_arm.hpp"
 
-#include <chrono>
-
 #include "rtctrl/dxl/conversions.hpp"
 
 namespace rtctrl::arm {
 
 using model::kCanonicalDof;
-
-namespace {
-double monotonicSeconds() {
-  return std::chrono::duration<double>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-}  // namespace
 
 double RealArm::dt() const { return hw_.options().control_cycle_s; }
 
@@ -24,7 +14,6 @@ bool RealArm::activate() {
     hw_.deactivate();  // never leave a torqued arm behind a failure
     return false;
   }
-  t0_ = monotonicSeconds();
   return true;
 }
 
@@ -43,7 +32,8 @@ bool RealArm::setMode(ControlMode mode) {
 }
 
 bool RealArm::readState(JointState& state) {
-  const auto fb = hw_.lastFeedback();
+  const auto stamped = hw_.lastFeedbackStamped();
+  const auto& fb = stamped.feedback;
   if (fb.size() != static_cast<std::size_t>(kCanonicalDof)) return false;
   for (int i = 0; i < kCanonicalDof; ++i) {
     zVecElemNC(state.q.get(), i) = fb[i].position;
@@ -52,7 +42,10 @@ bool RealArm::readState(JointState& state) {
         fb[i].current *
         dxl::torqueConstant(hw_.config().joints[i].model_number);
   }
-  state.t = t0_ < 0.0 ? 0.0 : monotonicSeconds() - t0_;
+  // Absolute acquisition stamp on CraneX7's injectable clock — the
+  // runner owns the time origin (types.hpp).
+  state.t = stamped.time;
+  state.seq = stamped.seq;
   return true;
 }
 

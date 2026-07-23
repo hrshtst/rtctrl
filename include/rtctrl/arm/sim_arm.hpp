@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -96,6 +97,7 @@ class SimArm : public Arm {
   ControlMode mode_ = ControlMode::Position;
   JointCommand cmd_;
   double time_ = 0.0;
+  std::uint64_t seq_ = 0;  // control-step counter -> JointState::seq
 
   model::ZVector q9_{model::kModelDof};    // committed joint positions
   model::ZVector v9_{model::kModelDof};    // committed joint velocities

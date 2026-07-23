@@ -28,7 +28,6 @@ class RealArm : public Arm {
  private:
   hw::CraneX7& hw_;
   std::uint64_t cycle_seen_ = 0;
-  double t0_ = -1.0;
 };
 
 }  // namespace rtctrl::arm
