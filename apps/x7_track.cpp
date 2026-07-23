@@ -139,7 +139,14 @@ int main(int argc, char* argv[]) {
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
     robot.writeCommand(hold);
     x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
-    const auto settled = x7::settleArm(robot, settle, 6.0);
+    // the settle phase gets its own small log next to the tracking one:
+    // a gate refusal must leave evidence
+    std::FILE* settle_log = nullptr;
+    if (!log_path.empty()) {
+      settle_log = std::fopen((log_path + ".settle").c_str(), "w");
+    }
+    const auto settled = x7::settleArm(robot, settle, 6.0, settle_log);
+    if (settle_log != nullptr) std::fclose(settle_log);
     if (!settled.io_ok || !settled.quiescent) {
       // No override: a settle timeout means real residual motion or a
       // broken quiescence metric — both grounds to stop. Tracking must

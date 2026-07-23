@@ -76,13 +76,21 @@ struct SettleController : arm::Controller {
       zVecElemNC(cmd.tau.get(), i) += d_filt_[i];
       q_prev_[i] = q;
     }
-    // Quiescence metric: velocity over a ~0.15 s WINDOWED position
-    // difference, then slow-filtered. The per-sample backward
-    // difference sits on the encoder-LSB noise floor — a real arm at
-    // rest under current control dithers within +/-1 count, and one
-    // 0.0015 rad flip over 10 ms reads 0.15 rad/s, which held the old
-    // metric at ~0.07 rad/s on a STILL arm (hardware pass-1 run, gate
-    // never opened). The same flip over the window is 0.010 rad/s.
+    // Quiescence metric: per-joint position RANGE across a ~0.15 s
+    // window, divided by the window span, then slow-filtered. Two
+    // failure modes shaped this:
+    //  * the per-sample backward difference sits on the encoder-LSB
+    //    noise floor (one 0.0015 rad flip over 10 ms reads 0.15 rad/s;
+    //    a real arm at rest under current control dithers within +/-1
+    //    count, which held an early metric at ~0.07 rad/s on a STILL
+    //    arm — the gate never opened);
+    //  * an endpoint difference over the window ALIASES periodic
+    //    motion whose period divides the window (review repro: 6.67
+    //    and 13 Hz at 0.02 rad amplitude read as quiescent — 13 Hz
+    //    being precisely the gear mode the gate must catch).
+    // The range cancels for neither: dither reads range/span ~= 0.02
+    // rad/s, monotonic motion reads its true speed, and oscillation of
+    // amplitude A reads 2A/span regardless of phase alignment.
     hist_t_[hist_head_] = t;
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       hist_q_[hist_head_][i] = zVecElemNC(state.q.get(), i);
@@ -95,10 +103,13 @@ struct SettleController : arm::Controller {
       const double span = t - hist_t_[oldest];
       if (span > 0.0) {
         for (int i = 0; i < model::kCanonicalDof; ++i) {
-          const double wraw =
-              std::fabs(zVecElemNC(state.q.get(), i) -
-                        hist_q_[oldest][i]) /
-              span;
+          double lo = hist_q_[0][i];
+          double hi = lo;
+          for (int k = 1; k < kWindow; ++k) {
+            lo = std::min(lo, hist_q_[k][i]);
+            hi = std::max(hi, hist_q_[k][i]);
+          }
+          const double wraw = (hi - lo) / span;
           speed_[i] += a_m * (wraw - speed_[i]);
         }
       }
@@ -144,11 +155,22 @@ struct SettleResult {
 // Runs the settle controller until the arm is quiescent (max estimated
 // joint speed below 0.05 rad/s for 0.3 s of measured time) or timeout,
 // under the same measured-time/stale-feedback policy as arm::run().
+// `settle_log` (optional) records the settle phase per cycle — a gate
+// refusal must come with the data to distinguish encoder noise from
+// real motion (the first hardware refusal left no evidence).
 inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
-                              double timeout_s) {
+                              double timeout_s,
+                              std::FILE* settle_log = nullptr) {
   arm::JointState state;
   arm::JointCommand cmd;
   SettleResult res;
+  if (settle_log != nullptr) {
+    std::fprintf(settle_log, "t,feedback_time,feedback_seq");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(settle_log, ",q%d,dqest%d,speed%d", i, i, i);
+    }
+    std::fprintf(settle_log, "\n");
+  }
   const double dt = robot.dt();
   const long max_cycles =
       static_cast<long>(4.0 * timeout_s / (dt > 0.0 ? dt : 1e-3)) + 8;
@@ -193,6 +215,16 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
     // was processed: accumulating before update() once let motion that
     // began exactly on the acceptance sample slip through the gate.
     quiet = settle.maxSpeed() < 0.05 ? quiet + step_dt : 0.0;
+    if (settle_log != nullptr) {
+      std::fprintf(settle_log, "%.4f,%.6f,%llu", t, state.t,
+                   static_cast<unsigned long long>(state.seq));
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        std::fprintf(settle_log, ",%.5f,%.5f,%.5f",
+                     zVecElemNC(state.q.get(), i), settle.dq_est_[i],
+                     settle.speed(i));
+      }
+      std::fprintf(settle_log, "\n");
+    }
     if (!robot.writeCommand(cmd)) return res;
     if (!robot.step()) return res;
     if (t > 0.5 && quiet >= 0.3) {

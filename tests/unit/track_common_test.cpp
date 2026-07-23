@@ -220,3 +220,48 @@ TEST_CASE("settle gate: motion beginning ON the acceptance sample is "
   CHECK_FALSE(res.quiescent);
   CHECK(res.residual > 0.05);
 }
+
+TEST_CASE("settle metric: dither accepted; motion and oscillation "
+          "rejected regardless of phase alignment",
+          "[track_common]") {
+  model::ChainModel chain(kModelPath);
+  model::JointMap map(chain);
+  constexpr double kLsb = 2.0 * M_PI / 4096.0;
+
+  SECTION("stationary +/-1-count encoder dither is accepted") {
+    x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
+    int k = 0;
+    PoseScriptArm robot([&k](double) {
+      return 0.1 + ((k++ % 2) ? kLsb : 0.0);  // flickers every sample
+    });
+    const auto res = x7::settleArm(robot, settle, 6.0);
+    CHECK(res.io_ok);
+    INFO("residual " << res.residual);
+    CHECK(res.quiescent);
+  }
+
+  SECTION("constant motion above threshold is rejected") {
+    x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
+    PoseScriptArm robot([](double t) { return 0.1 * t; });  // 0.1 rad/s
+    const auto res = x7::settleArm(robot, settle, 2.0);
+    CHECK(res.io_ok);
+    CHECK_FALSE(res.quiescent);
+  }
+
+  SECTION("persistent oscillation is rejected at every alignment") {
+    // 4.5 Hz (structural mode), 13 Hz (gear mode, ~2 periods/window)
+    // and 6.67 Hz (EXACTLY one period per 0.15 s window — the endpoint
+    // -difference metric read this as 0.007 rad/s and passed it)
+    for (const double hz : {4.5, 6.67, 13.0}) {
+      x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
+      PoseScriptArm robot([hz](double t) {
+        return 0.1 + 0.02 * std::sin(2.0 * M_PI * hz * t);
+      });
+      const auto res = x7::settleArm(robot, settle, 2.0);
+      CHECK(res.io_ok);
+      INFO(hz << " Hz: residual " << res.residual);
+      CHECK_FALSE(res.quiescent);
+      CHECK(res.residual > 0.05);
+    }
+  }
+}
