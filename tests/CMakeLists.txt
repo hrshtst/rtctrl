@@ -29,9 +29,13 @@ add_executable(integration_tests
   integration/pty_test.cpp
   integration/thread_test.cpp
   integration/gravity_sim_test.cpp
-  integration/tracking_sim_test.cpp)
+  integration/tracking_sim_test.cpp
+  integration/ident_sim_test.cpp)
 target_link_libraries(integration_tests PRIVATE rtctrl::rtctrl
   Catch2::Catch2WithMain)
+# ident_sim_test drives the app-layer IdentRun and TwoMassArm fixture.
+target_include_directories(integration_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/apps)
 catch_discover_tests(integration_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS integration)

@@ -286,6 +286,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     double setup_offset_s = 0.0;
     double t_stop_s = kTStopS;
     HealthProvider health;         // optional; empty = unsupervised (sim)
+    // Sim twin / TwoMassArm ONLY (C6b): the fixture is gravity-free, so
+    // the real model's anchor feedforward is a fictitious torque that
+    // would drive it into the deviation abort — subtract it. NEVER on
+    // hardware.
+    bool gravity_free_plant = false;
   };
 
   IdentRun(model::ChainModel& chain, const model::JointMap& map,
@@ -319,6 +324,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   void update(const arm::JointState& state, arm::JointCommand& cmd,
               double t) override {
     inner_.update(state, cmd, t);
+    if (options_.gravity_free_plant) {
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        zVecElemNC(cmd.tau.get(), i) -= inner_.feedforward()[i];
+      }
+    }
     if (t_prev_ < 0.0) {  // first sample: anchor feedforward only
       t_prev_ = t;
       probe_tau_ = 0.0;
@@ -581,7 +591,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
       case Phase::Hold: {
         phi_ += 2.0 * M_PI * currentSpec().freq_hz * dt;
         emitProbe(1.0);
-        demodJoints(state, dt);
+        demodJoints(state, dt, /*growth_check=*/false);
         const bool q_block = hold_demod_q_.add(phi_, dt, q_probe);
         const bool tau_block = hold_demod_tau_.add(phi_, dt, tau_probe);
         if (softEventCheck(t)) break;
@@ -611,7 +621,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
       case Phase::Measure: {
         phi_ += 2.0 * M_PI * currentSpec().freq_hz * dt;
         emitProbe(1.0);
-        demodJoints(state, dt);
+        demodJoints(state, dt, /*growth_check=*/true);
         auto& res = results_[dwell_];
         // block counter (period boundaries) + window-aggregate I/Q
         win_q_.add(phi_, dt, q_probe);
@@ -715,8 +725,12 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
 
   // ALL-JOINT online demodulated response monitors (the target is a
   // coherent whole-arm mode: excitation at one joint can produce the
-  // larger response elsewhere). Cap and growth are SOFT events.
-  void demodJoints(const arm::JointState& state, double dt) {
+  // larger response elsewhere). Cap and growth are SOFT events. The
+  // growth check runs in the MEASURE window only, against its first
+  // block: the adaptive hold guarantees steady state by then, whereas
+  // the normal resonant ring-up during Hold would false-trigger it.
+  void demodJoints(const arm::JointState& state, double dt,
+                   bool growth_check) {
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       if (joint_demod_[i].add(phi_, dt, zVecElemNC(state.q.get(), i))) {
         const double amp = joint_demod_[i].lastBlock().abs();
@@ -724,6 +738,8 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         if (amp > kRespCapRad) {
           pend_soft_ = "response cap " + std::to_string(amp) +
                        " rad on joint " + std::to_string(i);
+        } else if (!growth_check) {
+          continue;
         } else if (first_block_amp_[i] < 0.0) {
           first_block_amp_[i] = amp;
         } else if (first_block_amp_[i] > 0.002 &&
@@ -848,6 +864,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     res.hold_s = t - hold_start_;
     measure_start_ = t;
     phase_ = Phase::Measure;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      first_block_amp_[i] = -1.0;  // growth reference = first MEASURE block
+    }
     win_q_.reset();
     win_tau_i_ = win_tau_q_ = win_cmd_i_ = win_cmd_q_ = 0.0;
     for (int i = 0; i < model::kCanonicalDof; ++i) {
