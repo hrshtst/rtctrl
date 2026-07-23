@@ -4,10 +4,16 @@
 > monitored and bounded (abort on violation), and its controller state continuous, so
 > that pass 2 (identification + D-path redesign) can.
 
-*Status: pass 1 IMPLEMENTED (2026-07-23; plan revised through nine
-review rounds beforehand). Awaiting the hardware instrumentation-
-validation run at scale 0.5; pass 2 (identification + D-path redesign)
-not started.*
+*Status: pass 1 COMPLETE — implemented and hardware-validated
+2026-07-23 (`pass1.csv`/`pass1.csv.settle`, scale 0.5): feedback
+intervals 10.0 ms median / 10.4 ms max with zero sequence gaps,
+receipt-matched first-apply delay 9.6–10.3 ms across 401 commands
+(bound 20 ms), zero saturation/gate engagements, turnaround torque
+steps within ordinary cycle deltas, `ff+pd+i ≡ tau_raw` holding on
+hardware, and the settle gate correctly riding out ~1.2 rad/s of real
+equilibration motion before opening at 0.024 rad/s residual. Pass 2
+(identification protocol, then the notch/phase D-path redesign) not
+started; the 0.6 scale cap stands.*
 
 ## Context
 
