@@ -69,8 +69,10 @@ nav:
       - Computed torque: theory/computed-torque.md
   - Hardware:
       - Bring-up checklist: HARDWARE_BRINGUP.md
+      - Identification protocol: IDENTIFICATION_PROTOCOL.md
   - Project records:
       - Original brief: PLAN.md
       - Implementation plan: IMPLEMENTATION_PLAN.md
       - Remediation plan: REMEDIATION_PLAN.md
+      - Identification plan: IDENTIFICATION_PLAN.md
       - Vendor parity: PARITY.md

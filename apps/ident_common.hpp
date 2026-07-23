@@ -180,6 +180,52 @@ inline std::vector<DwellSpec> buildSchedule(
   return dwells;
 }
 
+// CLI frequency list: comma-separated "f" or "f@amp" entries — the
+// optional per-dwell amplitude override is how the refinement up-sweep
+// carries its HALF-amplitude peak repeat (the linearity spot-check)
+// inside one invocation, e.g. "--freqs 3.9,4.2,4.5,4.8,4.5@0.075".
+struct FreqSpec {
+  double freq_hz = 0.0;
+  double amp_override_nm = 0.0;  // <= 0: the amplitude rule applies
+};
+
+inline std::vector<FreqSpec> parseFreqList(const char* text) {
+  std::vector<FreqSpec> out;
+  const char* p = text;
+  while (*p != '\0') {
+    char* end = nullptr;
+    const double f = std::strtod(p, &end);
+    if (end == p) break;
+    FreqSpec spec;
+    spec.freq_hz = f;
+    p = end;
+    if (*p == '@') {
+      spec.amp_override_nm = std::strtod(p + 1, &end);
+      p = end;
+    }
+    if (f > 0.0) out.push_back(spec);
+    if (*p == ',') ++p;
+  }
+  return out;
+}
+
+// Schedule from CLI specs: the amplitude rule, then any per-dwell
+// overrides (clamped to the same floor/caps).
+inline std::vector<DwellSpec> buildScheduleFromSpecs(
+    const std::vector<FreqSpec>& specs, double j_hat, double a_cap_nm) {
+  std::vector<double> freqs;
+  for (const auto& s : specs) freqs.push_back(s.freq_hz);
+  auto dwells = buildSchedule(freqs, j_hat, a_cap_nm);
+  for (std::size_t k = 0; k < specs.size(); ++k) {
+    if (specs[k].amp_override_nm > 0.0) {
+      dwells[k].amp_nm = std::clamp(
+          specs[k].amp_override_nm, kAmpFloorNm,
+          std::min(a_cap_nm, kAmpCapHardNm));
+    }
+  }
+  return dwells;
+}
+
 // Anchor reference loader: accepts the per-dwell JSON sidecar (takes
 // the 8 numbers after the "anchor" key) or any plain text holding 8
 // numbers. Returns false unless exactly kCanonicalDof values found.

@@ -27,24 +27,17 @@ namespace model = rtctrl::model;
 
 namespace {
 
-std::vector<double> parseFreqList(const char* text) {
-  std::vector<double> freqs;
-  const char* p = text;
-  while (*p != '\0') {
-    char* end = nullptr;
-    const double f = std::strtod(p, &end);
-    if (end == p) break;
-    if (f > 0.0) freqs.push_back(f);
-    p = *end == ',' ? end + 1 : end;
-  }
-  return freqs;
+std::vector<x7::FreqSpec> defaultSurvey() {
+  std::vector<x7::FreqSpec> specs;
+  for (const double f : x7::surveyGridHz()) specs.push_back({f, 0.0});
+  return specs;
 }
 
 }  // namespace
 
 int main(int argc, char* argv[]) {
   int probe_joint = 1;
-  std::vector<double> freqs = x7::surveyGridHz();
+  std::vector<x7::FreqSpec> freqs = defaultSurvey();
   double a_cap = 0.15;
   std::string label = "sim";
   std::string log_path = "ident_sim.csv";
@@ -52,7 +45,7 @@ int main(int argc, char* argv[]) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
       probe_joint = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--freqs") == 0 && i + 1 < argc) {
-      freqs = parseFreqList(argv[++i]);
+      freqs = x7::parseFreqList(argv[++i]);
     } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
       a_cap = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
@@ -87,7 +80,7 @@ int main(int argc, char* argv[]) {
     // amplitude rule against the fixture's TRUE low-frequency inertia
     const auto& p = robot.params(probe_joint);
     const double j_hat = p.j_l + p.j_m;
-    auto dwells = x7::buildSchedule(freqs, j_hat, a_cap);
+    auto dwells = x7::buildScheduleFromSpecs(freqs, j_hat, a_cap);
     if (!x7::scheduleFitsBudget(dwells)) {
       std::fprintf(stderr,
                    "schedule worst case %.1f s exceeds T_stop %.1f s — "

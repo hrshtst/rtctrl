@@ -50,17 +50,10 @@ namespace model = rtctrl::model;
 
 namespace {
 
-std::vector<double> parseFreqList(const char* text) {
-  std::vector<double> freqs;
-  const char* p = text;
-  while (*p != '\0') {
-    char* end = nullptr;
-    const double f = std::strtod(p, &end);
-    if (end == p) break;
-    if (f > 0.0) freqs.push_back(f);
-    p = *end == ',' ? end + 1 : end;
-  }
-  return freqs;
+std::vector<x7::FreqSpec> defaultSurvey() {
+  std::vector<x7::FreqSpec> specs;
+  for (const double f : x7::surveyGridHz()) specs.push_back({f, 0.0});
+  return specs;
 }
 
 void printDwellSummary(const x7::IdentRun& run) {
@@ -82,14 +75,14 @@ void printDwellSummary(const x7::IdentRun& run) {
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   int probe_joint = -1;
-  std::vector<double> freqs = x7::surveyGridHz();
+  std::vector<x7::FreqSpec> freqs = defaultSurvey();
   double a_cap = 0.15;
   std::string label, log_path, anchor_ref_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
       probe_joint = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--freqs") == 0 && i + 1 < argc) {
-      freqs = parseFreqList(argv[++i]);
+      freqs = x7::parseFreqList(argv[++i]);
     } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
       a_cap = std::atof(argv[++i]);
     } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
@@ -262,7 +255,7 @@ int main(int argc, char* argv[]) {
     }
     const double j_hat = x7::diagInertia(chain, map, q_anchor,
                                          probe_joint);
-    auto dwells = x7::buildSchedule(freqs, j_hat, a_cap);
+    auto dwells = x7::buildScheduleFromSpecs(freqs, j_hat, a_cap);
     // Pre-activation-style refusal (checked before settle would be
     // ideal, but the amplitudes depend on the settled anchor; the
     // authoritative admission below covers the difference).

@@ -12,8 +12,10 @@ receipt-matched first-apply delay 9.6–10.3 ms across 401 commands
 steps within ordinary cycle deltas, `ff+pd+i ≡ tau_raw` holding on
 hardware, and the settle gate correctly riding out ~1.2 rad/s of real
 equilibration motion before opening at 0.024 rad/s residual. Pass 2
-(identification protocol, then the notch/phase D-path redesign) not
-started; the 0.6 scale cap stands.*
+step A (flexible-mode identification — [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md),
+[IDENTIFICATION_PROTOCOL.md](IDENTIFICATION_PROTOCOL.md)) is
+implemented and sim-validated, awaiting the hardware campaign; the
+notch/phase D-path redesign follows it. The 0.6 scale cap stands.*
 
 ## Context
 
