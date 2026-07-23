@@ -44,6 +44,7 @@ REFINE_STEP_HZ = 0.35  # local spacing needed to resolve zeta ~ 0.03
 @dataclass
 class Dwell:
     source: str
+    order: int  # dwell_id: the run's chronological execution order
     freq_hz: float
     amp_nm: float
     n_rows: int
@@ -149,6 +150,7 @@ def demod_dwells(path: str, data: np.ndarray,
         delays = delays[np.isfinite(delays)]
         dw = Dwell(
             source=path,
+            order=int(d),
             freq_hz=freq,
             amp_nm=float(rows["probe_amp"][0]),
             n_rows=int(rows.size),
@@ -320,6 +322,28 @@ def mode_entry(band: list[Dwell], all_dwells: list[Dwell],
             f"needs the second refinement direction: only {rf.size} "
             "local frequencies have distinct-invocation full-amplitude "
             "repeat visits")
+    # the hysteresis evidence is DIRECTIONAL: the repeat visits must
+    # come from one ascending and one descending traversal, verified
+    # from each run's recorded dwell execution order — two copies of
+    # the same up-sweep under different names satisfy the repeat count
+    # but not this (review finding)
+    directions = set()
+    for src in {d.source for d in local_band}:
+        src_dwells = [d for d in local_band if d.source == src]
+        full_src, _ = amp_classes(src_dwells)
+        f_seq = [d.freq_hz
+                 for d in sorted(full_src, key=lambda d: d.order)]
+        if len(f_seq) < 3:
+            continue
+        steps = np.diff(f_seq)
+        if np.all(steps > 0):
+            directions.add("up")
+        elif np.all(steps < 0):
+            directions.add("down")
+    if not {"up", "down"} <= directions:
+        missing.append(
+            "needs BOTH sweep directions through the band (seen: "
+            + (", ".join(sorted(directions)) or "none") + ")")
     near_pk = [d for d in all_dwells
                if abs(d.freq_hz - f_pk) <= max(0.2, 0.05 * f_pk)]
     full, reduced = amp_classes(near_pk) if near_pk else ([], [])

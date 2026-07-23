@@ -161,10 +161,12 @@ uv run --project tools tools/ident_analysis.py \
   secondary; their ratio = the actuator transfer for the notch phase
   budget), all-joint participation vector, fit residuals, and repeat /
   half-amplitude consistency flags. A mode is marked **refined** only
-  with all three pieces of evidence — a grid fine enough for ζ ≈ 0.03,
-  visits from at least two invocations (up/down), and the
-  half-amplitude linearity point — otherwise survey-only, with the
-  missing evidence named.
+  with all three pieces of evidence — a grid fine enough for ζ ≈ 0.03;
+  per-frequency full-amplitude repeat visits from two invocations
+  whose recorded dwell order traverses the band in BOTH directions
+  (one ascending, one descending — a duplicated same-direction sweep
+  is rejected); and the half-amplitude linearity point — otherwise
+  survey-only, with the missing evidence named.
 
 ## Preview first
 
