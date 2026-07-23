@@ -70,6 +70,7 @@ nav:
   - Hardware:
       - Bring-up checklist: HARDWARE_BRINGUP.md
       - Identification protocol: IDENTIFICATION_PROTOCOL.md
+      - Identification campaign checklist: IDENTIFICATION_CAMPAIGN.md
   - Project records:
       - Original brief: PLAN.md
       - Implementation plan: IMPLEMENTATION_PLAN.md
