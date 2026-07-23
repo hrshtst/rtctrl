@@ -195,6 +195,20 @@ class CraneX7 {
   bool escalated() const { return escalated_; }
   void onEscalate(std::function<void()> hook) { on_escalate_ = std::move(hook); }
 
+  // Emergency bus silence (a session deadline watchdog's expiry
+  // action): atomic, idempotent, safe from ANY thread — unlike
+  // deactivate()/escalate(), which must never be entered concurrently.
+  // Once set, the background thread stops issuing instruction packets
+  // (reads AND writes — the servo Bus Watchdog counts reads too)
+  // without being joined, and deactivate()/stopThread() issue no
+  // further bus operations either: the quiesced cleanup only stops the
+  // thread and marks the session inactive. The resulting bus silence
+  // makes the armed servo Bus Watchdog stop every servo within its
+  // 0.1 s interval regardless of host state. One-way for the lifetime
+  // of this object.
+  void requestQuiesce() { quiesced_.store(true); }
+  bool quiesced() const { return quiesced_.load(); }
+
   // Per-servo parameter writes (all joints).
   bool writePositionPGain(std::uint16_t gain);
   bool writeProfileVelocity(std::uint32_t raw);
@@ -216,6 +230,7 @@ class CraneX7 {
   dxl::SyncGroup group_;
   bool activated_ = false;
   std::atomic<bool> escalated_{false};
+  std::atomic<bool> quiesced_{false};
   std::function<double()> now_;
   std::atomic<double> last_command_{0.0};
   std::string last_error_;

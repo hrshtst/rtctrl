@@ -189,18 +189,27 @@ bool CraneX7::activateSteps() {
 
 bool CraneX7::deactivate() {
   stopThread();
+  // Once quiesced, the deadline watchdog has silenced the bus so the
+  // servo Bus Watchdog can stop the servos — ANY further instruction
+  // packet here (including these limp/torque-off writes) would feed
+  // that watchdog and defeat the stop. The flag is re-checked between
+  // transactions so a quiesce landing mid-sequence suppresses the
+  // remainder; the quiesced cleanup only marks the session inactive.
   bool ok = true;
-  ok &= writePositionPGain(options_.limp_p_gain);
+  if (!quiesced_.load()) ok &= writePositionPGain(options_.limp_p_gain);
   // zero goal currents (relevant in current mode; harmless otherwise)
   for (const auto& joint : config_.joints) {
+    if (quiesced_.load()) break;
     ok &= io_.write16(joint.id, reg::kGoalCurrent.addr, 0).ok();
   }
   for (const auto& joint : config_.joints) {
+    if (quiesced_.load()) break;
     ok &= io_.write8(joint.id, reg::kTorqueEnable.addr, 0).ok();
+    if (quiesced_.load()) break;
     ok &= io_.write8(joint.id, reg::kBusWatchdog.addr, 0).ok();
   }
   activated_ = false;
-  return ok;
+  return ok && !quiesced_.load();
 }
 
 bool CraneX7::readAll(std::vector<dxl::Feedback>& out) {
@@ -434,6 +443,7 @@ void CraneX7::stopThread() {
     return;
   }
   thread_.join();
+  if (quiesced_.load()) return;  // the bus must stay silent
   // Safety on stop: zero motion-producing targets (vendor parity).
   const auto mode = config_.joints.front().operating_mode;
   const std::vector<double> zeros(config_.joints.size(), 0.0);
@@ -470,14 +480,37 @@ void CraneX7::threadLoop() {
   int failed_reads_row = 0;
   int failed_writes_row = 0;
   std::uint64_t cycle_number = 0;
+  const auto end_cycle = [&] {
+    {
+      std::lock_guard<std::mutex> lock(cycle_mutex_);
+      ++cycle_seq_;
+      ++stats_.cycles;
+      if (std::chrono::steady_clock::now() > next) ++stats_.overruns;
+    }
+    cycle_cv_.notify_all();
+    std::this_thread::sleep_until(next);
+    next += cycle;
+  };
   while (thread_run_.load()) {
     ++cycle_number;
-    if (readAll(fb)) {
-      failed_reads_row = 0;
-    } else {
-      ++failed_reads_row;
-      std::lock_guard<std::mutex> lock(cycle_mutex_);
-      ++stats_.read_failures;
+    // Quiesce gates: before the read and again before the write. Once
+    // requested, no further instruction packet leaves this thread —
+    // reads count against the servo Bus Watchdog too, and the ensuing
+    // bus silence is what lets the servos stop themselves. Cycle
+    // bookkeeping stays alive so waitCycle()/stopThread() remain
+    // responsive.
+    if (!quiesced_.load()) {
+      if (readAll(fb)) {
+        failed_reads_row = 0;
+      } else {
+        ++failed_reads_row;
+        std::lock_guard<std::mutex> lock(cycle_mutex_);
+        ++stats_.read_failures;
+      }
+    }
+    if (quiesced_.load()) {
+      end_cycle();
+      continue;
     }
     std::uint64_t tseq = 0;
     {
@@ -541,24 +574,18 @@ void CraneX7::threadLoop() {
     // write failure is the mirror trap (healthy reads, old actuator
     // goal stuck active). Both escalate exactly as a stale command
     // stream would.
-    if (failed_reads_row >= options_.max_read_failures ||
-        failed_writes_row >= options_.max_write_failures) {
-      escalate();
-      thread_run_.store(false);
-    } else if (!checkDeadman()) {
-      thread_run_.store(false);
+    // The failure/deadman escalation path writes to the bus (via
+    // deactivate()): it must not run once quiesced.
+    if (!quiesced_.load()) {
+      if (failed_reads_row >= options_.max_read_failures ||
+          failed_writes_row >= options_.max_write_failures) {
+        escalate();
+        thread_run_.store(false);
+      } else if (!checkDeadman()) {
+        thread_run_.store(false);
+      }
     }
-
-    {
-      std::lock_guard<std::mutex> lock(cycle_mutex_);
-      ++cycle_seq_;
-      ++stats_.cycles;
-      if (std::chrono::steady_clock::now() > next) ++stats_.overruns;
-    }
-    cycle_cv_.notify_all();
-
-    std::this_thread::sleep_until(next);
-    next += cycle;
+    end_cycle();
   }
   cycle_cv_.notify_all();
 }
@@ -600,6 +627,7 @@ void CraneX7::escalate() {
 
 bool CraneX7::writePositionPGain(std::uint16_t gain) {
   for (const auto& joint : config_.joints) {
+    if (quiesced_.load()) return false;
     if (!io_.write16(joint.id, reg::kPositionPGain.addr, gain).ok()) {
       last_error_ = "P-gain write failed on id " + std::to_string(joint.id);
       return false;

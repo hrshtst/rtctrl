@@ -1,8 +1,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <fstream>
+#include <functional>
 #include <sstream>
+#include <thread>
 
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
@@ -646,4 +650,128 @@ TEST_CASE("persistent write failure escalates like the read path",
   CHECK(arm.cycleStats().write_failures >=
         static_cast<std::uint64_t>(options.max_write_failures));
   arm.stopThread();
+}
+
+namespace {
+
+// PacketIO decorator counting every bus transaction, with an optional
+// per-transaction hook (used to land a quiesce request deterministically
+// in the middle of a shutdown write sequence).
+class CountingIO : public dxl::PacketIO {
+ public:
+  explicit CountingIO(dxl::PacketIO& inner) : inner_(inner) {}
+
+  std::atomic<long> ops{0};
+  std::function<void(long)> on_op;  // receives the op ordinal
+
+  dxl::IoResult ping(std::uint8_t id,
+                     std::uint16_t* model_number = nullptr) override {
+    tap();
+    return inner_.ping(id, model_number);
+  }
+  dxl::IoResult read(std::uint8_t id, std::uint16_t addr, std::uint8_t* data,
+                     std::uint16_t len) override {
+    tap();
+    return inner_.read(id, addr, data, len);
+  }
+  dxl::IoResult write(std::uint8_t id, std::uint16_t addr,
+                      const std::uint8_t* data, std::uint16_t len) override {
+    tap();
+    return inner_.write(id, addr, data, len);
+  }
+  dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
+                         const std::vector<std::uint8_t>& ids,
+                         std::vector<std::uint8_t>& out) override {
+    tap();
+    return inner_.syncRead(addr, len, ids, out);
+  }
+  dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
+                          const std::vector<std::uint8_t>& ids,
+                          const std::vector<std::uint8_t>& data) override {
+    tap();
+    return inner_.syncWrite(addr, len, ids, data);
+  }
+
+ private:
+  void tap() {
+    const long n = ++ops;
+    if (on_op) on_op(n);
+  }
+  dxl::PacketIO& inner_;
+};
+
+}  // namespace
+
+TEST_CASE("quiesce from a second thread silences all bus traffic",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  CountingIO counting(io);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.001;
+  hw::CraneX7 arm(counting, config, options);
+
+  REQUIRE(arm.activate());
+  REQUIRE(arm.startThread());
+  REQUIRE(arm.waitCycle(0) > 0);
+  CHECK(counting.ops.load() > 0);
+
+  // second thread (this one) requests quiesce mid-loop
+  arm.requestQuiesce();
+  // traffic must cease at the next gate check: allow the in-flight
+  // cycle to drain, then the count must freeze
+  std::uint64_t seen = arm.waitCycle(0);
+  seen = arm.waitCycle(seen);
+  seen = arm.waitCycle(seen);
+  const long frozen = counting.ops.load();
+  for (int i = 0; i < 5; ++i) seen = arm.waitCycle(seen);
+  CHECK(counting.ops.load() == frozen);
+  // the thread was NOT joined — bookkeeping stays alive, and the
+  // silenced deadman must not escalate (its path writes to the bus)
+  CHECK(arm.threadRunning());
+  CHECK(seen > 0);
+  CHECK_FALSE(arm.escalated());
+  // feedback goes stale by design: the runner's stale policy aborts
+  const auto s1 = arm.lastFeedbackStamped();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  CHECK(arm.lastFeedbackStamped().seq == s1.seq);
+
+  // deactivate after quiesce: zero further bus operations, session down
+  CHECK_FALSE(arm.deactivate());
+  CHECK(counting.ops.load() == frozen);
+  CHECK_FALSE(arm.activated());
+  CHECK_FALSE(arm.threadRunning());
+  // the servos were never torqued off by the host: silence is the
+  // mechanism — their own Bus Watchdog does the stopping
+  CHECK(bus.find(config.joints[0].id)->peek(reg::kTorqueEnable) == 1);
+}
+
+TEST_CASE("quiesce landing mid-deactivate suppresses the remaining writes",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  CountingIO counting(io);
+  hw::CraneX7 arm(counting, config);
+
+  REQUIRE(arm.activate());
+  for (const auto& joint : config.joints) {
+    REQUIRE(bus.find(joint.id)->peek(reg::kTorqueEnable) == 1);
+  }
+  // quiesce lands during the third transaction of the shutdown
+  // sequence; every later per-transaction re-check must suppress its
+  // bus operation
+  const long base = counting.ops.load();
+  counting.on_op = [&](long n) {
+    if (n == base + 3) arm.requestQuiesce();
+  };
+  CHECK_FALSE(arm.deactivate());
+  CHECK(counting.ops.load() == base + 3);
+  CHECK_FALSE(arm.activated());
+  // the torque-off writes were never reached: every servo still shows
+  // torque enabled (the servo-side watchdog owns the stop)
+  for (const auto& joint : config.joints) {
+    CHECK(bus.find(joint.id)->peek(reg::kTorqueEnable) == 1);
+  }
 }
