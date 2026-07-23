@@ -91,7 +91,13 @@ int main(int argc, char* argv[]) {
         return 1;
       }
     } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
-      a_cap = std::atof(argv[++i]);
+      if (!x7::parseAmpCap(argv[++i], &a_cap)) {
+        std::fprintf(stderr,
+                     "--amp rejected: one finite value in [%.2f, %.2f] "
+                     "Nm required\n",
+                     x7::kAmpFloorNm, x7::kAmpCapHardNm);
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
       label = argv[++i];
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
@@ -117,7 +123,6 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "--freqs parsed to an empty grid\n");
     return 1;
   }
-  a_cap = std::clamp(a_cap, x7::kAmpFloorNm, x7::kAmpCapHardNm);
 
   double anchor_ref[model::kCanonicalDof];
   if (!anchor_ref_path.empty() &&
@@ -173,30 +178,46 @@ int main(int argc, char* argv[]) {
                  std::chrono::steady_clock::now() - t_activate)
           .count();
     };
-    // Every post-activation exit funnels through this. A deactivation
-    // that could not CONFIRM zero + torque-off on every servo leaves
-    // the failed servos' Bus Watchdogs armed — silence the bus so they
-    // fire, and say so loudly; the run must then not report success.
-    // The session watchdog disarms only after the shutdown attempt
-    // (its deadline covers deactivation).
-    const auto shutdown = [&robot, hw, &watchdog]() -> bool {
-      const bool clean = robot.deactivate();
-      if (!clean) {
-        hw->requestQuiesce();
-        std::fprintf(stderr,
-                     "SHUTDOWN FAULT: deactivation incomplete — bus "
-                     "silenced, armed servo watchdogs will halt any "
-                     "still-torqued joint. Verify the arm is limp "
-                     "before approaching; power-cycle before the next "
-                     "run.\n");
+    // Every post-activation exit funnels through this — INCLUDING an
+    // exception unwinding to the outer catch (the destructor runs the
+    // same path; a review finding showed exceptions bypassed it). A
+    // deactivation that could not CONFIRM zero + torque-off on every
+    // servo leaves the failed servos' Bus Watchdogs armed — silence
+    // the bus so they fire, and say so loudly; the run must then not
+    // report success. The session watchdog disarms only after the
+    // shutdown attempt (its deadline covers deactivation).
+    struct ShutdownGuard {
+      arm::RealArm& robot;
+      rtctrl::hw::CraneX7* hw;
+      x7::SessionWatchdog& watchdog;
+      bool done = false;
+      bool run() {
+        done = true;
+        const bool clean = robot.deactivate();
+        if (!clean) {
+          hw->requestQuiesce();
+          std::fprintf(stderr,
+                       "SHUTDOWN FAULT: deactivation incomplete — bus "
+                       "silenced, armed servo watchdogs will halt any "
+                       "still-torqued joint. Verify the arm is limp "
+                       "before approaching; power-cycle before the "
+                       "next run.\n");
+        }
+        watchdog.disarm();
+        return clean;
       }
-      watchdog.disarm();
-      return clean;
-    };
+      ~ShutdownGuard() {
+        if (done) return;
+        try {
+          run();
+        } catch (...) {
+        }
+      }
+    } shutdown{robot, hw, watchdog};
 
     arm::JointState start;
     if (!robot.readState(start)) {
-      shutdown();
+      shutdown.run();
       return 1;
     }
     arm::JointCommand hold;
@@ -216,11 +237,11 @@ int main(int argc, char* argv[]) {
     if (!settled.io_ok || !settled.quiescent) {
       std::fprintf(stderr, "settle phase %s — aborting\n",
                    settled.io_ok ? "did not reach quiescence" : "aborted");
-      shutdown();
+      shutdown.run();
       return 1;
     }
     if (!robot.readState(start)) {
-      shutdown();
+      shutdown.run();
       return 1;
     }
 
@@ -237,7 +258,7 @@ int main(int argc, char* argv[]) {
                      "arm and rerun\n",
                      i, model::canonicalJoints()[i].urdf_joint, q, lo[i],
                      hi[i]);
-        shutdown();
+        shutdown.run();
         return 1;
       }
     }
@@ -250,7 +271,7 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "pre-run health gate: %s — let the arm "
                              "cool / check supply, then rerun\n",
                      why.empty() ? "health read failed" : why.c_str());
-        shutdown();
+        shutdown.run();
         return 1;
       }
     }
@@ -276,7 +297,7 @@ int main(int argc, char* argv[]) {
                            ? "  <-- out"
                            : "");
         }
-        shutdown();
+        shutdown.run();
         return 1;
       }
     }
@@ -298,7 +319,7 @@ int main(int argc, char* argv[]) {
                    "T_stop %.1f s — split it (--freqs)\n",
                    x7::baseWorstSeconds(dwells), x7::kSetupAllowanceS,
                    x7::kTStopS);
-      shutdown();
+      shutdown.run();
       return 1;
     }
     std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, lead-in "
@@ -318,7 +339,7 @@ int main(int argc, char* argv[]) {
                    "setup consumed %.1f s: the worst-case schedule no "
                    "longer fits T_stop — deactivating\n",
                    setup_elapsed);
-      shutdown();
+      shutdown.run();
       return 1;
     }
 
@@ -346,7 +367,7 @@ int main(int argc, char* argv[]) {
       if (!log) {
         std::fprintf(stderr, "cannot open log file %s\n",
                      log_path.c_str());
-        shutdown();
+        shutdown.run();
         return 1;
       }
     }
@@ -379,7 +400,7 @@ int main(int argc, char* argv[]) {
     (void)ran;  // every path is judged by the run's own outcome below
     // Safe transition FIRST (shutdown() escalates to bus silence if it
     // cannot confirm every servo stopped), then report.
-    const bool clean_shutdown = shutdown();
+    const bool clean_shutdown = shutdown.run();
     const auto stats = hw->cycleStats();
     if (log) std::fclose(log);
     if (!log_path.empty()) {

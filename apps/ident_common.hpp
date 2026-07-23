@@ -119,13 +119,34 @@ inline constexpr double kHeadroomMarginNm = 0.2;
 inline constexpr int kClipSoftCycles = 5;
 
 // A(f) = clamp(x_t * J_hat * omega^2, floor, cap): sized for a target
-// link response x_t = 0.005 rad, floored at ~10 torque LSB.
+// link response x_t = 0.005 rad, floored at ~10 torque LSB. The
+// 0.3 Nm hard cap is UNBYPASSABLE: a non-finite or out-of-range cap
+// request degrades to the hard cap (std::clamp does not sanitize NaN
+// — a "--amp nan" once scheduled 3.8 Nm; review finding).
 inline double probeAmplitude(double j_hat, double freq_hz,
                              double a_cap_nm = 0.15,
                              double x_t_rad = 0.005) {
+  const double cap =
+      std::isfinite(a_cap_nm) && a_cap_nm > 0.0
+          ? std::min(a_cap_nm, kAmpCapHardNm)
+          : kAmpCapHardNm;
   const double w = 2.0 * M_PI * freq_hz;
-  return std::clamp(x_t_rad * j_hat * w * w, kAmpFloorNm,
-                    std::min(a_cap_nm, kAmpCapHardNm));
+  const double a = x_t_rad * j_hat * w * w;
+  if (!std::isfinite(a)) return kAmpFloorNm;
+  return std::clamp(a, kAmpFloorNm, cap);
+}
+
+// Strict "--amp" parsing: the whole token must be one finite number in
+// [floor, hard cap] — atof-plus-clamp let NaN through (review finding).
+inline bool parseAmpCap(const char* text, double* out) {
+  char* end = nullptr;
+  const double a = std::strtod(text, &end);
+  if (end == text || *end != '\0' || !std::isfinite(a) ||
+      a < kAmpFloorNm || a > kAmpCapHardNm) {
+    return false;
+  }
+  *out = a;
+  return true;
 }
 
 // Default survey grid: dense through the 4-6 Hz structural band, the
@@ -194,8 +215,11 @@ struct FreqSpec {
 };
 
 inline constexpr double kFreqMinHz = 0.5;
-inline constexpr double kFreqMaxHz = 30.0;  // 100 Hz loop: stay well
-                                            // under Nyquist
+// The drift-immune block estimator needs >= 5 samples per period at
+// the 100 Hz loop, so 20 Hz (the survey-grid maximum) is the true
+// ceiling — 30 Hz gave 3-4 samples per block and the measurement
+// window never completed (review finding).
+inline constexpr double kFreqMaxHz = 20.0;
 
 inline bool parseFreqList(const char* text, std::vector<FreqSpec>* out) {
   out->clear();

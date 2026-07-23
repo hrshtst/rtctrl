@@ -302,8 +302,24 @@ def mode_entry(band: list[Dwell], all_dwells: list[Dwell],
     uf = np.unique(np.round(freqs[local], 3))
     if uf.size < 3 or np.min(np.diff(uf)) > REFINE_STEP_HZ:
         missing.append("grid too coarse for zeta~0.03")
-    if len({d.source for d in band}) < 2:
-        missing.append("needs visits from a second (up/down) invocation")
+    # the up/down repeat evidence is PER FREQUENCY: each local
+    # fine-grid point needs full-amplitude visits from two distinct
+    # invocations — two source files alone (e.g. survey + up-sweep)
+    # only repeat the coincident frequencies (review finding)
+    local_band = [d for d in band
+                  if abs(d.freq_hz - f_pk) <= max(1.0, 0.15 * f_pk)]
+    repeat_freqs = []
+    for f in uf:
+        at_f = [d for d in local_band if round(d.freq_hz, 3) == f]
+        full, _ = amp_classes(at_f) if at_f else ([], [])
+        if len({d.source for d in full}) >= 2:
+            repeat_freqs.append(float(f))
+    rf = np.unique(np.round(repeat_freqs, 3))
+    if rf.size < 5 or np.min(np.diff(rf)) > REFINE_STEP_HZ:
+        missing.append(
+            f"needs the second refinement direction: only {rf.size} "
+            "local frequencies have distinct-invocation full-amplitude "
+            "repeat visits")
     near_pk = [d for d in all_dwells
                if abs(d.freq_hz - f_pk) <= max(0.2, 0.05 * f_pk)]
     full, reduced = amp_classes(near_pk) if near_pk else ([], [])

@@ -54,7 +54,13 @@ int main(int argc, char* argv[]) {
         return 1;
       }
     } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
-      a_cap = std::atof(argv[++i]);
+      if (!x7::parseAmpCap(argv[++i], &a_cap)) {
+        std::fprintf(stderr,
+                     "--amp rejected: one finite value in [%.2f, %.2f] "
+                     "Nm required\n",
+                     x7::kAmpFloorNm, x7::kAmpCapHardNm);
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
       label = argv[++i];
     } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
@@ -73,7 +79,6 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "--freqs parsed to an empty grid\n");
     return 1;
   }
-  a_cap = std::clamp(a_cap, x7::kAmpFloorNm, x7::kAmpCapHardNm);
 
   try {
     model::ChainModel chain("models/crane_x7/crane_x7.ztk");

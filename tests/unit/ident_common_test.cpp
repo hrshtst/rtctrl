@@ -541,9 +541,35 @@ TEST_CASE("ident frequency list parsing is strict", "[ident]") {
   CHECK_FALSE(x7::parseFreqList("", &out));
   CHECK_FALSE(x7::parseFreqList("4.5x", &out));
   CHECK_FALSE(x7::parseFreqList("0.1", &out));   // below 0.5 Hz
-  CHECK_FALSE(x7::parseFreqList("45", &out));    // above 30 Hz
+  // the block estimator needs >= 5 samples/period at 100 Hz: anything
+  // above 20 Hz would stall the measurement window, so it is refused
+  CHECK_FALSE(x7::parseFreqList("25", &out));
+  CHECK_FALSE(x7::parseFreqList("45", &out));
+  CHECK(x7::parseFreqList("20", &out));  // the survey-grid ceiling
   CHECK_FALSE(x7::parseFreqList("nan", &out));
   CHECK_FALSE(x7::parseFreqList("4.5@0", &out));
   CHECK_FALSE(x7::parseFreqList("4.5@-1", &out));
   CHECK_FALSE(x7::parseFreqList("4.5@nan", &out));
+}
+
+TEST_CASE("ident amplitude cap parsing is strict and the hard cap is "
+          "unbypassable",
+          "[ident]") {
+  double a = 0.0;
+  CHECK(x7::parseAmpCap("0.15", &a));
+  CHECK(a == Approx(0.15));
+  CHECK(x7::parseAmpCap("0.3", &a));
+  CHECK(x7::parseAmpCap("0.05", &a));
+  // atof-plus-clamp let "nan" schedule 3.8 Nm (review finding)
+  CHECK_FALSE(x7::parseAmpCap("nan", &a));
+  CHECK_FALSE(x7::parseAmpCap("inf", &a));
+  CHECK_FALSE(x7::parseAmpCap("0.31", &a));   // above the hard cap
+  CHECK_FALSE(x7::parseAmpCap("0.01", &a));   // below the floor
+  CHECK_FALSE(x7::parseAmpCap("0.15x", &a));  // trailing garbage
+  CHECK_FALSE(x7::parseAmpCap("", &a));
+  // defense in depth: even a NaN cap reaching the amplitude rule must
+  // degrade to the hard cap, never bypass it
+  const double nan_cap = std::nan("");
+  CHECK(x7::probeAmplitude(0.05, 20.0, nan_cap) <= x7::kAmpCapHardNm);
+  CHECK(x7::probeAmplitude(0.05, 20.0, 1e9) <= x7::kAmpCapHardNm);
 }
