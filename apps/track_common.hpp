@@ -35,7 +35,12 @@ using tuning::kGainScale;
 struct SettleController : arm::Controller {
   SettleController(model::ChainModel& chain, const model::JointMap& map,
                    double kd)
-      : chain_(chain), map_(map), kd_(kd) {}
+      : chain_(chain), map_(map), kd_(kd) {
+    // The quiescence metric must not read "quiet" before it has ever
+    // measured anything: it starts pessimistic and only relaxes once
+    // the position window is full.
+    for (int i = 0; i < model::kCanonicalDof; ++i) speed_[i] = 1.0;
+  }
 
   void update(const arm::JointState& state, arm::JointCommand& cmd,
               double t) override {
@@ -69,11 +74,34 @@ struct SettleController : arm::Controller {
       dq_est_[i] += a_v * (raw - dq_est_[i]);
       d_filt_[i] += a_d * (-kd_ * kGainScale[i] * dq_est_[i] - d_filt_[i]);
       zVecElemNC(cmd.tau.get(), i) += d_filt_[i];
-      // slow-filtered |speed| for the quiescence metric: the fast
-      // estimator hovers near the position-LSB noise floor (~0.05
-      // rad/s spikes) even on a perfectly still arm
-      speed_[i] += a_m * (std::fabs(dq_est_[i]) - speed_[i]);
       q_prev_[i] = q;
+    }
+    // Quiescence metric: velocity over a ~0.15 s WINDOWED position
+    // difference, then slow-filtered. The per-sample backward
+    // difference sits on the encoder-LSB noise floor — a real arm at
+    // rest under current control dithers within +/-1 count, and one
+    // 0.0015 rad flip over 10 ms reads 0.15 rad/s, which held the old
+    // metric at ~0.07 rad/s on a STILL arm (hardware pass-1 run, gate
+    // never opened). The same flip over the window is 0.010 rad/s.
+    hist_t_[hist_head_] = t;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      hist_q_[hist_head_][i] = zVecElemNC(state.q.get(), i);
+    }
+    hist_head_ = (hist_head_ + 1) % kWindow;
+    if (hist_count_ < kWindow) {
+      ++hist_count_;  // metric stays pessimistic until the window fills
+    } else {
+      const int oldest = hist_head_;  // overwritten next call = oldest
+      const double span = t - hist_t_[oldest];
+      if (span > 0.0) {
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          const double wraw =
+              std::fabs(zVecElemNC(state.q.get(), i) -
+                        hist_q_[oldest][i]) /
+              span;
+          speed_[i] += a_m * (wraw - speed_[i]);
+        }
+      }
     }
     t_prev_ = t;
   }
@@ -85,6 +113,9 @@ struct SettleController : arm::Controller {
     }
     return m;
   }
+  double speed(int i) const { return speed_[i]; }
+
+  static constexpr int kWindow = 16;  // ~0.15 s at the 10 ms cycle
 
   model::ChainModel& chain_;
   const model::JointMap& map_;
@@ -94,6 +125,10 @@ struct SettleController : arm::Controller {
   model::ZVector dq_est_{model::kCanonicalDof};
   model::ZVector d_filt_{model::kCanonicalDof};
   model::ZVector speed_{model::kCanonicalDof};
+  double hist_t_[kWindow] = {};
+  double hist_q_[kWindow][model::kCanonicalDof] = {};
+  int hist_head_ = 0;
+  int hist_count_ = 0;
 };
 
 // Policy-free settle outcome — the CALLER decides whether a
@@ -174,6 +209,16 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
   res.quiescent = reached_quiet_window;
   std::printf("settled in %.1f s (residual %.3f rad/s)%s\n", res.elapsed,
               res.residual, res.quiescent ? "" : " — still moving");
+  if (!res.quiescent) {
+    // name the offenders so the operator knows what to look at
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      if (settle.speed(i) >= 0.05) {
+        std::printf("  [%d] %-22s residual %.3f rad/s\n", i,
+                    model::canonicalJoints()[i].urdf_joint,
+                    settle.speed(i));
+      }
+    }
+  }
   return res;
 }
 

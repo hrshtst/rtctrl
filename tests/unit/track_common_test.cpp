@@ -190,20 +190,33 @@ TEST_CASE("settle gate: motion beginning ON the acceptance sample is "
   model::ChainModel chain(kModelPath);
   model::JointMap map(chain);
   x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
-  // Still through the whole prospective quiet window, then an abrupt
-  // jump exactly on the sample that would have granted acceptance
-  // (t > 0.5 with quiet >= 0.3 first holds at t = 0.51, i.e. arm time
-  // 0.52 given the reference cycle). The pre-fix ordering accumulated
-  // `quiet` from the PREVIOUS sample's speed and accepted here with a
-  // residual of ~1 rad/s. (An onset must be strong enough for the
-  // 0.15 s quiescence metric to register within the sample — a gentle
-  // ramp's first 10 ms is below any finite-lag gate's resolution.)
-  PoseScriptArm robot([](double time) {
-    return time < 0.52 ? 0.1 : 0.6 + 0.5 * (time - 0.52);
+  // Learn the acceptance moment from a still run, then replay with an
+  // abrupt jump exactly on that sample. The pre-fix ordering
+  // accumulated `quiet` from the PREVIOUS sample's speed and accepted
+  // with ~1 rad/s of new motion. (The onset must be strong enough for
+  // the windowed quiescence metric to register within one sample — a
+  // gentle ramp's first 10 ms is below any finite-lag gate's
+  // resolution, which the metric's time constant bounds by design.)
+  double accept_t = 0.0;
+  {
+    x7::SettleController probe(chain, map, x7::tuning::kSettleKd);
+    PoseScriptArm still(
+        [](double) { return 0.1; });
+    const auto r = x7::settleArm(still, probe, 6.0);
+    REQUIRE(r.quiescent);
+    accept_t = r.elapsed;  // controller time of the acceptance sample
+  }
+  // arm time of the acceptance sample is accept_t + one cycle; aim
+  // half a cycle early so FP accumulation drift cannot push the jump
+  // past the sample
+  const double jump_time = accept_t + 0.005;
+  PoseScriptArm robot([jump_time](double time) {
+    return time < jump_time ? 0.1 : 0.6 + 0.5 * (time - jump_time);
   });
-  const auto res = x7::settleArm(robot, settle, 0.7);
+  const auto res = x7::settleArm(robot, settle, accept_t + 0.2);
   CHECK(res.io_ok);
-  INFO("residual " << res.residual << ", elapsed " << res.elapsed);
+  INFO("residual " << res.residual << ", elapsed " << res.elapsed
+                   << ", accept_t " << accept_t);
   CHECK_FALSE(res.quiescent);
   CHECK(res.residual > 0.05);
 }
