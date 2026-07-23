@@ -30,7 +30,8 @@ add_executable(integration_tests
   integration/thread_test.cpp
   integration/gravity_sim_test.cpp
   integration/tracking_sim_test.cpp
-  integration/ident_sim_test.cpp)
+  integration/ident_sim_test.cpp
+  integration/quiesce_pty_test.cpp)
 target_link_libraries(integration_tests PRIVATE rtctrl::rtctrl
   Catch2::Catch2WithMain)
 # ident_sim_test drives the app-layer IdentRun and TwoMassArm fixture.
