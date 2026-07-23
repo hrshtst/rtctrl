@@ -6,9 +6,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <map>
 #include <string>
 
+#include "latency_verifier.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
@@ -282,63 +282,16 @@ struct TrackingRun : arm::Controller, arm::CycleObserver {
     ++samples[leg];
   }
 
-  // Latency verification (docs/REMEDIATION_PLAN.md D3 round 9): match
-  // the snapshot's applied sequence to ITS OWN historical receipt —
-  // never the receipt created in this row.
+  // Latency verification delegates to the shared LatencyVerifier
+  // (latency_verifier.hpp) — receipts recorded and checked post-write.
   bool observe(double t, const arm::JointState& state,
                const arm::CommandSnapshot& cmds,
                const arm::JointCommand& cmd,
                const arm::CommandReceipt& receipt) override {
     (void)cmd;  // controller telemetry is read from `inner` directly
-    const auto& ap = cmds.applied;
     double first_apply_delay = std::nan("");
-    if (ap.valid) {
-      // a pending sequence OLDER than the applied one was skipped
-      for (const auto& [seq, t_sub] : pending_) {
-        if (seq < ap.target_seq) {
-          std::fprintf(stderr,
-                       "LATENCY: submission seq %llu was skipped "
-                       "(applied jumped to %llu) — aborting\n",
-                       static_cast<unsigned long long>(seq),
-                       static_cast<unsigned long long>(ap.target_seq));
-          return false;
-        }
-      }
-      const auto it = pending_.find(ap.target_seq);
-      if (it != pending_.end()) {
-        first_apply_delay = ap.first_time - it->second;
-        delay_cache_seq_ = ap.target_seq;
-        delay_cache_ = first_apply_delay;
-        pending_.erase(it);
-        if (first_apply_delay > 2.0 * tuning::kNominalDt + 1e-9) {
-          std::fprintf(stderr,
-                       "LATENCY: seq %llu first applied %.1f ms after "
-                       "submission (bound %.1f ms) — aborting\n",
-                       static_cast<unsigned long long>(ap.target_seq),
-                       1e3 * first_apply_delay,
-                       2e3 * tuning::kNominalDt);
-          return false;
-        }
-      } else if (ap.target_seq == delay_cache_seq_) {
-        // completed sequence still current: re-emit the cached delay
-        first_apply_delay = delay_cache_;
-      }
-      // else: pre-run baseline (e.g. the settle phase's last command)
-      // — not a tracked submission, delay stays NaN
-    }
-    // any still-pending receipt past the deadline was never applied
-    for (const auto& [seq, t_sub] : pending_) {
-      if (state.t - t_sub > 2.0 * tuning::kNominalDt + 1e-9) {
-        std::fprintf(stderr,
-                     "LATENCY: submission seq %llu unapplied after "
-                     "%.1f ms — aborting\n",
-                     static_cast<unsigned long long>(seq),
-                     1e3 * (state.t - t_sub));
-        return false;
-      }
-    }
-    if (receipt.accepted) {
-      pending_[receipt.submitted_seq] = receipt.submission_time;
+    if (!verifier_.check(state.t, cmds, receipt, &first_apply_delay)) {
+      return false;
     }
     if (log_ != nullptr) writeRow(t, state, cmds, receipt,
                                   first_apply_delay);
@@ -420,9 +373,7 @@ struct TrackingRun : arm::Controller, arm::CycleObserver {
   double sum_sq[2][model::kCanonicalDof] = {};
   double max_abs[2][model::kCanonicalDof] = {};
   long samples[2] = {};
-  std::map<std::uint64_t, double> pending_;  // submitted_seq -> time
-  std::uint64_t delay_cache_seq_ = 0;
-  double delay_cache_ = std::nan("");
+  LatencyVerifier verifier_;
 };
 
 // CSV with explicit event semantics (docs/REMEDIATION_PLAN.md D8). A
