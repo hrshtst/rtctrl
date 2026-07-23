@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -125,6 +126,88 @@ inline double probeAmplitude(double j_hat, double freq_hz,
   const double w = 2.0 * M_PI * freq_hz;
   return std::clamp(x_t_rad * j_hat * w * w, kAmpFloorNm,
                     std::min(a_cap_nm, kAmpCapHardNm));
+}
+
+// Default survey grid: dense through the 4-6 Hz structural band, the
+// gear band around 13 Hz covered, 0.5-octave elsewhere.
+inline const std::vector<double>& surveyGridHz() {
+  static const std::vector<double> grid = {2.0,  3.0,  3.5, 4.0,  4.5,
+                                           5.0,  5.5,  6.0, 7.0,  8.0,
+                                           10.0, 12.0, 13.0, 14.0, 16.0,
+                                           20.0};
+  return grid;
+}
+
+// Analytic position-demod noise floor for a >= 3 s window (encoder
+// quantization sigma ~4.4e-4 rad, dither-linearized) — the predicted-
+// SNR gate's yardstick at schedule-build time.
+inline constexpr double kWindowFloorRad = 3.6e-5;
+
+// Diagonal inertia J_jj at the anchor from two inverseDynamics calls
+// (unit angular acceleration on joint j minus the gravity-only term).
+inline double diagInertia(model::ChainModel& chain,
+                          const model::JointMap& map,
+                          const model::ZVector& q_anchor, int joint) {
+  model::ZVector zero(model::kCanonicalDof), ddq(model::kCanonicalDof);
+  model::ZVector tau_g(model::kCanonicalDof), tau_a(model::kCanonicalDof);
+  zVecElemNC(ddq.get(), joint) = 1.0;
+  chain.inverseDynamics(map, q_anchor.get(), zero.get(), zero.get(),
+                        tau_g.get());
+  chain.inverseDynamics(map, q_anchor.get(), zero.get(), ddq.get(),
+                        tau_a.get());
+  return tau_a[joint] - tau_g[joint];
+}
+
+// Dwell list from a frequency grid with the amplitude rule; cap-bound
+// dwells whose predicted response falls under 3x the window noise
+// floor request the x4 window extension (granted at runtime only under
+// the T_stop admission).
+inline std::vector<DwellSpec> buildSchedule(
+    const std::vector<double>& freqs_hz, double j_hat, double a_cap_nm) {
+  std::vector<DwellSpec> dwells;
+  for (const double f : freqs_hz) {
+    DwellSpec d;
+    d.freq_hz = f;
+    d.amp_nm = probeAmplitude(j_hat, f, a_cap_nm);
+    const double w = 2.0 * M_PI * f;
+    const double x_hat = d.amp_nm / (j_hat * w * w);
+    if (d.amp_nm >= std::min(a_cap_nm, kAmpCapHardNm) - 1e-9 &&
+        x_hat < 3.0 * kWindowFloorRad) {
+      d.window_mult = 4;
+    }
+    dwells.push_back(d);
+  }
+  return dwells;
+}
+
+// Anchor reference loader: accepts the per-dwell JSON sidecar (takes
+// the 8 numbers after the "anchor" key) or any plain text holding 8
+// numbers. Returns false unless exactly kCanonicalDof values found.
+inline bool loadAnchorRef(const std::string& path, double* out) {
+  std::FILE* f = std::fopen(path.c_str(), "r");
+  if (!f) return false;
+  std::string text;
+  char buf[4096];
+  std::size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+  std::fclose(f);
+  std::size_t pos = 0;
+  const auto key = text.find("\"anchor\"");
+  if (key != std::string::npos) pos = key + 8;
+  int found = 0;
+  while (pos < text.size() && found < model::kCanonicalDof) {
+    const char c = text[pos];
+    if ((c >= '0' && c <= '9') ||
+        ((c == '-' || c == '+') && pos + 1 < text.size() &&
+         text[pos + 1] >= '0' && text[pos + 1] <= '9')) {
+      char* end = nullptr;
+      out[found++] = std::strtod(text.c_str() + pos, &end);
+      pos = end - text.c_str();
+    } else {
+      ++pos;
+    }
+  }
+  return found == model::kCanonicalDof;
 }
 
 // Lead-in sized to guarantee >= 4 non-overlapping 1-period noise-floor

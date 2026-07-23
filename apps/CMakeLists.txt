@@ -5,7 +5,7 @@ add_executable(dxl_inspect dxl_inspect.cpp)
 target_link_libraries(dxl_inspect PRIVATE rtctrl::rtctrl)
 
 foreach(app x7_onoff x7_read x7_set_param x7_move_simple x7_float x7_track
-        x7_track_sim)
+        x7_track_sim x7_ident x7_ident_sim)
   add_executable(${app} ${app}.cpp)
   target_link_libraries(${app} PRIVATE rtctrl::rtctrl)
 endforeach()

@@ -174,6 +174,8 @@ class TwoMassArm : public arm::Arm {
     return true;
   }
 
+  const JointParams& params(int i) const { return options_.joints[i]; }
+
   // Test hooks: displace the motor side against a held link (a pure
   // gear-spring deflection) so release rings the transmission mode.
   void deflectGear(int i, double delta) { q_m_[i] += delta; }
