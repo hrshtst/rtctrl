@@ -101,7 +101,7 @@ struct SettleController : arm::Controller {
 // --disturb seeds: warn and continue).
 struct SettleResult {
   bool io_ok = false;      // the arm layer stayed healthy
-  bool quiescent = false;  // residual below threshold at exit
+  bool quiescent = false;  // the SUSTAINED 0.3 s quiet window was reached
   double elapsed = 0.0;    // measured time spent settling [s]
   double residual = 0.0;   // final slow-filtered max joint speed [rad/s]
 };
@@ -130,6 +130,7 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
   bool reached_quiet_window = false;
   for (long cycle = 0; cycle < max_cycles; ++cycle) {
     if (!robot.readState(state)) return res;
+    double step_dt = 0.0;
     if (!have_ref) {
       seq_prev = state.seq;
       have_ref = true;
@@ -146,13 +147,17 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
       if (state.t < t_prev) return res;  // backward clock
       if (state.seq - seq_prev > arm::kMaxSeqGap) return res;
       if (state.t - t_prev > arm::kMaxSampleInterval) return res;
-      quiet = settle.maxSpeed() < 0.05 ? quiet + (state.t - t_prev) : 0.0;
+      step_dt = state.t - t_prev;
       t_prev = state.t;
       seq_prev = state.seq;
       t = state.t - t0;
     }
     if (t >= timeout_s) break;
     settle.update(state, cmd, t);
+    // The quiet window must be judged on the speed AFTER this sample
+    // was processed: accumulating before update() once let motion that
+    // began exactly on the acceptance sample slip through the gate.
+    quiet = settle.maxSpeed() < 0.05 ? quiet + step_dt : 0.0;
     if (!robot.writeCommand(cmd)) return res;
     if (!robot.step()) return res;
     if (t > 0.5 && quiet >= 0.3) {

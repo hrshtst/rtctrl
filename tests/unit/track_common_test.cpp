@@ -183,3 +183,27 @@ TEST_CASE("TrackingRun latency verification: baseline, match, deadline, "
                             {true, 101, 100.03}));
   }
 }
+
+TEST_CASE("settle gate: motion beginning ON the acceptance sample is "
+          "caught",
+          "[track_common]") {
+  model::ChainModel chain(kModelPath);
+  model::JointMap map(chain);
+  x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
+  // Still through the whole prospective quiet window, then an abrupt
+  // jump exactly on the sample that would have granted acceptance
+  // (t > 0.5 with quiet >= 0.3 first holds at t = 0.51, i.e. arm time
+  // 0.52 given the reference cycle). The pre-fix ordering accumulated
+  // `quiet` from the PREVIOUS sample's speed and accepted here with a
+  // residual of ~1 rad/s. (An onset must be strong enough for the
+  // 0.15 s quiescence metric to register within the sample — a gentle
+  // ramp's first 10 ms is below any finite-lag gate's resolution.)
+  PoseScriptArm robot([](double time) {
+    return time < 0.52 ? 0.1 : 0.6 + 0.5 * (time - 0.52);
+  });
+  const auto res = x7::settleArm(robot, settle, 0.7);
+  CHECK(res.io_ok);
+  INFO("residual " << res.residual << ", elapsed " << res.elapsed);
+  CHECK_FALSE(res.quiescent);
+  CHECK(res.residual > 0.05);
+}
