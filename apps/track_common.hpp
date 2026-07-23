@@ -107,7 +107,7 @@ inline bool settleArm(arm::Arm& robot, SettleController& settle,
 // optionally logs every cycle to CSV.
 struct TrackingRun : arm::Controller {
   TrackingRun(model::ChainModel& chain, const model::JointMap& map,
-              const model::MinJerkTrajectory& trajectory, double kp,
+              const model::Trajectory& trajectory, double kp,
               double kd, int leg, std::FILE* log)
       : inner(chain, map, trajectory, kp, kd),
         trajectory_(trajectory),
@@ -157,7 +157,7 @@ struct TrackingRun : arm::Controller {
   }
 
   arm::ComputedTorque inner;
-  const model::MinJerkTrajectory& trajectory_;
+  const model::Trajectory& trajectory_;
   int leg_;
   std::FILE* log_;
   model::ZVector q_d{model::kCanonicalDof};

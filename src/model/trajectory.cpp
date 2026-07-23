@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace rtctrl::model {
 
@@ -68,6 +69,32 @@ void MinJerkTrajectory::sample(double t, zVec q, zVec dq, zVec ddq) const {
     zVecElemNC(q, i) = q0_[i] + delta * s;
     if (dq != nullptr) zVecElemNC(dq, i) = delta * ds;
     if (ddq != nullptr) zVecElemNC(ddq, i) = delta * dds;
+  }
+}
+
+RoundTripTrajectory::RoundTripTrajectory(MinJerkTrajectory out,
+                                         MinJerkTrajectory back)
+    : out_(std::move(out)), back_(std::move(back)) {
+  if (out_.size() != back_.size()) {
+    throw std::invalid_argument(
+        "RoundTripTrajectory: segment sizes must match");
+  }
+  ZVector out_end(out_.size()), back_start(back_.size());
+  out_.sample(out_.duration(), out_end.get());
+  back_.sample(0.0, back_start.get());
+  for (int i = 0; i < out_.size(); ++i) {
+    if (std::fabs(out_end[i] - back_start[i]) > 1e-9) {
+      throw std::invalid_argument(
+          "RoundTripTrajectory: segments must meet at the split");
+    }
+  }
+}
+
+void RoundTripTrajectory::sample(double t, zVec q, zVec dq, zVec ddq) const {
+  if (t < out_.duration()) {
+    out_.sample(t, q, dq, ddq);
+  } else {
+    back_.sample(t - out_.duration(), q, dq, ddq);
   }
 }
 

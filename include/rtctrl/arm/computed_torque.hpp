@@ -36,7 +36,7 @@ namespace rtctrl::arm {
 class ComputedTorque : public Controller {
  public:
   ComputedTorque(model::ChainModel& chain, const model::JointMap& map,
-                 const model::MinJerkTrajectory& trajectory, double kp,
+                 const model::Trajectory& trajectory, double kp,
                  double kd)
       : chain_(chain), map_(map), trajectory_(trajectory), kp_(kp), kd_(kd) {
     for (int i = 0; i < model::kCanonicalDof; ++i) scale_[i] = 1.0;
@@ -110,7 +110,7 @@ class ComputedTorque : public Controller {
 
   model::ChainModel& chain_;
   const model::JointMap& map_;
-  const model::MinJerkTrajectory& trajectory_;
+  const model::Trajectory& trajectory_;
   double kp_;
   double kd_;
   bool use_state_velocity_ = false;

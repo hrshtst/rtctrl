@@ -117,3 +117,48 @@ TEST_CASE("zvs output re-parses as a zm sequence", "[trajectory][zvs]") {
   zSeqFree(&seq);
   std::remove(path);
 }
+
+TEST_CASE("round trip is C2-continuous at the split", "[trajectory]") {
+  using rtctrl::model::MinJerkTrajectory;
+  using rtctrl::model::RoundTripTrajectory;
+  using rtctrl::model::ZVector;
+  ZVector q0(3), qf(3);
+  q0[0] = 0.1;
+  qf[0] = 0.6;
+  qf[1] = -0.4;
+  qf[2] = 0.2;
+  RoundTripTrajectory rt(MinJerkTrajectory(q0.get(), qf.get(), 2.0),
+                         MinJerkTrajectory(qf.get(), q0.get(), 1.5));
+  CHECK(rt.outDuration() == Approx(2.0));
+  CHECK(rt.duration() == Approx(3.5));
+  CHECK(rt.size() == 3);
+
+  // position, velocity and acceleration continuous across the split
+  ZVector qa(3), dqa(3), dda(3), qb(3), dqb(3), ddb(3);
+  const double eps = 1e-6;
+  rt.sample(2.0 - eps, qa.get(), dqa.get(), dda.get());
+  rt.sample(2.0 + eps, qb.get(), dqb.get(), ddb.get());
+  for (int i = 0; i < 3; ++i) {
+    CHECK(qa[i] == Approx(qb[i]).margin(1e-6));
+    CHECK(dqa[i] == Approx(dqb[i]).margin(1e-4));   // both ~0 (min-jerk ends)
+    CHECK(dda[i] == Approx(ddb[i]).margin(1e-3));   // both ~0
+    CHECK(std::fabs(dqa[i]) < 1e-4);
+    CHECK(std::fabs(dda[i]) < 1e-3);
+  }
+
+  // endpoints clamp: before 0 and past the total duration
+  ZVector q(3);
+  rt.sample(-1.0, q.get());
+  CHECK(q[0] == Approx(q0[0]));
+  rt.sample(99.0, q.get());
+  CHECK(q[0] == Approx(q0[0]));  // returns to start
+  rt.sample(2.0, q.get());
+  CHECK(q[0] == Approx(qf[0]));  // split sits at the turn pose
+
+  // mismatched segments are rejected
+  ZVector other(3);
+  other[0] = 9.0;
+  CHECK_THROWS(RoundTripTrajectory(
+      MinJerkTrajectory(q0.get(), qf.get(), 1.0),
+      MinJerkTrajectory(other.get(), q0.get(), 1.0)));
+}

@@ -23,6 +23,7 @@ using rtctrl::model::ChainModel;
 using rtctrl::model::JointMap;
 using rtctrl::model::kCanonicalDof;
 using rtctrl::model::MinJerkTrajectory;
+using rtctrl::model::Trajectory;
 using rtctrl::model::ZVector;
 
 namespace {
@@ -32,7 +33,7 @@ constexpr const char* kModelPath = "models/crane_x7/crane_x7.ztk";
 // PD in torque space WITHOUT the inverse-dynamics feedforward — the
 // baseline computed torque must beat.
 struct PdOnly : Controller {
-  PdOnly(const MinJerkTrajectory& trajectory, double kp, double kd)
+  PdOnly(const Trajectory& trajectory, double kp, double kd)
       : trajectory_(trajectory), kp_(kp), kd_(kd) {}
   void update(const JointState& state, JointCommand& cmd,
               double t) override {
@@ -44,14 +45,14 @@ struct PdOnly : Controller {
           kd_ * (dq_d[i] - zVecElemNC(state.dq.get(), i));
     }
   }
-  const MinJerkTrajectory& trajectory_;
+  const Trajectory& trajectory_;
   double kp_, kd_;
   ZVector q_d{kCanonicalDof}, dq_d{kCanonicalDof};
 };
 
 // Runs `controller` over the trajectory on a fresh sim; returns the
 // tracking RMS across all joints and samples.
-double trackingRms(const MinJerkTrajectory& trajectory,
+double trackingRms(const Trajectory& trajectory,
                    Controller& controller, double duration) {
   SimArm::Options opt;
   opt.model_path = kModelPath;
