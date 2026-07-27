@@ -1,0 +1,152 @@
+// Positioning aid for the identification campaign: moves the arm to a
+// canonical posture in POSITION mode so the operator sees the real
+// target on hardware, holds it there, then goes limp on request while
+// the operator supports the arm. x7_ident then runs UNCHANGED (its
+// settle gate and +/-0.02 rad anchor gate still do the verifying) —
+// hand placement reduces to briefly steadying an already-posed arm
+// through the torque-off.
+//
+// SAFETY: the arm is servo-stiff during the move and DROPS under
+// gravity the moment it goes limp — support the shoulder and elbow
+// BEFORE pressing Enter. Power cutoff within reach.
+//
+// Usage: x7_pose [--config path] [--port dev] --posture <file> [--vel v]
+//   --posture  target vector: a checked-in config/postures/*.json, a
+//              .dwells.json sidecar, or any file with 8 numbers
+//   --vel      joint speed limit [rad/s], default 0.25, max 0.5
+
+#include <poll.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "ident_common.hpp"
+#include "rtctrl/model/trajectory.hpp"
+#include "rtctrl/model/zvector.hpp"
+#include "x7_common.hpp"
+
+namespace model = rtctrl::model;
+
+namespace {
+
+bool enterPressed() {
+  struct pollfd pfd = {0 /*stdin*/, POLLIN, 0};
+  if (poll(&pfd, 1, 0) <= 0) return false;
+  char buf[64];
+  return read(0, buf, sizeof buf) > 0;
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+  const auto cli = x7::parseCli(argc, argv);
+  std::string posture_path;
+  double vel = 0.25;
+  for (int i = cli.argi; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--posture") == 0 && i + 1 < argc) {
+      posture_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--vel") == 0 && i + 1 < argc) {
+      vel = std::atof(argv[++i]);
+    } else {
+      std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
+      return 1;
+    }
+  }
+  if (posture_path.empty()) {
+    std::fprintf(stderr, "--posture <file> is required\n");
+    return 1;
+  }
+  if (!std::isfinite(vel)) vel = 0.25;
+  vel = std::clamp(vel, 0.05, 0.5);
+  double posture[model::kCanonicalDof];
+  if (!x7::loadAnchorRef(posture_path, posture)) {
+    std::fprintf(stderr, "cannot read %d joint values from %s\n",
+                 model::kCanonicalDof, posture_path.c_str());
+    return 1;
+  }
+
+  try {
+    auto session = x7::openSession(cli, /*operating_mode_override=*/3);
+    auto& arm = *session.arm;
+    if (!arm.activate()) {
+      std::fprintf(stderr, "activation failed: %s\n",
+                   arm.lastError().c_str());
+      return 1;
+    }
+
+    std::vector<rtctrl::dxl::Feedback> fb;
+    if (!arm.readAll(fb)) {
+      arm.deactivate();
+      return 1;
+    }
+    const int n = static_cast<int>(fb.size());
+    model::ZVector start(n), target(n), q(n);
+    const auto& lo = arm.softLimitLo();
+    const auto& hi = arm.softLimitHi();
+    constexpr double kBuffer = 0.05;  // stay clear of the gate band
+    for (int i = 0; i < n; ++i) {
+      start[i] = fb[i].position;
+      target[i] = std::clamp(posture[i], lo[i] + kBuffer, hi[i] - kBuffer);
+      if (target[i] != posture[i]) {
+        std::printf("joint %d target clamped %.3f -> %.3f (soft limit)\n",
+                    i, posture[i], target[i]);
+      }
+    }
+
+    const auto move = model::MinJerkTrajectory::withVelocityLimit(
+        start, target, vel, 2.0);
+    std::printf("moving to the posture in %.1f s (vel limit %.2f rad/s)"
+                "\n", move.duration(), vel);
+    for (int i = 0; i < n; ++i) {
+      std::printf("  joint %d: %+.3f -> %+.3f (%+.3f)\n", i, start[i],
+                  target[i], target[i] - start[i]);
+    }
+
+    constexpr int kCycleUs = 10000;  // 100 Hz
+    std::vector<double> cmd(n);
+    for (double t = 0.0; t <= move.duration(); t += 1e-6 * kCycleUs) {
+      move.sample(t, q);
+      for (int i = 0; i < n; ++i) cmd[i] = q[i];
+      if (!arm.writePositions(cmd) && arm.escalated()) return 1;
+      if (!arm.checkDeadman()) return 1;
+      usleep(kCycleUs);
+    }
+    if (arm.readAll(fb)) {
+      std::printf("reached (servo vs target):\n");
+      for (int i = 0; i < n; ++i) {
+        std::printf("  joint %d: %+.3f vs %+.3f (%+.4f)\n",
+                    i, fb[i].position, target[i],
+                    fb[i].position - target[i]);
+      }
+    }
+
+    std::printf(
+        "\nHOLDING the posture in position mode.\n"
+        ">>> SUPPORT THE ARM (shoulder + elbow) — it goes LIMP and\n"
+        ">>> drops under gravity when you continue. Then press Enter\n"
+        ">>> to torque off and hand over to x7_ident.\n");
+    // keep the command stream (and both watchdog layers) alive while
+    // waiting — a silent bus would trip the servo Bus Watchdogs
+    for (int i = 0; i < n; ++i) cmd[i] = target[i];
+    while (!enterPressed()) {
+      if (!arm.writePositions(cmd) && arm.escalated()) return 1;
+      if (!arm.checkDeadman()) return 1;
+      usleep(kCycleUs);
+    }
+    const bool clean = arm.deactivate();
+    std::printf("%s — the arm is limp. Keep supporting it and start "
+                "x7_ident (activation + gravity comp take over).\n",
+                clean ? "torque off" : "torque off INCOMPLETE — check "
+                                       "the arm before proceeding");
+    return clean ? 0 : 1;
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "error: %s\n", e.what());
+    return 1;
+  }
+}

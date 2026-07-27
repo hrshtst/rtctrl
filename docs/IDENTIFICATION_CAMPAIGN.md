@@ -18,10 +18,20 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
 
 ## 2. First run: P1 posture, joint 1, survey
 
-- [ ] With the arm limp (before launching), hand-place it at the P1
-      vector (the pass-1 anchor — "roughly where it sat for pass 1" is
-      close enough; the settle gate and the ±0.02 rad tolerance do the
-      verifying).
+- [ ] Get the arm to the P1 vector. Easiest: let the servos do the
+      placing — `x7_pose` moves there in position mode, holds, and
+      goes limp on Enter WHILE YOU SUPPORT the shoulder and elbow
+      (the arm drops the moment torque cuts; keep supporting it until
+      x7_ident's gravity comp takes over):
+
+  ```sh
+  ./build/apps/x7_pose --posture config/postures/p1.json
+  ```
+
+      Hand placement of the limp arm remains the fallback ("roughly
+      where it sat for pass 1"). Either way the settle gate and the
+      ±0.02 rad anchor tolerance do the verifying — x7_ident is
+      unchanged.
 - [ ] Run WITH the checked-in P1 reference — without `--anchor-ref`
       nothing enforces the canonical posture and the first survey
       would silently establish an arbitrary anchor as "P1"

@@ -35,6 +35,14 @@ compensation hold it. The strict settle gate verifies stillness; the
 app refuses to probe unless the settled anchor matches the reference
 within **±0.02 rad per joint** (`--anchor-ref`).
 
+Positioning aid: `x7_pose --posture config/postures/p1.json` moves the
+arm to the target in POSITION mode, holds, and goes limp on request —
+**support the shoulder and elbow through the torque-off** (the arm
+drops the moment torque cuts) and keep supporting until x7_ident's
+gravity comp takes over. This reduces hand placement to briefly
+steadying an already-posed arm; the identification run itself is
+unchanged, and its gates still do the verifying.
+
 | posture | description | canonical vector [rad] |
 |---|---|---|
 | P1 | pass-1 anchor (proven) — `config/postures/p1.json` | `-0.357, -0.831, 2.126, -1.572, -2.456, -0.106, 0.563, -0.014` |
