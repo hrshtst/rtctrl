@@ -34,8 +34,9 @@ the PRODUCTION DEFAULT for every pose-first/capture-carrying
 identification run (surveys included; the manual fallback has no
 capture, so its integrator stays live — see step 3; x7_track's
 shipped tuning unchanged): joint-0 PD scale 0.5
-(`kIdentScale0`) + the learned integral bias frozen at capture
-acceptance, persisting uninterrupted through probing. The sidecar
+(`kIdentScale0`) + per-joint integral latching during capture
+(each joint freezes at its own readiness; all-latched at admission),
+persisting uninterrupted through probing. The sidecar
 records the full tuning AND the actual frozen bias vector (it varied
 −0.109 to −0.427 Nm on joint 2 across qualifying holds — compare
 repeat-survey peaks alongside it). The 8.9 Hz joint-0 signature stays

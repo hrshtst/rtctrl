@@ -76,15 +76,27 @@ class ComputedTorque : public Controller {
     for (int i = 0; i < model::kCanonicalDof; ++i) tau_max_[i] = tau_max[i];
     has_limits_ = true;
   }
-  // EXPERIMENTAL (identification hold diagnostic): freeze the learned
-  // integral state — updates are skipped while frozen, but the stored
-  // terms KEEP acting, so the captured friction/gravity bias and the
-  // emitted torque are continuous. Introduced for integrator-stiction
-  // hunting: a stiction-held, in-tolerance error winds the integral at
-  // Ki*e until breakaway slings the joint across the band (hardware
-  // 2026-07-27: joint 2, ~26 mrad slips recurring every 1-3 s).
-  void freezeIntegral(bool freeze) { i_frozen_ = freeze; }
-  bool integralFrozen() const { return i_frozen_; }
+  // Identification capture/hold: freeze learned integral state —
+  // updates are skipped while frozen, but the stored terms KEEP
+  // acting, so the captured friction/gravity bias and the emitted
+  // torque are continuous. PER-JOINT mask: a joint that is already
+  // stable latches immediately instead of waiting for the whole arm —
+  // joint 3 wound -0.07 to -0.54 Nm while stable in-band waiting for
+  // joint 2's global admission, then broke away ~37 mrad (hardware
+  // 2026-07-27 survey capture). The stiction-hunting mechanism itself:
+  // a stiction-held, in-tolerance error winds the integral at Ki*e
+  // until breakaway slings the joint across the band.
+  void freezeIntegral(int i, bool freeze) { i_frozen_[i] = freeze; }
+  void freezeIntegral(bool freeze) {  // all joints
+    for (int i = 0; i < model::kCanonicalDof; ++i) i_frozen_[i] = freeze;
+  }
+  bool integralFrozen(int i) const { return i_frozen_[i]; }
+  bool integralFrozen() const {  // ALL frozen: the controller-mode query
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      if (!i_frozen_[i]) return false;
+    }
+    return true;
+  }
 
   void update(const JointState& state, JointCommand& cmd,
               double t) override {
@@ -138,7 +150,7 @@ class ComputedTorque : public Controller {
       // unwinding direction always commits. The emitted command is
       // then recomputed from the COMMITTED state — a rejected
       // candidate never leaks into the output.
-      if (ki_ > 0.0 && !i_frozen_) {
+      if (ki_ > 0.0 && !i_frozen_[i]) {
         const double i_cand = std::clamp(i_term_[i] + ki_ * e * dt_f,
                                          -i_clamp_, i_clamp_);
         const double lim = has_limits_ ? tau_max_[i] : 1e300;
@@ -197,7 +209,7 @@ class ComputedTorque : public Controller {
   double i_clamp_ = 1.5;      // [Nm]
   double nominal_dt_ = 0.01;  // [s] — see setNominalDt
   bool has_limits_ = false;
-  bool i_frozen_ = false;  // see freezeIntegral
+  bool i_frozen_[model::kCanonicalDof] = {};  // see freezeIntegral
   double t_prev_ = -1.0;
   model::ZVector q_d_{model::kCanonicalDof};
   model::ZVector dq_d_{model::kCanonicalDof};

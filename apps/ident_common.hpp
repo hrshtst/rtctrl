@@ -833,10 +833,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   // override) — recorded so the analysis can refuse to merge runs
   // under different controllers (the FRFs are controller-specific)
   const double* gainScales() const { return gain_scale_; }
-  // the integral vector captured at the freeze instant (valid when
-  // biasFrozen())
+  // the per-joint integral values and times captured at each joint's
+  // LATCH instant (valid when biasFrozen())
   bool biasFrozen() const { return bias_frozen_; }
   double frozenBias(int i) const { return frozen_bias_[i]; }
+  double freezeLatchS(int i) const { return freeze_latch_s_[i]; }
   // calibrated floors (valid after lead-in), 3x RMS of block magnitudes
   double floorQ(int dwell) const {
     return dwell >= 0 && dwell < static_cast<int>(floor_q_val_.size())
@@ -1004,8 +1005,10 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
           break;
         }
         const double held = t - hold_traj_.captureEnd();
+        const bool latching = options_.freeze_integral_at_capture;
         double worst = 0.0;
         int worst_j = 0;
+        bool all_latched = true;
         for (int i = 0; i < model::kCanonicalDof; ++i) {
           const double dev = std::fabs(
               zVecElemNC(state.q.get(), i) - options_.anchor[i]);
@@ -1013,33 +1016,45 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
             worst = dev;
             worst_j = i;
           }
+          if (!latching) continue;
+          // PER-JOINT latching (review design): each joint's OWN
+          // readiness — in-band AND quiet, sustained 0.3 s — freezes
+          // THAT joint's integral immediately, recording its bias and
+          // latch time. Waiting for global admission let joint 3 wind
+          // -0.07 to -0.54 Nm while stable, then break away, while
+          // joint 2 blocked the arm-wide gate (survey telemetry).
+          // A latched joint NEVER resumes winding: if PD + the stored
+          // bias cannot keep it in-band, capture times out.
+          if (!inner_.integralFrozen(i)) {
+            const bool r =
+                dev <= kAnchorToleranceRad &&
+                capture_metric_.speed(i) < 0.05;
+            joint_ready_s_[i] = r ? joint_ready_s_[i] + dt : 0.0;
+            if (joint_ready_s_[i] >= 0.3) {
+              inner_.freezeIntegral(i, true);
+              frozen_bias_[i] = inner_.integralTerm()[i];
+              freeze_latch_s_[i] = t;
+            } else {
+              all_latched = false;
+            }
+          }
         }
-        // Admission readiness accumulates ONLY while BOTH conditions
-        // hold at THIS sample — position inside the tolerance AND the
-        // metric quiet — and resets when either fails. A joint stuck
-        // motionless OUTSIDE tolerance must not bank quiet time, and a
-        // breakaway transit through the band must not be caught
-        // mid-slip (review finding: joint 2 was admitted crossing the
-        // band at ~0.19 rad/s host velocity — quiet time banked while
-        // stuck off-anchor, position checked only at the final sample
-        // — and overshot the far boundary 0.11 s later).
-        const bool ready_now = worst <= kAnchorToleranceRad &&
+        // GLOBAL admission: once every joint is latched, the existing
+        // simultaneous all-joint conditions — position inside the
+        // tolerance AND the metric quiet at THIS sample — must hold a
+        // further 0.3 s (resetting when either fails; a breakaway
+        // transit must not be caught mid-slip). Tolerance, speed
+        // threshold, timeout and no-probe-before-admission unchanged.
+        const bool ready_now = all_latched &&
+                               worst <= kAnchorToleranceRad &&
                                capture_metric_.maxSpeed() < 0.05;
         capture_quiet_ = ready_now ? capture_quiet_ + dt : 0.0;
         if (held >= 0.5 && capture_quiet_ >= 0.3) {
           capture_s_ = t;  // both gates passed under the hold
-          if (options_.freeze_integral_at_capture) {
-            // the stored terms keep acting; only the winding stops.
-            // The ACTUAL frozen vector is recorded — the captured
-            // bias varies run to run (hardware: joint 2 at -0.109 to
-            // -0.427 Nm across qualifying holds) and must be visible
-            // to the analysis for repeatability comparisons.
-            inner_.freezeIntegral(true);
-            bias_frozen_ = true;
-            for (int i = 0; i < model::kCanonicalDof; ++i) {
-              frozen_bias_[i] = inner_.integralTerm()[i];
-            }
-          }
+          // with latching, every joint froze at ITS OWN latch (bias
+          // and latch time already recorded per joint); the effective
+          // controller mode is all-latched from here on
+          bias_frozen_ = latching;
           if (options_.hold_only_s > 0.0) {
             // diagnostic: reset the REPORTING statistics only — the
             // controller and metric state run on uninterrupted
@@ -1595,9 +1610,11 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   QuiescenceMetric capture_metric_;
   model::ZVector ref_scratch_{model::kCanonicalDof};
 
-  // frozen-bias record
+  // per-joint latch records
   bool bias_frozen_ = false;
   double frozen_bias_[model::kCanonicalDof] = {};
+  double freeze_latch_s_[model::kCanonicalDof] = {};
+  double joint_ready_s_[model::kCanonicalDof] = {};
 
   // hold diagnostic
   double hold_done_s_ = 0.0;
@@ -1701,6 +1718,10 @@ inline bool writeDwellJson(const std::string& path,
     std::fprintf(f, "  \"frozen_bias_nm\": [");
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       std::fprintf(f, "%s%.4f", i ? ", " : "", run.frozenBias(i));
+    }
+    std::fprintf(f, "],\n  \"freeze_latch_s\": [");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(f, "%s%.3f", i ? ", " : "", run.freezeLatchS(i));
     }
     std::fprintf(f, "],\n");
   }

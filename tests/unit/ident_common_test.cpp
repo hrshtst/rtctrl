@@ -893,3 +893,41 @@ TEST_CASE("ident sidecar records the EFFECTIVE integral mode: a run "
         std::string::npos);
   CHECK(text.find("\"frozen_bias_nm\"") == std::string::npos);
 }
+
+TEST_CASE("ident per-joint latching: a stable joint freezes without "
+          "waiting for the arm-wide admission",
+          "[ident]") {
+  // the survey-capture defect (2026-07-27): joint 3, stable in-band at
+  // +0.012, wound -0.07 -> -0.54 Nm while joint 2 blocked the global
+  // admission, then broke away. With latching, joint 3's integral
+  // stops ~0.3 s after ITS OWN readiness; joint 2 keeps integrating
+  // until it settles, and capture then succeeds.
+  Fixture fx;
+  auto o = baseOptions({});
+  o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+  o.hold_only_s = 3.0;
+  x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+  ScriptArm robot([](int i, double t) {
+    if (i == 3) return 0.012;               // stable, in-band, quiet
+    if (i == 2) return t < 4.0 ? 0.05 : 0.0;  // blocks, then settles
+    return 0.0;
+  });
+  CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+  INFO("outcome " << static_cast<int>(run.outcome())
+                  << " fault: " << run.faultReason());
+  REQUIRE(run.finishedCleanly());  // capture succeeded after j2 settled
+  CHECK(run.biasFrozen());
+  CHECK(run.inner().integralFrozen());
+  // joint 3 latched EARLY: its integral stopped near its readiness
+  // instant instead of winding for the ~4+ s joint 2 needed
+  INFO("latch3 " << run.freezeLatchS(3) << " bias3 "
+                 << run.frozenBias(3) << " latch2 "
+                 << run.freezeLatchS(2) << " bias2 "
+                 << run.frozenBias(2));
+  CHECK(run.freezeLatchS(3) < 2.5);
+  CHECK(run.freezeLatchS(2) > 4.0);
+  CHECK(std::fabs(run.frozenBias(3)) < 0.15);  // stopped winding early
+  // joint 2 integrated while unlatched (out of band at 0.05 for 4 s)
+  CHECK(std::fabs(run.frozenBias(2)) > 0.5);
+  CHECK(std::fabs(run.frozenBias(2)) > std::fabs(run.frozenBias(3)));
+}

@@ -468,3 +468,18 @@ continuous gates (2026-07-27); the unchanged quiescence and anchor
 gates remain the authority. The FRFs are controller-specific to this
 recorded tuning (see the earlier addendum); the sidecar tuning block
 and the analysis merge guard enforce dataset consistency.
+
+### Refinement (2026-07-27, same day): per-joint integral latching
+
+The single freeze-at-acceptance proved insufficient on hardware: in
+the first production survey capture, joint 3 — stable and in-band at
++0.012 rad — wound its integral from −0.07 to −0.54 Nm while joint 2
+blocked the arm-wide admission, then broke away ~37 mrad and the
+capture timed out. Capture now LATCHES each joint's integral
+individually once that joint's own in-band + quiet readiness sustains
+0.3 s (never resumed; a latched joint that PD + stored bias cannot
+hold in-band times the capture out), with global admission requiring
+all eight latched plus the unchanged simultaneous gates for a further
+0.3 s. Per-joint biases and latch times are recorded in the sidecar.
+Tolerance, speed threshold, timeout and the no-probe-before-admission
+rule are unchanged.

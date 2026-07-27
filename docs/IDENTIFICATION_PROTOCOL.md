@@ -39,10 +39,16 @@ bounded, gently ramped reference from the measured posture onto the
 canonical anchor under the QUALIFIED identification anchor controller
 (joint-0 PD scale 0.5, shipped scales elsewhere — see the plan
 addendum; x7_track's tuning is unchanged), with the quiescence metric
-and the ±0.02 rad anchor gate evaluated UNDER that hold. At capture
-acceptance the learned integral bias FREEZES — never reset, so the
-captured friction/gravity bias keeps pinning the posture — and stays
-frozen through lead-in, probing, retries and the final hold. A post-transition displacement beyond the 0.08 rad capture
+and the ±0.02 rad anchor gate evaluated UNDER that hold. During
+capture, each joint's learned integral bias LATCHES individually the
+moment that joint has been in-band and quiet for 0.3 s — a stable
+joint must not keep winding while another joint blocks the arm-wide
+admission — and admission itself requires all eight latched plus the
+unchanged simultaneous gates for a further 0.3 s. Latched biases are
+never reset or resumed: the captured friction/gravity bias keeps
+pinning the posture through lead-in, probing, retries and the final
+hold, and each joint's bias and latch time are recorded in the
+sidecar. A post-transition displacement beyond the 0.08 rad capture
 envelope aborts — capture closes a small expected residual, never an
 arbitrary offset. One controller instance spans capture, gates,
 lead-in and probe. This replaced the hand handover after four
