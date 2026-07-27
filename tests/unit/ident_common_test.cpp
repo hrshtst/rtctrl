@@ -646,3 +646,96 @@ TEST_CASE("ident capture phase: integrated startup", "[ident]") {
     CHECK_FALSE(run.results()[0].started);
   }
 }
+
+TEST_CASE("ident hold diagnostic: explicit mode, continuous gates",
+          "[ident]") {
+  Fixture fx;
+
+  SECTION("options validation: no dummy-dwell fakes, scale is "
+          "diagnostic-only") {
+    auto o = baseOptions({});
+    o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    o.hold_only_s = 10.0;
+    CHECK_NOTHROW(x7::IdentRun(fx.chain, fx.map, o, nullptr));
+    auto no_capture = o;
+    no_capture.capture_envelope_rad = 0.0;
+    CHECK_THROWS(x7::IdentRun(fx.chain, fx.map, no_capture, nullptr));
+    auto with_dwells = o;
+    with_dwells.dwells = {{5.0, 0.15, 1}};
+    CHECK_THROWS(x7::IdentRun(fx.chain, fx.map, with_dwells, nullptr));
+    auto empty_no_hold = baseOptions({});
+    CHECK_THROWS(x7::IdentRun(fx.chain, fx.map, empty_no_hold, nullptr));
+    auto scale_no_hold = baseOptions({{5.0, 0.15, 1}});
+    scale_no_hold.hold_scale0 = 0.3;
+    CHECK_THROWS(x7::IdentRun(fx.chain, fx.map, scale_no_hold, nullptr));
+  }
+
+  SECTION("a stable hold completes with per-joint statistics and the "
+          "effective gain vector recorded") {
+    x7::TwoMassArm::Options topt;
+    topt.initial_q8.assign(kCanonicalDof, 0.0);
+    topt.initial_q8[1] = 0.03;
+    x7::TwoMassArm robot(topt);
+    REQUIRE(robot.setMode(arm::ControlMode::Current));
+    REQUIRE(robot.activate());
+    auto o = baseOptions({});
+    o.tau_max.assign(kCanonicalDof, 4.0);
+    o.gravity_free_plant = true;
+    o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    o.hold_only_s = 5.0;
+    o.hold_scale0 = 0.3;
+    x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+    CHECK(run.gainScales()[0] == Approx(0.3));
+    CHECK(run.gainScales()[1] == Approx(x7::tuning::kGainScale[1]));
+    CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+    INFO("outcome " << static_cast<int>(run.outcome())
+                    << " fault: " << run.faultReason());
+    REQUIRE(run.finishedCleanly());
+    CHECK(run.outcome() == x7::IdentRun::Outcome::Completed);
+    CHECK(run.holdCompletedS() == Approx(5.0).margin(0.1));
+    // statistics record the WHOLE hold including the enforcement
+    // grace, where the acceptance-boundary decay tail may still sit
+    // slightly above the threshold — completion itself proves the
+    // post-grace continuous requirement held
+    for (int i = 0; i < kCanonicalDof; ++i) {
+      INFO("joint " << i << " max metric " << run.holdMaxSpeed(i));
+      CHECK(run.holdMaxSpeed(i) < 0.1);
+    }
+  }
+
+  SECTION("sustained oscillation DURING the hold fails continuously, "
+          "not just at the end") {
+    // still through capture acceptance, then a 9 Hz limit-cycle
+    // analog on joint 0 — the diagnostic must fail mid-hold
+    auto o = baseOptions({});
+    o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    o.hold_only_s = 30.0;
+    x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+    ScriptArm robot([](int i, double t) {
+      return (i == 0 && t > 4.0)
+                 ? 0.014 * std::sin(2.0 * M_PI * 9.0 * t)
+                 : 0.0;
+    });
+    CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+    CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
+    CHECK(run.faultReason().find("hold quiescence lost") !=
+          std::string::npos);
+    CHECK(run.holdMaxSpeed(0) >= 0.05);
+  }
+
+  SECTION("drift beyond the anchor tolerance DURING the hold fails") {
+    auto o = baseOptions({});
+    o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    o.hold_only_s = 30.0;
+    x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+    ScriptArm robot([](int i, double t) {
+      // slow drift: below the quiescence threshold, but out of the
+      // +/-0.02 band by t ~ 15 s
+      return (i == 2 && t > 4.0) ? 0.002 * (t - 4.0) : 0.0;
+    });
+    CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+    CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
+    CHECK(run.faultReason().find("hold deviation") != std::string::npos);
+    CHECK(run.faultReason().find("joint 2") != std::string::npos);
+  }
+}

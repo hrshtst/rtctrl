@@ -81,23 +81,42 @@ class Dwell:
         )
 
 
-def load_run(path: str) -> tuple[np.ndarray, np.ndarray, list | None]:
-    """Returns (data, anchor, sidecar dwell verdicts). skip_header=1
-    skips the '#' semantics line — genfromtxt(names=True) would
-    otherwise take IT as the column names."""
+def load_run(
+    path: str,
+) -> tuple[np.ndarray, np.ndarray, list | None, dict | None]:
+    """Returns (data, anchor, sidecar dwell verdicts, tuning record).
+    skip_header=1 skips the '#' semantics line — genfromtxt(names=True)
+    would otherwise take IT as the column names."""
     data = np.genfromtxt(path, delimiter=",", names=True, skip_header=1)
     if data.size == 0:
         raise SystemExit(f"{path}: no data rows")
     anchor = np.array([data[f"qd{i}"][0] for i in range(DOF)])
     sidecar = None
+    tuning = None
     sc_path = path + ".dwells.json"
     if os.path.exists(sc_path):
         with open(sc_path) as f:
-            sidecar = json.load(f).get("dwells")
+            sc = json.load(f)
+        sidecar = sc.get("dwells")
+        tuning = sc.get("tuning")
     else:
         print(f"WARNING: {sc_path} missing — dwell verdicts unknown",
               file=sys.stderr)
-    return data, anchor, sidecar
+    return data, anchor, sidecar, tuning
+
+
+def same_tuning(a: dict, b: dict) -> bool:
+    if set(a) != set(b):
+        return False
+    for k in a:
+        va, vb = a[k], b[k]
+        if isinstance(va, list):
+            if len(va) != len(vb) or any(
+                    abs(x - y) > 1e-6 for x, y in zip(va, vb)):
+                return False
+        elif abs(float(va) - float(vb)) > 1e-6:
+            return False
+    return True
 
 
 def demod_dwells(path: str, data: np.ndarray,
@@ -370,11 +389,17 @@ def main() -> int:
     ap.add_argument("--out", default="ident_analysis", help="output prefix")
     args = ap.parse_args()
 
-    # anchor merge guard: refuse to combine runs from different postures
+    # merge guards: refuse to combine runs from different postures OR
+    # different controllers — the FRFs are CONTROLLER-SPECIFIC (a
+    # multivariable arm: the other joints' coherent feedback torques
+    # are coupled inputs the primary estimator's denominator does not
+    # contain), so mixed tunings are not one dataset
     runs = []
     anchor0 = None
+    tuning0 = None
+    tuning0_path = None
     for path in args.csv:
-        data, anchor, sidecar = load_run(path)
+        data, anchor, sidecar, tuning = load_run(path)
         if anchor0 is None:
             anchor0 = anchor
         else:
@@ -387,6 +412,18 @@ def main() -> int:
                     f"{ANCHOR_TOL_RAD}) — separate postures cannot form "
                     "one FRF dataset"
                 )
+        if tuning is None:
+            print(f"WARNING: {path}: no tuning record — cannot verify "
+                  "controller consistency", file=sys.stderr)
+        elif tuning0 is None:
+            tuning0 = tuning
+            tuning0_path = path
+        elif not same_tuning(tuning0, tuning):
+            raise SystemExit(
+                f"TUNING MERGE GUARD: {path} ran a different controller "
+                f"than {tuning0_path} — controller-specific FRFs from "
+                "mixed tunings are not one dataset"
+            )
         runs.append((path, data, sidecar))
 
     assert anchor0 is not None
@@ -438,6 +475,10 @@ def main() -> int:
         "probe_joint": pj,
         "anchor": [float(a) for a in anchor0],
         "sources": [p for p, _, _ in runs],
+        # the FRFs below are specific to THIS controller (verified
+        # identical across the merged runs); transferring them to a
+        # different tuning requires demonstration, not assumption
+        "controller": tuning0,
         "modes": modes,
         "actuator_transfer": [
             {

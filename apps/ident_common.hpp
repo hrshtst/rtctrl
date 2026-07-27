@@ -473,6 +473,14 @@ inline constexpr double kCaptureRampMinS = 1.0;
 inline constexpr double kCaptureRampMaxS = 5.0;
 inline constexpr double kCaptureHoldMaxS = 10.0;  // quiescence timeout
 inline constexpr double kCaptureWorstS = 20.0;    // budget pre-check add-on
+// Hold-diagnostic enforcement grace: capture acceptance means the
+// metric sat just under 0.05 rad/s for 0.3 s, so a marginal entry can
+// blip a fraction of a millirad-per-second over the threshold moments
+// later while the last transient finishes decaying — an acceptance-
+// boundary artifact, not instability. Continuous enforcement begins
+// after this grace; the per-joint statistics still record the WHOLE
+// hold, so a grace-period excursion remains visible in the report.
+inline constexpr double kHoldDiagGraceS = 1.0;
 // The integrated flow has NO settle phase — setup between current-mode
 // activation and run start is the thread start, the confirmed hold and
 // the gates (~1-2 s), not the hand-placed flow's 10 s settle + gates.
@@ -561,8 +569,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     ReSettle,
     FinalHold,
     Done,
-    Capture  // appended: the CSV's dwell_phase numbering is frozen
-             // (Measure == 3 in tools/ident_analysis.py)
+    Capture,  // appended: the CSV's dwell_phase numbering is frozen
+              // (Measure == 3 in tools/ident_analysis.py)
+    HoldDiag  // unforced-hold diagnostic (stabilization procedure)
   };
   enum class Outcome {
     Running,
@@ -596,6 +605,22 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // envelope hard-faults (abort, never pull through). 0 disables:
     // the hand-placed flow starts at the anchor as before.
     double capture_envelope_rad = 0.0;
+    // Unforced-hold DIAGNOSTIC mode (stabilization procedure): when
+    // > 0 the run holds the anchor for this long after capture
+    // acceptance — no calibration, no probing (dwells must be EMPTY;
+    // requires the capture) — under CONTINUOUS-stability requirements:
+    // every joint within the +/-0.02 anchor tolerance and the
+    // quiescence metric below 0.05 rad/s at EVERY sample, all hard
+    // monitors live; any violation fails. Per-joint maxima are
+    // reported for the tuning decision.
+    double hold_only_s = 0.0;
+    // Diagnostic-scoped joint-0 PD gain-scale override (0 = shipped
+    // kGainScale). Restricted to the hold diagnostic by the app: the
+    // FRFs are CONTROLLER-SPECIFIC (a multivariable arm: other joints'
+    // coherent feedback torques are coupled inputs the primary
+    // estimator's denominator does not contain), so the campaign runs
+    // one fixed, recorded tuning — never a per-run knob.
+    double hold_scale0 = 0.0;
   };
 
   IdentRun(model::ChainModel& chain, const model::JointMap& map,
@@ -606,7 +631,13 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         inner_(chain, map, hold_traj_, tuning::kKp, tuning::kKd),
         log_(log) {
     inner_.setIntegral(tuning::kKi, tuning::kIntegralClampNm);
-    inner_.setGainScales(tuning::kGainScale);
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      gain_scale_[i] = tuning::kGainScale[i];
+    }
+    if (options_.hold_scale0 > 0.0) {
+      gain_scale_[0] = options_.hold_scale0;
+    }
+    inner_.setGainScales(gain_scale_);
     inner_.setNominalDt(tuning::kNominalDt);
     inner_.setPdFilterTau(tuning::kPdFilterTau);
     inner_.setTorqueLimits(options_.tau_max.data());
@@ -759,6 +790,16 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   // capture telemetry (integrated startup only)
   double captureInitialDev() const { return capture_initial_dev_; }
   double captureAcceptedAt() const { return capture_s_; }
+  // hold-diagnostic telemetry
+  double holdCompletedS() const { return hold_done_s_; }
+  double holdMaxSpeed(int i) const { return hold_max_speed_[i]; }
+  double holdRangeRad(int i) const {
+    return hold_q_max_[i] - hold_q_min_[i];
+  }
+  // the EFFECTIVE gain-scale vector (shipped + any diagnostic
+  // override) — recorded so the analysis can refuse to merge runs
+  // under different controllers (the FRFs are controller-specific)
+  const double* gainScales() const { return gain_scale_; }
   // calibrated floors (valid after lead-in), 3x RMS of block magnitudes
   double floorQ(int dwell) const {
     return dwell >= 0 && dwell < static_cast<int>(floor_q_val_.size())
@@ -783,9 +824,23 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   static Options validated(Options o) {
     if (static_cast<int>(o.anchor.size()) != model::kCanonicalDof ||
         static_cast<int>(o.tau_max.size()) != model::kCanonicalDof ||
-        o.probe_joint < 0 || o.probe_joint >= model::kCanonicalDof ||
-        o.dwells.empty()) {
+        o.probe_joint < 0 || o.probe_joint >= model::kCanonicalDof) {
       throw std::invalid_argument("IdentRun: bad options");
+    }
+    if (o.hold_only_s > 0.0) {
+      // the diagnostic is explicit: no dwells, and it needs the
+      // capture phase (never faked with a dummy dwell)
+      if (!o.dwells.empty() || o.capture_envelope_rad <= 0.0) {
+        throw std::invalid_argument(
+            "IdentRun: hold diagnostic requires EMPTY dwells and the "
+            "capture phase");
+      }
+    } else if (o.dwells.empty()) {
+      throw std::invalid_argument("IdentRun: no dwells");
+    }
+    if (o.hold_scale0 != 0.0 && o.hold_only_s <= 0.0) {
+      throw std::invalid_argument(
+          "IdentRun: the scale override is diagnostic-only");
     }
     return o;
   }
@@ -890,9 +945,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // Only in the probe-carrying phases — the wind-down phases are
     // already covered by the admission bounds that let them start.
     if (outcome_ == Outcome::Running &&
-        (phase_ == Phase::Capture || phase_ == Phase::LeadIn ||
-         phase_ == Phase::RampIn || phase_ == Phase::Hold ||
-         phase_ == Phase::Measure) &&
+        (phase_ == Phase::Capture || phase_ == Phase::HoldDiag ||
+         phase_ == Phase::LeadIn || phase_ == Phase::RampIn ||
+         phase_ == Phase::Hold || phase_ == Phase::Measure) &&
         options_.setup_offset_s + t + kRampS + kFinalHoldS >
             options_.t_stop_s) {
       fail(Outcome::DeadlineStop, "graceful stop at T_stop");
@@ -928,7 +983,18 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         if (held >= 0.5 && capture_quiet_ >= 0.3 &&
             worst <= kAnchorToleranceRad) {
           capture_s_ = t;  // both gates passed under the hold
-          phase_ = Phase::LeadIn;
+          if (options_.hold_only_s > 0.0) {
+            // diagnostic: reset the REPORTING statistics only — the
+            // controller and metric state run on uninterrupted
+            phase_ = Phase::HoldDiag;
+            for (int i = 0; i < model::kCanonicalDof; ++i) {
+              hold_max_speed_[i] = 0.0;
+              hold_q_min_[i] = hold_q_max_[i] =
+                  zVecElemNC(state.q.get(), i);
+            }
+          } else {
+            phase_ = Phase::LeadIn;
+          }
           phase_start_ = t;
         } else if (held >= kCaptureHoldMaxS) {
           // Only the timeout gives up: a quiet P-only equilibrium is
@@ -943,6 +1009,46 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
                    ", residual speed " +
                    std::to_string(capture_metric_.maxSpeed()) +
                    " rad/s) after " + std::to_string(held) + " s");
+        }
+        break;
+      }
+      case Phase::HoldDiag: {
+        // CONTINUOUS stability, not a passing final window (review
+        // correction): every sample of the hold must keep every joint
+        // inside the anchor tolerance AND the unchanged quiescence
+        // metric below 0.05 rad/s; all hard monitors stay live. The
+        // per-joint maxima feed the tuning decision.
+        probe_tau_ = 0.0;
+        capture_metric_.update(t, state.q.get());
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          const double q = zVecElemNC(state.q.get(), i);
+          hold_max_speed_[i] =
+              std::max(hold_max_speed_[i], capture_metric_.speed(i));
+          hold_q_min_[i] = std::min(hold_q_min_[i], q);
+          hold_q_max_[i] = std::max(hold_q_max_[i], q);
+          const double dev = std::fabs(q - options_.anchor[i]);
+          if (dev > kAnchorToleranceRad) {
+            fail(Outcome::HardFault,
+                 "hold deviation: joint " + std::to_string(i) + " at " +
+                     std::to_string(dev) + " rad after " +
+                     std::to_string(t - phase_start_) + " s");
+            break;
+          }
+        }
+        if (outcome_ == Outcome::Running &&
+            t - phase_start_ >= kHoldDiagGraceS &&
+            capture_metric_.maxSpeed() >= 0.05) {
+          fail(Outcome::HardFault,
+               "hold quiescence lost: " +
+                   std::to_string(capture_metric_.maxSpeed()) +
+                   " rad/s after " + std::to_string(t - phase_start_) +
+                   " s");
+        }
+        if (outcome_ == Outcome::Running &&
+            t - phase_start_ >= options_.hold_only_s) {
+          hold_done_s_ = t - phase_start_;
+          outcome_ = Outcome::Completed;
+          phase_ = Phase::Done;
         }
         break;
       }
@@ -1424,6 +1530,13 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   double capture_s_ = 0.0;
   QuiescenceMetric capture_metric_;
   model::ZVector ref_scratch_{model::kCanonicalDof};
+
+  // hold diagnostic
+  double hold_done_s_ = 0.0;
+  double hold_max_speed_[model::kCanonicalDof] = {};
+  double hold_q_min_[model::kCanonicalDof] = {};
+  double hold_q_max_[model::kCanonicalDof] = {};
+  double gain_scale_[model::kCanonicalDof] = {};
 };
 
 // ---------------------------------------------------------------------------
@@ -1492,6 +1605,34 @@ inline bool writeDwellJson(const std::string& path,
                  "\"initial_dev_rad\": %.4f, \"accepted_at_s\": %.3f},\n",
                  options.capture_envelope_rad, run.captureInitialDev(),
                  run.captureAcceptedAt());
+  }
+  // The COMPLETE controller record (review correction: the FRFs are
+  // controller-specific on a multivariable arm — the analysis merge
+  // guard refuses to combine runs under different tunings).
+  std::fprintf(f,
+               "  \"tuning\": {\"kp\": %.4f, \"kd\": %.4f, \"ki\": %.4f, "
+               "\"i_clamp_nm\": %.4f, \"pd_tau_s\": %.4f, "
+               "\"nominal_dt_s\": %.4f, \"gain_scale\": [",
+               tuning::kKp, tuning::kKd, tuning::kKi,
+               tuning::kIntegralClampNm, tuning::kPdFilterTau,
+               tuning::kNominalDt);
+  for (int i = 0; i < model::kCanonicalDof; ++i) {
+    std::fprintf(f, "%s%.4f", i ? ", " : "", run.gainScales()[i]);
+  }
+  std::fprintf(f, "]},\n");
+  if (options.hold_only_s > 0.0) {
+    std::fprintf(f,
+                 "  \"hold\": {\"requested_s\": %.1f, "
+                 "\"completed_s\": %.2f,\n   \"max_speed\": [",
+                 options.hold_only_s, run.holdCompletedS());
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(f, "%s%.4f", i ? ", " : "", run.holdMaxSpeed(i));
+    }
+    std::fprintf(f, "],\n   \"range_rad\": [");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(f, "%s%.5f", i ? ", " : "", run.holdRangeRad(i));
+    }
+    std::fprintf(f, "]},\n");
   }
   std::fprintf(f, "  \"dwells\": [\n");
   const auto& results = run.results();

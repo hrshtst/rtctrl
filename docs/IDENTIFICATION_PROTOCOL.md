@@ -186,10 +186,17 @@ uv run --project tools tools/ident_analysis.py \
 ```
 
 - Combines runs only when the recorded anchors agree within ±0.02 rad
-  (the merge guard refuses otherwise) and all probe the same joint.
-  Dwell verdicts come from the `.dwells.json` sidecars: skipped or
-  incomplete dwells are dropped, low-confidence dwells are excluded
-  from the mode fits and flagged.
+  (the merge guard refuses otherwise), all probe the same joint, AND
+  all ran the SAME recorded controller tuning — the FRFs are
+  **controller-specific**: on a multivariable arm the other joints'
+  coherent feedback torques are coupled inputs that the primary
+  estimator's denominator does not contain, so a gain change changes
+  the reported FRF. Every sidecar records the complete tuning
+  (gains, scales, filter constants); the mode table carries it as the
+  `controller` record; transferring results to a different tuning
+  (e.g. x7_track's) must be demonstrated, not assumed. Dwell verdicts
+  come from the sidecars: skipped or incomplete dwells are dropped,
+  low-confidence dwells are excluded from the mode fits and flagged.
 - `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band —
   the 4–5 Hz and ~13 Hz bands when both appear; the ~13 Hz gear band
   may be weak or absent on joint 1 (probe joint 5 covers it) — fitted

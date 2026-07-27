@@ -33,6 +33,14 @@
 //                 hands needed; the quiescence and +/-0.02 gates still
 //                 decide.
 //   --vel         placement speed limit [rad/s], default 0.25, max 0.5
+//   --hold        STABILIZATION DIAGNOSTIC (requires --pose-first, no
+//                 --freqs): capture, then an unforced anchor hold for
+//                 the given seconds under CONTINUOUS gates (±0.02 rad
+//                 and the 0.05 rad/s metric at every sample after a
+//                 1 s grace); reports per-joint maxima. No probing.
+//   --scale0      diagnostic-only joint-0 PD scale override in
+//                 [0.05, 1.0) — the campaign runs ONE fixed, recorded
+//                 tuning; this knob exists only to find it
 //   --log         full-loop ident telemetry CSV; a per-dwell JSON
 //                 sidecar lands next to it as <log>.dwells.json
 
@@ -87,14 +95,18 @@ int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   int probe_joint = -1;
   std::vector<x7::FreqSpec> freqs = defaultSurvey();
+  bool freqs_given = false;
   double a_cap = 0.15;
   bool pose_first = false;
   double pose_vel = 0.25;
+  double hold_s = 0.0;
+  double scale0 = 0.0;
   std::string label, log_path, anchor_ref_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
       probe_joint = std::atoi(argv[++i]);
     } else if (std::strcmp(argv[i], "--freqs") == 0 && i + 1 < argc) {
+      freqs_given = true;
       if (!x7::parseFreqList(argv[++i], &freqs)) {
         std::fprintf(stderr,
                      "--freqs rejected (nothing runs on a truncated "
@@ -121,6 +133,10 @@ int main(int argc, char* argv[]) {
       pose_first = true;
     } else if (std::strcmp(argv[i], "--vel") == 0 && i + 1 < argc) {
       pose_vel = std::atof(argv[++i]);
+    } else if (std::strcmp(argv[i], "--hold") == 0 && i + 1 < argc) {
+      hold_s = std::atof(argv[++i]);
+    } else if (std::strcmp(argv[i], "--scale0") == 0 && i + 1 < argc) {
+      scale0 = std::atof(argv[++i]);
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return 1;
@@ -157,6 +173,46 @@ int main(int argc, char* argv[]) {
   }
   if (!std::isfinite(pose_vel)) pose_vel = 0.25;
   pose_vel = std::clamp(pose_vel, 0.05, 0.5);
+  // Unforced-hold diagnostic (the stabilization procedure): strict
+  // validation, and --scale0 exists ONLY here so arbitrary survey
+  // tuning cannot slip into the campaign (the FRFs are
+  // controller-specific).
+  const bool hold_mode = hold_s != 0.0;
+  if (hold_mode) {
+    if (!pose_first) {
+      std::fprintf(stderr, "--hold requires --pose-first (the "
+                           "diagnostic runs capture-then-hold)\n");
+      return 1;
+    }
+    if (freqs_given) {
+      std::fprintf(stderr, "--hold takes no --freqs: the diagnostic "
+                           "never probes\n");
+      return 1;
+    }
+    if (!std::isfinite(hold_s) || hold_s < 5.0 || hold_s > 120.0) {
+      std::fprintf(stderr, "--hold rejected: one finite duration in "
+                           "[5, 120] s required\n");
+      return 1;
+    }
+    if (scale0 != 0.0) {
+      if (!std::isfinite(scale0) || scale0 < 0.05 || scale0 > 1.0) {
+        std::fprintf(stderr, "--scale0 rejected: one finite value in "
+                             "[0.05, 1.0] required\n");
+        return 1;
+      }
+      if (scale0 == 1.0) {
+        std::fprintf(stderr,
+                     "--scale0 1.0 is the already-characterized "
+                     "failing case (2026-07-27 run) — pick a reduced "
+                     "value\n");
+        return 1;
+      }
+    }
+  } else if (scale0 != 0.0) {
+    std::fprintf(stderr, "--scale0 is diagnostic-only: it requires "
+                         "--hold\n");
+    return 1;
+  }
 
   try {
     auto session =
@@ -171,16 +227,18 @@ int main(int argc, char* argv[]) {
       // The anchor is the reference vector, so the whole schedule is
       // known up front.
       {
-        model::ZVector q_ref(model::kCanonicalDof);
-        for (int i = 0; i < model::kCanonicalDof; ++i) {
-          zVecElemNC(q_ref.get(), i) = anchor_ref[i];
+        double worst = x7::kCaptureWorstS +
+                       x7::kPoseFirstSetupAllowanceS + hold_s;
+        if (!hold_mode) {
+          model::ZVector q_ref(model::kCanonicalDof);
+          for (int i = 0; i < model::kCanonicalDof; ++i) {
+            zVecElemNC(q_ref.get(), i) = anchor_ref[i];
+          }
+          const double j0 =
+              x7::diagInertia(chain, map, q_ref, probe_joint);
+          const auto d0 = x7::buildScheduleFromSpecs(freqs, j0, a_cap);
+          worst += x7::baseWorstSeconds(d0);
         }
-        const double j0 =
-            x7::diagInertia(chain, map, q_ref, probe_joint);
-        const auto d0 = x7::buildScheduleFromSpecs(freqs, j0, a_cap);
-        const double worst = x7::baseWorstSeconds(d0) +
-                             x7::kCaptureWorstS +
-                             x7::kPoseFirstSetupAllowanceS;
         if (worst > x7::kTStopS) {
           std::fprintf(stderr,
                        "schedule worst case %.1f s (incl. capture + "
@@ -502,19 +560,23 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    // Schedule with the amplitude rule at THIS anchor's inertia.
+    // Schedule with the amplitude rule at THIS anchor's inertia (the
+    // hold diagnostic never probes: empty dwell list).
     model::ZVector q_anchor(model::kCanonicalDof);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       zVecElemNC(q_anchor.get(), i) = anchor[i];
     }
     const double j_hat = x7::diagInertia(chain, map, q_anchor,
                                          probe_joint);
-    auto dwells = x7::buildScheduleFromSpecs(freqs, j_hat, a_cap);
+    auto dwells = hold_mode
+                      ? std::vector<x7::DwellSpec>{}
+                      : x7::buildScheduleFromSpecs(freqs, j_hat, a_cap);
     // Pre-activation-style refusal (checked before settle would be
     // ideal, but the amplitudes depend on the settled anchor; the
     // authoritative admission below covers the difference). The
     // capture phase spends session time too.
-    const double capture_worst = pose_first ? x7::kCaptureWorstS : 0.0;
+    const double capture_worst =
+        pose_first ? x7::kCaptureWorstS + hold_s : 0.0;
     const double setup_allow = pose_first
                                    ? x7::kPoseFirstSetupAllowanceS
                                    : x7::kSetupAllowanceS;
@@ -528,13 +590,21 @@ int main(int argc, char* argv[]) {
       shutdown.run();
       return 1;
     }
-    std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, lead-in "
-                "%.1f s, worst case %.1f s:\n",
-                probe_joint, j_hat, dwells.size(),
-                x7::leadInSeconds(dwells), x7::baseWorstSeconds(dwells));
-    for (const auto& d : dwells) {
-      std::printf("  %6.2f Hz  amp %.3f Nm%s\n", d.freq_hz, d.amp_nm,
-                  d.window_mult > 1 ? "  (x4 window requested)" : "");
+    if (hold_mode) {
+      std::printf("HOLD DIAGNOSTIC: capture, then %.0f s unforced "
+                  "anchor hold under continuous gates (joint-0 scale "
+                  "%.2f); no probing\n",
+                  hold_s, scale0 > 0.0 ? scale0 : x7::kGainScale[0]);
+    } else {
+      std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, "
+                  "lead-in %.1f s, worst case %.1f s:\n",
+                  probe_joint, j_hat, dwells.size(),
+                  x7::leadInSeconds(dwells),
+                  x7::baseWorstSeconds(dwells));
+      for (const auto& d : dwells) {
+        std::printf("  %6.2f Hz  amp %.3f Nm%s\n", d.freq_hz, d.amp_nm,
+                    d.window_mult > 1 ? "  (x4 window requested)" : "");
+      }
     }
 
     // POST-SETTLE ADMISSION (authoritative): the deadline runs from
@@ -572,6 +642,11 @@ int main(int argc, char* argv[]) {
                     "] kp=%.1f kd=%.2f ki=%.1f", x7::tuning::kKp,
                     x7::tuning::kKd, x7::tuning::kKi);
       meta += num;
+      if (hold_mode) {
+        std::snprintf(num, sizeof num, " hold=%.0f scale0=%.3f", hold_s,
+                      scale0);
+        meta += num;
+      }
       log = x7::openIdentCsvLog(log_path, meta);
       if (!log) {
         std::fprintf(stderr, "cannot open log file %s\n",
@@ -589,6 +664,10 @@ int main(int argc, char* argv[]) {
     opt.health = health;
     if (pose_first) {
       opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    }
+    if (hold_mode) {
+      opt.hold_only_s = hold_s;
+      opt.hold_scale0 = scale0;
     }
     // exact per-joint torque limits, mirroring writeCurrents
     opt.tau_max.resize(model::kCanonicalDof);
@@ -623,6 +702,17 @@ int main(int argc, char* argv[]) {
       std::printf("capture: initial residual %.4f rad, gates passed at "
                   "%.2f s under the hold\n",
                   ident.captureInitialDev(), ident.captureAcceptedAt());
+    }
+    if (hold_mode) {
+      std::printf("hold diagnostic (joint-0 scale %.2f, %.1f of %.0f s "
+                  "completed):\n",
+                  ident.gainScales()[0], ident.holdCompletedS(), hold_s);
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        std::printf("  joint %d: max metric %.4f rad/s (bound 0.05)  "
+                    "p-p %.5f rad%s\n",
+                    i, ident.holdMaxSpeed(i), ident.holdRangeRad(i),
+                    ident.holdMaxSpeed(i) >= 0.05 ? "  <-- FAIL" : "");
+      }
     }
     printDwellSummary(ident);
     std::printf("cycles %llu, overruns %llu, read failures %llu, write "

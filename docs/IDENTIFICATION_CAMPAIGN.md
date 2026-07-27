@@ -19,7 +19,43 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
       `dxl_emu` in one terminal, then
       `x7_ident --port <link> --joint 1 --freqs "5,8"` in another.
 
-## 2. First run: P1 posture, joint 1, survey
+## 2. Stabilize the anchor hold FIRST (required)
+
+The first hardware capture (2026-07-27) exposed a **~8.9 Hz,
+±13 mrad joint-0 limit cycle under the stationary anchor hold** at
+full pan PD scale — the controller pumps it (+11 mW at the mode), and
+its 0.34 Nm p-p torque exceeds the probe amplitude. Treat 8.9 Hz as a
+CLOSED-LOOP limit-cycle candidate, not a confirmed mechanical mode; do
+not add joint 0 to the probe set on this evidence alone.
+
+- [ ] Run the unforced-hold diagnostic, stepping the joint-0 scale
+      DOWN (scale 1.0 is the already-characterized failing run — the
+      app refuses it). Start at 0.5:
+
+  ```sh
+  ./build/apps/x7_ident --joint 1 --pose-first \
+      --anchor-ref config/postures/p1.json \
+      --hold 30 --scale0 0.5 --label p1-hold-s050 --log p1_hold_s050.csv
+  ```
+
+      then 0.3, etc., until the hold COMPLETES: continuous stability —
+      every joint inside ±0.02 rad and the unchanged 0.05 rad/s metric
+      at every sample after a 1 s settling grace, all hard monitors
+      live. The report lists each joint's max metric and p-p motion.
+- [ ] Repeat the passing scale at least once at P1, and validate it at
+      EVERY posture before that posture's surveys — P1 stability does
+      not establish P2–P4 stability.
+- [ ] The selected scale then becomes the ONE campaign tuning: report
+      it for baking into the ident controller (a code change) — the
+      FRFs are CONTROLLER-SPECIFIC (a multivariable arm: other joints'
+      coherent feedback torques are coupled inputs), the full tuning is
+      recorded in every sidecar, and the analysis refuses to merge
+      runs under different tunings. Transferring the resulting mode
+      tables to x7_track's scale-1.0 tuning must be demonstrated, not
+      assumed — or the chosen scale promoted to x7_track as well
+      (decide with the reviewer once the value is known).
+
+## 3. First survey: P1 posture, joint 1
 
 - [ ] One command does placement AND survey — `--pose-first` (the
       reviewer-approved integrated startup, after four hand-handover
@@ -48,7 +84,7 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
       four trial sessions showed the limp handover loses 0.06–0.18 rad
       on the gravity-loaded joints — expect anchor-gate refusals.
 
-## 3. Analyze BEFORE any refinement (the protocol's hard gate)
+## 4. Analyze BEFORE any refinement (the protocol's hard gate)
 
 ```sh
 uv run --project tools tools/ident_analysis.py p1_j1_survey.csv --out p1_j1_survey
@@ -72,7 +108,7 @@ Verify four things:
       (possibly the 13 Hz mode weakly from joint 1). It is marked
       SURVEY-ONLY: expected at this stage.
 
-## 4. Refinement sweeps (same posture)
+## 5. Refinement sweeps (same posture)
 
 Same session or after cooldown — the pre-run gate enforces the
 cooldown automatically; just rerun.
@@ -111,7 +147,7 @@ cooldown automatically; just rerun.
       p1_j1_survey.csv p1_j1_up.csv p1_j1_down.csv --out p1_j1
   ```
 
-## 5. Expand the campaign
+## 6. Expand the campaign
 
 - [ ] Joints 3 and 5 at P1 (survey → analyze → refine, same pattern;
       each first survey gates on `config/postures/p1.json`).
