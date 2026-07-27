@@ -166,16 +166,57 @@ int main(int argc, char* argv[]) {
     model::JointMap map(chain);
 
     if (pose_first) {
+      // EARLY budget refusal, before ANY motion (review finding: the
+      // old check ran after placement had already moved the robot).
+      // The anchor is the reference vector, so the whole schedule is
+      // known up front.
+      {
+        model::ZVector q_ref(model::kCanonicalDof);
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          zVecElemNC(q_ref.get(), i) = anchor_ref[i];
+        }
+        const double j0 =
+            x7::diagInertia(chain, map, q_ref, probe_joint);
+        const auto d0 = x7::buildScheduleFromSpecs(freqs, j0, a_cap);
+        const double worst = x7::baseWorstSeconds(d0) +
+                             x7::kCaptureWorstS +
+                             x7::kPoseFirstSetupAllowanceS;
+        if (worst > x7::kTStopS) {
+          std::fprintf(stderr,
+                       "schedule worst case %.1f s (incl. capture + "
+                       "setup) exceeds T_stop %.1f s — split it "
+                       "(--freqs); refusing BEFORE any motion\n",
+                       worst, x7::kTStopS);
+          return 1;
+        }
+      }
       // Integrated placement (reviewer-approved): position-mode move
-      // with MEASURED-posture convergence, then the shortest possible
-      // in-process transition to current mode with a clamped
-      // gravity-current preload — the servos hold from the instant
-      // torque re-enables, and the run's capture phase closes the
-      // remaining residual under the restoring controller.
+      // with MEASURED-posture convergence, then the minimal in-place
+      // transition to current mode with the clamped gravity-current
+      // preload landing before torque re-enable.
       if (!session.arm->activate()) {
         std::fprintf(stderr, "position activation failed: %s\n",
                      session.arm->lastError().c_str());
         return 1;
+      }
+      // Health gate BEFORE motion (review finding: an overheated arm
+      // must not perform the placement move first).
+      {
+        const auto fb = session.arm->lastFeedback();
+        std::array<x7::JointHealth, model::kCanonicalDof> h;
+        std::string why;
+        bool ok = static_cast<int>(fb.size()) == model::kCanonicalDof;
+        for (int i = 0; ok && i < model::kCanonicalDof; ++i) {
+          h[i] = {fb[i].temperature, fb[i].voltage};
+        }
+        if (!ok || !x7::preRunHealthOk(h, &why)) {
+          std::fprintf(stderr,
+                       "pre-placement health gate: %s — let the arm "
+                       "cool / check supply, then rerun\n",
+                       why.empty() ? "health read failed" : why.c_str());
+          session.arm->deactivate();
+          return 1;
+        }
       }
       const auto placed =
           x7::movePose(*session.arm, anchor_ref, pose_vel, 0.01, 5);
@@ -201,27 +242,20 @@ int main(int argc, char* argv[]) {
         preload[i] = tau_g[i] / rtctrl::dxl::torqueConstant(
                                     session.config.joints[i].model_number);
       }
-      if (!session.arm->deactivate()) {
-        std::fprintf(stderr, "position-phase deactivation incomplete — "
-                             "check the arm; not switching modes\n");
+      // Minimal in-place transition (review finding: the rebuild path
+      // repeated the FULL activation — verification, indirect maps,
+      // limits — all unsupported): ~25 transactions, torque-off to
+      // torque-on, preload in the goal registers before the enable.
+      std::printf("switching to current mode in place (gravity preload "
+                  "armed)...\n");
+      if (!session.arm->switchToCurrentModeWithPreload(preload)) {
+        std::fprintf(stderr, "mode switch failed: %s — the arm was "
+                             "released; check it before rerunning\n",
+                     session.arm->lastError().c_str());
         return 1;
       }
-      // rebuild on the SAME open port in current mode; the unsupported
-      // interval is exactly this activate() and ends at torque-enable
-      // with the preload already in the goal registers
-      std::printf("switching to current mode (gravity preload armed)"
-                  "...\n");
+      // keep session.config consistent with the switched arm
       for (auto& joint : session.config.joints) joint.operating_mode = 0;
-      session.arm = std::make_unique<rtctrl::hw::CraneX7>(
-          *session.port, session.config);
-      rtctrl::dxl::Port* port = session.port.get();
-      session.arm->onEscalate([port] {
-        std::fprintf(stderr,
-                     "DEADMAN: command stream stale — closing the bus; "
-                     "servo watchdogs will halt the arm\n");
-        port->close();
-      });
-      session.arm->setActivationCurrentPreload(preload);
     }
 
     arm::RealArm robot(*session.arm);
@@ -448,14 +482,16 @@ int main(int argc, char* argv[]) {
     // authoritative admission below covers the difference). The
     // capture phase spends session time too.
     const double capture_worst = pose_first ? x7::kCaptureWorstS : 0.0;
-    if (x7::baseWorstSeconds(dwells) + x7::kSetupAllowanceS +
-            capture_worst >
+    const double setup_allow = pose_first
+                                   ? x7::kPoseFirstSetupAllowanceS
+                                   : x7::kSetupAllowanceS;
+    if (x7::baseWorstSeconds(dwells) + setup_allow + capture_worst >
         x7::kTStopS) {
       std::fprintf(stderr,
                    "schedule worst case %.1f s + %.0f s setup exceeds "
                    "T_stop %.1f s — split it (--freqs)\n",
                    x7::baseWorstSeconds(dwells) + capture_worst,
-                   x7::kSetupAllowanceS, x7::kTStopS);
+                   setup_allow, x7::kTStopS);
       shutdown.run();
       return 1;
     }

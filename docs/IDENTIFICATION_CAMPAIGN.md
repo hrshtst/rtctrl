@@ -9,9 +9,12 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
 
 - [ ] Build current `main`; `ctest` fully green,
       `uv run mkdocs build --strict` clean.
-- [ ] Actuator power cutoff within reach; workspace clear. Current
-      mode throughout — the arm free-falls until the gravity hold
-      lands, exactly as x7_track.
+- [ ] Actuator power cutoff within reach; workspace clear. With
+      `--pose-first` the arm starts servo-held in POSITION mode for
+      the placement, then switches to current mode in-place (a ~25-
+      transaction torque-off window with the gravity preload landing
+      before re-enable). The manual fallback is current mode
+      throughout and free-falls until the gravity hold lands.
 - [ ] Optional dry run without the arm to see the output shape:
       `dxl_emu` in one terminal, then
       `x7_ident --port <link> --joint 1 --freqs "5,8"` in another.
@@ -85,7 +88,8 @@ cooldown automatically; just rerun.
       merge guard (see the protocol's anchor-reference policy):
 
   ```sh
-  ./build/apps/x7_ident --joint 1 --anchor-ref p1_j1_survey.csv.dwells.json \
+  ./build/apps/x7_ident --joint 1 --pose-first \
+      --anchor-ref p1_j1_survey.csv.dwells.json \
       --freqs "3.75,3.9,4.05,4.2,4.35,4.5,4.65,4.8,4.95,5.1,5.25,<peak>@<half-amp>" \
       --label p1-j1-up --log p1_j1_up.csv
   ```
@@ -93,7 +97,8 @@ cooldown automatically; just rerun.
 - [ ] Down-sweep: the same grid DESCENDING, a separate invocation:
 
   ```sh
-  ./build/apps/x7_ident --joint 1 --anchor-ref p1_j1_survey.csv.dwells.json \
+  ./build/apps/x7_ident --joint 1 --pose-first \
+      --anchor-ref p1_j1_survey.csv.dwells.json \
       --freqs "5.25,5.1,4.95,4.8,4.65,4.5,4.35,4.2,4.05,3.9,3.75" \
       --label p1-j1-down --log p1_j1_down.csv
   ```

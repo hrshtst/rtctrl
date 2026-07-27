@@ -116,6 +116,12 @@ TEST_CASE("ident schedule arithmetic matches the plan's budget",
   INFO("survey worst-case base " << worst << " s");
   CHECK(worst == Approx(146.0).margin(2.0));
   CHECK(x7::scheduleFitsBudget(survey));
+  // the DEFAULT survey must also fit the INTEGRATED flow: base +
+  // capture worst case + the pose-first setup allowance (the 15 s
+  // hand-flow allowance made the documented command self-rejecting at
+  // 181.5 s — review finding)
+  CHECK(worst + x7::kCaptureWorstS + x7::kPoseFirstSetupAllowanceS <=
+        x7::kTStopS);
 
   // an over-long custom schedule is refused before activation
   std::vector<x7::DwellSpec> too_long(30, {2.0, 0.1, 1});
@@ -623,17 +629,19 @@ TEST_CASE("ident capture phase: integrated startup", "[ident]") {
     CHECK_FALSE(run.results()[0].started);  // no probe after the abort
   }
 
-  SECTION("an arm that cannot follow the capture fails the anchor gate "
-          "under the hold — no probing on a missed posture") {
+  SECTION("an arm that cannot follow the capture times out under the "
+          "hold — but is given the FULL hold (a quiet P-only "
+          "equilibrium may still be integrator-corrected)") {
     // scripted arm frozen 0.05 rad off the anchor: inside the
-    // admission envelope, quiescent, but the capture cannot move it
+    // admission envelope, quiescent, but the capture cannot move it —
+    // the fail must come from the TIMEOUT, not the first quiet window
     auto opt = baseOptions({{5.0, 0.15, 1}});
     opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
     x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
     ScriptArm robot([](int i, double) { return i == 1 ? 0.05 : 0.0; });
     CHECK_FALSE(arm::run(robot, run, 30.0, &run));
     CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
-    CHECK(run.faultReason().find("capture failed") != std::string::npos);
+    CHECK(run.faultReason().find("capture timeout") != std::string::npos);
     CHECK(run.faultReason().find("joint 1") != std::string::npos);
     CHECK_FALSE(run.results()[0].started);
   }

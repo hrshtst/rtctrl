@@ -114,10 +114,12 @@ per probe joint-posture, EXCLUDING cooldown and operator handling.
 Cross-invocation combination is legitimate through the anchor-reference
 gate.
 
-1. **Survey** — default grid, against the canonical reference:
+1. **Survey** — default grid, integrated placement against the
+   canonical reference:
 
    ```sh
-   ./build/apps/x7_ident --joint 1 --anchor-ref config/postures/p1.json \
+   ./build/apps/x7_ident --joint 1 --pose-first \
+       --anchor-ref config/postures/p1.json \
        --label p1-j1-survey --log p1_j1_survey.csv
    ```
 
@@ -132,7 +134,8 @@ gate.
    refuses to run rather than dropping the dwell):
 
    ```sh
-   ./build/apps/x7_ident --joint 1 --anchor-ref p1_j1_survey.csv.dwells.json \
+   ./build/apps/x7_ident --joint 1 --pose-first \
+       --anchor-ref p1_j1_survey.csv.dwells.json \
        --freqs "3.75,3.9,4.05,4.2,4.35,4.5,4.65,4.8,4.95,5.1,5.25,<peak>@<half-amp>" \
        --label p1-j1-up --log p1_j1_up.csv
    ```
@@ -144,7 +147,8 @@ gate.
    separate invocation:
 
    ```sh
-   ./build/apps/x7_ident --joint 1 --anchor-ref p1_j1_survey.csv.dwells.json \
+   ./build/apps/x7_ident --joint 1 --pose-first \
+       --anchor-ref p1_j1_survey.csv.dwells.json \
        --freqs "5.25,5.1,4.95,4.8,4.65,4.5,4.35,4.2,4.05,3.9,3.75" \
        --label p1-j1-down --log p1_j1_down.csv
    ```

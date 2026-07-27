@@ -222,6 +222,20 @@ class CraneX7 {
     preload_amps_ = amps;
   }
 
+  // Minimal in-place position->current transition for the integrated
+  // identification startup: torque off -> operating-mode writes -> one
+  // grouped goal write carrying the (limited) preload currents ->
+  // torque on. ~25 transactions total; NO re-verification, NO indirect
+  // re-setup, limits and Bus Watchdogs left as activated — the
+  // unsupported interval is exactly the span between the first
+  // torque-off and the last torque-on. Requires an ACTIVE arm with the
+  // background thread stopped. A preload that the limiter would clip
+  // or gate REFUSES the switch (a limited gravity preload cannot hold
+  // the arm); any mid-sequence failure best-effort releases every
+  // servo and deactivates. On success the config's operating modes and
+  // the thread's default targets are updated to current/preload.
+  bool switchToCurrentModeWithPreload(const std::vector<double>& amps);
+
   // Per-servo parameter writes (all joints).
   bool writePositionPGain(std::uint16_t gain);
   bool writeProfileVelocity(std::uint32_t raw);

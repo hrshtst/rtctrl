@@ -70,10 +70,17 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
     usleep(kCycleUs);
   }
 
-  // goal-offset convergence: command target + accumulated measured
-  // error; P = 800 pulls the measured posture through the friction sag
-  std::vector<double> goal(n);
+  // Goal-offset convergence: command target + accumulated measured
+  // error; P = 800 pulls the measured posture through the friction
+  // sag. BOUNDED (review finding): per-iteration steps and the total
+  // accumulated offset are capped, and a stalled correction (a stuck
+  // or non-improving joint) stops iterating instead of winding the
+  // goal further into the mechanism.
+  constexpr double kStepMax = 0.05;    // per-iteration offset [rad]
+  constexpr double kOffsetMax = 0.15;  // total accumulated offset [rad]
+  std::vector<double> goal(n), offset(n, 0.0);
   for (int i = 0; i < n; ++i) goal[i] = target[i];
+  double prev_worst = 1e9;
   for (int iter = 0; iter <= max_iters; ++iter) {
     // settle the servo loop while keeping the stream alive
     for (int k = 0; k < 30; ++k) {  // 0.3 s
@@ -95,9 +102,19 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
       break;
     }
     if (iter == max_iters) break;
+    if (res.worst_dev > 0.9 * prev_worst) {
+      std::printf("placement correction stalled (%.4f -> %.4f rad on "
+                  "joint %d) — stopping the iterations\n",
+                  prev_worst, res.worst_dev, res.worst_joint);
+      break;
+    }
+    prev_worst = res.worst_dev;
     for (int i = 0; i < n; ++i) {
-      goal[i] = std::clamp(goal[i] + (target[i] - fb[i].position),
-                           lo[i] + kBuffer, hi[i] - kBuffer);
+      const double step = std::clamp(target[i] - fb[i].position,
+                                     -kStepMax, kStepMax);
+      offset[i] = std::clamp(offset[i] + step, -kOffsetMax, kOffsetMax);
+      goal[i] = std::clamp(target[i] + offset[i], lo[i] + kBuffer,
+                           hi[i] - kBuffer);
     }
   }
 

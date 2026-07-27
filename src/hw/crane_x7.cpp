@@ -184,9 +184,12 @@ bool CraneX7::activateSteps() {
   // present-state read above. A failed preload fails the activation —
   // the caller's rollback releases everything.
   if (!preload_amps_.empty()) {
-    if (config_.joints.front().operating_mode != 0) {
-      last_error_ = "activation preload requires current mode";
-      return false;
+    for (const auto& joint : config_.joints) {
+      if (joint.operating_mode != 0) {  // EVERY joint, not the first
+        last_error_ = "activation preload requires current mode on all "
+                      "joints (id " + std::to_string(joint.id) + ")";
+        return false;
+      }
     }
     if (preload_amps_.size() != config_.joints.size()) {
       last_error_ = "activation preload size mismatch";
@@ -195,6 +198,13 @@ bool CraneX7::activateSteps() {
     std::vector<double> limited;
     std::vector<std::uint8_t> flags;
     limitCurrents(preload_amps_, present, &limited, &flags);
+    for (std::size_t i = 0; i < flags.size(); ++i) {
+      if (flags[i] != 0) {  // a limited gravity preload cannot hold
+        last_error_ = "activation preload clipped/gated on joint " +
+                      std::to_string(i) + " — refusing";
+        return false;
+      }
+    }
     if (!group_.writeGoalCurrents(limited).ok()) {
       last_error_ = "activation preload write failed";
       return false;
@@ -647,6 +657,70 @@ void CraneX7::escalate() {
   // failing, which is why the bus goes silent afterwards regardless.
   deactivate();
   if (on_escalate_) on_escalate_();
+}
+
+bool CraneX7::switchToCurrentModeWithPreload(
+    const std::vector<double>& amps) {
+  if (!requireActive("mode switch")) return false;
+  if (escalated_ || quiesced_.load()) return false;
+  if (threadRunning()) {
+    last_error_ = "mode switch requires the background thread stopped";
+    return false;
+  }
+  if (!requireSize(amps.size(), "mode switch preload")) return false;
+  std::vector<dxl::Feedback> present;
+  if (!readAll(present)) {
+    last_error_ = "mode switch: present-state read failed";
+    return false;
+  }
+  std::vector<double> limited;
+  std::vector<std::uint8_t> flags;
+  limitCurrents(amps, present, &limited, &flags);
+  for (std::size_t i = 0; i < flags.size(); ++i) {
+    if (flags[i] != 0) {
+      last_error_ = "mode-switch preload clipped/gated on joint " +
+                    std::to_string(i) +
+                    " — refusing (a limited gravity preload cannot "
+                    "hold the arm)";
+      return false;
+    }
+  }
+  // The unsupported interval: first torque-off to last torque-on.
+  // Everything already programmed at activation (verification,
+  // indirect maps, limits, gains, Bus Watchdogs) is deliberately NOT
+  // repeated.
+  bool ok = true;
+  for (const auto& joint : config_.joints) {
+    ok = ok && io_.write8(joint.id, reg::kTorqueEnable.addr, 0).ok();
+  }
+  for (const auto& joint : config_.joints) {
+    ok = ok && io_.write8(joint.id, reg::kOperatingMode.addr, 0).ok();
+  }
+  std::vector<double> zeros(config_.joints.size(), 0.0);
+  std::vector<double> positions(config_.joints.size());
+  for (std::size_t i = 0; i < present.size(); ++i) {
+    positions[i] = present[i].position;
+  }
+  ok = ok && group_.writeGoals(limited, zeros, positions).ok();
+  if (ok) {
+    for (const auto& joint : config_.joints) {
+      ok = ok && io_.write8(joint.id, reg::kTorqueEnable.addr, 1).ok();
+    }
+  }
+  if (!ok) {
+    last_error_ = "mode switch failed mid-sequence — releasing";
+    bestEffortRelease();
+    activated_ = false;
+    return false;
+  }
+  for (auto& joint : config_.joints) joint.operating_mode = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    targets_ = amps;  // the writer re-clamps every retransmission
+    have_targets_ = true;
+  }
+  last_command_ = now_();
+  return true;
 }
 
 void CraneX7::limitCurrents(const std::vector<double>& amps,

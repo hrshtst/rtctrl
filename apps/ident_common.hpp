@@ -473,6 +473,12 @@ inline constexpr double kCaptureRampMinS = 1.0;
 inline constexpr double kCaptureRampMaxS = 5.0;
 inline constexpr double kCaptureHoldMaxS = 10.0;  // quiescence timeout
 inline constexpr double kCaptureWorstS = 20.0;    // budget pre-check add-on
+// The integrated flow has NO settle phase — setup between current-mode
+// activation and run start is the thread start, the confirmed hold and
+// the gates (~1-2 s), not the hand-placed flow's 10 s settle + gates.
+// With the 15 s allowance the DEFAULT survey + capture arithmetic
+// rejected itself: 146.5 + 20 + 15 = 181.5 > 177.5 (review finding).
+inline constexpr double kPoseFirstSetupAllowanceS = 5.0;
 
 // The capture reference: a constant anchor until beginCapture()
 // installs a min-jerk segment from the MEASURED start posture onto the
@@ -909,33 +915,34 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
                              ? capture_quiet_ + dt
                              : 0.0;
         const double held = t - hold_traj_.captureEnd();
-        if (held >= 0.5 && capture_quiet_ >= 0.3) {
-          double worst = 0.0;
-          int worst_j = 0;
-          for (int i = 0; i < model::kCanonicalDof; ++i) {
-            const double dev = std::fabs(
-                zVecElemNC(state.q.get(), i) - options_.anchor[i]);
-            if (dev > worst) {
-              worst = dev;
-              worst_j = i;
-            }
+        double worst = 0.0;
+        int worst_j = 0;
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          const double dev = std::fabs(
+              zVecElemNC(state.q.get(), i) - options_.anchor[i]);
+          if (dev > worst) {
+            worst = dev;
+            worst_j = i;
           }
-          if (worst <= kAnchorToleranceRad) {
-            capture_s_ = t;  // both gates passed under the hold
-            phase_ = Phase::LeadIn;
-            phase_start_ = t;
-          } else {
-            fail(Outcome::HardFault,
-                 "capture failed: joint " + std::to_string(worst_j) +
-                     " settled " + std::to_string(worst) +
-                     " rad from the anchor (tolerance " +
-                     std::to_string(kAnchorToleranceRad) + ")");
-          }
+        }
+        if (held >= 0.5 && capture_quiet_ >= 0.3 &&
+            worst <= kAnchorToleranceRad) {
+          capture_s_ = t;  // both gates passed under the hold
+          phase_ = Phase::LeadIn;
+          phase_start_ = t;
         } else if (held >= kCaptureHoldMaxS) {
+          // Only the timeout gives up: a quiet P-only equilibrium is
+          // still being pulled onto the anchor by the integrator, so
+          // an early quiet-but-out sample must keep holding, not fail
+          // (review finding).
           fail(Outcome::HardFault,
-               "capture quiescence timeout: residual " +
+               "capture timeout: joint " + std::to_string(worst_j) +
+                   " still " + std::to_string(worst) +
+                   " rad from the anchor (tolerance " +
+                   std::to_string(kAnchorToleranceRad) +
+                   ", residual speed " +
                    std::to_string(capture_metric_.maxSpeed()) +
-                   " rad/s after " + std::to_string(held) + " s");
+                   " rad/s) after " + std::to_string(held) + " s");
         }
         break;
       }

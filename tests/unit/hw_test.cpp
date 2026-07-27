@@ -825,11 +825,12 @@ TEST_CASE("current-mode activation preload is clamped and lands before "
   emu::FakePacketIO io(bus);
   hw::CraneX7 arm(io, config);
 
-  // joint 0 asks a reasonable holding current; joint 1 asks far beyond
-  // any limit and must arrive clamped, exactly as writeCurrents would
+  // reasonable holding currents land verbatim before torque enable; a
+  // preload the limiter would CLIP refuses activation outright (a
+  // limited gravity preload cannot hold the arm — review finding)
   std::vector<double> preload(config.joints.size(), 0.0);
   preload[0] = 0.4;
-  preload[1] = 99.0;
+  preload[1] = 0.6;
   arm.setActivationCurrentPreload(preload);
   REQUIRE(arm.activate());
   const auto goal0 = static_cast<std::int16_t>(
@@ -837,9 +838,7 @@ TEST_CASE("current-mode activation preload is clamped and lands before "
   const auto goal1 = static_cast<std::int16_t>(
       bus.find(config.joints[1].id)->peek(reg::kGoalCurrent));
   CHECK(dxl::currentToAmps(goal0) == Approx(0.4).margin(0.01));
-  // clamped to min(effort/kt, servo limit) - margin, NOT 99 A
-  CHECK(dxl::currentToAmps(goal1) < 5.0);
-  CHECK(dxl::currentToAmps(goal1) > 0.1);
+  CHECK(dxl::currentToAmps(goal1) == Approx(0.6).margin(0.01));
   CHECK(bus.find(config.joints[0].id)->peek(reg::kTorqueEnable) == 1);
 
   // the background thread retransmits the preload until a controller
@@ -851,6 +850,19 @@ TEST_CASE("current-mode activation preload is clamped and lands before "
   CHECK(dxl::currentToAmps(still0) == Approx(0.4).margin(0.01));
   REQUIRE(arm.deactivate());
 
+  // a preload beyond the limits refuses activation with full rollback
+  {
+    auto bus2 = busFor(config);
+    emu::FakePacketIO io2(bus2);
+    hw::CraneX7 arm2(io2, config);
+    std::vector<double> huge(config.joints.size(), 0.0);
+    huge[1] = 99.0;
+    arm2.setActivationCurrentPreload(huge);
+    CHECK_FALSE(arm2.activate());
+    CHECK(arm2.lastError().find("clipped") != std::string::npos);
+    CHECK(bus2.find(config.joints[0].id)->peek(reg::kTorqueEnable) == 0);
+  }
+
   // preload in a non-current mode must fail activation entirely
   auto pos_config = craneConfig();
   auto pos_bus = busFor(pos_config);
@@ -861,4 +873,49 @@ TEST_CASE("current-mode activation preload is clamped and lands before "
   CHECK(pos_arm.lastError().find("preload") != std::string::npos);
   CHECK(pos_bus.find(pos_config.joints[0].id)->peek(reg::kTorqueEnable) ==
         0);  // rollback released everything
+}
+
+TEST_CASE("in-place position->current switch: preload lands before "
+          "torque re-enable, nothing is re-verified",
+          "[hw][safety]") {
+  const auto config = craneConfig();  // position mode per the config
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.activate());
+
+  std::vector<double> preload(config.joints.size(), 0.0);
+  preload[1] = 0.5;
+  REQUIRE(arm.switchToCurrentModeWithPreload(preload));
+  for (const auto& joint : config.joints) {
+    auto* motor = bus.find(joint.id);
+    CHECK(motor->peek(reg::kOperatingMode) == 0);
+    CHECK(motor->peek(reg::kTorqueEnable) == 1);
+    CHECK(motor->peek(reg::kBusWatchdog) == 5);  // left armed
+  }
+  const auto goal1 = static_cast<std::int16_t>(
+      bus.find(config.joints[1].id)->peek(reg::kGoalCurrent));
+  CHECK(dxl::currentToAmps(goal1) == Approx(0.5).margin(0.01));
+  // the object's mode followed the servos: current commands accepted
+  std::vector<double> amps(config.joints.size(), 0.0);
+  CHECK(arm.writeCurrents(amps));
+  REQUIRE(arm.deactivate());
+
+  // a preload the limiter would clip REFUSES the switch and leaves the
+  // arm exactly as it was (active, position mode, torqued)
+  auto bus2 = busFor(config);
+  emu::FakePacketIO io2(bus2);
+  hw::CraneX7 arm2(io2, config);
+  REQUIRE(arm2.activate());
+  std::vector<double> huge(config.joints.size(), 0.0);
+  huge[2] = 99.0;
+  CHECK_FALSE(arm2.switchToCurrentModeWithPreload(huge));
+  CHECK(arm2.lastError().find("clipped") != std::string::npos);
+  CHECK(arm2.activated());
+  for (const auto& joint : config.joints) {
+    auto* motor = bus2.find(joint.id);
+    CHECK(motor->peek(reg::kTorqueEnable) == 1);   // still held
+    CHECK(motor->peek(reg::kOperatingMode) == 3);  // still position
+  }
+  REQUIRE(arm2.deactivate());
 }
