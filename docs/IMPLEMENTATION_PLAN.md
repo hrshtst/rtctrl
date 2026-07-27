@@ -345,12 +345,13 @@ live-validated: read-failure escalation (frozen-feedback trap) and both watchdog
 *Known limitation:* excursions beyond scale ≈ 0.6 extend the arm into configurations
 whose ~4–5 Hz structural mode (shoulder gear compliance vs arm inertia) the 100 Hz loop
 actively pumps — runs 7–8 oscillated coherently there even at matched trajectory rates.
-`x7_track` caps its scale accordingly. Lifting the cap requires mode identification plus
-a notch/phase-compensated D-path design (natural companion to the M7
-friction-identification follow-up; input shaping only reduces reference excitation and
-cannot stabilize an internally unstable loop), or
-position-mode tracking for large fast motions. Full detail:
-`docs/theory/computed-torque.md` (hardware-reality section) and the apps' headers.
+`x7_track` caps its scale accordingly. **The cap is FINAL (closure decision 2026-07-28)**:
+the pass-2 identification that a notch/phase-compensated D-path design required was
+executed and closed with a null result — gearbox stiction plus output-shaft-only encoding
+make the modes unobservable to the stationary current probe up to its hard cap (see
+IDENTIFICATION_PLAN.md, Closure). Large fast motions beyond scale 0.6 belong to
+position-mode tracking. Full detail: `docs/theory/computed-torque.md` (hardware-reality
+section) and the apps' headers.
 
 ## Post-completion hardening (2026-07-21 external review)
 
@@ -398,9 +399,10 @@ stale-feedback abort policy, feedback and command sequencing with coherent snaps
 first-vs-latest application records, receipt-matched latency verification, one
 continuous round-trip controller, a strict settle gate, direction-aware anti-windup
 against exact actuator limits, write-failure escalation, the shipped tuning moved into
-the library and pinned by tests, and full-loop CSV telemetry. The 0.6 scale cap stands;
-pass 2 (identification, then a notch/phase-compensated D-path design) starts from the
-data pass 1 makes trustworthy. Note the architecture addendum: `hw` now includes
+the library and pinned by tests, and full-loop CSV telemetry. Pass 2 step A
+(identification) was subsequently executed on that trustworthy data path and CLOSED with
+a null result (2026-07-28): the 0.6 scale cap is the final supported boundary — see
+IDENTIFICATION_PLAN.md's Closure section. Note the architecture addendum: `hw` now includes
 `arm/types.hpp` for the shared bridge DATA types (types only, no behavior).
 
 ## Git workflow

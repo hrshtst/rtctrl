@@ -1,12 +1,18 @@
 # Flexible-mode identification protocol
 
+> **CAMPAIGN CLOSED 2026-07-28** — the stationary probe cannot
+> observe the modes on this hardware (stop condition reached; see
+> the [campaign checklist](IDENTIFICATION_CAMPAIGN.md) §3a and the
+> [design record's Closure section](IDENTIFICATION_PLAN.md)). **The
+> 0.6 excursion-scale cap in `x7_track` is the final supported
+> boundary.** This procedure is retained as the historical record
+> and for any documented reopening.
+
 Operator procedure for the pass-2 stepped-sine identification campaign
 ([design record](IDENTIFICATION_PLAN.md)). The goal: per-posture tables
 of the arm's flexible modes — the configuration-dependent ~4–5 Hz
 whole-arm structural mode and the ~13 Hz gear mode — with frequency,
-damping, and joint participation. **The 0.6 excursion-scale cap in
-`x7_track` stands until the notch design consuming these tables
-lands.**
+damping, and joint participation.
 
 ## Safety
 

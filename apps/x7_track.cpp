@@ -94,12 +94,14 @@ int main(int argc, char* argv[]) {
   // where its ~4-5 Hz structural mode (shoulder gear compliance vs arm
   // inertia) goes actively unstable under this 100 Hz loop — verified
   // twice at scale 1.0 on 2026-07-21 (runs 7-8, both ended in manual
-  // power cuts). Raising the cap needs mode identification plus a
-  // notch/phase-compensated D-path design first (input shaping alone
-  // cannot stabilize it); see docs/theory/computed-torque.md.
+  // power cuts). The cap is FINAL (closure 2026-07-28): the mode
+  // identification a compensator design required ended in a null
+  // result — the modes are unobservable to the servo encoders under a
+  // stationary probe (docs/IDENTIFICATION_PLAN.md, Closure). Use
+  // position mode for larger fast motions.
   if (scale > 0.6) {
-    std::printf("scale %.2f capped to 0.60 — the stable envelope of the "
-                "current loop (see x7_track.cpp header)\n", scale);
+    std::printf("scale %.2f capped to 0.60 — the final supported "
+                "boundary (see x7_track.cpp header)\n", scale);
   }
   scale = std::clamp(scale, 0.05, 0.6);
   kp = std::clamp(kp, 0.0, 50.0);

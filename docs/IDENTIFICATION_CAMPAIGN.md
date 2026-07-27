@@ -1,5 +1,12 @@
 # Identification campaign checklist
 
+> **CAMPAIGN CLOSED 2026-07-28** — the stationary probe reached its
+> documented stop condition (§3a) and the owner decided the 0.6
+> excursion-scale cap is the FINAL SUPPORTED boundary. This checklist
+> is retained as the historical run record and for any documented
+> reopening (see the identification plan's Closure section). Sections
+> 4–6 were never reached and are not to be run.
+
 The concrete run order for the pass-2 hardware campaign. The full
 operator procedure, posture vectors, and abort semantics live in
 [IDENTIFICATION_PROTOCOL.md](IDENTIFICATION_PROTOCOL.md); the design
@@ -129,13 +136,13 @@ recorded `floor_q`) — i.e. the analysis's reported `obs_snr` ≥ 1.
 Merely exceeding the fixed analytic floor is NOT success: the
 0.25 Nm pilot did, at 0.09× its actual run floor.
 
-- [ ] Next: a protocol-design decision (reviewer), not another retry.
-      Plausible directions on the table: a posture with lower joint-1
-      stiction/load; probing a different joint with measurable output
-      motion (joints 3/5 are the other planned probe joints); a
-      controlled motion/dither excitation identifying around a moving
-      operating condition; or external link-side sensing if the
-      flexible response is invisible to the servo-output encoder.
+- [x] Protocol-design decision, RESOLVED 2026-07-28 (owner): **cease
+      — the 0.6 excursion-scale cap in x7_track is the final
+      supported boundary.** None of the candidate directions (lower
+      joint-1 load posture; different probe joint; motion/dither
+      excitation; external link-side sensing) is pursued; they are
+      recorded as reopening options in the identification plan's
+      Closure section, contingent on a concrete need for scale > 0.6.
 
 ## 4. Analyze BEFORE any refinement (the protocol's hard gate)
 
@@ -225,9 +232,12 @@ treat any soft event or hard fault as DATA — the telemetry around the
 offending dwell says what happened. Do not simply rerun after a hard
 fault; resolve the cause first (cool down, re-place, inspect the CSV).
 
-## After the campaign
+## After the campaign (superseded by the closure)
 
-The per-posture mode tables (frequency, damping, participation,
-actuator transfer) feed the notch/phase-compensated D-path design —
-the next pass-2 step. The 0.6 excursion-scale cap in x7_track stands
-until that design lands.
+This section described the intended outcome: per-posture mode tables
+feeding a notch/phase-compensated D-path design that would lift the
+0.6 cap. The campaign closed before any mode table existed (§3a);
+**the 0.6 excursion-scale cap in x7_track is the final supported
+boundary.** What the campaign DID deliver — the commanded→measured
+actuator transfer and the empirical stationary-hold noise floors —
+is recorded in the identification plan's Closure section.

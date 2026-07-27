@@ -13,9 +13,18 @@ steps within ordinary cycle deltas, `ff+pd+i ≡ tau_raw` holding on
 hardware, and the settle gate correctly riding out ~1.2 rad/s of real
 equilibration motion before opening at 0.024 rad/s residual. Pass 2
 step A (flexible-mode identification — [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md),
-[IDENTIFICATION_PROTOCOL.md](IDENTIFICATION_PROTOCOL.md)) is
-implemented and sim-validated, awaiting the hardware campaign; the
-notch/phase D-path redesign follows it. The 0.6 scale cap stands.*
+[IDENTIFICATION_PROTOCOL.md](IDENTIFICATION_PROTOCOL.md)) was
+implemented, sim-validated, and executed on hardware 2026-07-27 —
+and **CLOSED 2026-07-28 with a null result**: gearbox stiction and
+output-shaft-only encoding make the flexible modes unobservable to
+the stationary small-signal current probe up to the 0.30 Nm hard cap
+(reviewer-confirmed stop condition). By owner decision, **the 0.6
+scale cap is the FINAL SUPPORTED boundary**; the notch/phase D-path
+redesign and the full-amplitude torque-mode end goal are closed, not
+deferred. See the identification plan's Closure section for the
+evidence, the surviving deliverables (actuator transfer, empirical
+noise floors, session-safety and analysis infrastructure), and the
+documented reopening conditions.*
 
 ## Context
 

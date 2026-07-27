@@ -4,7 +4,11 @@
 > safety design, protocol document. The notch/phase D-path redesign is a LATER step that
 > consumes this step's mode tables. The 0.6 scale cap stands throughout.
 
-*Status: planned (2026-07-23), revised through nine design-review rounds; reviewer-accepted for implementation. Pass 2 step A of [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md).*
+*Status: **CLOSED 2026-07-28 — null result; the 0.6 scale cap is the
+final supported boundary** (see the Closure section at the end).
+Planned 2026-07-23, revised through nine design-review rounds,
+reviewer-accepted, implemented, and executed on hardware 2026-07-27.
+Pass 2 step A of [REMEDIATION_PLAN.md](REMEDIATION_PLAN.md).*
 
 ## Context
 
@@ -546,3 +550,63 @@ per-dwell effective floor. The campaign is paused for a
 protocol-design decision (posture with lower joint-1 load, a
 different probe joint, motion/dither excitation, or external
 link-side sensing); no direction is chosen in this plan.
+
+## Closure (2026-07-28) — the 0.6 cap is the final supported boundary
+
+Decision (owner, 2026-07-28, following the reviewer-confirmed stop
+condition): **the 0.6 excursion-scale cap in `x7_track` is the FINAL
+SUPPORTED operating boundary.** The notch/phase-compensated D-path
+redesign and the "full-amplitude torque mode" end goal are CLOSED,
+not deferred. Pass 2 step A ends here.
+
+**What was executed.** The full protocol as designed and reviewed:
+implementation with sim-twin validation (planted modes recovered at
+4.51 Hz ζ 0.033 and 13.01 Hz ζ 0.058), the integrated pose-first
+placement/capture startup, the qualified identification controller
+(joint-0 scale 0.5, per-joint integral latching; three qualifying
+30 s holds plus a production-path equivalence hold), one
+valid-procedure survey at P1 joint 1, and the reviewer-directed
+single-dwell amplitude pilot at 4.5 Hz stepping 0.20 / 0.25 /
+0.30 Nm — the unchanged hard cap. Every run was mechanically clean:
+placement within ±0.02 rad, capture admission ~1.6 s, zero
+saturation, clipping, overruns, or I/O failures, torque delivered
+faithfully at every amplitude.
+
+**What was found (the null result).** The stationary small-signal
+current probe cannot observe the cap-relevant flexible modes on this
+hardware. Gearbox stiction locks the output shaft at every
+admissible amplitude (the probe joint reported a single encoder
+count through 13 of 16 survey windows; pilot responses of 22–68 µrad
+sat 10–30× below their run-measured 0.4–1.1 mrad noise floors,
+non-monotonic in amplitude and phase-incoherent), and the servo's
+output-shaft encoder is structurally blind to motor-side gear
+wind-up. The failure is structural, not parametric: the ~4–5 Hz
+whole-arm mode that forced the cap participates most strongly at the
+gravity-loaded shoulder joints — exactly where stiction is highest —
+so amplitude, frequency, or posture adjustments within this method
+were judged unable to close the gap.
+
+**What survives the closure.** The commanded→measured actuator
+transfer (magnitude ~1.00–1.05 flat across 2–20 Hz, phase −8° to
+−76°, consistent with the measured ~9.9 ms one-cycle apply delay) —
+the phase-budget input for any future compensator; the first
+empirical stationary-hold noise floors (0.4–1.1 mrad, 10–30× the
+analytic figure — the servo encoder cannot support small-signal
+stationary work); the session-safety machinery (deadline ladder,
+quiesce, watchdogs), the pose-first startup, and the analysis
+tooling with its dataset-integrity guards; and the preserved
+null-result datasets (`p1_j1_survey_r2`, `p1_j1_amp020/025/030`),
+which never enter mode fitting.
+
+**Reopening conditions (documented, not planned).** Reopening
+requires BOTH a concrete application need for scale > 0.6 AND one of:
+external link-side sensing (IMU/accelerometer — the flexible response
+is invisible to the servo encoder); identification around a moving
+operating condition, where motion linearizes the friction that
+defeated the stationary probe (a pragmatic sub-variant: mode
+estimates from existing full-amplitude tracking telemetry, a
+deliberately wide conservative notch, and cautious empirical
+scale-stepping under the existing gates); or dither-assisted
+excitation with its own safety analysis. Any reopening restarts from
+the external review process. Until then, large fast motions beyond
+scale 0.6 belong to position-mode tracking.
