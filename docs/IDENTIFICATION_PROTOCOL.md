@@ -56,7 +56,11 @@ stillness and the app refuses to probe unless the settled anchor
 matches the reference within **±0.02 rad per joint** (`--anchor-ref`).
 `x7_pose` gives rough positioning, but the torque-off handover does
 NOT preserve the posture — expect anchor-gate refusals; the gates are
-doing their job.
+doing their job. NOTE: the fallback has no capture phase, so its
+integrator stays LIVE — a different effective controller. The sidecar
+records that mode and the analysis refuses to merge it with frozen-
+integrator pose-first data: **manual-flow surveys are not campaign
+data** (debugging only).
 
 | posture | description | canonical vector [rad] |
 |---|---|---|

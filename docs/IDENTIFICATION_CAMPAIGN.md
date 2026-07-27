@@ -30,8 +30,10 @@ not add joint 0 to the probe set on this evidence alone.
 
 **QUALIFIED at P1 (2026-07-27)**: three consecutive complete 30 s
 frozen-integral holds at joint-0 scale 0.5. The selected tuning is now
-the PRODUCTION DEFAULT for every identification run (surveys included;
-x7_track's shipped tuning unchanged): joint-0 PD scale 0.5
+the PRODUCTION DEFAULT for every pose-first/capture-carrying
+identification run (surveys included; the manual fallback has no
+capture, so its integrator stays live — see step 3; x7_track's
+shipped tuning unchanged): joint-0 PD scale 0.5
 (`kIdentScale0`) + the learned integral bias frozen at capture
 acceptance, persisting uninterrupted through probing. The sidecar
 records the full tuning AND the actual frozen bias vector (it varied
