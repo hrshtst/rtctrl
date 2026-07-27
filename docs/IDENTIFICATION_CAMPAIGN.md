@@ -93,36 +93,49 @@ the isolated joint-6 ~4.4 Hz event did not recur in 3×30 s.
       and the analysis refuses to merge it with frozen-integrator
       pose-first data. Manual-flow surveys are not campaign data.
 
-## 3a. P1 joint 1: amplitude pilot BEFORE any further survey
+## 3a. P1 joint 1: NOT IDENTIFIABLE with the stationary probe
+      (2026-07-27 — campaign paused for a protocol-design decision)
 
-The first valid-procedure survey (`p1_j1_survey_r2.csv`, 2026-07-27)
-was mechanically flawless but **scientifically null**: joint 1 held a
-single encoder count through 13 of 16 measurement windows (two
-adjacent counts at 2, 3, and 20 Hz) while the actuator faithfully
-applied the 0.05–0.15 Nm probes. The probe amplitudes sit below the
-joint's effective stiction/deadband at P1, so no plant FRF exists in
-that dataset (the analysis now refuses to fit it). Do NOT run
-refinement sweeps, other joints, or other postures at these
-amplitudes — every survey would be null.
+The first valid-procedure survey (`p1_j1_survey_r2.csv`) was
+mechanically flawless but **scientifically null**: joint 1 held a
+single encoder count through 13 of 16 measurement windows while the
+actuator faithfully applied the 0.05–0.15 Nm probes. The
+reviewer-directed amplitude pilot then stepped one 4.5 Hz dwell
+through 0.20 / 0.25 / 0.30 Nm (the unchanged hard cap) — clean runs,
+torque delivered faithfully — and the joint-1 response stayed
+noise-dominated at every amplitude: 22 / 68 / 38 µrad against
+run-measured noise floors of 423 / 733 / 1051 µrad (response/floor
+0.05 / 0.09 / 0.04), non-monotonic in amplitude, phase-incoherent,
+raw motion 1–2 ambient encoder counts, all three adaptive holds
+timed out. **The documented stop condition is reached: joint 1 at P1
+is not identifiable with this stationary small-signal current-probe
+method.**
 
-- [ ] Reviewer-directed amplitude pilot, ONE dwell per run, stepping
-      0.20 → 0.25 → at most the 0.30 Nm hard cap, one run at a time,
-      all response/deviation/safety gates unchanged:
+Standing consequences (reviewer-confirmed):
 
-  ```sh
-  ./build/apps/x7_ident --joint 1 --pose-first \
-      --anchor-ref config/postures/p1.json \
-      --freqs "4.5@0.20" --amp 0.20 \
-      --label p1-j1-amp020 --log p1_j1_amp020.csv
-  ```
+- The three pilot runs are preserved as null-result evidence; they
+  never enter mode fitting.
+- No further joint-1/P1 surveys with this excitation; no amplitude
+  above the 0.30 Nm hard cap; no refinement sweeps on null data.
+- Confidence and observability thresholds are NOT widened to admit
+  this data.
 
-      The decisive readout is joint-1 MOTION (the analysis reports the
-      demodulated response against the observability floor), not the
-      dwell verdict alone. If 0.30 Nm still produces no observable
-      joint-1 response, STOP the escalation: joint 1 at P1 is not
-      identifiable with this small-signal current-probe method, and
-      the protocol or probe/posture choice must change (reviewer
-      decision).
+**Pilot success definition** (applies to every future excitation
+pilot): a pilot dwell succeeds only when BOTH hold — (a) the
+adaptive hold CONVERGED (the dwell is not low-confidence), and
+(b) the demodulated probe-joint response clears the RUN-SPECIFIC
+observability floor — max(the 3.6e-5 rad analytic floor, the run's
+recorded `floor_q`) — i.e. the analysis's reported `obs_snr` ≥ 1.
+Merely exceeding the fixed analytic floor is NOT success: the
+0.25 Nm pilot did, at 0.09× its actual run floor.
+
+- [ ] Next: a protocol-design decision (reviewer), not another retry.
+      Plausible directions on the table: a posture with lower joint-1
+      stiction/load; probing a different joint with measurable output
+      motion (joints 3/5 are the other planned probe joints); a
+      controlled motion/dither excitation identifying around a moving
+      operating condition; or external link-side sensing if the
+      flexible response is invisible to the servo-output encoder.
 
 ## 4. Analyze BEFORE any refinement (the protocol's hard gate)
 

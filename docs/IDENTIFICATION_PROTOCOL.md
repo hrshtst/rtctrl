@@ -220,16 +220,23 @@ uv run --project tools tools/ident_analysis.py \
   `dwell_attempt` CSV column; the sidecar records the accepted
   attempt's reduced amplitude as `amp_eff_nm`).
 - **Mode fitting refuses rather than fitting noise**: unless at least
-  five dwells are both confident AND above the observability floor on
-  the demodulated probe-joint response (default 3.6e-5 rad — the
-  analytic window noise floor; `--obs-floor-rad` overrides), the
+  five dwells are both confident AND above the PER-DWELL
+  observability floor on the demodulated probe-joint response, the
   analysis reports **INSUFFICIENT USABLE DATA** with the reasons and
-  an empty mode list. The dwell table and the actuator transfer are
-  still emitted — they are valid measurements regardless. A
-  tick-frozen probe joint (one encoder count per window) demodulates
-  to numerical zero and never clears the floor: the 2026-07-27 P1
-  joint-1 survey was exactly this shape, and the modes its analysis
-  would previously have fitted were numerical artifacts.
+  an empty mode list. The effective floor is run-specific:
+  max(the analytic window-noise default 3.6e-5 rad — `--obs-floor-rad`
+  overrides — and the run's own recorded lead-in `floor_q`); each
+  dwell's response, effective floor, and their ratio are reported as
+  `resp_probe_rad` / `obs_floor_rad` / `obs_snr` (`obs_snr` ≥ 1 plus
+  a converged hold is the pilot-success criterion — see the campaign
+  checklist). The dwell table and the actuator transfer are still
+  emitted — they are valid measurements regardless. A tick-frozen
+  probe joint (one encoder count per window) demodulates to numerical
+  zero and never clears any floor: the 2026-07-27 P1 joint-1 survey
+  was exactly this shape, and the modes its analysis would previously
+  have fitted were numerical artifacts; the amplitude pilots that
+  followed cleared the analytic floor at 0.25/0.30 Nm yet sat 10–30×
+  below their run-measured floors — noise, correctly excluded.
 - `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band —
   the 4–5 Hz and ~13 Hz bands when both appear; the ~13 Hz gear band
   may be weak or absent on joint 1 (probe joint 5 covers it) — fitted

@@ -523,3 +523,26 @@ time, all gates unchanged; if 0.30 Nm still produces no observable
 joint-1 response, the small-signal stationary current-probe method
 is not viable for joint 1 at P1 and the protocol or probe/posture
 choice must change (reviewer decision).
+
+### Pilot result (2026-07-27): stop condition reached
+
+The single-dwell 4.5 Hz amplitude pilot ran at 0.20, 0.25, and
+0.30 Nm (the unchanged hard cap), one run at a time, all gates
+unchanged — mechanically clean, torque delivered faithfully. The
+joint-1 response stayed noise-dominated at every step: 22/68/38 µrad
+against run-measured noise floors of 423/733/1051 µrad,
+non-monotonic in amplitude, phase-incoherent, 1–2 ambient encoder
+counts of raw motion, all adaptive holds timed out. Joint 1 at P1 is
+NOT identifiable with the stationary small-signal current probe; the
+pilots are preserved as null-result evidence and never enter mode
+fitting. The pilot incidentally produced the first non-degenerate
+run-specific noise-floor measurements (ambient tick-toggling gave
+the lead-in calibration real signal): ~0.4–1.1 mrad, 10–30× the
+analytic figure. Consequences: pilot success is now DEFINED (campaign
+checklist) as a converged hold AND a response clearing the
+run-specific floor — max(analytic 3.6e-5 rad, recorded floor_q),
+reported by the analysis as obs_snr — and the analyzer applies that
+per-dwell effective floor. The campaign is paused for a
+protocol-design decision (posture with lower joint-1 load, a
+different probe joint, motion/dither excitation, or external
+link-side sensing); no direction is chosen in this plan.

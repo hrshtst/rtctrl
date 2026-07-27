@@ -109,7 +109,7 @@ print("final-attempt selection regressions: ok")
 # fitted from numerical noise).
 
 
-def make_dwell(freq, resp_rad, low_confidence=False):
+def make_dwell(freq, resp_rad, low_confidence=False, floor_q=0.0):
     z_q = np.zeros(ia.DOF, dtype=complex)
     z_q[1] = resp_rad
     return ia.Dwell(
@@ -117,7 +117,7 @@ def make_dwell(freq, resp_rad, low_confidence=False):
         n_rows=300, window_s=3.0, z_q=z_q, z_tau_meas=0.15 + 0j,
         z_cmd=0.15 + 0j, delay_s=0.01, probe_joint=1,
         fit_residual_rms=0.0, clipped_cycles=0,
-        low_confidence=low_confidence)
+        low_confidence=low_confidence, floor_q_rad=floor_q)
 
 
 # all low-confidence (the null survey shape): refuse
@@ -140,6 +140,27 @@ good = [make_dwell(f, 0.005) for f in (3, 4, 4.5, 5, 6)]
 ia.apply_observability_floor(good, ia.OBS_FLOOR_RAD)
 usable, reasons = ia.fit_gate(good)
 assert len(usable) == 5 and not reasons
+
+# the effective floor is RUN-SPECIFIC (review finding, amplitude
+# pilots 2026-07-27): a response above the fixed 3.6e-5 analytic
+# floor but below the run's own recorded floor_q is noise, not
+# observation — the 0.25 Nm pilot measured 68 urad against its
+# 733 urad run floor and must be excluded
+pilot_shape = [make_dwell(4.5, 68e-6, floor_q=733e-6)]
+ia.apply_observability_floor(pilot_shape, ia.OBS_FLOOR_RAD)
+assert pilot_shape[0].below_floor, \
+    "above-analytic but below-run-floor responses must be excluded"
+assert pilot_shape[0].obs_floor_rad == 733e-6
+assert abs(pilot_shape[0].obs_snr - 68e-6 / 733e-6) < 1e-9
+
+# a degenerate (tick-frozen ~0) or absent floor_q falls back to the
+# analytic floor: the sim twin's floor_q is exactly 0 and its real
+# responses must stay admitted
+sim_shape = [make_dwell(4.5, 5.3e-3, floor_q=0.0)]
+ia.apply_observability_floor(sim_shape, ia.OBS_FLOOR_RAD)
+assert not sim_shape[0].below_floor
+assert sim_shape[0].obs_floor_rad == ia.OBS_FLOOR_RAD
+assert sim_shape[0].obs_snr > 100
 
 print("mode-fit admission gate regressions: ok")
 

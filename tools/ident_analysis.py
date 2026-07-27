@@ -16,9 +16,12 @@ excluded from the mode fits and flagged. A retried dwell contributes
 only its FINAL completed attempt (the dwell_attempt column, or the
 last time-contiguous segment on legacy CSVs). Mode fitting REFUSES —
 reporting "insufficient usable data", never fitting noise — unless at
-least five dwells are both confident and above the observability
-floor on the probe-joint response (default: the analytic
-window-noise floor, 3.6e-5 rad).
+least five dwells are both confident and above the PER-DWELL
+observability floor on the probe-joint response: the larger of the
+analytic window-noise default (3.6e-5 rad; --obs-floor-rad
+overrides) and the run's own recorded lead-in floor_q. The reported
+obs_snr (response over the effective floor) is the pilot-success
+measure alongside hold convergence.
 "Refined" confidence requires all three pieces of evidence near a
 peak: a grid fine enough for zeta ~ 0.03, visits from at least two
 invocations (the up/down sweeps), and the half-amplitude linearity
@@ -76,6 +79,9 @@ class Dwell:
     clipped_cycles: int
     low_confidence: bool = False
     below_floor: bool = False  # probe-joint response unobservable
+    floor_q_rad: float = 0.0  # the run's recorded lead-in floor
+    obs_floor_rad: float = 0.0  # effective floor applied to this dwell
+    obs_snr: float = 0.0  # |resp_probe| / obs_floor_rad
     flags: list[str] = field(default_factory=list)
 
     @property
@@ -191,9 +197,19 @@ def parse_obs_floor(text: str) -> float:
 
 def apply_observability_floor(dwells: list[Dwell],
                               floor_rad: float) -> None:
-    """Flag dwells whose probe-joint response is below the explicit
+    """Flag dwells whose probe-joint response is below the effective
     observability floor: they carry no plant information and must not
-    enter the mode fits regardless of their sidecar verdict."""
+    enter the mode fits regardless of their sidecar verdict.
+
+    The effective floor is PER DWELL: max(floor_rad, the run's own
+    recorded lead-in floor_q). The fixed analytic default models
+    dither-averaged quantization only; the recorded floor measures the
+    run's actual noise environment when the lead-in carried signal
+    (review finding: the amplitude pilots' 22-68 urad responses
+    exceeded the 36 urad analytic floor while sitting 10-30x BELOW
+    their measured 0.4-1.1 mrad run floors — noise, not response). A
+    tick-frozen lead-in degenerates floor_q to ~0, where the analytic
+    floor takes over."""
     # defense in depth for non-CLI callers: an unusable floor must
     # never silently admit everything
     if not np.isfinite(floor_rad) or floor_rad <= 0.0:
@@ -201,11 +217,18 @@ def apply_observability_floor(dwells: list[Dwell],
             f"observability floor must be finite and > 0, got {floor_rad}")
     for d in dwells:
         resp = float(np.abs(d.z_q[d.probe_joint]))
-        if resp < floor_rad:
+        eff = max(floor_rad, d.floor_q_rad)
+        d.obs_floor_rad = eff
+        d.obs_snr = resp / eff
+        if resp < eff:
             d.below_floor = True
+            which = ("the run's recorded floor_q"
+                     if d.floor_q_rad > floor_rad else
+                     "the analytic floor")
             d.flags.append(
                 f"below the observability floor: |resp| {resp:.2e} < "
-                f"{floor_rad:.2e} rad — no usable probe-joint response"
+                f"{eff:.2e} rad ({which}) — no usable probe-joint "
+                "response"
             )
 
 
@@ -296,11 +319,15 @@ def demod_dwells(path: str, data: np.ndarray,
         )
         if verdict is None:
             dw.flags.append("no sidecar: verdict unknown")
-        elif verdict.get("low_confidence"):
-            dw.low_confidence = True
-            dw.flags.append(
-                "low-confidence (" + verdict.get("note", "") + ")"
-            )
+        else:
+            fq = verdict.get("floor_q")
+            if isinstance(fq, (int, float)) and np.isfinite(fq) and fq > 0:
+                dw.floor_q_rad = float(fq)
+            if verdict.get("low_confidence"):
+                dw.low_confidence = True
+                dw.flags.append(
+                    "low-confidence (" + verdict.get("note", "") + ")"
+                )
         dwells.append(dw)
     return dwells
 
@@ -655,6 +682,13 @@ def main() -> int:
                 "fit_residual_rad": d.fit_residual_rms,
                 "clipped_cycles": d.clipped_cycles,
                 "low_confidence": d.low_confidence,
+                # observability record: the response, the effective
+                # per-dwell floor (max of the analytic floor and the
+                # run's recorded floor_q), and their ratio — pilot
+                # success requires obs_snr >= 1 AND a converged hold
+                "resp_probe_rad": float(np.abs(d.z_q[d.probe_joint])),
+                "obs_floor_rad": d.obs_floor_rad,
+                "obs_snr": d.obs_snr,
                 "flags": d.flags,
             }
             for d in dwells
@@ -692,15 +726,16 @@ def main() -> int:
         )
     lines += [
         "",
-        "| f [Hz] | A [Nm] | \\|H\\| [rad/Nm] | phase [deg] | window [s] | flags |",
-        "|---|---|---|---|---|---|",
+        "| f [Hz] | A [Nm] | \\|H\\| [rad/Nm] | phase [deg] | "
+        "resp/floor | window [s] | flags |",
+        "|---|---|---|---|---|---|---|",
     ]
     for d in dwells:
         hp = d.h_primary
         lines.append(
             f"| {d.freq_hz:.2f} | {d.amp_nm:.3f} | {np.abs(hp):.5f} | "
-            f"{np.degrees(np.angle(hp)):.1f} | {d.window_s:.2f} | "
-            f"{'; '.join(d.flags)} |"
+            f"{np.degrees(np.angle(hp)):.1f} | {d.obs_snr:.2f} | "
+            f"{d.window_s:.2f} | {'; '.join(d.flags)} |"
         )
     with open(f"{args.out}.mode_table.md", "w") as f:
         f.write("\n".join(lines) + "\n")
