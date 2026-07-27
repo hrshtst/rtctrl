@@ -36,12 +36,13 @@ app refuses to probe unless the settled anchor matches the reference
 within **±0.02 rad per joint** (`--anchor-ref`).
 
 Positioning aid: `x7_pose --posture config/postures/p1.json` moves the
-arm to the target in POSITION mode, holds, and goes limp on request —
-**support the shoulder and elbow through the torque-off** (the arm
-drops the moment torque cuts) and keep supporting until x7_ident's
-gravity comp takes over. This reduces hand placement to briefly
-steadying an already-posed arm; the identification run itself is
-unchanged, and its gates still do the verifying.
+arm to the target in POSITION mode, holds, and goes limp on request.
+**Catch, don't hold**: support from below only against the drop during
+the torque-off handover, then RELEASE fully when x7_ident prints its
+"gravity hold active" cue — the hold FLOATS with no restoring force,
+so sustained steadying or lifting re-poses the arm permanently instead
+of being corrected. The identification run itself is unchanged, and
+its gates still do the verifying.
 
 | posture | description | canonical vector [rad] |
 |---|---|---|

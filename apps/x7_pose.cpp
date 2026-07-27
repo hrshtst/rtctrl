@@ -128,9 +128,11 @@ int main(int argc, char* argv[]) {
 
     std::printf(
         "\nHOLDING the posture in position mode.\n"
-        ">>> SUPPORT THE ARM (shoulder + elbow) — it goes LIMP and\n"
-        ">>> drops under gravity when you continue. Then press Enter\n"
-        ">>> to torque off and hand over to x7_ident.\n");
+        ">>> The arm goes LIMP and drops when you continue. CATCH,\n"
+        ">>> don't hold: support from below (forearm/under-elbow)\n"
+        ">>> only against the drop — do NOT grip or lift, or the\n"
+        ">>> posture is lost. Have the x7_ident command ready in\n"
+        ">>> another terminal, then press Enter to torque off.\n");
     // keep the command stream (and both watchdog layers) alive while
     // waiting — a silent bus would trip the servo Bus Watchdogs
     for (int i = 0; i < n; ++i) cmd[i] = target[i];
@@ -140,8 +142,10 @@ int main(int argc, char* argv[]) {
       usleep(kCycleUs);
     }
     const bool clean = arm.deactivate();
-    std::printf("%s — the arm is limp. Keep supporting it and start "
-                "x7_ident (activation + gravity comp take over).\n",
+    std::printf("%s — the arm is limp. Catch the drop, start x7_ident "
+                "immediately, and RELEASE fully the moment it prints "
+                "its release cue (its gravity hold floats — sustained "
+                "contact re-poses the arm).\n",
                 clean ? "torque off" : "torque off INCOMPLETE — check "
                                        "the arm before proceeding");
     return clean ? 0 : 1;

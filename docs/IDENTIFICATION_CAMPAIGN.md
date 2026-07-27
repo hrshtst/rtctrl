@@ -20,9 +20,12 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
 
 - [ ] Get the arm to the P1 vector. Easiest: let the servos do the
       placing — `x7_pose` moves there in position mode, holds, and
-      goes limp on Enter WHILE YOU SUPPORT the shoulder and elbow
-      (the arm drops the moment torque cuts; keep supporting it until
-      x7_ident's gravity comp takes over):
+      goes limp on Enter. **Catch, don't hold**: support from below
+      only against the drop during the handover, and RELEASE fully
+      the moment x7_ident prints its "gravity hold active" cue — the
+      hold floats with no restoring force, so a hand that keeps
+      steadying or lifting re-poses the arm permanently (a first
+      session lost 0.4 rad of tilt exactly this way):
 
   ```sh
   ./build/apps/x7_pose --posture config/postures/p1.json

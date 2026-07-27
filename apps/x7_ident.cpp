@@ -224,15 +224,24 @@ int main(int argc, char* argv[]) {
     hold.mode = arm::ControlMode::Current;
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
     robot.writeCommand(hold);
+    // Operator cue for the x7_pose handover: the hold FLOATS — it has
+    // no restoring force, so a hand that keeps steadying or lifting
+    // re-poses the arm permanently (a first-session settle log showed
+    // the tilt raised 0.4 rad by a well-meaning supporting hand).
+    std::printf(
+        ">>> gravity hold active — RELEASE the arm now. Do not keep\n"
+        ">>> steadying or lifting it: the hold floats, and a touched\n"
+        ">>> arm is re-posed, not corrected.\n");
 
     // Strict settle gate, no override: the probe must anchor on a
-    // quiescent arm.
+    // quiescent arm. 10 s leaves room for a slow hand-release tail on
+    // top of the equilibration the gate must ride out.
     x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
     std::FILE* settle_log = nullptr;
     if (!log_path.empty()) {
       settle_log = std::fopen((log_path + ".settle").c_str(), "w");
     }
-    const auto settled = x7::settleArm(robot, settle, 6.0, settle_log);
+    const auto settled = x7::settleArm(robot, settle, 10.0, settle_log);
     if (settle_log != nullptr) std::fclose(settle_log);
     if (!settled.io_ok || !settled.quiescent) {
       std::fprintf(stderr, "settle phase %s — aborting\n",
