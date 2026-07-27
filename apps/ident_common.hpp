@@ -1688,8 +1688,13 @@ inline bool writeDwellJson(const std::string& path,
   for (int i = 0; i < model::kCanonicalDof; ++i) {
     std::fprintf(f, "%s%.4f", i ? ", " : "", run.gainScales()[i]);
   }
+  // the EFFECTIVE mode, not the requested option: a hand-placed
+  // fallback run has no capture phase, so its integrator stayed live
+  // even though the option defaults true — recording the request
+  // would let a live-integrator survey merge with frozen-integrator
+  // data (review finding)
   std::fprintf(f, "], \"integral_frozen_at_capture\": %d},\n",
-               options.freeze_integral_at_capture ? 1 : 0);
+               run.biasFrozen() ? 1 : 0);
   if (run.biasFrozen()) {
     // run STATE, not tuning: visible to the analysis (repeatability
     // comparisons) but never a merge-guard criterion

@@ -867,3 +867,29 @@ TEST_CASE("ident production survey: qualified tuning applied, bias "
   CHECK(text.find("\"frozen_bias_nm\"") != std::string::npos);
   CHECK(text.find("\"gain_scale\": [0.5000") != std::string::npos);
 }
+
+TEST_CASE("ident sidecar records the EFFECTIVE integral mode: a run "
+          "without capture is labeled live, never frozen",
+          "[ident]") {
+  // the hand-placement fallback has no capture phase, so its
+  // integrator stays live even though the option defaults true —
+  // mislabeling it frozen would let it merge with frozen-integrator
+  // survey data (review finding)
+  Fixture fx;
+  auto opt = baseOptions({{5.0, 0.15, 1}});  // manual flow: no capture
+  x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+  ScriptArm robot([](int, double) { return 0.0; });
+  CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+  REQUIRE(run.finishedCleanly());
+  CHECK_FALSE(run.inner().integralFrozen());
+  CHECK_FALSE(run.biasFrozen());
+  REQUIRE(x7::writeDwellJson("build/manual_flow_test.json", opt, run));
+  std::FILE* f = std::fopen("build/manual_flow_test.json", "r");
+  REQUIRE(f != nullptr);
+  std::string text(1 << 16, '\0');
+  text.resize(std::fread(text.data(), 1, text.size(), f));
+  std::fclose(f);
+  CHECK(text.find("\"integral_frozen_at_capture\": 0") !=
+        std::string::npos);
+  CHECK(text.find("\"frozen_bias_nm\"") == std::string::npos);
+}

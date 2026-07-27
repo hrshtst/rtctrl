@@ -108,6 +108,18 @@ def load_run(
     return data, anchor, sidecar, tuning, frozen_bias
 
 
+def valid_frozen_record(tuning: dict | None,
+                        frozen_bias: list | None) -> bool:
+    """A sidecar claiming a frozen integral must carry the actual
+    8-element frozen-bias vector — the claim alone is unverifiable
+    (and the effective-mode flag is what separates frozen from
+    live-integrator datasets in the merge guard)."""
+    if tuning is None or not tuning.get("integral_frozen_at_capture"):
+        return True
+    return (isinstance(frozen_bias, list) and len(frozen_bias) == DOF
+            and all(isinstance(b, (int, float)) for b in frozen_bias))
+
+
 def same_tuning(a: dict, b: dict) -> bool:
     if set(a) != set(b):
         return False
@@ -405,6 +417,12 @@ def main() -> int:
     frozen_biases = {}
     for path in args.csv:
         data, anchor, sidecar, tuning, frozen_bias = load_run(path)
+        if not valid_frozen_record(tuning, frozen_bias):
+            raise SystemExit(
+                f"{path}: the sidecar claims a frozen integral but "
+                "records no valid 8-element frozen_bias_nm — "
+                "regenerate the sidecar"
+            )
         if frozen_bias is not None:
             frozen_biases[path] = frozen_bias
         if anchor0 is None:

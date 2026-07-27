@@ -36,9 +36,13 @@ iterations close the friction sag), switches to current mode
 in-process with a clamped gravity-current preload (the servos hold
 from the instant torque re-enables), then runs a CAPTURE phase: a
 bounded, gently ramped reference from the measured posture onto the
-canonical anchor under the shipped restoring controller, with the
-quiescence metric and the ±0.02 rad anchor gate evaluated UNDER that
-hold. A post-transition displacement beyond the 0.08 rad capture
+canonical anchor under the QUALIFIED identification anchor controller
+(joint-0 PD scale 0.5, shipped scales elsewhere — see the plan
+addendum; x7_track's tuning is unchanged), with the quiescence metric
+and the ±0.02 rad anchor gate evaluated UNDER that hold. At capture
+acceptance the learned integral bias FREEZES — never reset, so the
+captured friction/gravity bias keeps pinning the posture — and stays
+frozen through lead-in, probing, retries and the final hold. A post-transition displacement beyond the 0.08 rad capture
 envelope aborts — capture closes a small expected residual, never an
 arbitrary offset. One controller instance spans capture, gates,
 lead-in and probe. This replaced the hand handover after four
@@ -192,9 +196,14 @@ uv run --project tools tools/ident_analysis.py \
   coherent feedback torques are coupled inputs that the primary
   estimator's denominator does not contain, so a gain change changes
   the reported FRF. Every sidecar records the complete tuning
-  (gains, scales, filter constants); the mode table carries it as the
-  `controller` record; transferring results to a different tuning
-  (e.g. x7_track's) must be demonstrated, not assumed. Dwell verdicts
+  (gains, scales, filter constants, and the EFFECTIVE frozen-integral
+  mode) plus the ACTUAL frozen bias vector — run state, surfaced for
+  repeatability comparisons (compare repeat-survey peaks alongside it;
+  observed joint-2 bias varied −0.109 to −0.427 Nm across qualifying
+  holds) but never a merge criterion. The mode table carries the
+  tuning as the `controller` record; transferring results to a
+  different tuning (e.g. x7_track's) must be demonstrated, not
+  assumed. Dwell verdicts
   come from the sidecars: skipped or incomplete dwells are dropped,
   low-confidence dwells are excluded from the mode fits and flagged.
 - `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band —

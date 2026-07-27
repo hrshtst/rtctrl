@@ -40,3 +40,10 @@ target_include_directories(integration_tests PRIVATE
 catch_discover_tests(integration_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS integration)
+
+# Dataset-integrity regressions for the offline analysis (frozen vs
+# live-integrator merge refusal, frozen-bias record validity).
+add_test(NAME ident_analysis_merge_guards
+  COMMAND uv run --project tools python tools/test_ident_analysis.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)

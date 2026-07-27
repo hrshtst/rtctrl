@@ -56,18 +56,6 @@ the isolated joint-6 ~4.4 Hz event did not recur in 3×30 s.
       plain `--hold 30` validation (P1 stability does not establish
       P2–P4 stability). `--scale0` remains available for stabilization
       experiments if a posture fails.
-- [ ] Repeat the passing scale at least once at P1, and validate it at
-      EVERY posture before that posture's surveys — P1 stability does
-      not establish P2–P4 stability.
-- [ ] The selected scale then becomes the ONE campaign tuning: report
-      it for baking into the ident controller (a code change) — the
-      FRFs are CONTROLLER-SPECIFIC (a multivariable arm: other joints'
-      coherent feedback torques are coupled inputs), the full tuning is
-      recorded in every sidecar, and the analysis refuses to merge
-      runs under different tunings. Transferring the resulting mode
-      tables to x7_track's scale-1.0 tuning must be demonstrated, not
-      assumed — or the chosen scale promoted to x7_track as well
-      (decide with the reviewer once the value is known).
 
 ## 3. First survey: P1 posture, joint 1
 
@@ -94,9 +82,13 @@ the isolated joint-6 ~4.4 Hz event did not recur in 3×30 s.
       envelope, capture admission, soft-limit band,
       temperature/voltage, budget — and names the reason.
 - [ ] Fallback only (e.g. debugging the placement): hand placement of
-      the limp arm plus `x7_pose` for rough positioning. Be aware the
-      four trial sessions showed the limp handover loses 0.06–0.18 rad
-      on the gravity-loaded joints — expect anchor-gate refusals.
+      the limp arm plus `x7_pose` for rough positioning. Two cautions:
+      the four trial sessions showed the limp handover loses
+      0.06–0.18 rad on the gravity-loaded joints (expect anchor-gate
+      refusals), and a manual-flow run has NO capture phase, so its
+      integrator stays LIVE — the sidecar records that effective mode
+      and the analysis refuses to merge it with frozen-integrator
+      pose-first data. Manual-flow surveys are not campaign data.
 
 ## 4. Analyze BEFORE any refinement (the protocol's hard gate)
 
