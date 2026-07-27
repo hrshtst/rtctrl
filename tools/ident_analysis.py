@@ -83,26 +83,29 @@ class Dwell:
 
 def load_run(
     path: str,
-) -> tuple[np.ndarray, np.ndarray, list | None, dict | None]:
-    """Returns (data, anchor, sidecar dwell verdicts, tuning record).
-    skip_header=1 skips the '#' semantics line — genfromtxt(names=True)
-    would otherwise take IT as the column names."""
+) -> tuple[np.ndarray, np.ndarray, list | None, dict | None, list | None]:
+    """Returns (data, anchor, sidecar dwell verdicts, tuning record,
+    frozen bias vector). skip_header=1 skips the '#' semantics line —
+    genfromtxt(names=True) would otherwise take IT as the column
+    names."""
     data = np.genfromtxt(path, delimiter=",", names=True, skip_header=1)
     if data.size == 0:
         raise SystemExit(f"{path}: no data rows")
     anchor = np.array([data[f"qd{i}"][0] for i in range(DOF)])
     sidecar = None
     tuning = None
+    frozen_bias = None
     sc_path = path + ".dwells.json"
     if os.path.exists(sc_path):
         with open(sc_path) as f:
             sc = json.load(f)
         sidecar = sc.get("dwells")
         tuning = sc.get("tuning")
+        frozen_bias = sc.get("frozen_bias_nm")
     else:
         print(f"WARNING: {sc_path} missing — dwell verdicts unknown",
               file=sys.stderr)
-    return data, anchor, sidecar, tuning
+    return data, anchor, sidecar, tuning, frozen_bias
 
 
 def same_tuning(a: dict, b: dict) -> bool:
@@ -399,8 +402,11 @@ def main() -> int:
     tuning0 = None
     tuning0_path = None
     missing_tuning = []
+    frozen_biases = {}
     for path in args.csv:
-        data, anchor, sidecar, tuning = load_run(path)
+        data, anchor, sidecar, tuning, frozen_bias = load_run(path)
+        if frozen_bias is not None:
+            frozen_biases[path] = frozen_bias
         if anchor0 is None:
             anchor0 = anchor
         else:
@@ -492,6 +498,11 @@ def main() -> int:
         # identical across the merged runs); transferring them to a
         # different tuning requires demonstration, not assumption
         "controller": tuning0,
+        # per-run STATE (never a merge criterion): the integral bias
+        # frozen at capture varies run to run (hardware: joint 2 at
+        # -0.109 to -0.427 Nm) — compare repeat-survey peaks alongside
+        # these vectors when judging flexible-mode repeatability
+        "frozen_bias_nm": frozen_biases,
         "modes": modes,
         "actuator_transfer": [
             {
@@ -575,6 +586,9 @@ def main() -> int:
     for d in dwells:
         if d.flags:
             print(f"  FLAG {d.freq_hz:.2f} Hz: {'; '.join(d.flags)}")
+    for path, bias in frozen_biases.items():
+        print("  frozen bias " + path + ": ["
+              + ", ".join(f"{b:+.3f}" for b in bias) + "] Nm")
     print(f"wrote {args.out}.mode_table.json / .md")
     return 0
 

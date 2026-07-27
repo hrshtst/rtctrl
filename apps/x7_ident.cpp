@@ -38,9 +38,11 @@
 //                 the given seconds under CONTINUOUS gates (±0.02 rad
 //                 and the 0.05 rad/s metric at every sample after a
 //                 1 s grace); reports per-joint maxima. No probing.
+//                 Without --scale0 it validates the QUALIFIED
+//                 production tuning (joint-0 scale 0.5, integral
+//                 frozen at capture — 2026-07-27 selection).
 //   --scale0      diagnostic-only joint-0 PD scale override in
-//                 [0.05, 1.0) — the campaign runs ONE fixed, recorded
-//                 tuning; this knob exists only to find it
+//                 [0.05, 1.0) for stabilization experiments
 //   --log         full-loop ident telemetry CSV; a per-dwell JSON
 //                 sidecar lands next to it as <log>.dwells.json
 
@@ -114,7 +116,6 @@ int main(int argc, char* argv[]) {
   double scale0 = 0.0;
   bool hold_given = false;
   bool scale0_given = false;
-  bool freeze_i = false;
   std::string label, log_path, anchor_ref_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
@@ -165,8 +166,6 @@ int main(int argc, char* argv[]) {
                              "[0.05, 1.0) required\n");
         return 1;
       }
-    } else if (std::strcmp(argv[i], "--freeze-i") == 0) {
-      freeze_i = true;
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return 1;
@@ -225,34 +224,27 @@ int main(int argc, char* argv[]) {
                            "[5, 120] s required\n");
       return 1;
     }
-    if (!scale0_given) {
-      std::fprintf(stderr,
-                   "--hold requires an explicit --scale0: the "
-                   "diagnostic exists to test a REDUCED joint-0 scale "
-                   "(1.0 is the already-characterized failing case)\n");
-      return 1;
-    }
-    if (scale0 >= 1.0) {
-      std::fprintf(stderr,
-                   "--scale0 %.3f rejected: 1.0 is the "
-                   "already-characterized failing case (2026-07-27 "
-                   "run) — pick a value in [0.05, 1.0)\n",
-                   scale0);
-      return 1;
-    }
-    if (scale0 < 0.05) {
-      std::fprintf(stderr, "--scale0 rejected: one finite value in "
-                           "[0.05, 1.0) required\n");
-      return 1;
+    // --scale0 is now an OPTIONAL diagnostic override: without it the
+    // hold validates the QUALIFIED production tuning (joint-0 scale
+    // 0.5, integral frozen at capture — 2026-07-27 selection)
+    if (scale0_given) {
+      if (scale0 >= 1.0) {
+        std::fprintf(stderr,
+                     "--scale0 %.3f rejected: 1.0 is the "
+                     "already-characterized failing case (2026-07-27 "
+                     "run) — pick a value in [0.05, 1.0)\n",
+                     scale0);
+        return 1;
+      }
+      if (scale0 < 0.05) {
+        std::fprintf(stderr, "--scale0 rejected: one finite value in "
+                             "[0.05, 1.0) required\n");
+        return 1;
+      }
     }
   } else if (scale0_given) {
     std::fprintf(stderr, "--scale0 is diagnostic-only: it requires "
                          "--hold\n");
-    return 1;
-  }
-  if (freeze_i && !hold_mode) {
-    std::fprintf(stderr, "--freeze-i is diagnostic-only (experimental): "
-                         "it requires --hold\n");
     return 1;
   }
 
@@ -635,9 +627,8 @@ int main(int argc, char* argv[]) {
     if (hold_mode) {
       std::printf("HOLD DIAGNOSTIC: capture, then %.0f s unforced "
                   "anchor hold under continuous gates (joint-0 scale "
-                  "%.2f%s); no probing\n",
-                  hold_s, scale0 > 0.0 ? scale0 : x7::kGainScale[0],
-                  freeze_i ? ", integral FROZEN at capture" : "");
+                  "%.2f, integral frozen at capture); no probing\n",
+                  hold_s, scale0 > 0.0 ? scale0 : x7::kIdentScale0);
     } else {
       std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, "
                   "lead-in %.1f s, worst case %.1f s:\n",
@@ -686,8 +677,8 @@ int main(int argc, char* argv[]) {
                     x7::tuning::kKd, x7::tuning::kKi);
       meta += num;
       if (hold_mode) {
-        std::snprintf(num, sizeof num, " hold=%.0f scale0=%.3f freeze_i=%d",
-                      hold_s, scale0, freeze_i ? 1 : 0);
+        std::snprintf(num, sizeof num, " hold=%.0f scale0=%.3f", hold_s,
+                      scale0 > 0.0 ? scale0 : x7::kIdentScale0);
         meta += num;
       }
       log = x7::openIdentCsvLog(log_path, meta);
@@ -710,8 +701,7 @@ int main(int argc, char* argv[]) {
     }
     if (hold_mode) {
       opt.hold_only_s = hold_s;
-      opt.hold_scale0 = scale0;
-      opt.freeze_integral_at_capture = freeze_i;
+      opt.hold_scale0 = scale0;  // 0 = the qualified production scale
     }
     // exact per-joint torque limits, mirroring writeCurrents
     opt.tau_max.resize(model::kCanonicalDof);

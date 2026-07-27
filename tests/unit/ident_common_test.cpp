@@ -803,30 +803,67 @@ TEST_CASE("ident integral freeze at capture: winding stops, the stored "
 
   double i2_unfrozen = 0.0, i2_frozen = 0.0;
   {
-    x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+    auto ou = o;
+    ou.freeze_integral_at_capture = false;  // comparison experiment
+    x7::IdentRun run(fx.chain, fx.map, ou, nullptr);
     ScriptArm robot(stuck);
     CHECK_FALSE(arm::run(robot, run, 60.0, &run));
     REQUIRE(run.finishedCleanly());  // the mock never slips
     i2_unfrozen = run.inner().integralTerm()[2];
   }
   {
-    auto of = o;
-    of.freeze_integral_at_capture = true;
-    x7::IdentRun run(fx.chain, fx.map, of, nullptr);
+    // freeze is the PRODUCTION default — nothing to set
+    x7::IdentRun run(fx.chain, fx.map, o, nullptr);
     ScriptArm robot(stuck);
     CHECK_FALSE(arm::run(robot, run, 60.0, &run));
     REQUIRE(run.finishedCleanly());
     CHECK(run.inner().integralFrozen());
+    CHECK(run.biasFrozen());
+    // the recorded vector IS the still-acting integral state
     i2_frozen = run.inner().integralTerm()[2];
+    CHECK(run.frozenBias(2) == Approx(i2_frozen));
   }
   INFO("i2 unfrozen " << i2_unfrozen << " frozen " << i2_frozen);
   // unfrozen: ~capture + 5 s of winding at Ki*e (~0.1 Nm/s); frozen:
   // only the capture-phase accumulation — the bias is kept, not reset
   CHECK(std::fabs(i2_unfrozen) > std::fabs(i2_frozen) + 0.2);
   CHECK(std::fabs(i2_frozen) > 0.05);  // captured bias preserved
+}
 
-  // diagnostic-only: the freeze without a hold is refused
-  auto bad = baseOptions({{5.0, 0.15, 1}});
-  bad.freeze_integral_at_capture = true;
-  CHECK_THROWS(x7::IdentRun(fx.chain, fx.map, bad, nullptr));
+TEST_CASE("ident production survey: qualified tuning applied, bias "
+          "frozen through probing, controller state recorded",
+          "[ident]") {
+  Fixture fx;
+  x7::TwoMassArm::Options topt;
+  topt.initial_q8.assign(kCanonicalDof, 0.0);
+  topt.initial_q8[1] = 0.03;
+  x7::TwoMassArm robot(topt);
+  REQUIRE(robot.setMode(arm::ControlMode::Current));
+  REQUIRE(robot.activate());
+
+  auto opt = baseOptions({{5.0, 0.15, 1}});  // a NORMAL survey dwell
+  opt.tau_max.assign(kCanonicalDof, 4.0);
+  opt.gravity_free_plant = true;
+  opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;  // pose-first
+  x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+  // the QUALIFIED identification tuning by default: pan scale 0.5,
+  // shipped scales elsewhere
+  CHECK(run.gainScales()[0] == Approx(x7::kIdentScale0));
+  CHECK(run.gainScales()[1] == Approx(x7::tuning::kGainScale[1]));
+  CHECK_FALSE(arm::run(robot, run, 90.0, &run));
+  REQUIRE(run.finishedCleanly());
+  CHECK(run.results()[0].completed);  // probing ran WITH the freeze
+  CHECK(run.inner().integralFrozen());  // uninterrupted through probe
+  CHECK(run.biasFrozen());
+  // the sidecar records the mode AND the actual frozen vector
+  REQUIRE(x7::writeDwellJson("build/prod_survey_test.json", opt, run));
+  std::FILE* f = std::fopen("build/prod_survey_test.json", "r");
+  REQUIRE(f != nullptr);
+  std::string text(1 << 16, '\0');
+  text.resize(std::fread(text.data(), 1, text.size(), f));
+  std::fclose(f);
+  CHECK(text.find("\"integral_frozen_at_capture\": 1") !=
+        std::string::npos);
+  CHECK(text.find("\"frozen_bias_nm\"") != std::string::npos);
+  CHECK(text.find("\"gain_scale\": [0.5000") != std::string::npos);
 }

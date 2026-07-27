@@ -481,6 +481,14 @@ inline constexpr double kCaptureWorstS = 20.0;    // budget pre-check add-on
 // after this grace; the per-joint statistics still record the WHOLE
 // hold, so a grace-period excursion remains visible in the report.
 inline constexpr double kHoldDiagGraceS = 1.0;
+// The QUALIFIED identification joint-0 (pan) PD scale — selected from
+// the 2026-07-27 stabilization campaign (three complete 30 s P1 holds;
+// the shipped scale-1.0 pan limit-cycles at ~8.9 Hz under the
+// stationary anchor hold, controller-pumped). IDENTIFICATION-SPECIFIC:
+// x7_track's shipped tuning is unchanged; the FRFs are labeled with
+// the full effective tuning and the analysis merge guard enforces
+// consistency.
+inline constexpr double kIdentScale0 = 0.5;
 // The integrated flow has NO settle phase — setup between current-mode
 // activation and run start is the thread start, the confirmed hold and
 // the gates (~1-2 s), not the hand-placed flow's 10 s settle + gates.
@@ -621,13 +629,18 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // estimator's denominator does not contain), so the campaign runs
     // one fixed, recorded tuning — never a per-run knob.
     double hold_scale0 = 0.0;
-    // EXPERIMENTAL (reviewer-directed, diagnostic-only): freeze the
-    // learned integral state at capture acceptance — without
-    // resetting — preserving the captured friction/gravity bias and
-    // torque continuity while preventing the integrator-stiction
+    // PRODUCTION default (qualified 2026-07-27, three 30 s holds):
+    // freeze the learned integral state at capture acceptance —
+    // without resetting — preserving the captured friction/gravity
+    // bias and torque continuity while preventing integrator-stiction
     // hunting (a stuck in-tolerance error otherwise winds at Ki*e
-    // until breakaway). Recorded in the sidecar tuning block.
-    bool freeze_integral_at_capture = false;
+    // until ~26 mrad breakaway slips; joint 2 hardware evidence). The
+    // frozen bias persists UNINTERRUPTED through lead-in, probing,
+    // retries and the final hold. Recorded in the sidecar tuning
+    // block, with the actual frozen bias vector alongside. Only
+    // meaningful when the capture phase runs; false is for
+    // comparison experiments.
+    bool freeze_integral_at_capture = true;
   };
 
   IdentRun(model::ChainModel& chain, const model::JointMap& map,
@@ -641,9 +654,10 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       gain_scale_[i] = tuning::kGainScale[i];
     }
-    if (options_.hold_scale0 > 0.0) {
-      gain_scale_[0] = options_.hold_scale0;
-    }
+    // the identification-specific pan scale (see kIdentScale0); the
+    // hold diagnostic may override it for stabilization experiments
+    gain_scale_[0] = options_.hold_scale0 > 0.0 ? options_.hold_scale0
+                                                : kIdentScale0;
     inner_.setGainScales(gain_scale_);
     inner_.setNominalDt(tuning::kNominalDt);
     inner_.setPdFilterTau(tuning::kPdFilterTau);
@@ -819,6 +833,10 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   // override) — recorded so the analysis can refuse to merge runs
   // under different controllers (the FRFs are controller-specific)
   const double* gainScales() const { return gain_scale_; }
+  // the integral vector captured at the freeze instant (valid when
+  // biasFrozen())
+  bool biasFrozen() const { return bias_frozen_; }
+  double frozenBias(int i) const { return frozen_bias_[i]; }
   // calibrated floors (valid after lead-in), 3x RMS of block magnitudes
   double floorQ(int dwell) const {
     return dwell >= 0 && dwell < static_cast<int>(floor_q_val_.size())
@@ -860,10 +878,6 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     if (o.hold_scale0 != 0.0 && o.hold_only_s <= 0.0) {
       throw std::invalid_argument(
           "IdentRun: the scale override is diagnostic-only");
-    }
-    if (o.freeze_integral_at_capture && o.hold_only_s <= 0.0) {
-      throw std::invalid_argument(
-          "IdentRun: the integral freeze is diagnostic-only");
     }
     return o;
   }
@@ -1015,8 +1029,16 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         if (held >= 0.5 && capture_quiet_ >= 0.3) {
           capture_s_ = t;  // both gates passed under the hold
           if (options_.freeze_integral_at_capture) {
-            // the stored terms keep acting; only the winding stops
+            // the stored terms keep acting; only the winding stops.
+            // The ACTUAL frozen vector is recorded — the captured
+            // bias varies run to run (hardware: joint 2 at -0.109 to
+            // -0.427 Nm across qualifying holds) and must be visible
+            // to the analysis for repeatability comparisons.
             inner_.freezeIntegral(true);
+            bias_frozen_ = true;
+            for (int i = 0; i < model::kCanonicalDof; ++i) {
+              frozen_bias_[i] = inner_.integralTerm()[i];
+            }
           }
           if (options_.hold_only_s > 0.0) {
             // diagnostic: reset the REPORTING statistics only — the
@@ -1573,6 +1595,10 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   QuiescenceMetric capture_metric_;
   model::ZVector ref_scratch_{model::kCanonicalDof};
 
+  // frozen-bias record
+  bool bias_frozen_ = false;
+  double frozen_bias_[model::kCanonicalDof] = {};
+
   // hold diagnostic
   double hold_done_s_ = 0.0;
   double hold_max_speed_[model::kCanonicalDof] = {};
@@ -1664,6 +1690,15 @@ inline bool writeDwellJson(const std::string& path,
   }
   std::fprintf(f, "], \"integral_frozen_at_capture\": %d},\n",
                options.freeze_integral_at_capture ? 1 : 0);
+  if (run.biasFrozen()) {
+    // run STATE, not tuning: visible to the analysis (repeatability
+    // comparisons) but never a merge-guard criterion
+    std::fprintf(f, "  \"frozen_bias_nm\": [");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(f, "%s%.4f", i ? ", " : "", run.frozenBias(i));
+    }
+    std::fprintf(f, "],\n");
+  }
   if (options.hold_only_s > 0.0) {
     std::fprintf(f,
                  "  \"hold\": {\"requested_s\": %.1f, "

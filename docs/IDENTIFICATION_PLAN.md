@@ -436,3 +436,35 @@ reset across the gate). The capture worst case (20 s) is budgeted in
 the pre-activation check; the position phase precedes current-mode
 activation and does not consume the session deadline. Hand placement
 remains the documented fallback.
+
+## Addendum — qualified identification controller tuning (2026-07-27)
+
+The Method section's "SHIPPED tuning unchanged" and "the integrator is
+what pins the posture" statements are SUPERSEDED for the identification
+anchor controller (x7_track's shipped tuning is untouched). Hardware
+stabilization sessions at P1 (nine hold-diagnostic runs) found and
+fixed two hold instabilities the float-settled tracking flows never
+exposed:
+
+- **Joint-0 (pan) PD scale 0.5** (`kIdentScale0`): the shipped scale
+  1.0 pan limit-cycles at ~8.9 Hz (±13 mrad, controller-pumped,
+  0.34 Nm p-p) under the stationary anchor hold. At 0.5 the pan is
+  bounded and slightly dissipative (0.030–0.047 rad/s across six
+  qualifying runs).
+- **Integral frozen at capture acceptance**: the live integrator winds
+  at Ki·e against stiction-held, in-tolerance error (joint 2: −0.436
+  → −0.564 Nm) until ~26 mrad breakaway slips recur. The freeze stops
+  the winding while the CAPTURED bias keeps acting — it is that stored
+  bias, not ongoing integration, that pins the posture (the original
+  "Ki=0 would sag" concern applied to an empty integrator). The bias
+  persists uninterrupted through lead-in, probing, retries and the
+  final hold, and the ACTUAL frozen vector is recorded per run in the
+  sidecar (observed joint-2 bias varied −0.109 to −0.427 Nm across
+  qualifying holds — visible to the analysis for repeatability
+  comparisons, never a merge criterion).
+
+Qualification: three consecutive complete 30 s P1 holds under the
+continuous gates (2026-07-27); the unchanged quiescence and anchor
+gates remain the authority. The FRFs are controller-specific to this
+recorded tuning (see the earlier addendum); the sidecar tuning block
+and the analysis merge guard enforce dataset consistency.
