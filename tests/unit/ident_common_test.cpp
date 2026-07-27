@@ -6,6 +6,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <random>
 #include <vector>
@@ -212,6 +214,100 @@ TEST_CASE("ident soft event on a NON-probe joint: kill ramp, re-settle, "
   CHECK(r.retried);
   CHECK_FALSE(r.completed);
   CHECK(r.note.find("response cap") != std::string::npos);
+}
+
+TEST_CASE("ident successful retry: the accepted window's REDUCED "
+          "amplitude is recorded, and the CSV labels the attempts",
+          "[ident]") {
+  // review finding (2 Hz dwell, 2026-07-27): a retried dwell logs both
+  // attempts under one dwell_id, the sidecar reported only the
+  // SCHEDULED amplitude (0.0517 vs the actual 0.0258), and the
+  // analyzer merged both segments into one 13.1 s "window". The CSV
+  // must label the attempts and the sidecar must record the effective
+  // amplitude of the accepted attempt.
+  Fixture fx;
+  auto opt = baseOptions({{5.0, 0.15, 1}});
+  std::FILE* log = x7::openIdentCsvLog("build/retry_attempt_test.csv",
+                                       "label=retry-attempt-test");
+  REQUIRE(log != nullptr);
+  x7::IdentRun run(fx.chain, fx.map, opt, log);
+  // joint 3 exceeds the 0.03 rad response cap only during the FIRST
+  // measure window (which opens at lead-in 2 s + ramp 0.5 s + the 4 s
+  // hold timeout on a still probe joint = 6.5 s): one soft event, one
+  // clean half-amplitude retry
+  ScriptArm robot([](int i, double t) {
+    return (i == 3 && t > 6.6 && t < 7.4)
+               ? 0.05 * std::sin(2.0 * M_PI * 5.0 * t)
+               : 0.0;
+  });
+  CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+  std::fclose(log);
+  REQUIRE(run.finishedCleanly());
+  const auto& r = run.results()[0];
+  CHECK(r.completed);
+  CHECK(r.retried);
+  CHECK(r.soft_events == 1);
+  // the accepted window ran at HALF the scheduled amplitude
+  CHECK(r.amp_eff_nm == Approx(0.075));
+
+  REQUIRE(x7::writeDwellJson("build/retry_attempt_test.json", opt, run));
+  std::FILE* jf = std::fopen("build/retry_attempt_test.json", "r");
+  REQUIRE(jf != nullptr);
+  std::string jtext(1 << 16, '\0');
+  jtext.resize(std::fread(jtext.data(), 1, jtext.size(), jf));
+  std::fclose(jf);
+  CHECK(jtext.find("\"amp_nm\": 0.1500") != std::string::npos);
+  CHECK(jtext.find("\"amp_eff_nm\": 0.0750") != std::string::npos);
+  CHECK(jtext.find("\"retried\": true") != std::string::npos);
+
+  // the CSV labels first-attempt measure rows 0 and retry rows 1
+  std::FILE* cf = std::fopen("build/retry_attempt_test.csv", "r");
+  REQUIRE(cf != nullptr);
+  char line[4096];
+  REQUIRE(std::fgets(line, sizeof(line), cf) != nullptr);  // '#'
+  REQUIRE(std::fgets(line, sizeof(line), cf) != nullptr);  // header
+  int col_phase = -1;
+  int col_amp = -1;
+  int col_attempt = -1;
+  {
+    int idx = 0;
+    for (char* tok = std::strtok(line, ",\n"); tok != nullptr;
+         tok = std::strtok(nullptr, ",\n"), ++idx) {
+      if (std::strcmp(tok, "dwell_phase") == 0) col_phase = idx;
+      if (std::strcmp(tok, "probe_amp") == 0) col_amp = idx;
+      if (std::strcmp(tok, "dwell_attempt") == 0) col_attempt = idx;
+    }
+  }
+  REQUIRE(col_phase >= 0);
+  REQUIRE(col_amp >= 0);
+  REQUIRE(col_attempt >= 0);
+  bool saw_first = false;
+  bool saw_retry = false;
+  double last_measure_amp = -1.0;
+  int last_measure_attempt = -1;
+  while (std::fgets(line, sizeof(line), cf) != nullptr) {
+    int idx = 0;
+    int phase = -1;
+    int attempt = -1;
+    double amp = -1.0;
+    for (char* tok = std::strtok(line, ",\n"); tok != nullptr;
+         tok = std::strtok(nullptr, ",\n"), ++idx) {
+      if (idx == col_phase) phase = std::atoi(tok);
+      if (idx == col_amp) amp = std::atof(tok);
+      if (idx == col_attempt) attempt = std::atoi(tok);
+    }
+    if (phase != 3) continue;  // Measure rows only
+    if (attempt == 0) saw_first = true;
+    if (attempt == 1) saw_retry = true;
+    last_measure_amp = amp;
+    last_measure_attempt = attempt;
+  }
+  std::fclose(cf);
+  CHECK(saw_first);   // the aborted attempt's rows are labeled 0...
+  CHECK(saw_retry);   // ...the retry's rows 1 — the analyzer separates
+  CHECK(last_measure_attempt == 1);
+  // the retry rows carry the EFFECTIVE amplitude
+  CHECK(last_measure_amp == Approx(0.075).margin(1e-4));
 }
 
 TEST_CASE("ident emergency kill ramp removes the probe within 50 ms",

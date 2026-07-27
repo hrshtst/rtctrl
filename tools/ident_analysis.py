@@ -12,10 +12,16 @@ guard (+/-0.02 rad), and per-posture mode tables.
 
 Dwell verdicts come from each run's `<csv>.dwells.json` sidecar:
 skipped/incomplete dwells are dropped, low-confidence dwells are
-excluded from the mode fits and flagged. "Refined" confidence requires
-all three pieces of evidence near a peak: a grid fine enough for
-zeta ~ 0.03, visits from at least two invocations (the up/down
-sweeps), and the half-amplitude linearity point.
+excluded from the mode fits and flagged. A retried dwell contributes
+only its FINAL completed attempt (the dwell_attempt column, or the
+last time-contiguous segment on legacy CSVs). Mode fitting REFUSES —
+reporting "insufficient usable data", never fitting noise — unless at
+least five dwells are both confident and above the observability
+floor on the probe-joint response (default: one encoder count).
+"Refined" confidence requires all three pieces of evidence near a
+peak: a grid fine enough for zeta ~ 0.03, visits from at least two
+invocations (the up/down sweeps), and the half-amplitude linearity
+point.
 
 Usage:
     uv run --project tools tools/ident_analysis.py run1.csv [run2.csv ...]
@@ -39,6 +45,17 @@ MEASURE_PHASE = 3  # IdentRun::Phase::Measure
 ANCHOR_TOL_RAD = 0.02
 DOF = 8
 REFINE_STEP_HZ = 0.35  # local spacing needed to resolve zeta ~ 0.03
+# Observability floor on the demodulated probe-joint response
+# ESTIMATE (not per-sample resolution): the plan's analytic window
+# noise floor — encoder quantization (sigma ~ 4.4e-4 rad) averaged
+# down over a >= 3 s window WHEN the signal dithers across counts. A
+# tick-frozen joint never crosses a count boundary: its estimate is
+# numerical zero, far below any positive floor (review finding: the
+# 2026-07-27 null survey — probe joint at ONE encoder value per
+# window — produced 5.04/12.06 Hz "modes" fitted at |H| ~ 5e-16
+# rad/Nm; even its two tick-toggling dwells peaked at 9.2e-6 rad).
+OBS_FLOOR_RAD = 3.6e-5
+MIN_FIT_DWELLS = 5
 
 
 @dataclass
@@ -57,6 +74,7 @@ class Dwell:
     fit_residual_rms: float  # probe-joint q LS residual [rad]
     clipped_cycles: int
     low_confidence: bool = False
+    below_floor: bool = False  # probe-joint response unobservable
     flags: list[str] = field(default_factory=list)
 
     @property
@@ -134,6 +152,64 @@ def same_tuning(a: dict, b: dict) -> bool:
     return True
 
 
+def final_attempt_rows(rows: np.ndarray) -> np.ndarray:
+    """A retried dwell logs BOTH attempts under one dwell_id, at
+    different amplitudes and with a kill-ramp/re-settle gap between
+    them. Fitting across the combined span corrupted the window
+    (review finding: a 2 Hz retry reported a 13.1 s window for a
+    5.02 s accepted attempt). Keep only the FINAL completed attempt:
+    the dwell_attempt column where recorded, else (legacy CSVs) the
+    last time-contiguous measurement segment."""
+    if rows.size == 0:
+        return rows
+    if rows.dtype.names and "dwell_attempt" in rows.dtype.names:
+        rows = rows[rows["dwell_attempt"] == np.max(rows["dwell_attempt"])]
+    # the gap between attempts is >= the 2 s re-settle; within one
+    # window consecutive stamps are one ~10 ms cycle apart
+    t = rows["feedback_time"]
+    gaps = np.flatnonzero(np.diff(t) > 0.5)
+    if gaps.size:
+        rows = rows[gaps[-1] + 1:]
+    return rows
+
+
+def apply_observability_floor(dwells: list[Dwell],
+                              floor_rad: float) -> None:
+    """Flag dwells whose probe-joint response is below the explicit
+    observability floor: they carry no plant information and must not
+    enter the mode fits regardless of their sidecar verdict."""
+    for d in dwells:
+        resp = float(np.abs(d.z_q[d.probe_joint]))
+        if resp < floor_rad:
+            d.below_floor = True
+            d.flags.append(
+                f"below the observability floor: |resp| {resp:.2e} < "
+                f"{floor_rad:.2e} rad — no usable probe-joint response"
+            )
+
+
+def fit_gate(dwells: list[Dwell]) -> tuple[list[Dwell], list[str]]:
+    """The mode-fit admission gate (review finding: with fewer than
+    five confident dwells the analyzer used to fall back to fitting
+    ALL points — on a null survey that manufactured modes from
+    numerical noise). Returns the usable dwells and, when they are
+    too few, the refusal reasons: the caller must then report
+    'insufficient usable data' instead of modes."""
+    usable = [d for d in dwells
+              if not d.low_confidence and not d.below_floor]
+    if len(usable) >= MIN_FIT_DWELLS:
+        return usable, []
+    reasons = [f"only {len(usable)} of {len(dwells)} dwells are "
+               f"usable (need >= {MIN_FIT_DWELLS})"]
+    n_low = sum(1 for d in dwells if d.low_confidence)
+    n_floor = sum(1 for d in dwells if d.below_floor)
+    if n_low:
+        reasons.append(f"{n_low} low-confidence")
+    if n_floor:
+        reasons.append(f"{n_floor} below the observability floor")
+    return usable, reasons
+
+
 def demod_dwells(path: str, data: np.ndarray,
                  sidecar: list | None) -> list[Dwell]:
     dwells: list[Dwell] = []
@@ -144,10 +220,10 @@ def demod_dwells(path: str, data: np.ndarray,
         if verdict is not None and (
                 verdict.get("skipped") or not verdict.get("completed")):
             continue  # no legitimate measurement window
-        rows = data[
+        rows = final_attempt_rows(data[
             (data["dwell_id"].astype(int) == d)
             & (data["dwell_phase"].astype(int) == MEASURE_PHASE)
-        ]
+        ])
         if rows.size < 16:
             continue
         t = rows["control_t"]
@@ -402,6 +478,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("csv", nargs="+", help="ident telemetry CSV(s)")
     ap.add_argument("--out", default="ident_analysis", help="output prefix")
+    ap.add_argument(
+        "--obs-floor-rad", type=float, default=OBS_FLOOR_RAD,
+        help="observability floor on the probe-joint response "
+             "(default: one encoder count, %(default)g rad)")
     args = ap.parse_args()
 
     # merge guards: refuse to combine runs from different postures OR
@@ -479,34 +559,33 @@ def main() -> int:
             "joint; analyze them separately"
         )
 
-    # low-confidence windows are excluded from the mode fits
-    fit_dwells = [d for d in dwells if not d.low_confidence]
-    if len(fit_dwells) < 5:
-        print("WARNING: fewer than 5 confident dwells — fitting all, "
-              "treat the result as indicative only", file=sys.stderr)
-        fit_dwells = dwells
-
-    uf = np.unique(np.round([d.freq_hz for d in fit_dwells], 3))
-    prof = np.array([
-        np.mean([abs(d.h_primary) for d in fit_dwells
-                 if round(d.freq_hz, 3) == f]) for f in uf
-    ])
-    modes = []
-    for p in find_peaks(uf, prof):
-        f_pk = float(uf[p])
-        band = [d for d in fit_dwells
-                if 0.7 * f_pk <= d.freq_hz <= 1.4 * f_pk]
-        if len(band) < 5:
-            modes.append({
-                "peak_freq_hz": f_pk,
-                "confidence": "insufficient",
-                "missing_evidence": [
-                    f"only {len(band)} dwells in the band"],
-            })
-            continue
-        modes.append(mode_entry(band, dwells, f_pk))
-    if not modes:
-        raise SystemExit("no mode peak detected in |H|")
+    # mode-fit admission: only confident dwells whose probe-joint
+    # response clears the observability floor may enter the fits; too
+    # few of them is a REFUSAL, never a fall-back to fitting noise
+    apply_observability_floor(dwells, args.obs_floor_rad)
+    fit_dwells, refusal = fit_gate(dwells)
+    modes: list[dict] = []
+    if not refusal:
+        uf = np.unique(np.round([d.freq_hz for d in fit_dwells], 3))
+        prof = np.array([
+            np.mean([abs(d.h_primary) for d in fit_dwells
+                     if round(d.freq_hz, 3) == f]) for f in uf
+        ])
+        for p in find_peaks(uf, prof):
+            f_pk = float(uf[p])
+            band = [d for d in fit_dwells
+                    if 0.7 * f_pk <= d.freq_hz <= 1.4 * f_pk]
+            if len(band) < 5:
+                modes.append({
+                    "peak_freq_hz": f_pk,
+                    "confidence": "insufficient",
+                    "missing_evidence": [
+                        f"only {len(band)} dwells in the band"],
+                })
+                continue
+            modes.append(mode_entry(band, dwells, f_pk))
+        if not modes:
+            raise SystemExit("no mode peak detected in |H|")
 
     table = {
         "probe_joint": pj,
@@ -521,6 +600,10 @@ def main() -> int:
         # -0.109 to -0.427 Nm) — compare repeat-survey peaks alongside
         # these vectors when judging flexible-mode repeatability
         "frozen_bias_nm": frozen_biases,
+        # non-empty = the mode-fit gate refused: there are NO modes in
+        # this table by decision, not by absence of peaks — the dwell
+        # rows and actuator transfer below remain valid measurements
+        "insufficient_usable_data": refusal,
         "modes": modes,
         "actuator_transfer": [
             {
@@ -556,6 +639,11 @@ def main() -> int:
         json.dump(table, f, indent=1)
 
     lines = [f"# Mode table — probe joint {pj}", ""]
+    if refusal:
+        lines.append(
+            "**INSUFFICIENT USABLE DATA — no mode fits** ("
+            + "; ".join(refusal) + ")"
+        )
     for m in modes:
         if m["confidence"] == "insufficient":
             lines.append(
@@ -592,6 +680,9 @@ def main() -> int:
     with open(f"{args.out}.mode_table.md", "w") as f:
         f.write("\n".join(lines) + "\n")
 
+    if refusal:
+        print("INSUFFICIENT USABLE DATA — no mode fits ("
+              + "; ".join(refusal) + ")")
     for m in modes:
         if m["confidence"] == "insufficient":
             print(f"peak near {m['peak_freq_hz']:.2f} Hz: insufficient "

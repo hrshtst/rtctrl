@@ -90,14 +90,21 @@ bool parseStrictDouble(const char* text, double* out) {
 
 void printDwellSummary(const x7::IdentRun& run) {
   for (const auto& r : run.results()) {
+    // a retried dwell's accepted window ran at the REDUCED amplitude —
+    // report it, not just the schedule (review finding)
+    char eff[32] = "";
+    if (r.retried && r.completed) {
+      std::snprintf(eff, sizeof(eff), " retried@%.3f Nm", r.amp_eff_nm);
+    } else if (r.retried) {
+      std::snprintf(eff, sizeof(eff), " retried");
+    }
     std::printf(
         "  %6.2f Hz  amp %.3f Nm  %s%s%s hold %.2f s window %.2f s "
         "(%d periods)%s%s\n",
         r.spec.freq_hz, r.spec.amp_nm,
         r.completed ? "done" : (r.skipped ? "SKIPPED" : "INCOMPLETE"),
-        r.low_confidence ? " low-confidence" : "",
-        r.retried ? " retried" : "", r.hold_s, r.window_s,
-        r.window_periods, r.note.empty() ? "" : "  — ",
+        r.low_confidence ? " low-confidence" : "", eff, r.hold_s,
+        r.window_s, r.window_periods, r.note.empty() ? "" : "  — ",
         r.note.c_str());
   }
 }

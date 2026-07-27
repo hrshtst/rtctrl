@@ -548,6 +548,11 @@ struct DwellResult {
   bool skipped = false;         // admission or headroom refusal
   bool low_confidence = false;  // hold timeout or unmet SNR
   bool retried = false;
+  // amplitude of the attempt whose window was ACCEPTED: a retry runs
+  // at half the scheduled amplitude, and reporting only spec.amp_nm
+  // misstated the completed measurement (review finding). 0 = no
+  // window accepted.
+  double amp_eff_nm = 0.0;
   int soft_events = 0;
   std::string note;
   double hold_s = 0.0;
@@ -1453,6 +1458,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   void finishMeasure(double t) {
     auto& res = results_[dwell_];
     res.completed = true;
+    res.amp_eff_nm = retry_amp_ > 0.0 ? retry_amp_ : res.spec.amp_nm;
     res.window_s = t - measure_start_;
     res.window_periods = win_q_.blocks();
     for (int i = 0; i < model::kCanonicalDof; ++i) {
@@ -1520,14 +1526,23 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         dwell_ >= 0 && dwell_ < static_cast<int>(options_.dwells.size())
             ? (retry_amp_ > 0.0 ? retry_amp_ : currentSpec().amp_nm)
             : 0.0;
-    std::fprintf(log_, ",%d,%d,%d,%.4f,%.4f,%.6f,%.5f,%.5f,%d,%.6f",
+    // dwell_attempt: 0 = first attempt, 1 = the reduced-amplitude
+    // retry. A retried dwell logs BOTH attempts under one dwell_id;
+    // the analysis must fit only the final completed attempt (review
+    // finding: merging the soft-aborted segment corrupted the window).
+    const int attempt =
+        dwell_ >= 0 && dwell_ < static_cast<int>(options_.dwells.size()) &&
+                results_[dwell_].retried
+            ? 1
+            : 0;
+    std::fprintf(log_, ",%d,%d,%d,%.4f,%.4f,%.6f,%.5f,%.5f,%d,%.6f,%d",
                  dwell_, static_cast<int>(phase_), options_.probe_joint,
                  dwell_ >= 0 &&
                          dwell_ < static_cast<int>(options_.dwells.size())
                      ? currentSpec().freq_hz
                      : 0.0,
                  amp, phi_, probe_tau_, last_cmd_tau_,
-                 probe_clipped_ ? 1 : 0, resp_amp_est_);
+                 probe_clipped_ ? 1 : 0, resp_amp_est_, attempt);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       std::fprintf(
           log_,
@@ -1649,7 +1664,9 @@ inline std::FILE* openIdentCsvLog(const std::string& path,
       "columns describe THIS cycle's excitation; cmd_total is the "
       "SUBMITTED total probe-joint torque (anchor + probe, post-clamp "
       "— the actuator-transfer variant's input); resp_amp_est is the "
-      "latest completed 1-period demod block on the probe joint. "
+      "latest completed 1-period demod block on the probe joint; "
+      "dwell_attempt is 0 for the first attempt and 1 for the "
+      "reduced-amplitude retry (analyze only the final attempt). "
       "%s\n",
       meta.c_str());
   std::fprintf(log,
@@ -1660,7 +1677,7 @@ inline std::FILE* openIdentCsvLog(const std::string& path,
                "feedback_minus_latest_apply,attempt_valid,attempt_seq,"
                "attempt_time,attempt_ok,dwell_id,dwell_phase,"
                "probe_joint,probe_hz,probe_amp,probe_phase,probe_tau,"
-               "cmd_total,probe_clipped,resp_amp_est");
+               "cmd_total,probe_clipped,resp_amp_est,dwell_attempt");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
     std::fprintf(log,
                  ",qd%d,q%d,dq%d,dqest%d,ff%d,pd%d,i%d,tauraw%d,"
@@ -1759,13 +1776,15 @@ inline bool writeDwellJson(const std::string& path,
     const auto& r = results[k];
     std::fprintf(
         f,
-        "    {\"freq_hz\": %.4f, \"amp_nm\": %.4f, \"started\": %s, "
+        "    {\"freq_hz\": %.4f, \"amp_nm\": %.4f, "
+        "\"amp_eff_nm\": %.4f, \"started\": %s, "
         "\"completed\": %s, \"skipped\": %s, \"low_confidence\": %s, "
         "\"retried\": %s, \"soft_events\": %d, \"hold_s\": %.3f, "
         "\"window_s\": %.3f, \"window_periods\": %d, "
         "\"floor_q\": %.3e, \"floor_tau\": %.3e, "
         "\"note\": \"%s\",\n     \"resp\": [",
-        r.spec.freq_hz, r.spec.amp_nm, r.started ? "true" : "false",
+        r.spec.freq_hz, r.spec.amp_nm, r.amp_eff_nm,
+        r.started ? "true" : "false",
         r.completed ? "true" : "false", r.skipped ? "true" : "false",
         r.low_confidence ? "true" : "false", r.retried ? "true" : "false",
         r.soft_events, r.hold_s, r.window_s, r.window_periods,

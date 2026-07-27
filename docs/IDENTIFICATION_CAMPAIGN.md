@@ -93,6 +93,37 @@ the isolated joint-6 ~4.4 Hz event did not recur in 3×30 s.
       and the analysis refuses to merge it with frozen-integrator
       pose-first data. Manual-flow surveys are not campaign data.
 
+## 3a. P1 joint 1: amplitude pilot BEFORE any further survey
+
+The first valid-procedure survey (`p1_j1_survey_r2.csv`, 2026-07-27)
+was mechanically flawless but **scientifically null**: joint 1 held a
+single encoder count through 13 of 16 measurement windows (two
+adjacent counts at 2, 3, and 20 Hz) while the actuator faithfully
+applied the 0.05–0.15 Nm probes. The probe amplitudes sit below the
+joint's effective stiction/deadband at P1, so no plant FRF exists in
+that dataset (the analysis now refuses to fit it). Do NOT run
+refinement sweeps, other joints, or other postures at these
+amplitudes — every survey would be null.
+
+- [ ] Reviewer-directed amplitude pilot, ONE dwell per run, stepping
+      0.20 → 0.25 → at most the 0.30 Nm hard cap, one run at a time,
+      all response/deviation/safety gates unchanged:
+
+  ```sh
+  ./build/apps/x7_ident --joint 1 --pose-first \
+      --anchor-ref config/postures/p1.json \
+      --freqs "4.5@0.20" --amp 0.20 \
+      --label p1-j1-amp020 --log p1_j1_amp020.csv
+  ```
+
+      The decisive readout is joint-1 MOTION (the analysis reports the
+      demodulated response against the observability floor), not the
+      dwell verdict alone. If 0.30 Nm still produces no observable
+      joint-1 response, STOP the escalation: joint 1 at P1 is not
+      identifiable with this small-signal current-probe method, and
+      the protocol or probe/posture choice must change (reviewer
+      decision).
+
 ## 4. Analyze BEFORE any refinement (the protocol's hard gate)
 
 ```sh
@@ -112,7 +143,11 @@ Verify four things:
 - [ ] **Dwell verdicts** — `done` on most dwells; hold timeouts
       (low-confidence) far off-resonance are normal, but
       low-confidence AT the peak means the amplitude or window needs
-      revisiting.
+      revisiting. The analysis REFUSES mode fitting ("INSUFFICIENT
+      USABLE DATA") unless at least five dwells are confident and
+      above the observability floor on the probe-joint response — a
+      refusal means the survey must be diagnosed (amplitude,
+      posture), never that its noise should be fitted.
 - [ ] **Peak locations** — the mode table names a peak near 4–5 Hz
       (possibly the 13 Hz mode weakly from joint 1). It is marked
       SURVEY-ONLY: expected at this stage.

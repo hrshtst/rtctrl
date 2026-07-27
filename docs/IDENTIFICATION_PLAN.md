@@ -483,3 +483,43 @@ all eight latched plus the unchanged simultaneous gates for a further
 0.3 s. Per-joint biases and latch times are recorded in the sidecar.
 Tolerance, speed threshold, timeout and the no-probe-before-admission
 rule are unchanged.
+
+## Addendum — the null survey and the observability limit (2026-07-27)
+
+The first valid-procedure P1 joint-1 survey completed every dwell
+with clean safety, timing, and thermal margins — and measured no
+plant response at all: joint 1's output encoder reported a SINGLE
+count through 13 of 16 measurement windows (two adjacent counts at 2,
+3, and 20 Hz) while τ_meas tracked the full 0.05–0.15 Nm probe. Two
+design assumptions failed on hardware together:
+
+- **Excitation**: the amplitude rule's 0.005 rad target assumed a
+  free linear plant. At a gravity-held stationary posture the probe
+  sits below joint 1's effective stiction/deadband; the XM430's
+  encoder is on the OUTPUT shaft, so gear-train wind-up from the
+  motor-side probe is invisible and the output simply does not move.
+- **Observability**: the 3.6e-5 rad analytic noise floor assumed the
+  encoder dithers across counts. A stationary joint is tick-frozen —
+  a constant signal demodulates to numerical zero, and the unforced
+  lead-in's floor calibration degenerates the same way (~1e-15),
+  which is why every adaptive hold timed out: the SNR truly was
+  unresolved. What the survey DID measure cleanly is the
+  commanded→measured actuator transfer (magnitude ~1.0 flat 2–20 Hz,
+  phase −8° to −76°, consistent with the recorded ~9.9 ms
+  first-apply delay) — a real notch-phase-budget deliverable.
+
+Consequences (reviewer-directed): the analysis REFUSES mode fitting
+without at least five confident dwells above an explicit
+observability floor on the probe-joint response — "insufficient
+usable data", never a fit of quantization noise (the null survey's
+former 5.04/12.06 Hz "fits" at |H| ≈ 5e-16 rad/Nm, with
+participation ratios of 10^10, were numerical artifacts); a retried
+dwell is analyzed only over its final completed attempt, with the
+CSV labeling attempts (`dwell_attempt`) and the sidecar recording
+the accepted attempt's effective amplitude (`amp_eff_nm`). The next
+hardware step is a single-dwell amplitude pilot at 4.5 Hz stepping
+0.20 → 0.25 → at most the unchanged 0.30 Nm hard cap, one run at a
+time, all gates unchanged; if 0.30 Nm still produces no observable
+joint-1 response, the small-signal stationary current-probe method
+is not viable for joint 1 at P1 and the protocol or probe/posture
+choice must change (reviewer decision).
