@@ -8,7 +8,9 @@ demodulated estimates the documentation quotes — are tracked
 in-repo under `data/` (one per starred file below). Checksums are
 SHA-256 of each file as archived on 2026-07-28; a citation in the
 project records is verifiable by checking the named file against
-its hash.
+its hash. Project records and code comments cite these datasets by
+bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
+— every such name resolves to a row in the tables below.
 
 ## `m8-tracking/` — M8 torque-tracking runs (2026-07-21)
 
