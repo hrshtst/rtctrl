@@ -864,6 +864,7 @@ TEST_CASE("ident production survey: qualified tuning applied, bias "
   std::fclose(f);
   CHECK(text.find("\"integral_frozen_at_capture\": 1") !=
         std::string::npos);
+  CHECK(text.find("\"integral_policy\": 2") != std::string::npos);
   CHECK(text.find("\"frozen_bias_nm\"") != std::string::npos);
   CHECK(text.find("\"gain_scale\": [0.5000") != std::string::npos);
 }
@@ -891,6 +892,7 @@ TEST_CASE("ident sidecar records the EFFECTIVE integral mode: a run "
   std::fclose(f);
   CHECK(text.find("\"integral_frozen_at_capture\": 0") !=
         std::string::npos);
+  CHECK(text.find("\"integral_policy\": 0") != std::string::npos);
   CHECK(text.find("\"frozen_bias_nm\"") == std::string::npos);
 }
 

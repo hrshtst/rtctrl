@@ -45,3 +45,19 @@ assert ia.valid_frozen_record(live, None)   # live: no vector expected
 assert ia.valid_frozen_record(None, None)   # legacy: handled upstream
 
 print("ident_analysis merge-guard regressions: ok")
+
+# policy versioning: the retired all-at-admission global freeze
+# (policy 1) and legacy sidecars without the field must never merge
+# with per-joint-latch (policy 2) datasets
+per_joint = dict(frozen)
+per_joint["integral_policy"] = 2
+legacy_global = dict(frozen)
+legacy_global["integral_policy"] = 1
+legacy_no_field = dict(frozen)  # pre-policy sidecar: field absent
+assert not ia.same_tuning(per_joint, legacy_global), \
+    "global-freeze and per-joint-latch runs must not merge"
+assert not ia.same_tuning(per_joint, legacy_no_field), \
+    "pre-policy legacy sidecars must not merge with versioned ones"
+assert ia.same_tuning(per_joint, dict(per_joint))
+
+print("integral-policy versioning regressions: ok")

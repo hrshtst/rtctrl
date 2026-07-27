@@ -40,7 +40,7 @@
 //                 1 s grace); reports per-joint maxima. No probing.
 //                 Without --scale0 it validates the QUALIFIED
 //                 production tuning (joint-0 scale 0.5, integral
-//                 frozen at capture — 2026-07-27 selection).
+//                 per-joint latched during capture — 2026-07-27 selection).
 //   --scale0      diagnostic-only joint-0 PD scale override in
 //                 [0.05, 1.0) for stabilization experiments
 //   --log         full-loop ident telemetry CSV; a per-dwell JSON
@@ -226,7 +226,7 @@ int main(int argc, char* argv[]) {
     }
     // --scale0 is now an OPTIONAL diagnostic override: without it the
     // hold validates the QUALIFIED production tuning (joint-0 scale
-    // 0.5, integral frozen at capture — 2026-07-27 selection)
+    // 0.5, integral per-joint latched during capture — 2026-07-27 selection)
     if (scale0_given) {
       if (scale0 >= 1.0) {
         std::fprintf(stderr,
@@ -627,7 +627,8 @@ int main(int argc, char* argv[]) {
     if (hold_mode) {
       std::printf("HOLD DIAGNOSTIC: capture, then %.0f s unforced "
                   "anchor hold under continuous gates (joint-0 scale "
-                  "%.2f, integral frozen at capture); no probing\n",
+                  "%.2f, per-joint integral latch during capture); no "
+                  "probing\n",
                   hold_s, scale0 > 0.0 ? scale0 : x7::kIdentScale0);
     } else {
       std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, "

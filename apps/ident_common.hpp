@@ -630,16 +630,18 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // one fixed, recorded tuning — never a per-run knob.
     double hold_scale0 = 0.0;
     // PRODUCTION default (qualified 2026-07-27, three 30 s holds):
-    // freeze the learned integral state at capture acceptance —
-    // without resetting — preserving the captured friction/gravity
-    // bias and torque continuity while preventing integrator-stiction
-    // hunting (a stuck in-tolerance error otherwise winds at Ki*e
-    // until ~26 mrad breakaway slips; joint 2 hardware evidence). The
-    // frozen bias persists UNINTERRUPTED through lead-in, probing,
-    // retries and the final hold. Recorded in the sidecar tuning
-    // block, with the actual frozen bias vector alongside. Only
-    // meaningful when the capture phase runs; false is for
-    // comparison experiments.
+    // PER-JOINT integral latching during capture — each joint's
+    // learned integral freezes, without resetting, the moment that
+    // joint's own in-band + quiet readiness sustains 0.3 s,
+    // preserving the captured friction/gravity bias and torque
+    // continuity while preventing integrator-stiction hunting (a
+    // stuck in-tolerance error otherwise winds at Ki*e until ~26 mrad
+    // breakaway slips; joints 2 and 3 hardware evidence). Latched
+    // biases persist UNINTERRUPTED through lead-in, probing, retries
+    // and the final hold. Recorded in the sidecar tuning block
+    // (integral_policy 2) with the per-joint bias and latch-time
+    // vectors alongside. Only meaningful when the capture phase runs;
+    // false is for comparison experiments.
     bool freeze_integral_at_capture = true;
   };
 
@@ -1709,9 +1711,16 @@ inline bool writeDwellJson(const std::string& path,
   // fallback run has no capture phase, so its integrator stayed live
   // even though the option defaults true — recording the request
   // would let a live-integrator survey merge with frozen-integrator
-  // data (review finding)
-  std::fprintf(f, "], \"integral_frozen_at_capture\": %d},\n",
-               run.biasFrozen() ? 1 : 0);
+  // data (review finding). integral_policy versions the freeze
+  // SEMANTICS (0 = live, 1 = the retired all-at-admission global
+  // freeze, 2 = per-joint latch during capture): legacy sidecars lack
+  // the field entirely and policy-1 data records a different value,
+  // so neither can silently merge with per-joint-latch datasets
+  // (review finding).
+  std::fprintf(f,
+               "], \"integral_frozen_at_capture\": %d, "
+               "\"integral_policy\": %d},\n",
+               run.biasFrozen() ? 1 : 0, run.biasFrozen() ? 2 : 0);
   if (run.biasFrozen()) {
     // run STATE, not tuning: visible to the analysis (repeatability
     // comparisons) but never a merge-guard criterion
