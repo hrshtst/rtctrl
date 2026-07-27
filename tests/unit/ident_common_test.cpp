@@ -65,7 +65,7 @@ class ScriptArm : public arm::Arm {
     for (int i = 0; i < kCanonicalDof; ++i) {
       echo_[i] = zVecElemNC(cmd.tau.get(), i);
       rec.applied[i] = echo_[i];
-      rec.flags[i] = 0;
+      rec.flags[i] = force_flags[i];
     }
     if (receipt != nullptr) *receipt = {true, target_seq_, 100.0 + time_};
     return true;
@@ -78,6 +78,10 @@ class ScriptArm : public arm::Arm {
   }
 
   double time() const { return time_; }
+
+  // scripted hardware flags (e.g. kCmdClamped) copied into the
+  // applied record each write
+  std::uint8_t force_flags[kCanonicalDof] = {};
 
  private:
   Script q_;
@@ -693,12 +697,13 @@ TEST_CASE("ident hold diagnostic: explicit mode, continuous gates",
     REQUIRE(run.finishedCleanly());
     CHECK(run.outcome() == x7::IdentRun::Outcome::Completed);
     CHECK(run.holdCompletedS() == Approx(5.0).margin(0.1));
-    // statistics record the WHOLE hold including the enforcement
-    // grace, where the acceptance-boundary decay tail may still sit
-    // slightly above the threshold — completion itself proves the
-    // post-grace continuous requirement held
+    // the ENFORCED maxima (post-grace) carry the pass/fail meaning
+    // and must be strictly inside the bound; the whole-hold maxima
+    // may include the acceptance-boundary decay tail
     for (int i = 0; i < kCanonicalDof; ++i) {
-      INFO("joint " << i << " max metric " << run.holdMaxSpeed(i));
+      INFO("joint " << i << " max metric " << run.holdMaxSpeed(i)
+                    << " enforced " << run.holdMaxSpeedEnforced(i));
+      CHECK(run.holdMaxSpeedEnforced(i) < 0.05);
       CHECK(run.holdMaxSpeed(i) < 0.1);
     }
   }
@@ -738,4 +743,21 @@ TEST_CASE("ident hold diagnostic: explicit mode, continuous gates",
     CHECK(run.faultReason().find("hold deviation") != std::string::npos);
     CHECK(run.faultReason().find("joint 2") != std::string::npos);
   }
+}
+
+TEST_CASE("ident hold diagnostic: a hardware clamp on the probe joint "
+          "is a hard fault (no probe-clipping exemption without a "
+          "probe)",
+          "[ident]") {
+  Fixture fx;
+  auto o = baseOptions({});
+  o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+  o.hold_only_s = 10.0;
+  x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+  ScriptArm robot([](int, double) { return 0.0; });
+  robot.force_flags[1] = arm::kCmdClamped;  // probe joint 1
+  CHECK_FALSE(arm::run(robot, run, 30.0, &run));
+  CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
+  CHECK(run.faultReason().find("hardware clamp on joint 1") !=
+        std::string::npos);
 }

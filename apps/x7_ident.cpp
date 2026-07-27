@@ -75,6 +75,17 @@ std::vector<x7::FreqSpec> defaultSurvey() {
   return specs;
 }
 
+// Strict full-token numeric parsing: atof() turned "--hold garbage"
+// into zero — which silently selected the normal survey instead of
+// refusing (review finding).
+bool parseStrictDouble(const char* text, double* out) {
+  char* end = nullptr;
+  const double v = std::strtod(text, &end);
+  if (end == text || *end != '\0' || !std::isfinite(v)) return false;
+  *out = v;
+  return true;
+}
+
 void printDwellSummary(const x7::IdentRun& run) {
   for (const auto& r : run.results()) {
     std::printf(
@@ -101,6 +112,8 @@ int main(int argc, char* argv[]) {
   double pose_vel = 0.25;
   double hold_s = 0.0;
   double scale0 = 0.0;
+  bool hold_given = false;
+  bool scale0_given = false;
   std::string label, log_path, anchor_ref_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
@@ -132,11 +145,25 @@ int main(int argc, char* argv[]) {
     } else if (std::strcmp(argv[i], "--pose-first") == 0) {
       pose_first = true;
     } else if (std::strcmp(argv[i], "--vel") == 0 && i + 1 < argc) {
-      pose_vel = std::atof(argv[++i]);
+      if (!parseStrictDouble(argv[++i], &pose_vel)) {
+        std::fprintf(stderr, "--vel rejected: one finite value "
+                             "required\n");
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--hold") == 0 && i + 1 < argc) {
-      hold_s = std::atof(argv[++i]);
+      hold_given = true;
+      if (!parseStrictDouble(argv[++i], &hold_s)) {
+        std::fprintf(stderr, "--hold rejected: one finite duration in "
+                             "[5, 120] s required\n");
+        return 1;
+      }
     } else if (std::strcmp(argv[i], "--scale0") == 0 && i + 1 < argc) {
-      scale0 = std::atof(argv[++i]);
+      scale0_given = true;
+      if (!parseStrictDouble(argv[++i], &scale0)) {
+        std::fprintf(stderr, "--scale0 rejected: one finite value in "
+                             "[0.05, 1.0) required\n");
+        return 1;
+      }
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return 1;
@@ -174,10 +201,11 @@ int main(int argc, char* argv[]) {
   if (!std::isfinite(pose_vel)) pose_vel = 0.25;
   pose_vel = std::clamp(pose_vel, 0.05, 0.5);
   // Unforced-hold diagnostic (the stabilization procedure): strict
-  // validation, and --scale0 exists ONLY here so arbitrary survey
-  // tuning cannot slip into the campaign (the FRFs are
-  // controller-specific).
-  const bool hold_mode = hold_s != 0.0;
+  // validation, --scale0 is REQUIRED with --hold (the zero sentinel
+  // would silently run the known-failing effective scale 1.0 — review
+  // finding), and it exists ONLY here so arbitrary survey tuning
+  // cannot slip into the campaign (the FRFs are controller-specific).
+  const bool hold_mode = hold_given;
   if (hold_mode) {
     if (!pose_first) {
       std::fprintf(stderr, "--hold requires --pose-first (the "
@@ -189,26 +217,32 @@ int main(int argc, char* argv[]) {
                            "never probes\n");
       return 1;
     }
-    if (!std::isfinite(hold_s) || hold_s < 5.0 || hold_s > 120.0) {
+    if (hold_s < 5.0 || hold_s > 120.0) {
       std::fprintf(stderr, "--hold rejected: one finite duration in "
                            "[5, 120] s required\n");
       return 1;
     }
-    if (scale0 != 0.0) {
-      if (!std::isfinite(scale0) || scale0 < 0.05 || scale0 > 1.0) {
-        std::fprintf(stderr, "--scale0 rejected: one finite value in "
-                             "[0.05, 1.0] required\n");
-        return 1;
-      }
-      if (scale0 == 1.0) {
-        std::fprintf(stderr,
-                     "--scale0 1.0 is the already-characterized "
-                     "failing case (2026-07-27 run) — pick a reduced "
-                     "value\n");
-        return 1;
-      }
+    if (!scale0_given) {
+      std::fprintf(stderr,
+                   "--hold requires an explicit --scale0: the "
+                   "diagnostic exists to test a REDUCED joint-0 scale "
+                   "(1.0 is the already-characterized failing case)\n");
+      return 1;
     }
-  } else if (scale0 != 0.0) {
+    if (scale0 >= 1.0) {
+      std::fprintf(stderr,
+                   "--scale0 %.3f rejected: 1.0 is the "
+                   "already-characterized failing case (2026-07-27 "
+                   "run) — pick a value in [0.05, 1.0)\n",
+                   scale0);
+      return 1;
+    }
+    if (scale0 < 0.05) {
+      std::fprintf(stderr, "--scale0 rejected: one finite value in "
+                           "[0.05, 1.0) required\n");
+      return 1;
+    }
+  } else if (scale0_given) {
     std::fprintf(stderr, "--scale0 is diagnostic-only: it requires "
                          "--hold\n");
     return 1;
@@ -705,13 +739,16 @@ int main(int argc, char* argv[]) {
     }
     if (hold_mode) {
       std::printf("hold diagnostic (joint-0 scale %.2f, %.1f of %.0f s "
-                  "completed):\n",
-                  ident.gainScales()[0], ident.holdCompletedS(), hold_s);
+                  "completed; enforced = after the %.0f s grace):\n",
+                  ident.gainScales()[0], ident.holdCompletedS(), hold_s,
+                  x7::kHoldDiagGraceS);
       for (int i = 0; i < model::kCanonicalDof; ++i) {
-        std::printf("  joint %d: max metric %.4f rad/s (bound 0.05)  "
-                    "p-p %.5f rad%s\n",
-                    i, ident.holdMaxSpeed(i), ident.holdRangeRad(i),
-                    ident.holdMaxSpeed(i) >= 0.05 ? "  <-- FAIL" : "");
+        std::printf(
+            "  joint %d: max metric %.4f enforced %.4f rad/s "
+            "(bound 0.05)  p-p %.5f rad%s\n",
+            i, ident.holdMaxSpeed(i), ident.holdMaxSpeedEnforced(i),
+            ident.holdRangeRad(i),
+            ident.holdMaxSpeedEnforced(i) >= 0.05 ? "  <-- FAIL" : "");
       }
     }
     printDwellSummary(ident);

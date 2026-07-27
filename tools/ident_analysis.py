@@ -398,6 +398,7 @@ def main() -> int:
     anchor0 = None
     tuning0 = None
     tuning0_path = None
+    missing_tuning = []
     for path in args.csv:
         data, anchor, sidecar, tuning = load_run(path)
         if anchor0 is None:
@@ -413,8 +414,7 @@ def main() -> int:
                     "one FRF dataset"
                 )
         if tuning is None:
-            print(f"WARNING: {path}: no tuning record — cannot verify "
-                  "controller consistency", file=sys.stderr)
+            missing_tuning.append(path)
         elif tuning0 is None:
             tuning0 = tuning
             tuning0_path = path
@@ -425,6 +425,19 @@ def main() -> int:
                 "mixed tunings are not one dataset"
             )
         runs.append((path, data, sidecar))
+    if missing_tuning:
+        if len(args.csv) > 1:
+            # combining runs REQUIRES verifiable controller consistency
+            # — a missing record must refuse, or differently tuned
+            # legacy runs bypass the guard (review finding)
+            raise SystemExit(
+                "TUNING MERGE GUARD: no tuning record for "
+                + ", ".join(missing_tuning)
+                + " — unverifiable controller consistency; regenerate "
+                "the sidecars (or analyze the runs separately)"
+            )
+        print(f"WARNING: {missing_tuning[0]}: no tuning record — the "
+              "mode table cannot name its controller", file=sys.stderr)
 
     assert anchor0 is not None
     dwells: list[Dwell] = []

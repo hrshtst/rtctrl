@@ -750,10 +750,17 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
       fail(Outcome::HardFault, "latency violation");
       return false;
     }
-    // Hardware saturation or position-gate engagement on ANY joint is a
-    // hard fault — except the probe joint's own kCmdClamped, which the
-    // controller already accounts for as probe clipping.
+    // Hardware saturation or position-gate engagement on ANY joint is
+    // a hard fault. The probe joint's own kCmdClamped is exempt ONLY
+    // while a probe can actually be active (the controller accounts
+    // for it as probe clipping): in Capture, HoldDiag, LeadIn,
+    // ReSettle and FinalHold there is no probe, so a clamp there is a
+    // genuine anomaly on every joint (review finding).
     if (cmds.applied.valid && outcome_ == Outcome::Running) {
+      const bool probe_active =
+          phase_ == Phase::RampIn || phase_ == Phase::Hold ||
+          phase_ == Phase::Measure || phase_ == Phase::RampOut ||
+          phase_ == Phase::KillRamp;
       for (int i = 0; i < model::kCanonicalDof; ++i) {
         if (cmds.applied.flags[i] & arm::kCmdGated) {
           fail(Outcome::HardFault, "position gate engaged on joint " +
@@ -761,7 +768,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
           return false;
         }
         if ((cmds.applied.flags[i] & arm::kCmdClamped) &&
-            i != options_.probe_joint) {
+            !(probe_active && i == options_.probe_joint)) {
           fail(Outcome::HardFault, "hardware clamp on joint " +
                                        std::to_string(i));
           return false;
@@ -790,9 +797,14 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   // capture telemetry (integrated startup only)
   double captureInitialDev() const { return capture_initial_dev_; }
   double captureAcceptedAt() const { return capture_s_; }
-  // hold-diagnostic telemetry
+  // hold-diagnostic telemetry: whole-hold vs ENFORCED-period maxima
+  // (the whole-hold figure includes the acceptance-boundary grace;
+  // pass/fail judgments belong to the enforced figure)
   double holdCompletedS() const { return hold_done_s_; }
   double holdMaxSpeed(int i) const { return hold_max_speed_[i]; }
+  double holdMaxSpeedEnforced(int i) const {
+    return hold_max_speed_enf_[i];
+  }
   double holdRangeRad(int i) const {
     return hold_q_max_[i] - hold_q_min_[i];
   }
@@ -989,6 +1001,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
             phase_ = Phase::HoldDiag;
             for (int i = 0; i < model::kCanonicalDof; ++i) {
               hold_max_speed_[i] = 0.0;
+              hold_max_speed_enf_[i] = 0.0;
               hold_q_min_[i] = hold_q_max_[i] =
                   zVecElemNC(state.q.get(), i);
             }
@@ -1020,10 +1033,15 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         // per-joint maxima feed the tuning decision.
         probe_tau_ = 0.0;
         capture_metric_.update(t, state.q.get());
+        const bool enforced = t - phase_start_ >= kHoldDiagGraceS;
         for (int i = 0; i < model::kCanonicalDof; ++i) {
           const double q = zVecElemNC(state.q.get(), i);
           hold_max_speed_[i] =
               std::max(hold_max_speed_[i], capture_metric_.speed(i));
+          if (enforced) {
+            hold_max_speed_enf_[i] = std::max(
+                hold_max_speed_enf_[i], capture_metric_.speed(i));
+          }
           hold_q_min_[i] = std::min(hold_q_min_[i], q);
           hold_q_max_[i] = std::max(hold_q_max_[i], q);
           const double dev = std::fabs(q - options_.anchor[i]);
@@ -1035,8 +1053,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
             break;
           }
         }
-        if (outcome_ == Outcome::Running &&
-            t - phase_start_ >= kHoldDiagGraceS &&
+        if (outcome_ == Outcome::Running && enforced &&
             capture_metric_.maxSpeed() >= 0.05) {
           fail(Outcome::HardFault,
                "hold quiescence lost: " +
@@ -1534,6 +1551,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   // hold diagnostic
   double hold_done_s_ = 0.0;
   double hold_max_speed_[model::kCanonicalDof] = {};
+  double hold_max_speed_enf_[model::kCanonicalDof] = {};
   double hold_q_min_[model::kCanonicalDof] = {};
   double hold_q_max_[model::kCanonicalDof] = {};
   double gain_scale_[model::kCanonicalDof] = {};
@@ -1627,6 +1645,11 @@ inline bool writeDwellJson(const std::string& path,
                  options.hold_only_s, run.holdCompletedS());
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       std::fprintf(f, "%s%.4f", i ? ", " : "", run.holdMaxSpeed(i));
+    }
+    std::fprintf(f, "],\n   \"max_speed_enforced\": [");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(f, "%s%.4f", i ? ", " : "",
+                   run.holdMaxSpeedEnforced(i));
     }
     std::fprintf(f, "],\n   \"range_rad\": [");
     for (int i = 0; i < model::kCanonicalDof; ++i) {
