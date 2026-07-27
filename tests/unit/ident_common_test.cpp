@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ident_common.hpp"
+#include "two_mass_arm.hpp"
 
 using Catch::Approx;
 namespace arm = rtctrl::arm;
@@ -572,4 +573,68 @@ TEST_CASE("ident amplitude cap parsing is strict and the hard cap is "
   const double nan_cap = std::nan("");
   CHECK(x7::probeAmplitude(0.05, 20.0, nan_cap) <= x7::kAmpCapHardNm);
   CHECK(x7::probeAmplitude(0.05, 20.0, 1e9) <= x7::kAmpCapHardNm);
+}
+
+TEST_CASE("ident capture phase: integrated startup", "[ident]") {
+  Fixture fx;
+
+  SECTION("a small displacement is captured onto the anchor under one "
+          "continuous controller, then the run proceeds") {
+    x7::TwoMassArm::Options topt;
+    topt.initial_q8.assign(kCanonicalDof, 0.0);
+    topt.initial_q8[1] = 0.05;  // post-transition residual, in envelope
+    x7::TwoMassArm robot(topt);
+    REQUIRE(robot.setMode(arm::ControlMode::Current));
+    REQUIRE(robot.activate());
+
+    auto opt = baseOptions({{5.0, 0.15, 1}});
+    opt.tau_max.assign(kCanonicalDof, 4.0);
+    opt.gravity_free_plant = true;  // C6b
+    opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+    CHECK_FALSE(arm::run(robot, run, 90.0, &run));
+    REQUIRE(run.finishedCleanly());
+    CHECK(run.outcome() == x7::IdentRun::Outcome::Completed);
+    CHECK(run.captureInitialDev() == Approx(0.05).margin(0.005));
+    CHECK(run.captureAcceptedAt() > 1.0);  // ramp + hold + quiet window
+    // the plant really was pulled onto the anchor before probing
+    CHECK(std::fabs(robot.linkPos(1)) < x7::kAnchorToleranceRad);
+    CHECK(run.results()[0].completed);
+  }
+
+  SECTION("a displacement beyond the envelope aborts — capture never "
+          "pulls through an arbitrary offset") {
+    x7::TwoMassArm::Options topt;
+    topt.initial_q8.assign(kCanonicalDof, 0.0);
+    topt.initial_q8[1] = 0.2;  // above the 0.08 rad envelope
+    x7::TwoMassArm robot(topt);
+    REQUIRE(robot.setMode(arm::ControlMode::Current));
+    REQUIRE(robot.activate());
+
+    auto opt = baseOptions({{5.0, 0.15, 1}});
+    opt.tau_max.assign(kCanonicalDof, 4.0);
+    opt.gravity_free_plant = true;
+    opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+    CHECK_FALSE(arm::run(robot, run, 30.0, &run));
+    CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
+    CHECK(run.faultReason().find("capture admission") !=
+          std::string::npos);
+    CHECK_FALSE(run.results()[0].started);  // no probe after the abort
+  }
+
+  SECTION("an arm that cannot follow the capture fails the anchor gate "
+          "under the hold — no probing on a missed posture") {
+    // scripted arm frozen 0.05 rad off the anchor: inside the
+    // admission envelope, quiescent, but the capture cannot move it
+    auto opt = baseOptions({{5.0, 0.15, 1}});
+    opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+    ScriptArm robot([](int i, double) { return i == 1 ? 0.05 : 0.0; });
+    CHECK_FALSE(arm::run(robot, run, 30.0, &run));
+    CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
+    CHECK(run.faultReason().find("capture failed") != std::string::npos);
+    CHECK(run.faultReason().find("joint 1") != std::string::npos);
+    CHECK_FALSE(run.results()[0].started);
+  }
 }

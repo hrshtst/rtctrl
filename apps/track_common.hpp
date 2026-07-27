@@ -9,6 +9,7 @@
 #include <string>
 
 #include "latency_verifier.hpp"
+#include "quiescence_metric.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
@@ -35,12 +36,7 @@ using tuning::kGainScale;
 struct SettleController : arm::Controller {
   SettleController(model::ChainModel& chain, const model::JointMap& map,
                    double kd)
-      : chain_(chain), map_(map), kd_(kd) {
-    // The quiescence metric must not read "quiet" before it has ever
-    // measured anything: it starts pessimistic and only relaxes once
-    // the position window is full.
-    for (int i = 0; i < model::kCanonicalDof; ++i) speed_[i] = 1.0;
-  }
+      : chain_(chain), map_(map), kd_(kd) {}
 
   void update(const arm::JointState& state, arm::JointCommand& cmd,
               double t) override {
@@ -67,7 +63,6 @@ struct SettleController : arm::Controller {
     }
     const double a_v = dt / (0.02 + dt);
     const double a_d = dt / (0.05 + dt);
-    const double a_m = dt / (0.15 + dt);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double q = zVecElemNC(state.q.get(), i);
       const double raw = (q - q_prev_[i]) / dt;
@@ -76,57 +71,14 @@ struct SettleController : arm::Controller {
       zVecElemNC(cmd.tau.get(), i) += d_filt_[i];
       q_prev_[i] = q;
     }
-    // Quiescence metric: per-joint position RANGE across a ~0.15 s
-    // window, divided by the window span, then slow-filtered. Two
-    // failure modes shaped this:
-    //  * the per-sample backward difference sits on the encoder-LSB
-    //    noise floor (one 0.0015 rad flip over 10 ms reads 0.15 rad/s;
-    //    a real arm at rest under current control dithers within +/-1
-    //    count, which held an early metric at ~0.07 rad/s on a STILL
-    //    arm — the gate never opened);
-    //  * an endpoint difference over the window ALIASES periodic
-    //    motion whose period divides the window (review repro: 6.67
-    //    and 13 Hz at 0.02 rad amplitude read as quiescent — 13 Hz
-    //    being precisely the gear mode the gate must catch).
-    // The range cancels for neither: dither reads range/span ~= 0.02
-    // rad/s, monotonic motion reads its true speed, and oscillation of
-    // amplitude A reads 2A/span regardless of phase alignment.
-    hist_t_[hist_head_] = t;
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      hist_q_[hist_head_][i] = zVecElemNC(state.q.get(), i);
-    }
-    hist_head_ = (hist_head_ + 1) % kWindow;
-    if (hist_count_ < kWindow) {
-      ++hist_count_;  // metric stays pessimistic until the window fills
-    } else {
-      const int oldest = hist_head_;  // overwritten next call = oldest
-      const double span = t - hist_t_[oldest];
-      if (span > 0.0) {
-        for (int i = 0; i < model::kCanonicalDof; ++i) {
-          double lo = hist_q_[0][i];
-          double hi = lo;
-          for (int k = 1; k < kWindow; ++k) {
-            lo = std::min(lo, hist_q_[k][i]);
-            hi = std::max(hi, hist_q_[k][i]);
-          }
-          const double wraw = (hi - lo) / span;
-          speed_[i] += a_m * (wraw - speed_[i]);
-        }
-      }
-    }
+    // Quiescence metric (quiescence_metric.hpp): the range-based,
+    // dither/alias-immune statistic, updated with the current sample.
+    metric_.update(t, state.q.get());
     t_prev_ = t;
   }
 
-  double maxSpeed() const {
-    double m = 0.0;
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      m = std::max(m, speed_[i]);
-    }
-    return m;
-  }
-  double speed(int i) const { return speed_[i]; }
-
-  static constexpr int kWindow = 16;  // ~0.15 s at the 10 ms cycle
+  double maxSpeed() const { return metric_.maxSpeed(); }
+  double speed(int i) const { return metric_.speed(i); }
 
   model::ChainModel& chain_;
   const model::JointMap& map_;
@@ -135,11 +87,7 @@ struct SettleController : arm::Controller {
   model::ZVector q_prev_{model::kCanonicalDof};
   model::ZVector dq_est_{model::kCanonicalDof};
   model::ZVector d_filt_{model::kCanonicalDof};
-  model::ZVector speed_{model::kCanonicalDof};
-  double hist_t_[kWindow] = {};
-  double hist_q_[kWindow][model::kCanonicalDof] = {};
-  int hist_head_ = 0;
-  int hist_count_ = 0;
+  QuiescenceMetric metric_;
 };
 
 // Policy-free settle outcome — the CALLER decides whether a

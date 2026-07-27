@@ -178,6 +178,29 @@ bool CraneX7::activateSteps() {
     }
   }
 
+  // Current-mode activation preload: written while torque is still off
+  // (the register accepts it and it takes effect at the enable
+  // instant), through the SAME limiter as writeCurrents, against the
+  // present-state read above. A failed preload fails the activation —
+  // the caller's rollback releases everything.
+  if (!preload_amps_.empty()) {
+    if (config_.joints.front().operating_mode != 0) {
+      last_error_ = "activation preload requires current mode";
+      return false;
+    }
+    if (preload_amps_.size() != config_.joints.size()) {
+      last_error_ = "activation preload size mismatch";
+      return false;
+    }
+    std::vector<double> limited;
+    std::vector<std::uint8_t> flags;
+    limitCurrents(preload_amps_, present, &limited, &flags);
+    if (!group_.writeGoalCurrents(limited).ok()) {
+      last_error_ = "activation preload write failed";
+      return false;
+    }
+  }
+
   for (const auto& joint : config_.joints) {
     if (!io_.write8(joint.id, reg::kTorqueEnable.addr, 1).ok()) {
       last_error_ = "torque-on failed on id " + std::to_string(joint.id);
@@ -189,6 +212,7 @@ bool CraneX7::activateSteps() {
 
 bool CraneX7::deactivate() {
   stopThread();
+  preload_amps_.clear();
   // Once quiesced, the deadline watchdog has silenced the bus so the
   // servo Bus Watchdog can stop the servos — ANY further instruction
   // packet here (including these limp/torque-off writes) would feed
@@ -356,26 +380,9 @@ bool CraneX7::writeCurrents(const std::vector<double>& amps,
                   "(software limits need it)";
     return false;
   }
-  std::vector<double> limited(amps.size());
-  std::vector<std::uint8_t> flags(amps.size(), 0);
-  for (std::size_t i = 0; i < amps.size(); ++i) {
-    const auto& joint = config_.joints[i];
-    // bound by both the URDF effort limit and the servo's own current
-    // limit (read at activation), minus the configured margin
-    const double imax = std::max(
-        0.0, std::min(joint.effort_limit /
-                          dxl::torqueConstant(joint.model_number),
-                      servo_current_limit_amps_[i]) -
-                 joint.current_limit_margin);
-    double a = std::clamp(amps[i], -imax, imax);
-    if (a != amps[i]) flags[i] |= arm::kCmdClamped;
-    if ((fb[i].position >= limit_hi_[i] && a > 0.0) ||
-        (fb[i].position <= limit_lo_[i] && a < 0.0)) {
-      a = 0.0;
-      flags[i] |= arm::kCmdGated;
-    }
-    limited[i] = a;
-  }
+  std::vector<double> limited;
+  std::vector<std::uint8_t> flags;
+  limitCurrents(amps, fb, &limited, &flags);
   if (!group_.writeGoalCurrents(limited).ok()) return false;
   if (out != nullptr) {
     out->values = std::move(limited);
@@ -438,6 +445,10 @@ bool CraneX7::startThread() {
         for (std::size_t i = 0; i < feedback_.size(); ++i) {
           targets_[i] = feedback_[i].position;
         }
+      } else if (mode == 0 && !preload_amps_.empty()) {
+        // keep the activation preload flowing (the writer re-clamps
+        // every cycle) until the first controller submission
+        targets_ = preload_amps_;
       }
       have_targets_ = true;
     }
@@ -636,6 +647,32 @@ void CraneX7::escalate() {
   // failing, which is why the bus goes silent afterwards regardless.
   deactivate();
   if (on_escalate_) on_escalate_();
+}
+
+void CraneX7::limitCurrents(const std::vector<double>& amps,
+                            const std::vector<dxl::Feedback>& fb,
+                            std::vector<double>* limited,
+                            std::vector<std::uint8_t>* flags) const {
+  limited->resize(amps.size());
+  flags->assign(amps.size(), 0);
+  for (std::size_t i = 0; i < amps.size(); ++i) {
+    const auto& joint = config_.joints[i];
+    // bound by both the URDF effort limit and the servo's own current
+    // limit (read at activation), minus the configured margin
+    const double imax = std::max(
+        0.0, std::min(joint.effort_limit /
+                          dxl::torqueConstant(joint.model_number),
+                      servo_current_limit_amps_[i]) -
+                 joint.current_limit_margin);
+    double a = std::clamp(amps[i], -imax, imax);
+    if (a != amps[i]) (*flags)[i] |= arm::kCmdClamped;
+    if ((fb[i].position >= limit_hi_[i] && a > 0.0) ||
+        (fb[i].position <= limit_lo_[i] && a < 0.0)) {
+      a = 0.0;
+      (*flags)[i] |= arm::kCmdGated;
+    }
+    (*limited)[i] = a;
+  }
 }
 
 bool CraneX7::writePositionPGain(std::uint16_t gain) {

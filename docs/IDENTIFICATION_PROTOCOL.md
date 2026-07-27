@@ -29,20 +29,30 @@ lands.**
 
 ## Postures
 
-Hand placement: deactivate (or run before activation), place the limp
-arm by hand at the target vector, then let activation + gravity
-compensation hold it. The strict settle gate verifies stillness; the
-app refuses to probe unless the settled anchor matches the reference
-within **±0.02 rad per joint** (`--anchor-ref`).
+**Primary: integrated placement (`x7_ident --pose-first`,
+reviewer-approved).** The app moves to the `--anchor-ref` posture in
+POSITION mode and converges the MEASURED posture (goal-offset
+iterations close the friction sag), switches to current mode
+in-process with a clamped gravity-current preload (the servos hold
+from the instant torque re-enables), then runs a CAPTURE phase: a
+bounded, gently ramped reference from the measured posture onto the
+canonical anchor under the shipped restoring controller, with the
+quiescence metric and the ±0.02 rad anchor gate evaluated UNDER that
+hold. A post-transition displacement beyond the 0.08 rad capture
+envelope aborts — capture closes a small expected residual, never an
+arbitrary offset. One controller instance spans capture, gates,
+lead-in and probe. This replaced the hand handover after four
+hardware sessions showed the limp gap loses 0.06–0.18 rad on the
+gravity-loaded joints.
 
-Positioning aid: `x7_pose --posture config/postures/p1.json` moves the
-arm to the target in POSITION mode, holds, and goes limp on request.
-**Catch, don't hold**: support from below only against the drop during
-the torque-off handover, then RELEASE fully when x7_ident prints its
-"gravity hold active" cue — the hold FLOATS with no restoring force,
-so sustained steadying or lifting re-poses the arm permanently instead
-of being corrected. The identification run itself is unchanged, and
-its gates still do the verifying.
+**Fallback: hand placement.** Deactivate (or run before activation),
+place the limp arm by hand at the target vector, then let activation +
+gravity compensation hold it; the strict settle gate verifies
+stillness and the app refuses to probe unless the settled anchor
+matches the reference within **±0.02 rad per joint** (`--anchor-ref`).
+`x7_pose` gives rough positioning, but the torque-off handover does
+NOT preserve the posture — expect anchor-gate refusals; the gates are
+doing their job.
 
 | posture | description | canonical vector [rad] |
 |---|---|---|

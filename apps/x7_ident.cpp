@@ -17,12 +17,22 @@
 // Usage: x7_ident --joint N [--config path] [--port dev]
 //                 [--freqs 4.1,4.25,...] [--amp cap] [--label name]
 //                 [--log out.csv] [--anchor-ref file]
+//                 [--pose-first [--vel v]]
 //   --joint       REQUIRED, exactly one probe joint (canonical index)
 //   --freqs       dwell grid [Hz]; default = the survey grid
 //   --amp         amplitude cap [Nm], default 0.15, hard cap 0.3
 //   --anchor-ref  refuse to run unless the settled anchor matches the
 //                 reference (JSON sidecar or 8 numbers) within
 //                 +/-0.02 rad per joint
+//   --pose-first  integrated placement (reviewer-approved): move to
+//                 the --anchor-ref posture in POSITION mode with
+//                 measured-posture convergence, switch to current mode
+//                 in-process with a clamped gravity-current preload,
+//                 then capture the residual onto the canonical anchor
+//                 under the restoring controller before probing. No
+//                 hands needed; the quiescence and +/-0.02 gates still
+//                 decide.
+//   --vel         placement speed limit [rad/s], default 0.25, max 0.5
 //   --log         full-loop ident telemetry CSV; a per-dwell JSON
 //                 sidecar lands next to it as <log>.dwells.json
 
@@ -35,6 +45,7 @@
 #include <vector>
 
 #include "ident_common.hpp"
+#include "pose_common.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/dxl/conversions.hpp"
@@ -77,6 +88,8 @@ int main(int argc, char* argv[]) {
   int probe_joint = -1;
   std::vector<x7::FreqSpec> freqs = defaultSurvey();
   double a_cap = 0.15;
+  bool pose_first = false;
+  double pose_vel = 0.25;
   std::string label, log_path, anchor_ref_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
@@ -104,6 +117,10 @@ int main(int argc, char* argv[]) {
       log_path = argv[++i];
     } else if (std::strcmp(argv[i], "--anchor-ref") == 0 && i + 1 < argc) {
       anchor_ref_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--pose-first") == 0) {
+      pose_first = true;
+    } else if (std::strcmp(argv[i], "--vel") == 0 && i + 1 < argc) {
+      pose_vel = std::atof(argv[++i]);
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return 1;
@@ -132,11 +149,81 @@ int main(int argc, char* argv[]) {
                  model::kCanonicalDof, anchor_ref_path.c_str());
     return 1;
   }
+  if (pose_first && anchor_ref_path.empty()) {
+    std::fprintf(stderr,
+                 "--pose-first needs --anchor-ref: the placement target "
+                 "IS the canonical anchor\n");
+    return 1;
+  }
+  if (!std::isfinite(pose_vel)) pose_vel = 0.25;
+  pose_vel = std::clamp(pose_vel, 0.05, 0.5);
 
   try {
-    auto session = x7::openSession(cli, /*operating_mode_override=*/0);
+    auto session =
+        x7::openSession(cli, /*operating_mode_override=*/pose_first ? 3
+                                                                    : 0);
     model::ChainModel chain("models/crane_x7/crane_x7.ztk");
     model::JointMap map(chain);
+
+    if (pose_first) {
+      // Integrated placement (reviewer-approved): position-mode move
+      // with MEASURED-posture convergence, then the shortest possible
+      // in-process transition to current mode with a clamped
+      // gravity-current preload — the servos hold from the instant
+      // torque re-enables, and the run's capture phase closes the
+      // remaining residual under the restoring controller.
+      if (!session.arm->activate()) {
+        std::fprintf(stderr, "position activation failed: %s\n",
+                     session.arm->lastError().c_str());
+        return 1;
+      }
+      const auto placed =
+          x7::movePose(*session.arm, anchor_ref, pose_vel, 0.01, 5);
+      constexpr double kPreSwitchTol = 0.03;  // capture envelope margin
+      if (!placed.ok || placed.worst_dev > kPreSwitchTol) {
+        std::fprintf(stderr,
+                     "placement did not reach a safe capture envelope "
+                     "(worst joint %d at %.4f rad, bound %.3f) — "
+                     "deactivating\n",
+                     placed.worst_joint, placed.worst_dev, kPreSwitchTol);
+        session.arm->deactivate();
+        return 1;
+      }
+      // gravity-current preload from the MEASURED pre-switch posture
+      model::ZVector q_meas(model::kCanonicalDof);
+      model::ZVector tau_g(model::kCanonicalDof);
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        zVecElemNC(q_meas.get(), i) = placed.measured[i];
+      }
+      chain.gravityTorque(map, q_meas.get(), tau_g.get());
+      std::vector<double> preload(model::kCanonicalDof);
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        preload[i] = tau_g[i] / rtctrl::dxl::torqueConstant(
+                                    session.config.joints[i].model_number);
+      }
+      if (!session.arm->deactivate()) {
+        std::fprintf(stderr, "position-phase deactivation incomplete — "
+                             "check the arm; not switching modes\n");
+        return 1;
+      }
+      // rebuild on the SAME open port in current mode; the unsupported
+      // interval is exactly this activate() and ends at torque-enable
+      // with the preload already in the goal registers
+      std::printf("switching to current mode (gravity preload armed)"
+                  "...\n");
+      for (auto& joint : session.config.joints) joint.operating_mode = 0;
+      session.arm = std::make_unique<rtctrl::hw::CraneX7>(
+          *session.port, session.config);
+      rtctrl::dxl::Port* port = session.port.get();
+      session.arm->onEscalate([port] {
+        std::fprintf(stderr,
+                     "DEADMAN: command stream stale — closing the bus; "
+                     "servo watchdogs will halt the arm\n");
+        port->close();
+      });
+      session.arm->setActivationCurrentPreload(preload);
+    }
+
     arm::RealArm robot(*session.arm);
     rtctrl::hw::CraneX7* hw = session.arm.get();
 
@@ -223,31 +310,65 @@ int main(int argc, char* argv[]) {
     arm::JointCommand hold;
     hold.mode = arm::ControlMode::Current;
     chain.gravityTorque(map, start.q.get(), hold.tau.get());
-    robot.writeCommand(hold);
-    // Operator cue for the x7_pose handover: the hold FLOATS — it has
-    // no restoring force, so a hand that keeps steadying or lifting
-    // re-poses the arm permanently (a first-session settle log showed
-    // the tilt raised 0.4 rad by a well-meaning supporting hand).
-    std::printf(
-        ">>> gravity hold active — RELEASE the arm now. Do not keep\n"
-        ">>> steadying or lifting it: the hold floats, and a touched\n"
-        ">>> arm is re-posed, not corrected.\n");
-
-    // Strict settle gate, no override: the probe must anchor on a
-    // quiescent arm. 10 s leaves room for a slow hand-release tail on
-    // top of the equilibration the gate must ride out.
-    x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
-    std::FILE* settle_log = nullptr;
-    if (!log_path.empty()) {
-      settle_log = std::fopen((log_path + ".settle").c_str(), "w");
+    arm::CommandReceipt hold_receipt;
+    robot.writeCommand(hold, &hold_receipt);
+    // The cue promises only what is CONFIRMED (review finding: printing
+    // on submission preceded application by a cycle): wait until the
+    // applied record shows our submission on the actuators.
+    {
+      bool applied = false;
+      std::uint64_t seen = 0;
+      for (int k = 0; k < 100 && !applied; ++k) {  // <= ~1 s of cycles
+        seen = hw->waitCycle(seen);
+        if (seen == 0) break;  // thread stopped; the runner would abort
+        arm::CommandSnapshot snap;
+        hw->lastFeedbackStamped(&snap);
+        applied = snap.applied.valid &&
+                  snap.applied.target_seq >= hold_receipt.submitted_seq;
+      }
+      if (!applied) {
+        std::fprintf(stderr,
+                     "gravity hold was not confirmed applied — "
+                     "aborting\n");
+        shutdown.run();
+        return 1;
+      }
     }
-    const auto settled = x7::settleArm(robot, settle, 10.0, settle_log);
-    if (settle_log != nullptr) std::fclose(settle_log);
-    if (!settled.io_ok || !settled.quiescent) {
-      std::fprintf(stderr, "settle phase %s — aborting\n",
-                   settled.io_ok ? "did not reach quiescence" : "aborted");
-      shutdown.run();
-      return 1;
+    if (pose_first) {
+      std::printf("gravity hold applied (confirmed); the capture phase "
+                  "will pull the residual onto the anchor\n");
+    } else {
+      // Operator cue for the manual handover: the hold FLOATS — a hand
+      // that keeps steadying or lifting re-poses the arm permanently
+      // (a first-session settle log showed the tilt raised 0.4 rad by
+      // a well-meaning supporting hand).
+      std::printf(
+          ">>> gravity hold applied (confirmed) — RELEASE the arm now.\n"
+          ">>> Do not keep steadying or lifting it: the hold floats,\n"
+          ">>> and a touched arm is re-posed, not corrected.\n");
+    }
+
+    if (!pose_first) {
+      // Strict settle gate for the hand-placed flow, no override: the
+      // probe must anchor on a quiescent arm. 10 s leaves room for a
+      // slow hand-release tail on top of the equilibration the gate
+      // must ride out. (--pose-first replaces this with the capture
+      // phase's quiescence-under-hold gates inside the run.)
+      x7::SettleController settle(chain, map, x7::tuning::kSettleKd);
+      std::FILE* settle_log = nullptr;
+      if (!log_path.empty()) {
+        settle_log = std::fopen((log_path + ".settle").c_str(), "w");
+      }
+      const auto settled =
+          x7::settleArm(robot, settle, 10.0, settle_log);
+      if (settle_log != nullptr) std::fclose(settle_log);
+      if (!settled.io_ok || !settled.quiescent) {
+        std::fprintf(stderr, "settle phase %s — aborting\n",
+                     settled.io_ok ? "did not reach quiescence"
+                                   : "aborted");
+        shutdown.run();
+        return 1;
+      }
     }
     if (!robot.readState(start)) {
       shutdown.run();
@@ -285,13 +406,16 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    // Anchor-reference gate: cross-invocation FRF data is only
-    // combinable when the settled anchor matches within +/-0.02 rad.
+    // The run's anchor: with --pose-first it IS the canonical
+    // reference (the capture phase pulls onto it and enforces the
+    // tolerance under the hold); the hand-placed flow anchors on the
+    // settled posture and gates it against the reference here.
     std::vector<double> anchor(model::kCanonicalDof);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
-      anchor[i] = zVecElemNC(start.q.get(), i);
+      anchor[i] = pose_first ? anchor_ref[i]
+                             : zVecElemNC(start.q.get(), i);
     }
-    if (!anchor_ref_path.empty()) {
+    if (!pose_first && !anchor_ref_path.empty()) {
       double deltas[model::kCanonicalDof];
       if (!x7::anchorWithinTolerance(anchor.data(), anchor_ref,
                                      x7::kAnchorToleranceRad, deltas)) {
@@ -321,13 +445,17 @@ int main(int argc, char* argv[]) {
     auto dwells = x7::buildScheduleFromSpecs(freqs, j_hat, a_cap);
     // Pre-activation-style refusal (checked before settle would be
     // ideal, but the amplitudes depend on the settled anchor; the
-    // authoritative admission below covers the difference).
-    if (!x7::scheduleFitsBudget(dwells)) {
+    // authoritative admission below covers the difference). The
+    // capture phase spends session time too.
+    const double capture_worst = pose_first ? x7::kCaptureWorstS : 0.0;
+    if (x7::baseWorstSeconds(dwells) + x7::kSetupAllowanceS +
+            capture_worst >
+        x7::kTStopS) {
       std::fprintf(stderr,
                    "schedule worst case %.1f s + %.0f s setup exceeds "
                    "T_stop %.1f s — split it (--freqs)\n",
-                   x7::baseWorstSeconds(dwells), x7::kSetupAllowanceS,
-                   x7::kTStopS);
+                   x7::baseWorstSeconds(dwells) + capture_worst,
+                   x7::kSetupAllowanceS, x7::kTStopS);
       shutdown.run();
       return 1;
     }
@@ -341,9 +469,12 @@ int main(int argc, char* argv[]) {
     }
 
     // POST-SETTLE ADMISSION (authoritative): the deadline runs from
-    // activation, and settling/gates have been spending it.
+    // activation, and settling/gates have been spending it. With
+    // --pose-first the capture phase's worst case rides inside the
+    // run and must fit too.
     const double setup_elapsed = sinceActivation();
-    if (setup_elapsed + x7::baseWorstSeconds(dwells) > x7::kTStopS) {
+    if (setup_elapsed + capture_worst + x7::baseWorstSeconds(dwells) >
+        x7::kTStopS) {
       std::fprintf(stderr,
                    "setup consumed %.1f s: the worst-case schedule no "
                    "longer fits T_stop — deactivating\n",
@@ -387,6 +518,9 @@ int main(int argc, char* argv[]) {
     opt.anchor = anchor;
     opt.setup_offset_s = setup_elapsed;
     opt.health = health;
+    if (pose_first) {
+      opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    }
     // exact per-joint torque limits, mirroring writeCurrents
     opt.tau_max.resize(model::kCanonicalDof);
     {
@@ -416,6 +550,11 @@ int main(int argc, char* argv[]) {
       x7::writeDwellJson(log_path + ".dwells.json", opt, ident);
     }
 
+    if (pose_first && ident.captureAcceptedAt() > 0.0) {
+      std::printf("capture: initial residual %.4f rad, gates passed at "
+                  "%.2f s under the hold\n",
+                  ident.captureInitialDev(), ident.captureAcceptedAt());
+    }
     printDwellSummary(ident);
     std::printf("cycles %llu, overruns %llu, read failures %llu, write "
                 "failures %llu\n",

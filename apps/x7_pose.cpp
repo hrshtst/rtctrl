@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "ident_common.hpp"
+#include "pose_common.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "x7_common.hpp"
@@ -80,51 +81,21 @@ int main(int argc, char* argv[]) {
       return 1;
     }
 
-    std::vector<rtctrl::dxl::Feedback> fb;
-    if (!arm.readAll(fb)) {
+    // converging placement: goal-offset iterations close the friction
+    // sag so "reached" means the MEASURED posture
+    const auto placed = x7::movePose(arm, posture, vel, 0.01, 5);
+    if (!placed.ok) {
+      std::fprintf(stderr, "placement failed — deactivating\n");
       arm.deactivate();
       return 1;
     }
-    const int n = static_cast<int>(fb.size());
-    model::ZVector start(n), target(n), q(n);
-    const auto& lo = arm.softLimitLo();
-    const auto& hi = arm.softLimitHi();
-    constexpr double kBuffer = 0.05;  // stay clear of the gate band
-    for (int i = 0; i < n; ++i) {
-      start[i] = fb[i].position;
-      target[i] = std::clamp(posture[i], lo[i] + kBuffer, hi[i] - kBuffer);
-      if (target[i] != posture[i]) {
-        std::printf("joint %d target clamped %.3f -> %.3f (soft limit)\n",
-                    i, posture[i], target[i]);
-      }
+    if (!placed.converged) {
+      std::printf("NOTE: joint %d still %.4f rad from target after "
+                  "convergence iterations\n",
+                  placed.worst_joint, placed.worst_dev);
     }
-
-    const auto move = model::MinJerkTrajectory::withVelocityLimit(
-        start, target, vel, 2.0);
-    std::printf("moving to the posture in %.1f s (vel limit %.2f rad/s)"
-                "\n", move.duration(), vel);
-    for (int i = 0; i < n; ++i) {
-      std::printf("  joint %d: %+.3f -> %+.3f (%+.3f)\n", i, start[i],
-                  target[i], target[i] - start[i]);
-    }
-
+    const int n = static_cast<int>(placed.hold_goal.size());
     constexpr int kCycleUs = 10000;  // 100 Hz
-    std::vector<double> cmd(n);
-    for (double t = 0.0; t <= move.duration(); t += 1e-6 * kCycleUs) {
-      move.sample(t, q);
-      for (int i = 0; i < n; ++i) cmd[i] = q[i];
-      if (!arm.writePositions(cmd) && arm.escalated()) return 1;
-      if (!arm.checkDeadman()) return 1;
-      usleep(kCycleUs);
-    }
-    if (arm.readAll(fb)) {
-      std::printf("reached (servo vs target):\n");
-      for (int i = 0; i < n; ++i) {
-        std::printf("  joint %d: %+.3f vs %+.3f (%+.4f)\n",
-                    i, fb[i].position, target[i],
-                    fb[i].position - target[i]);
-      }
-    }
 
     std::printf(
         "\nHOLDING the posture in position mode.\n"
@@ -135,9 +106,11 @@ int main(int argc, char* argv[]) {
         ">>> another terminal, then press Enter to torque off.\n");
     // keep the command stream (and both watchdog layers) alive while
     // waiting — a silent bus would trip the servo Bus Watchdogs
-    for (int i = 0; i < n; ++i) cmd[i] = target[i];
+    (void)n;
     while (!enterPressed()) {
-      if (!arm.writePositions(cmd) && arm.escalated()) return 1;
+      if (!arm.writePositions(placed.hold_goal) && arm.escalated()) {
+        return 1;
+      }
       if (!arm.checkDeadman()) return 1;
       usleep(kCycleUs);
     }

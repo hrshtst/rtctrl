@@ -815,3 +815,50 @@ TEST_CASE("deactivate keeps the Bus Watchdog armed on a servo whose "
     CHECK(motor->peek(reg::kBusWatchdog) == 5);    // ...watchdog armed
   }
 }
+
+TEST_CASE("current-mode activation preload is clamped and lands before "
+          "torque enable",
+          "[hw][safety]") {
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 0;  // current
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+
+  // joint 0 asks a reasonable holding current; joint 1 asks far beyond
+  // any limit and must arrive clamped, exactly as writeCurrents would
+  std::vector<double> preload(config.joints.size(), 0.0);
+  preload[0] = 0.4;
+  preload[1] = 99.0;
+  arm.setActivationCurrentPreload(preload);
+  REQUIRE(arm.activate());
+  const auto goal0 = static_cast<std::int16_t>(
+      bus.find(config.joints[0].id)->peek(reg::kGoalCurrent));
+  const auto goal1 = static_cast<std::int16_t>(
+      bus.find(config.joints[1].id)->peek(reg::kGoalCurrent));
+  CHECK(dxl::currentToAmps(goal0) == Approx(0.4).margin(0.01));
+  // clamped to min(effort/kt, servo limit) - margin, NOT 99 A
+  CHECK(dxl::currentToAmps(goal1) < 5.0);
+  CHECK(dxl::currentToAmps(goal1) > 0.1);
+  CHECK(bus.find(config.joints[0].id)->peek(reg::kTorqueEnable) == 1);
+
+  // the background thread retransmits the preload until a controller
+  // submission replaces it
+  REQUIRE(arm.startThread());
+  REQUIRE(arm.waitCycle(0) > 0);
+  const auto still0 = static_cast<std::int16_t>(
+      bus.find(config.joints[0].id)->peek(reg::kGoalCurrent));
+  CHECK(dxl::currentToAmps(still0) == Approx(0.4).margin(0.01));
+  REQUIRE(arm.deactivate());
+
+  // preload in a non-current mode must fail activation entirely
+  auto pos_config = craneConfig();
+  auto pos_bus = busFor(pos_config);
+  emu::FakePacketIO pos_io(pos_bus);
+  hw::CraneX7 pos_arm(pos_io, pos_config);
+  pos_arm.setActivationCurrentPreload(preload);
+  CHECK_FALSE(pos_arm.activate());
+  CHECK(pos_arm.lastError().find("preload") != std::string::npos);
+  CHECK(pos_bus.find(pos_config.joints[0].id)->peek(reg::kTorqueEnable) ==
+        0);  // rollback released everything
+}

@@ -209,6 +209,19 @@ class CraneX7 {
   void requestQuiesce() { quiesced_.store(true); }
   bool quiesced() const { return quiesced_.load(); }
 
+  // Optional CURRENT-mode activation preload: the per-joint currents
+  // [A] are clamped and position-gated exactly like writeCurrents
+  // (shared limiter) and written to the goal registers BEFORE torque
+  // enable, so the servos produce (e.g. gravity-holding) torque from
+  // the instant torque comes on — closing the zero-current free-fall
+  // interval of an activation at a gravity-loaded posture. The
+  // background thread retransmits the preload until the first
+  // setTargetCurrents submission replaces it. Cleared by deactivate();
+  // a preload in any other operating mode fails activation.
+  void setActivationCurrentPreload(const std::vector<double>& amps) {
+    preload_amps_ = amps;
+  }
+
   // Per-servo parameter writes (all joints).
   bool writePositionPGain(std::uint16_t gain);
   bool writeProfileVelocity(std::uint32_t raw);
@@ -221,6 +234,13 @@ class CraneX7 {
   bool requireMode(std::uint8_t mode, const char* what);
   bool requireSize(std::size_t n, const char* what);
   bool requireActive(const char* what);
+  // The one current limiter (URDF effort + servo current limit -
+  // margin, plus the soft position gates) shared by writeCurrents and
+  // the activation preload.
+  void limitCurrents(const std::vector<double>& amps,
+                     const std::vector<dxl::Feedback>& fb,
+                     std::vector<double>* limited,
+                     std::vector<std::uint8_t>* flags) const;
   std::vector<std::uint8_t> ids() const;
   void threadLoop();
 
@@ -238,6 +258,7 @@ class CraneX7 {
   // limits read from the servos at activation
   std::vector<double> limit_lo_, limit_hi_;          // [rad], margin applied
   std::vector<double> servo_current_limit_amps_;     // [A]
+  std::vector<double> preload_amps_;  // activation preload [A]; may be empty
 
   mutable std::mutex state_mutex_;
   std::vector<dxl::Feedback> feedback_;     // last successful readAll

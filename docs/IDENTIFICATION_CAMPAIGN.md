@@ -18,34 +18,32 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
 
 ## 2. First run: P1 posture, joint 1, survey
 
-- [ ] Get the arm to the P1 vector. Easiest: let the servos do the
-      placing — `x7_pose` moves there in position mode, holds, and
-      goes limp on Enter. **Catch, don't hold**: support from below
-      only against the drop during the handover, and RELEASE fully
-      the moment x7_ident prints its "gravity hold active" cue — the
-      hold floats with no restoring force, so a hand that keeps
-      steadying or lifting re-poses the arm permanently (a first
-      session lost 0.4 rad of tilt exactly this way):
+- [ ] One command does placement AND survey — `--pose-first` (the
+      reviewer-approved integrated startup, after four hand-handover
+      sessions failed the anchor gate): the app moves to P1 in
+      position mode with measured-posture convergence, switches to
+      current mode in-process with a gravity-current preload, captures
+      the residual onto the canonical anchor under the restoring
+      controller, and only then probes. No hands on the arm; the
+      quiescence and ±0.02 rad gates still decide, and a
+      post-transition displacement beyond the 0.08 rad envelope
+      aborts:
 
   ```sh
-  ./build/apps/x7_pose --posture config/postures/p1.json
-  ```
-
-      Hand placement of the limp arm remains the fallback ("roughly
-      where it sat for pass 1"). Either way the settle gate and the
-      ±0.02 rad anchor tolerance do the verifying — x7_ident is
-      unchanged.
-- [ ] Run WITH the checked-in P1 reference — without `--anchor-ref`
-      nothing enforces the canonical posture and the first survey
-      would silently establish an arbitrary anchor as "P1"
-      (~2.7 min worst case including the setup allowance; the app
-      refuses on its own — settle, soft-limit band,
-      temperature/voltage, anchor, budget — and names the reason):
-
-  ```sh
-  ./build/apps/x7_ident --joint 1 --anchor-ref config/postures/p1.json \
+  ./build/apps/x7_ident --joint 1 --pose-first \
+      --anchor-ref config/postures/p1.json \
       --label p1-j1-survey --log p1_j1_survey.csv
   ```
+
+      `--anchor-ref` is REQUIRED here (the placement target IS the
+      canonical anchor) — and without it in any flow, nothing enforces
+      the canonical posture. The app refuses on its own — placement
+      envelope, capture admission, soft-limit band,
+      temperature/voltage, budget — and names the reason.
+- [ ] Fallback only (e.g. debugging the placement): hand placement of
+      the limp arm plus `x7_pose` for rough positioning. Be aware the
+      four trial sessions showed the limp handover loses 0.06–0.18 rad
+      on the gravity-loaded joints — expect anchor-gate refusals.
 
 ## 3. Analyze BEFORE any refinement (the protocol's hard gate)
 

@@ -408,3 +408,31 @@ the 0.6 scale cap; extending SimArm with gear elasticity (TwoMassArm covers the
 validation need); dzco-based identification (optional cross-check later); any
 ring-down protocol (removed in review — it would need its own integrator
 freeze/reset design, caps, and closed-loop model).
+
+## Addendum — integrated placement/capture startup (2026-07-27)
+
+Hardware sessions showed the hand handover cannot preserve a posture
+within the ±0.02 rad anchor tolerance: four consecutive anchor-gate
+refusals with a systematic 0.06–0.18 rad loss on the gravity-loaded
+joints during the limp gap between torque-off and the gravity hold,
+on top of 0.03–0.06 rad of position-mode friction sag in the
+placement itself. Reviewer-approved change (supersedes the pure
+hand-placement decision above; the gates' authority is unchanged):
+
+`x7_ident --pose-first` performs the position-mode move with
+MEASURED-posture convergence (goal-offset iterations,
+`apps/pose_common.hpp`), an in-process mode switch with a clamped
+gravity-current preload written before torque enable
+(`CraneX7::setActivationCurrentPreload`, shared limiter with
+writeCurrents), a confirmed-application release cue, and a
+pre-lead-in CAPTURE phase in `IdentRun`: a bounded min-jerk reference
+from the measured first sample onto the canonical anchor under the
+shipped restoring ComputedTorque (admission envelope 0.08 rad — abort
+beyond it, never pull through), with the quiescence metric
+(`apps/quiescence_metric.hpp`, extracted from the settle gate) and
+the ±0.02 rad anchor gate evaluated UNDER the hold. One controller
+instance spans capture, gates, lead-in and probe (no integrator
+reset across the gate). The capture worst case (20 s) is budgeted in
+the pre-activation check; the position phase precedes current-mode
+activation and does not consume the session deadline. Hand placement
+remains the documented fallback.

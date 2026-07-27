@@ -12,11 +12,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "latency_verifier.hpp"
+#include "quiescence_metric.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
@@ -460,6 +462,61 @@ inline bool blocksConverged(const BlockEstimate& prev,
 }
 
 // ---------------------------------------------------------------------------
+// Capture-phase constants (reviewer-approved integrated startup): the
+// pre-lead-in capture pulls a SMALL post-transition displacement onto
+// the canonical anchor with the shipped restoring controller; a
+// displacement beyond the envelope aborts rather than being pulled
+// through.
+inline constexpr double kCaptureEnvelopeRad = 0.08;  // = deviation abort
+inline constexpr double kCaptureSpeedRadS = 0.05;    // ramp peak speed
+inline constexpr double kCaptureRampMinS = 1.0;
+inline constexpr double kCaptureRampMaxS = 5.0;
+inline constexpr double kCaptureHoldMaxS = 10.0;  // quiescence timeout
+inline constexpr double kCaptureWorstS = 20.0;    // budget pre-check add-on
+
+// The capture reference: a constant anchor until beginCapture()
+// installs a min-jerk segment from the MEASURED start posture onto the
+// anchor; reverts to the constant anchor when the segment ends. The
+// identification controller tracks THIS trajectory for its whole life,
+// so the capture, the gates, the lead-in and the probe all share one
+// controller instance with continuous integrator state (reviewer
+// correction: a controller swap after the gate would step the torque).
+class AnchorCaptureTrajectory : public model::Trajectory {
+ public:
+  explicit AnchorCaptureTrajectory(const zVec anchor)
+      : anchor_(model::kCanonicalDof) {
+    zVecCopyNC(anchor, anchor_.get());
+  }
+
+  double duration() const override { return 1.0; }  // nominal; unused
+  int size() const override { return model::kCanonicalDof; }
+
+  void beginCapture(const zVec q0, double t0, double duration) {
+    seg_.emplace(q0, anchor_.get(), duration);
+    t0_ = t0;
+  }
+  double captureEnd() const {
+    return seg_ ? t0_ + seg_->duration() : 0.0;
+  }
+
+  void sample(double t, zVec q, zVec dq = nullptr,
+              zVec ddq = nullptr) const override {
+    if (seg_ && t >= t0_ && t < t0_ + seg_->duration()) {
+      seg_->sample(t - t0_, q, dq, ddq);
+      return;
+    }
+    zVecCopyNC(anchor_.get(), q);
+    if (dq != nullptr) zVecZero(dq);
+    if (ddq != nullptr) zVecZero(ddq);
+  }
+
+ private:
+  model::ZVector anchor_;
+  std::optional<model::MinJerkTrajectory> seg_;
+  double t0_ = 0.0;
+};
+
+// ---------------------------------------------------------------------------
 // Per-dwell outcome record (the JSON sidecar's substance).
 
 struct DwellResult {
@@ -497,7 +554,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     KillRamp,
     ReSettle,
     FinalHold,
-    Done
+    Done,
+    Capture  // appended: the CSV's dwell_phase numbering is frozen
+             // (Measure == 3 in tools/ident_analysis.py)
   };
   enum class Outcome {
     Running,
@@ -522,14 +581,22 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // would drive it into the deviation abort — subtract it. NEVER on
     // hardware.
     bool gravity_free_plant = false;
+    // Integrated startup (reviewer-approved): when > 0 the run begins
+    // with a CAPTURE phase — a bounded min-jerk reference from the
+    // MEASURED first-sample posture onto the anchor under the shipped
+    // restoring controller, then the quiescence metric and the
+    // +/-0.02 rad anchor gate evaluated UNDER that hold — before any
+    // calibration or probing. A first-sample displacement beyond this
+    // envelope hard-faults (abort, never pull through). 0 disables:
+    // the hand-placed flow starts at the anchor as before.
+    double capture_envelope_rad = 0.0;
   };
 
   IdentRun(model::ChainModel& chain, const model::JointMap& map,
            Options options, std::FILE* log)
       : options_(validated(std::move(options))),
         anchor_(model::kCanonicalDof),
-        hold_traj_(makeAnchorVec(options_, anchor_),
-                   anchor_.get(), 1.0),
+        hold_traj_(makeAnchorVec(options_, anchor_)),
         inner_(chain, map, hold_traj_, tuning::kKp, tuning::kKd),
         log_(log) {
     inner_.setIntegral(tuning::kKi, tuning::kIntegralClampNm);
@@ -541,6 +608,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     for (std::size_t k = 0; k < options_.dwells.size(); ++k) {
       results_[k].spec = options_.dwells[k];
     }
+    if (options_.capture_envelope_rad > 0.0) phase_ = Phase::Capture;
     lead_in_s_ = leadInSeconds(options_.dwells);
     // one floor calibrator per scheduled frequency, per signal
     floor_q_.resize(options_.dwells.size());
@@ -554,6 +622,36 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
 
   void update(const arm::JointState& state, arm::JointCommand& cmd,
               double t) override {
+    if (phase_ == Phase::Capture && !capture_begun_) {
+      // First controlled sample: install the ramped reference FROM THE
+      // MEASURED posture (so the very first feedforward is computed at
+      // the real pose), then admit or abort. The envelope rule is the
+      // reviewer's: capture closes a small expected residual — it must
+      // never pull through an arbitrary displacement.
+      capture_begun_ = true;
+      double worst = 0.0;
+      int worst_j = 0;
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        const double dev =
+            std::fabs(zVecElemNC(state.q.get(), i) - options_.anchor[i]);
+        if (dev > worst) {
+          worst = dev;
+          worst_j = i;
+        }
+      }
+      capture_initial_dev_ = worst;
+      const double ramp = std::clamp(
+          worst * 1.875 / kCaptureSpeedRadS, kCaptureRampMinS,
+          kCaptureRampMaxS);
+      hold_traj_.beginCapture(state.q.get(), t, ramp);
+      if (worst > options_.capture_envelope_rad) {
+        fail(Outcome::HardFault,
+             "capture admission: joint " + std::to_string(worst_j) +
+                 " is " + std::to_string(worst) +
+                 " rad from the anchor (envelope " +
+                 std::to_string(options_.capture_envelope_rad) + ")");
+      }
+    }
     inner_.update(state, cmd, t);
     if (options_.gravity_free_plant) {
       for (int i = 0; i < model::kCanonicalDof; ++i) {
@@ -652,6 +750,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   double probePhase() const { return phi_; }
   bool probeClipped() const { return probe_clipped_; }
   double leadIn() const { return lead_in_s_; }
+  // capture telemetry (integrated startup only)
+  double captureInitialDev() const { return capture_initial_dev_; }
+  double captureAcceptedAt() const { return capture_s_; }
   // calibrated floors (valid after lead-in), 3x RMS of block magnitudes
   double floorQ(int dwell) const {
     return dwell >= 0 && dwell < static_cast<int>(floor_q_val_.size())
@@ -706,7 +807,6 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
 
   // Hard-fault supervision, every cycle regardless of phase.
   void supervise(const arm::JointState& state, double t) {
-    (void)t;
     if (options_.health) {
       std::array<JointHealth, model::kCanonicalDof> h;
       if (!options_.health(h)) {
@@ -727,12 +827,24 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         }
       }
     }
+    // During Capture the deviation bound applies to the TRACKING error
+    // against the moving capture reference (the distance to the anchor
+    // is legitimately up to the envelope there); everywhere else it is
+    // the anchor deviation as before.
+    if (phase_ == Phase::Capture) {
+      hold_traj_.sample(t, ref_scratch_.get());
+    }
     for (int i = 0; i < model::kCanonicalDof; ++i) {
-      const double dev =
-          std::fabs(zVecElemNC(state.q.get(), i) - options_.anchor[i]);
+      const double ref = phase_ == Phase::Capture
+                             ? zVecElemNC(ref_scratch_.get(), i)
+                             : options_.anchor[i];
+      const double dev = std::fabs(zVecElemNC(state.q.get(), i) - ref);
       if (dev >= kDeviationAbortRad) {
-        fail(Outcome::HardFault, "anchor deviation " + std::to_string(dev) +
-                                     " rad on joint " + std::to_string(i));
+        fail(Outcome::HardFault,
+             std::string(phase_ == Phase::Capture ? "capture tracking"
+                                                  : "anchor") +
+                 " deviation " + std::to_string(dev) + " rad on joint " +
+                 std::to_string(i));
         return;
       }
       if (inner_.controllerSaturated(i)) {
@@ -772,8 +884,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // Only in the probe-carrying phases — the wind-down phases are
     // already covered by the admission bounds that let them start.
     if (outcome_ == Outcome::Running &&
-        (phase_ == Phase::LeadIn || phase_ == Phase::RampIn ||
-         phase_ == Phase::Hold || phase_ == Phase::Measure) &&
+        (phase_ == Phase::Capture || phase_ == Phase::LeadIn ||
+         phase_ == Phase::RampIn || phase_ == Phase::Hold ||
+         phase_ == Phase::Measure) &&
         options_.setup_offset_s + t + kRampS + kFinalHoldS >
             options_.t_stop_s) {
       fail(Outcome::DeadlineStop, "graceful stop at T_stop");
@@ -782,6 +895,50 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     }
 
     switch (phase_) {
+      case Phase::Capture: {
+        probe_tau_ = 0.0;
+        // quiescence is judged UNDER the restoring hold — never by
+        // handing back to the float, which would lose position again
+        // (reviewer correction 3)
+        capture_metric_.update(t, state.q.get());
+        if (t < hold_traj_.captureEnd()) {
+          capture_quiet_ = 0.0;
+          break;
+        }
+        capture_quiet_ = capture_metric_.maxSpeed() < 0.05
+                             ? capture_quiet_ + dt
+                             : 0.0;
+        const double held = t - hold_traj_.captureEnd();
+        if (held >= 0.5 && capture_quiet_ >= 0.3) {
+          double worst = 0.0;
+          int worst_j = 0;
+          for (int i = 0; i < model::kCanonicalDof; ++i) {
+            const double dev = std::fabs(
+                zVecElemNC(state.q.get(), i) - options_.anchor[i]);
+            if (dev > worst) {
+              worst = dev;
+              worst_j = i;
+            }
+          }
+          if (worst <= kAnchorToleranceRad) {
+            capture_s_ = t;  // both gates passed under the hold
+            phase_ = Phase::LeadIn;
+            phase_start_ = t;
+          } else {
+            fail(Outcome::HardFault,
+                 "capture failed: joint " + std::to_string(worst_j) +
+                     " settled " + std::to_string(worst) +
+                     " rad from the anchor (tolerance " +
+                     std::to_string(kAnchorToleranceRad) + ")");
+          }
+        } else if (held >= kCaptureHoldMaxS) {
+          fail(Outcome::HardFault,
+               "capture quiescence timeout: residual " +
+                   std::to_string(capture_metric_.maxSpeed()) +
+                   " rad/s after " + std::to_string(held) + " s");
+        }
+        break;
+      }
       case Phase::LeadIn: {
         // noise-floor calibration on the UNFORCED anchor hold: the same
         // 1-period estimator at every scheduled frequency, both signals
@@ -802,8 +959,8 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
               a * (std::fabs(zVecElemNC(state.tau.get(), i)) -
                    tau_anchor_[i]);
         }
-        if (t >= lead_in_s_) {
-          finishFloors();
+        if (t - phase_start_ >= lead_in_s_) {  // phase_start_ = 0
+          finishFloors();                      // without a capture phase
           startDwell(0, t);
         }
         break;
@@ -1197,7 +1354,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
 
   Options options_;
   model::ZVector anchor_;
-  model::MinJerkTrajectory hold_traj_;
+  AnchorCaptureTrajectory hold_traj_;
   arm::ComputedTorque inner_;
   std::FILE* log_;
   LatencyVerifier verifier_;
@@ -1252,6 +1409,14 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
 
   std::array<JointHealth, model::kCanonicalDof> last_health_{};
   std::vector<DwellResult> results_;
+
+  // capture phase (integrated startup)
+  bool capture_begun_ = false;
+  double capture_initial_dev_ = 0.0;
+  double capture_quiet_ = 0.0;
+  double capture_s_ = 0.0;
+  QuiescenceMetric capture_metric_;
+  model::ZVector ref_scratch_{model::kCanonicalDof};
 };
 
 // ---------------------------------------------------------------------------
@@ -1314,6 +1479,13 @@ inline bool writeDwellJson(const std::string& path,
   std::fprintf(f, "],\n  \"outcome\": %d,\n  \"fault\": \"%s\",\n",
                static_cast<int>(run.outcome()),
                run.faultReason().c_str());
+  if (options.capture_envelope_rad > 0.0) {
+    std::fprintf(f,
+                 "  \"capture\": {\"envelope_rad\": %.4f, "
+                 "\"initial_dev_rad\": %.4f, \"accepted_at_s\": %.3f},\n",
+                 options.capture_envelope_rad, run.captureInitialDev(),
+                 run.captureAcceptedAt());
+  }
   std::fprintf(f, "  \"dwells\": [\n");
   const auto& results = run.results();
   for (std::size_t k = 0; k < results.size(); ++k) {
