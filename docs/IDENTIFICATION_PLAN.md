@@ -2,7 +2,9 @@
 
 > Deliverables: probe app + sim twin, offline analysis, two-mass validation fixture,
 > safety design, protocol document. The notch/phase D-path redesign is a LATER step that
-> consumes this step's mode tables. The 0.6 scale cap stands throughout.
+> consumes this step's mode tables. The 0.6 scale cap stands throughout. *(Closure
+> 2026-07-28: no mode tables were produced — the campaign stopped at its first gate and
+> the cap is final; see the Closure section.)*
 
 *Status: **CLOSED 2026-07-28 — null result; the 0.6 scale cap is the
 final supported boundary** (see the Closure section at the end).
@@ -370,7 +372,8 @@ emulator smoke → hardware)
    EXCLUDING cooldown and operator handling), operator steps, abort semantics,
    output table
    semantics, and the explicit statement that the 0.6 scale cap stands until the
-   notch design lands. Status touch in docs/REMEDIATION_PLAN.md.
+   notch design lands *(superseded by the Closure: the cap is final)*. Status touch
+   in docs/REMEDIATION_PLAN.md.
 
 ## Verification
 
@@ -550,6 +553,8 @@ per-dwell effective floor. The campaign is paused for a
 protocol-design decision (posture with lower joint-1 load, a
 different probe joint, motion/dither excitation, or external
 link-side sensing); no direction is chosen in this plan.
+*(Resolved 2026-07-28: closed without pursuing any direction — see
+the Closure section below.)*
 
 ## Closure (2026-07-28) — the 0.6 cap is the final supported boundary
 
@@ -559,7 +564,10 @@ SUPPORTED operating boundary.** The notch/phase-compensated D-path
 redesign and the "full-amplitude torque mode" end goal are CLOSED,
 not deferred. Pass 2 step A ends here.
 
-**What was executed.** The full protocol as designed and reviewed:
+**What was executed.** The implementation was qualified and the
+campaign executed through its first scientific gate, where the stop
+condition was reached — the wider campaign (refinement sweeps,
+joints 3/5, postures P2–P4) was never entered. Concretely:
 implementation with sim-twin validation (planted modes recovered at
 4.51 Hz ζ 0.033 and 13.01 Hz ζ 0.058), the integrated pose-first
 placement/capture startup, the qualified identification controller
@@ -567,24 +575,32 @@ placement/capture startup, the qualified identification controller
 30 s holds plus a production-path equivalence hold), one
 valid-procedure survey at P1 joint 1, and the reviewer-directed
 single-dwell amplitude pilot at 4.5 Hz stepping 0.20 / 0.25 /
-0.30 Nm — the unchanged hard cap. Every run was mechanically clean:
-placement within ±0.02 rad, capture admission ~1.6 s, zero
-saturation, clipping, overruns, or I/O failures, torque delivered
-faithfully at every amplitude.
+0.30 Nm — the unchanged hard cap. The final survey and the three
+pilot runs were mechanically clean — placement within ±0.02 rad,
+capture admission ~1.6 s, zero saturation, clipping, overruns, or
+I/O failures, torque delivered faithfully at every amplitude —
+whereas the development trials before them (failed hand-placement
+handovers, capture timeouts, the joint-0 limit cycle and joint-2/3
+integrator–stiction hunting) are recorded in the addenda above.
 
-**What was found (the null result).** The stationary small-signal
-current probe cannot observe the cap-relevant flexible modes on this
-hardware. Gearbox stiction locks the output shaft at every
-admissible amplitude (the probe joint reported a single encoder
-count through 13 of 16 survey windows; pilot responses of 22–68 µrad
-sat 10–30× below their run-measured 0.4–1.1 mrad noise floors,
-non-monotonic in amplitude and phase-incoherent), and the servo's
-output-shaft encoder is structurally blind to motor-side gear
-wind-up. The failure is structural, not parametric: the ~4–5 Hz
-whole-arm mode that forced the cap participates most strongly at the
+**What was found (the null result — precisely scoped).** What the
+experiment established is exactly this: **joint 1 at posture P1 is
+not identifiable with the stationary small-signal current probe up
+to the 0.30 Nm hard cap.** Gearbox stiction locked the output shaft
+at every admissible amplitude (the probe joint reported a single
+encoder count through 13 of 16 survey windows; pilot responses of
+22–68 µrad sat 10–30× below their run-measured 0.4–1.1 mrad noise
+floors, non-monotonic in amplitude and phase-incoherent), and the
+servo's output-shaft encoder is structurally blind to motor-side
+gear wind-up. Other joints, other postures, other sensing, and
+other excitation strategies were NOT tested. The closure
+generalizes by judgment, not by experiment: the ~4–5 Hz whole-arm
+mode that forced the cap participates most strongly at the
 gravity-loaded shoulder joints — exactly where stiction is highest —
-so amplitude, frequency, or posture adjustments within this method
-were judged unable to close the gap.
+so in-method adjustments were judged unlikely to close the gap, and
+the out-of-method routes were judged not worth their cost absent a
+concrete need for scale > 0.6. That judgment is the owner decision
+above, not an experimentally established impossibility.
 
 **What survives the closure.** The commanded→measured actuator
 transfer (magnitude ~1.00–1.05 flat across 2–20 Hz, phase −8° to
@@ -600,8 +616,9 @@ which never enter mode fitting.
 
 **Reopening conditions (documented, not planned).** Reopening
 requires BOTH a concrete application need for scale > 0.6 AND one of:
-external link-side sensing (IMU/accelerometer — the flexible response
-is invisible to the servo encoder); identification around a moving
+external link-side sensing (IMU/accelerometer — in the tested
+configuration the flexible response was invisible to the servo
+encoder); identification around a moving
 operating condition, where motion linearizes the friction that
 defeated the stationary probe (a pragmatic sub-variant: mode
 estimates from existing full-amplitude tracking telemetry, a

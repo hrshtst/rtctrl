@@ -94,11 +94,12 @@ int main(int argc, char* argv[]) {
   // where its ~4-5 Hz structural mode (shoulder gear compliance vs arm
   // inertia) goes actively unstable under this 100 Hz loop — verified
   // twice at scale 1.0 on 2026-07-21 (runs 7-8, both ended in manual
-  // power cuts). The cap is FINAL (closure 2026-07-28): the mode
-  // identification a compensator design required ended in a null
-  // result — the modes are unobservable to the servo encoders under a
-  // stationary probe (docs/IDENTIFICATION_PLAN.md, Closure). Use
-  // position mode for larger fast motions.
+  // power cuts). The cap is FINAL (owner closure 2026-07-28): the
+  // identification a compensator design required stopped at its first
+  // gate — joint 1 at P1 stiction-locked below one encoder count up
+  // to the probe's 0.3 Nm hard cap; other routes untested, closed by
+  // decision (docs/IDENTIFICATION_PLAN.md, Closure). Use position
+  // mode for larger fast motions.
   if (scale > 0.6) {
     std::printf("scale %.2f capped to 0.60 — the final supported "
                 "boundary (see x7_track.cpp header)\n", scale);

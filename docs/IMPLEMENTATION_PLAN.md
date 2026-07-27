@@ -345,12 +345,12 @@ live-validated: read-failure escalation (frozen-feedback trap) and both watchdog
 *Known limitation:* excursions beyond scale ≈ 0.6 extend the arm into configurations
 whose ~4–5 Hz structural mode (shoulder gear compliance vs arm inertia) the 100 Hz loop
 actively pumps — runs 7–8 oscillated coherently there even at matched trajectory rates.
-`x7_track` caps its scale accordingly. **The cap is FINAL (closure decision 2026-07-28)**:
-the pass-2 identification that a notch/phase-compensated D-path design required was
-executed and closed with a null result — gearbox stiction plus output-shaft-only encoding
-make the modes unobservable to the stationary current probe up to its hard cap (see
-IDENTIFICATION_PLAN.md, Closure). Large fast motions beyond scale 0.6 belong to
-position-mode tracking. Full detail: `docs/theory/computed-torque.md` (hardware-reality
+`x7_track` caps its scale accordingly. **The cap is FINAL (owner closure 2026-07-28)**:
+the pass-2 identification that a notch/phase-compensated D-path design required stopped
+at its first gate — joint 1 at P1 stiction-locked below the output encoder's resolution
+up to the stationary probe's hard cap; other joints, postures, sensing, and excitations
+untested, closed by decision (see IDENTIFICATION_PLAN.md, Closure). Large fast motions
+beyond scale 0.6 belong to position-mode tracking. Full detail: `docs/theory/computed-torque.md` (hardware-reality
 section) and the apps' headers.
 
 ## Post-completion hardening (2026-07-21 external review)

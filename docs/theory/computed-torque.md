@@ -202,9 +202,12 @@ feedback and command sequencing with first-vs-latest application
 records and receipt-matched latency verification, one continuous
 round-trip controller (no turnaround state reset), a strict quiescence
 gate, direction-aware anti-windup against the exact actuator limits,
-and full-loop CSV telemetry. Pass 1 does NOT lift the scale cap; it
-gives pass 2 (mode identification, then a notch/phase-compensated
-D-path design) trustworthy data to work from.
+and full-loop CSV telemetry. Pass 1 does NOT lift the scale cap. The
+pass-2 identification it enabled was executed and closed 2026-07-28
+with a null result at its first gate (joint 1 at P1 stiction-locked
+below the output encoder's resolution under a stationary current
+probe up to its hard cap): **the 0.6 scale cap is the final
+supported boundary** (see IDENTIFICATION_PLAN.md, Closure).
 
 ## Limitations and outlook
 
@@ -213,14 +216,19 @@ D-path design) trustworthy data to work from.
   floor (the smooth tilt/elbow error humps in the accepted runs are
   the integrator chasing kinetic friction). Friction identification
   (M7 follow-up) can move friction from $\delta$ into the feedforward.
-- **Large fast motions**: lifting the scale cap needs identification
-  of the ~4–5 Hz structural mode followed by a notch or
-  phase-compensated redesign of the D path — or position-mode tracking
-  (servo-internal kHz loops) for that regime, keeping current mode for
-  what it does best: gravity compensation, hand-guiding, and
+- **Large fast motions**: the scale cap is FINAL (owner closure
+  2026-07-28). Lifting it would have needed identification of the
+  ~4–5 Hz structural mode followed by a notch or phase-compensated
+  redesign of the D path; the identification was executed and stopped
+  at its first gate — joint 1 at P1 is stiction-locked below the
+  output encoder's resolution under a stationary current probe up to
+  its hard cap (other routes untested; closed by decision — see
+  IDENTIFICATION_PLAN.md, Closure). That regime belongs to
+  position-mode tracking (servo-internal kHz loops), keeping current
+  mode for what it does best: gravity compensation, hand-guiding, and
   moderate-envelope tracking. Input shaping can only reduce REFERENCE
   excitation; it cannot stabilize an internally unstable feedback
-  loop, so it is a supplement to the redesign, never a substitute.
+  loop, so it could never have substituted for the redesign.
 - The feedback is diagonal PID; model-based designs
   (operational-space control, impedance control) can reuse the same
   `ChainModel::inverseDynamics` building block unchanged — that is

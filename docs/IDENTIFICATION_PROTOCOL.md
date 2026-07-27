@@ -1,10 +1,12 @@
 # Flexible-mode identification protocol
 
-> **CAMPAIGN CLOSED 2026-07-28** — the stationary probe cannot
-> observe the modes on this hardware (stop condition reached; see
-> the [campaign checklist](IDENTIFICATION_CAMPAIGN.md) §3a and the
-> [design record's Closure section](IDENTIFICATION_PLAN.md)). **The
-> 0.6 excursion-scale cap in `x7_track` is the final supported
+> **CAMPAIGN CLOSED 2026-07-28** — the stationary probe reached its
+> documented stop condition: joint 1 at P1 is not identifiable up to
+> the 0.30 Nm hard cap (other joints, postures, sensing, and
+> excitations were not tested), and the owner closed the campaign —
+> see the [campaign checklist](IDENTIFICATION_CAMPAIGN.md) §3a and
+> the [design record's Closure section](IDENTIFICATION_PLAN.md).
+> **The 0.6 excursion-scale cap in `x7_track` is the final supported
 > boundary.** This procedure is retained as the historical record
 > and for any documented reopening.
 

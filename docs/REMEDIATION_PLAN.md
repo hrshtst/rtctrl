@@ -2,7 +2,8 @@
 
 > Pass 1 does NOT itself enable scale 1.0: it makes the loop observable, its timing
 > monitored and bounded (abort on violation), and its controller state continuous, so
-> that pass 2 (identification + D-path redesign) can.
+> that pass 2 (identification + D-path redesign) can. *(Superseded 2026-07-28: pass 2
+> closed with a null result at its first gate — the 0.6 cap is final; see Status.)*
 
 *Status: pass 1 COMPLETE — implemented and hardware-validated
 2026-07-23 (`pass1.csv`/`pass1.csv.settle`, scale 0.5): feedback
@@ -15,13 +16,14 @@ equilibration motion before opening at 0.024 rad/s residual. Pass 2
 step A (flexible-mode identification — [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md),
 [IDENTIFICATION_PROTOCOL.md](IDENTIFICATION_PROTOCOL.md)) was
 implemented, sim-validated, and executed on hardware 2026-07-27 —
-and **CLOSED 2026-07-28 with a null result**: gearbox stiction and
-output-shaft-only encoding make the flexible modes unobservable to
-the stationary small-signal current probe up to the 0.30 Nm hard cap
-(reviewer-confirmed stop condition). By owner decision, **the 0.6
-scale cap is the FINAL SUPPORTED boundary**; the notch/phase D-path
-redesign and the full-amplitude torque-mode end goal are closed, not
-deferred. See the identification plan's Closure section for the
+and **CLOSED 2026-07-28 with a null result**: joint 1 at P1 proved
+not identifiable with the stationary small-signal current probe up
+to the 0.30 Nm hard cap — gearbox stiction locks the output shaft
+and the servo encoder is blind to gear wind-up (reviewer-confirmed
+stop condition; other joints, postures, sensing, and excitations
+were not tested). By owner decision, **the 0.6 scale cap is the
+FINAL SUPPORTED boundary**; the notch/phase D-path redesign and the
+full-amplitude torque-mode end goal are closed, not deferred. See the identification plan's Closure section for the
 evidence, the surviving deliverables (actuator transfer, empirical
 noise floors, session-safety and analysis infrastructure), and the
 documented reopening conditions.*
@@ -36,7 +38,8 @@ at the turnaround; a quiescence gate that doesn't gate; logging that hides the l
 signals; tests that never exercise the shipped configuration. Decisions: two passes
 (pass 1 = this plan; pass 2 = identification then notch/phase D-path redesign);
 full-amplitude torque mode remains the end goal; the shipped PD filter and the 0.6 scale
-cap stay untouched through pass 1.
+cap stay untouched through pass 1. *(Historical decisions of 2026-07-21 — superseded
+2026-07-28: the full-amplitude end goal is closed and the 0.6 cap is final; see Status.)*
 
 **Plan-review round 2 findings incorporated below (referenced as F1–F7):**
 F1 command timing not observable (no target/applied sequencing, no post-limit values);
@@ -348,3 +351,5 @@ perturbations, with defined abort thresholds).
   scale 0.5 confirms timing/sequencing columns are sane and the turnaround is smooth.
   This run is NOT sufficient input for pass-2 identification (wrong posture, little
   4–5 Hz excitation); pass 2 starts by designing the dedicated identification protocol.
+  *(That protocol was subsequently designed, executed, and closed 2026-07-28 with a
+  null result at its first gate; see Status.)*
