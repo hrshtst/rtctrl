@@ -10,5 +10,8 @@ The raw CSV time series they summarize live in the operator's private
 data archive outside this repository; see
 [docs/DATA_ARCHIVE.md](../docs/DATA_ARCHIVE.md) for each file's role
 and SHA-256. These sidecars alone cannot be re-fitted (the analysis
-needs the raw CSVs), but they carry every number cited by
-`docs/IDENTIFICATION_PLAN.md`'s Closure section and its addenda.
+needs the raw CSVs). They carry the controller, capture, dwell, and
+demodulation values cited by `docs/IDENTIFICATION_PLAN.md`'s Closure
+section and its addenda; raw timing and sample-level claims (apply
+delays, encoder-count behavior, overrun/I/O counts) require the
+archived CSVs.

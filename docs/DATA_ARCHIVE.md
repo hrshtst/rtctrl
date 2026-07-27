@@ -70,4 +70,3 @@ its hash.
 | `p1_j1_amp030.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_j1_amp030.csv.dwells.json`) | `b004cbcfc73111bc38f5e84efb740b3d8c8c9c78f7d9f98e7204b03a1d371a11` |
 
 \* the run's `.dwells.json` sidecar is tracked in-repo under `data/`.
-
