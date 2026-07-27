@@ -205,8 +205,9 @@ int main(int argc, char* argv[]) {
       // silence when this program exits, but the operator must be told
       // the truth about the state (review finding: one path claimed
       // "released" while the arm was still held).
-      const auto positionPhaseAbort = [&session] {
-        if (!session.arm->deactivate()) {
+      const auto positionPhaseAbort = [&session]() -> bool {
+        const bool clean = session.arm->deactivate();
+        if (!clean) {
           std::fprintf(stderr,
                        "SHUTDOWN FAULT: position-phase deactivation "
                        "incomplete — still-torqued servos keep their "
@@ -214,6 +215,7 @@ int main(int argc, char* argv[]) {
                        "silence at exit; verify the arm is limp "
                        "before approaching\n");
         }
+        return clean;
       };
       // Health gate BEFORE motion (review finding: an overheated arm
       // must not perform the placement move first).
@@ -273,10 +275,11 @@ int main(int argc, char* argv[]) {
         // and held in position mode — deactivate it and verify; only
         // a mid-sequence failure has already released it.
         if (session.arm->activated()) {
-          positionPhaseAbort();
-          std::fprintf(stderr,
-                       "the switch was refused before any torque-off; "
-                       "the arm has been deactivated\n");
+          if (positionPhaseAbort()) {
+            std::fprintf(stderr,
+                         "the switch was refused before any torque-off; "
+                         "the arm has been deactivated\n");
+          }
         } else {
           std::fprintf(stderr,
                        "the switch failed mid-sequence and released "
