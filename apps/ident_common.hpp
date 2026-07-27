@@ -978,9 +978,6 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
           capture_quiet_ = 0.0;
           break;
         }
-        capture_quiet_ = capture_metric_.maxSpeed() < 0.05
-                             ? capture_quiet_ + dt
-                             : 0.0;
         const double held = t - hold_traj_.captureEnd();
         double worst = 0.0;
         int worst_j = 0;
@@ -992,8 +989,19 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
             worst_j = i;
           }
         }
-        if (held >= 0.5 && capture_quiet_ >= 0.3 &&
-            worst <= kAnchorToleranceRad) {
+        // Admission readiness accumulates ONLY while BOTH conditions
+        // hold at THIS sample — position inside the tolerance AND the
+        // metric quiet — and resets when either fails. A joint stuck
+        // motionless OUTSIDE tolerance must not bank quiet time, and a
+        // breakaway transit through the band must not be caught
+        // mid-slip (review finding: joint 2 was admitted crossing the
+        // band at ~0.19 rad/s host velocity — quiet time banked while
+        // stuck off-anchor, position checked only at the final sample
+        // — and overshot the far boundary 0.11 s later).
+        const bool ready_now = worst <= kAnchorToleranceRad &&
+                               capture_metric_.maxSpeed() < 0.05;
+        capture_quiet_ = ready_now ? capture_quiet_ + dt : 0.0;
+        if (held >= 0.5 && capture_quiet_ >= 0.3) {
           capture_s_ = t;  // both gates passed under the hold
           if (options_.hold_only_s > 0.0) {
             // diagnostic: reset the REPORTING statistics only — the

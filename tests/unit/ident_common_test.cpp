@@ -633,6 +633,32 @@ TEST_CASE("ident capture phase: integrated startup", "[ident]") {
     CHECK_FALSE(run.results()[0].started);  // no probe after the abort
   }
 
+  SECTION("a joint stuck motionless OUTSIDE tolerance banks no quiet "
+          "time, and a breakaway transit through the band is not "
+          "admitted mid-slip") {
+    // the hardware defect (2026-07-27, run 3): joint 2 sat frozen at
+    // +0.0246 rad — perfectly quiescent — banking quiet time while
+    // the integrator wound, then was ADMITTED as it slipped through
+    // the +/-0.02 band at speed, overshooting the far boundary
+    // 0.11 s later
+    auto opt = baseOptions({{5.0, 0.15, 1}});
+    opt.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+    x7::IdentRun run(fx.chain, fx.map, opt, nullptr);
+    ScriptArm robot([](int i, double t) {
+      if (i != 2) return 0.0;
+      if (t < 5.0) return 0.05;  // stuck, motionless, outside band
+      if (t < 5.3) {             // breakaway: fast transit through
+        return 0.05 - (t - 5.0) / 0.3 * 0.10;
+      }
+      return -0.05;              // re-stuck on the far side
+    });
+    CHECK_FALSE(arm::run(robot, run, 30.0, &run));
+    CHECK(run.outcome() == x7::IdentRun::Outcome::HardFault);
+    CHECK(run.faultReason().find("capture timeout") !=
+          std::string::npos);
+    CHECK_FALSE(run.results()[0].started);  // never probed
+  }
+
   SECTION("an arm that cannot follow the capture times out under the "
           "hold — but is given the FULL hold (a quiet P-only "
           "equilibrium may still be integrator-corrected)") {
