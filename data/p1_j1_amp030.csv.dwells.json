@@ -1,0 +1,15 @@
+{
+  "probe_joint": 1,
+  "anchor": [-0.357000, -0.831000, 2.126000, -1.572000, -2.456000, -0.106000, 0.563000, -0.014000],
+  "outcome": 1,
+  "fault": "",
+  "capture": {"envelope_rad": 0.0800, "initial_dev_rad": 0.0137, "accepted_at_s": 1.610},
+  "tuning": {"kp": 6.0000, "kd": 1.0000, "ki": 6.0000, "i_clamp_nm": 1.5000, "pd_tau_s": 0.0500, "nominal_dt_s": 0.0100, "gain_scale": [0.5000, 1.0000, 0.7000, 0.7000, 0.1000, 0.3000, 0.2000, 0.2000], "integral_frozen_at_capture": 1, "integral_policy": 2},
+  "frozen_bias_nm": [0.0057, -0.0236, -0.1064, -0.1059, -0.0015, -0.0023, -0.0016, -0.0009],
+  "freeze_latch_s": [1.310, 1.310, 1.310, 1.310, 1.310, 1.310, 1.310, 1.310],
+  "dwells": [
+    {"freq_hz": 4.5000, "amp_nm": 0.3000, "amp_eff_nm": 0.3000, "started": true, "completed": true, "skipped": false, "low_confidence": true, "retried": false, "soft_events": 0, "hold_s": 4.010, "window_s": 3.130, "window_periods": 14, "floor_q": 1.051e-03, "floor_tau": 2.758e-02, "note": "hold timeout: transient/SNR unresolved",
+     "resp": [[2.536243e-04, 1.205147e-04], [-1.103082e-05, -3.759744e-05], [-1.835690e-05, -7.201266e-06], [2.876327e-06, 4.664964e-05], [-1.196722e-05, -4.326789e-06], [-1.046440e-04, -6.655102e-05], [6.726797e-06, -2.483149e-05], [1.387714e-18, 3.700992e-19]],
+     "tau_meas": [2.572594e-01, -1.582277e-01], "tau_cmd": [3.002216e-01, 5.465957e-04]}
+  ]
+}

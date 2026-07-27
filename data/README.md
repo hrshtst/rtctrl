@@ -1,0 +1,14 @@
+# Tracked evidence sidecars
+
+The `.dwells.json` files here are the per-run summary sidecars of the
+hardware identification campaign (2026-07-27): the complete controller
+tuning record, per-dwell verdicts, demodulated estimates, frozen-bias
+vectors, and capture telemetry that the project records quote — small,
+text, and diffable, so they are tracked with the code.
+
+The raw CSV time series they summarize live in the operator's private
+data archive outside this repository; see
+[docs/DATA_ARCHIVE.md](../docs/DATA_ARCHIVE.md) for each file's role
+and SHA-256. These sidecars alone cannot be re-fitted (the analysis
+needs the raw CSVs), but they carry every number cited by
+`docs/IDENTIFICATION_PLAN.md`'s Closure section and its addenda.

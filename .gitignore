@@ -5,3 +5,11 @@ __pycache__/
 .venv/
 site/
 docs/resume.md
+
+# Hardware/sim telemetry lands at the repo root by default — raw data
+# is archived privately (see docs/DATA_ARCHIVE.md), never committed.
+# (data/ holds the deliberately tracked evidence sidecars.)
+/*.csv
+/*.csv.*
+/*.zvs
+/dump*.txt
