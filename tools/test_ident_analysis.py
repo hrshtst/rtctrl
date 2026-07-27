@@ -10,8 +10,11 @@ only its final completed attempt; and mode fitting refuses on
 insufficient usable data instead of fitting noise.
 """
 
+import argparse
 import importlib.util
 import sys
+
+import numpy as np
 
 spec = importlib.util.spec_from_file_location("ia", "tools/ident_analysis.py")
 assert spec is not None and spec.loader is not None
@@ -71,8 +74,6 @@ print("integral-policy versioning regressions: ok")
 # (review finding: the analyzer merged a soft-aborted 2 Hz attempt
 # with its retry and reported a 13.1 s window for a 5.02 s
 # measurement).
-
-import numpy as np
 
 # legacy CSV (no dwell_attempt column): split on the re-settle gap
 t1 = np.arange(0.0, 1.0, 0.01)          # aborted first attempt
@@ -141,3 +142,36 @@ usable, reasons = ia.fit_gate(good)
 assert len(usable) == 5 and not reasons
 
 print("mode-fit admission gate regressions: ok")
+
+# ---------------------------------------------------------------------------
+# Floor validation (review finding): --obs-floor-rad accepted NaN,
+# infinity, zero, and negatives — a NaN bypasses every `resp < floor`
+# comparison, admitting tick-frozen dwells as usable. Both the CLI
+# parser and the gate itself must reject unusable floors.
+
+for bad in ("nan", "inf", "-inf", "0", "0.0", "-1e-3"):
+    try:
+        ia.parse_obs_floor(bad)
+        raise AssertionError(f"parse_obs_floor must reject {bad!r}")
+    except argparse.ArgumentTypeError:
+        pass
+try:
+    ia.parse_obs_floor("not-a-number")
+    raise AssertionError("parse_obs_floor must reject non-numbers")
+except argparse.ArgumentTypeError:
+    pass
+assert ia.parse_obs_floor("3.6e-5") == 3.6e-5
+
+# defense in depth: the gate refuses directly too — the reviewer's
+# reproduction (five tick-frozen dwells admitted under a NaN floor)
+# must be impossible at every layer
+for bad_floor in (float("nan"), float("inf"), 0.0, -1e-3):
+    frozen_again = [make_dwell(f, 1e-16) for f in (2, 3, 4, 5, 6)]
+    try:
+        ia.apply_observability_floor(frozen_again, bad_floor)
+        raise AssertionError(
+            f"apply_observability_floor must reject {bad_floor}")
+    except ValueError:
+        pass
+
+print("observability-floor validation regressions: ok")

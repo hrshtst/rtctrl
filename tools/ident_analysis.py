@@ -17,7 +17,8 @@ only its FINAL completed attempt (the dwell_attempt column, or the
 last time-contiguous segment on legacy CSVs). Mode fitting REFUSES —
 reporting "insufficient usable data", never fitting noise — unless at
 least five dwells are both confident and above the observability
-floor on the probe-joint response (default: one encoder count).
+floor on the probe-joint response (default: the analytic
+window-noise floor, 3.6e-5 rad).
 "Refined" confidence requires all three pieces of evidence near a
 peak: a grid fine enough for zeta ~ 0.03, visits from at least two
 invocations (the up/down sweeps), and the half-amplitude linearity
@@ -173,11 +174,31 @@ def final_attempt_rows(rows: np.ndarray) -> np.ndarray:
     return rows
 
 
+def parse_obs_floor(text: str) -> float:
+    """--obs-floor-rad values: a NaN bypasses every `resp < floor`
+    comparison and admits tick-frozen dwells as usable, and zero or
+    negative silently disables the gate (review finding). Require a
+    finite, strictly positive floor."""
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}")
+    if not np.isfinite(v) or v <= 0.0:
+        raise argparse.ArgumentTypeError(
+            f"--obs-floor-rad must be finite and > 0, got {text!r}")
+    return v
+
+
 def apply_observability_floor(dwells: list[Dwell],
                               floor_rad: float) -> None:
     """Flag dwells whose probe-joint response is below the explicit
     observability floor: they carry no plant information and must not
     enter the mode fits regardless of their sidecar verdict."""
+    # defense in depth for non-CLI callers: an unusable floor must
+    # never silently admit everything
+    if not np.isfinite(floor_rad) or floor_rad <= 0.0:
+        raise ValueError(
+            f"observability floor must be finite and > 0, got {floor_rad}")
     for d in dwells:
         resp = float(np.abs(d.z_q[d.probe_joint]))
         if resp < floor_rad:
@@ -479,9 +500,10 @@ def main() -> int:
     ap.add_argument("csv", nargs="+", help="ident telemetry CSV(s)")
     ap.add_argument("--out", default="ident_analysis", help="output prefix")
     ap.add_argument(
-        "--obs-floor-rad", type=float, default=OBS_FLOOR_RAD,
-        help="observability floor on the probe-joint response "
-             "(default: one encoder count, %(default)g rad)")
+        "--obs-floor-rad", type=parse_obs_floor, default=OBS_FLOOR_RAD,
+        help="observability floor on the demodulated probe-joint "
+             "response (default: the analytic window-noise floor, "
+             "%(default)g rad)")
     args = ap.parse_args()
 
     # merge guards: refuse to combine runs from different postures OR
@@ -600,6 +622,9 @@ def main() -> int:
         # -0.109 to -0.427 Nm) — compare repeat-survey peaks alongside
         # these vectors when judging flexible-mode repeatability
         "frozen_bias_nm": frozen_biases,
+        # the floor this analysis actually applied — recorded so the
+        # usability verdict is reproducible from the table alone
+        "obs_floor_rad": args.obs_floor_rad,
         # non-empty = the mode-fit gate refused: there are NO modes in
         # this table by decision, not by absence of peaks — the dwell
         # rows and actuator transfer below remain valid measurements
