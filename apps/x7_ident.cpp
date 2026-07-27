@@ -114,6 +114,7 @@ int main(int argc, char* argv[]) {
   double scale0 = 0.0;
   bool hold_given = false;
   bool scale0_given = false;
+  bool freeze_i = false;
   std::string label, log_path, anchor_ref_path;
   for (int i = cli.argi; i < argc; ++i) {
     if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
@@ -164,6 +165,8 @@ int main(int argc, char* argv[]) {
                              "[0.05, 1.0) required\n");
         return 1;
       }
+    } else if (std::strcmp(argv[i], "--freeze-i") == 0) {
+      freeze_i = true;
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return 1;
@@ -245,6 +248,11 @@ int main(int argc, char* argv[]) {
   } else if (scale0_given) {
     std::fprintf(stderr, "--scale0 is diagnostic-only: it requires "
                          "--hold\n");
+    return 1;
+  }
+  if (freeze_i && !hold_mode) {
+    std::fprintf(stderr, "--freeze-i is diagnostic-only (experimental): "
+                         "it requires --hold\n");
     return 1;
   }
 
@@ -627,8 +635,9 @@ int main(int argc, char* argv[]) {
     if (hold_mode) {
       std::printf("HOLD DIAGNOSTIC: capture, then %.0f s unforced "
                   "anchor hold under continuous gates (joint-0 scale "
-                  "%.2f); no probing\n",
-                  hold_s, scale0 > 0.0 ? scale0 : x7::kGainScale[0]);
+                  "%.2f%s); no probing\n",
+                  hold_s, scale0 > 0.0 ? scale0 : x7::kGainScale[0],
+                  freeze_i ? ", integral FROZEN at capture" : "");
     } else {
       std::printf("probe joint %d (J_hat %.4f kg m^2), %zu dwells, "
                   "lead-in %.1f s, worst case %.1f s:\n",
@@ -677,8 +686,8 @@ int main(int argc, char* argv[]) {
                     x7::tuning::kKd, x7::tuning::kKi);
       meta += num;
       if (hold_mode) {
-        std::snprintf(num, sizeof num, " hold=%.0f scale0=%.3f", hold_s,
-                      scale0);
+        std::snprintf(num, sizeof num, " hold=%.0f scale0=%.3f freeze_i=%d",
+                      hold_s, scale0, freeze_i ? 1 : 0);
         meta += num;
       }
       log = x7::openIdentCsvLog(log_path, meta);
@@ -702,6 +711,7 @@ int main(int argc, char* argv[]) {
     if (hold_mode) {
       opt.hold_only_s = hold_s;
       opt.hold_scale0 = scale0;
+      opt.freeze_integral_at_capture = freeze_i;
     }
     // exact per-joint torque limits, mirroring writeCurrents
     opt.tau_max.resize(model::kCanonicalDof);

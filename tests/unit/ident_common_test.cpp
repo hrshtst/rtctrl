@@ -787,3 +787,46 @@ TEST_CASE("ident hold diagnostic: a hardware clamp on the probe joint "
   CHECK(run.faultReason().find("hardware clamp on joint 1") !=
         std::string::npos);
 }
+
+TEST_CASE("ident integral freeze at capture: winding stops, the stored "
+          "bias keeps acting",
+          "[ident]") {
+  Fixture fx;
+  // joint 2 stuck at a constant in-tolerance error — the hardware
+  // hunting precondition: without the freeze the integral winds at
+  // Ki*e for the whole hold; with it, winding stops at acceptance
+  // while the captured bias persists
+  const auto stuck = [](int i, double) { return i == 2 ? 0.017 : 0.0; };
+  auto o = baseOptions({});
+  o.capture_envelope_rad = x7::kCaptureEnvelopeRad;
+  o.hold_only_s = 5.0;
+
+  double i2_unfrozen = 0.0, i2_frozen = 0.0;
+  {
+    x7::IdentRun run(fx.chain, fx.map, o, nullptr);
+    ScriptArm robot(stuck);
+    CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+    REQUIRE(run.finishedCleanly());  // the mock never slips
+    i2_unfrozen = run.inner().integralTerm()[2];
+  }
+  {
+    auto of = o;
+    of.freeze_integral_at_capture = true;
+    x7::IdentRun run(fx.chain, fx.map, of, nullptr);
+    ScriptArm robot(stuck);
+    CHECK_FALSE(arm::run(robot, run, 60.0, &run));
+    REQUIRE(run.finishedCleanly());
+    CHECK(run.inner().integralFrozen());
+    i2_frozen = run.inner().integralTerm()[2];
+  }
+  INFO("i2 unfrozen " << i2_unfrozen << " frozen " << i2_frozen);
+  // unfrozen: ~capture + 5 s of winding at Ki*e (~0.1 Nm/s); frozen:
+  // only the capture-phase accumulation — the bias is kept, not reset
+  CHECK(std::fabs(i2_unfrozen) > std::fabs(i2_frozen) + 0.2);
+  CHECK(std::fabs(i2_frozen) > 0.05);  // captured bias preserved
+
+  // diagnostic-only: the freeze without a hold is refused
+  auto bad = baseOptions({{5.0, 0.15, 1}});
+  bad.freeze_integral_at_capture = true;
+  CHECK_THROWS(x7::IdentRun(fx.chain, fx.map, bad, nullptr));
+}

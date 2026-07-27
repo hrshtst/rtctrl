@@ -28,20 +28,37 @@ its 0.34 Nm p-p torque exceeds the probe amplitude. Treat 8.9 Hz as a
 CLOSED-LOOP limit-cycle candidate, not a confirmed mechanical mode; do
 not add joint 0 to the probe set on this evidence alone.
 
-- [ ] Run the unforced-hold diagnostic, stepping the joint-0 scale
-      DOWN (scale 1.0 is the already-characterized failing run — the
-      app refuses it). Start at 0.5:
+Status after two hold sessions (2026-07-27): `--scale0 0.5` resolved
+the joint-0 cycle (0.030–0.040 rad/s, slightly dissipative), but
+**joint 2 shows integral-driven stick-slip**: stuck IN tolerance while
+the integral winds at Ki·e (~0.13 Nm over seconds), then breakaway
+slips ~26 mrad across the band. The reviewer-directed experiment is
+the **frozen-integral hold**: the learned integral state freezes at
+capture acceptance — never reset, so the captured friction/gravity
+bias keeps acting — preventing further winding inside the band.
+
+- [ ] Run the frozen-integral hold diagnostic at scale 0.5, UNIQUE log
+      names per attempt:
 
   ```sh
   ./build/apps/x7_ident --joint 1 --pose-first \
       --anchor-ref config/postures/p1.json \
-      --hold 30 --scale0 0.5 --label p1-hold-s050 --log p1_hold_s050.csv
+      --hold 30 --scale0 0.5 --freeze-i \
+      --label p1-hold-s050-fz-r1 --log p1_hold_s050_fz_r1.csv
   ```
 
-      then 0.3, etc., until the hold COMPLETES: continuous stability —
-      every joint inside ±0.02 rad and the unchanged 0.05 rad/s metric
-      at every sample after a 1 s settling grace, all hard monitors
-      live. The report lists each joint's max metric and p-p motion.
+      The hold must COMPLETE: continuous stability — every joint
+      inside ±0.02 rad and the unchanged 0.05 rad/s metric at every
+      sample after a 1 s settling grace, all hard monitors live. The
+      report lists each joint's max metric and p-p motion; the sidecar
+      records the controller mode (`integral_frozen_at_capture`).
+- [ ] Require THREE complete 30 s holds before selecting the tuning.
+      If joint 2 still stick-slips with the freeze, the next
+      alternatives (reviewer-sequenced) are a leaky/deadband
+      integrator or posture-specific gravity/bias compensation.
+- [ ] Reassess the isolated joint-6 ~4.4 Hz event only after joint-2
+      winding is eliminated (one short occurrence is not evidence for
+      tuning joint 6).
 - [ ] Repeat the passing scale at least once at P1, and validate it at
       EVERY posture before that posture's surveys — P1 stability does
       not establish P2–P4 stability.

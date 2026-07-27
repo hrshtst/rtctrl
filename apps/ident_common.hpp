@@ -621,6 +621,13 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // estimator's denominator does not contain), so the campaign runs
     // one fixed, recorded tuning — never a per-run knob.
     double hold_scale0 = 0.0;
+    // EXPERIMENTAL (reviewer-directed, diagnostic-only): freeze the
+    // learned integral state at capture acceptance — without
+    // resetting — preserving the captured friction/gravity bias and
+    // torque continuity while preventing the integrator-stiction
+    // hunting (a stuck in-tolerance error otherwise winds at Ki*e
+    // until breakaway). Recorded in the sidecar tuning block.
+    bool freeze_integral_at_capture = false;
   };
 
   IdentRun(model::ChainModel& chain, const model::JointMap& map,
@@ -854,6 +861,10 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
       throw std::invalid_argument(
           "IdentRun: the scale override is diagnostic-only");
     }
+    if (o.freeze_integral_at_capture && o.hold_only_s <= 0.0) {
+      throw std::invalid_argument(
+          "IdentRun: the integral freeze is diagnostic-only");
+    }
     return o;
   }
 
@@ -1003,6 +1014,10 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         capture_quiet_ = ready_now ? capture_quiet_ + dt : 0.0;
         if (held >= 0.5 && capture_quiet_ >= 0.3) {
           capture_s_ = t;  // both gates passed under the hold
+          if (options_.freeze_integral_at_capture) {
+            // the stored terms keep acting; only the winding stops
+            inner_.freezeIntegral(true);
+          }
           if (options_.hold_only_s > 0.0) {
             // diagnostic: reset the REPORTING statistics only — the
             // controller and metric state run on uninterrupted
@@ -1041,6 +1056,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         // per-joint maxima feed the tuning decision.
         probe_tau_ = 0.0;
         capture_metric_.update(t, state.q.get());
+        // elapsed is recorded continuously so an aborted summary
+        // reports the real hold time, not 0.0 (review cosmetic)
+        hold_done_s_ = t - phase_start_;
         const bool enforced = t - phase_start_ >= kHoldDiagGraceS;
         for (int i = 0; i < model::kCanonicalDof; ++i) {
           const double q = zVecElemNC(state.q.get(), i);
@@ -1071,7 +1089,6 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
         }
         if (outcome_ == Outcome::Running &&
             t - phase_start_ >= options_.hold_only_s) {
-          hold_done_s_ = t - phase_start_;
           outcome_ = Outcome::Completed;
           phase_ = Phase::Done;
         }
@@ -1645,7 +1662,8 @@ inline bool writeDwellJson(const std::string& path,
   for (int i = 0; i < model::kCanonicalDof; ++i) {
     std::fprintf(f, "%s%.4f", i ? ", " : "", run.gainScales()[i]);
   }
-  std::fprintf(f, "]},\n");
+  std::fprintf(f, "], \"integral_frozen_at_capture\": %d},\n",
+               options.freeze_integral_at_capture ? 1 : 0);
   if (options.hold_only_s > 0.0) {
     std::fprintf(f,
                  "  \"hold\": {\"requested_s\": %.1f, "
