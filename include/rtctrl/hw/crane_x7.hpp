@@ -229,11 +229,20 @@ class CraneX7 {
   // re-setup, limits and Bus Watchdogs left as activated — the
   // unsupported interval is exactly the span between the first
   // torque-off and the last torque-on. Requires an ACTIVE arm with the
-  // background thread stopped. A preload that the limiter would clip
-  // or gate REFUSES the switch (a limited gravity preload cannot hold
-  // the arm); any mid-sequence failure best-effort releases every
-  // servo and deactivates. On success the config's operating modes and
-  // the thread's default targets are updated to current/preload.
+  // background thread stopped.
+  //
+  // CONTRACT on `false` — two distinct hardware states, distinguished
+  // by activated():
+  //  * PRE-sequence refusal (bad size, state-read failure, a preload
+  //    the limiter would clip or gate — a limited gravity preload
+  //    cannot hold the arm): NOTHING was written; the arm stays
+  //    ACTIVE and HELD in position mode. Deliberate: a refusal must
+  //    not drop a held arm. The caller must deactivate (and verify)
+  //    before exiting.
+  //  * Mid-sequence failure: best-effort release of every servo,
+  //    activated() becomes false.
+  // On success the config's operating modes and the thread's default
+  // targets are updated to current/preload.
   bool switchToCurrentModeWithPreload(const std::vector<double>& amps);
 
   // Per-servo parameter writes (all joints).

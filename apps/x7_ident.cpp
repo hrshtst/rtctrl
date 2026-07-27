@@ -199,6 +199,22 @@ int main(int argc, char* argv[]) {
                      session.arm->lastError().c_str());
         return 1;
       }
+      // Every position-phase abort must VERIFY its shutdown: a failed
+      // deactivation leaves the failed servos torqued with their Bus
+      // Watchdogs still armed (by design) — they halt on the bus
+      // silence when this program exits, but the operator must be told
+      // the truth about the state (review finding: one path claimed
+      // "released" while the arm was still held).
+      const auto positionPhaseAbort = [&session] {
+        if (!session.arm->deactivate()) {
+          std::fprintf(stderr,
+                       "SHUTDOWN FAULT: position-phase deactivation "
+                       "incomplete — still-torqued servos keep their "
+                       "Bus Watchdogs armed and will halt on bus "
+                       "silence at exit; verify the arm is limp "
+                       "before approaching\n");
+        }
+      };
       // Health gate BEFORE motion (review finding: an overheated arm
       // must not perform the placement move first).
       {
@@ -214,7 +230,7 @@ int main(int argc, char* argv[]) {
                        "pre-placement health gate: %s — let the arm "
                        "cool / check supply, then rerun\n",
                        why.empty() ? "health read failed" : why.c_str());
-          session.arm->deactivate();
+          positionPhaseAbort();
           return 1;
         }
       }
@@ -227,7 +243,7 @@ int main(int argc, char* argv[]) {
                      "(worst joint %d at %.4f rad, bound %.3f) — "
                      "deactivating\n",
                      placed.worst_joint, placed.worst_dev, kPreSwitchTol);
-        session.arm->deactivate();
+        positionPhaseAbort();
         return 1;
       }
       // gravity-current preload from the MEASURED pre-switch posture
@@ -249,9 +265,23 @@ int main(int argc, char* argv[]) {
       std::printf("switching to current mode in place (gravity preload "
                   "armed)...\n");
       if (!session.arm->switchToCurrentModeWithPreload(preload)) {
-        std::fprintf(stderr, "mode switch failed: %s — the arm was "
-                             "released; check it before rerunning\n",
+        std::fprintf(stderr, "mode switch failed: %s\n",
                      session.arm->lastError().c_str());
+        // Two distinct hardware states (review finding — the old
+        // message claimed "released" for both): a PRE-sequence refusal
+        // (state read, clipped/gated preload) leaves the arm ACTIVE
+        // and held in position mode — deactivate it and verify; only
+        // a mid-sequence failure has already released it.
+        if (session.arm->activated()) {
+          positionPhaseAbort();
+          std::fprintf(stderr,
+                       "the switch was refused before any torque-off; "
+                       "the arm has been deactivated\n");
+        } else {
+          std::fprintf(stderr,
+                       "the switch failed mid-sequence and released "
+                       "the arm — check it before rerunning\n");
+        }
         return 1;
       }
       // keep session.config consistent with the switched arm
