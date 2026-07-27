@@ -7,8 +7,8 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
 
 ## 1. Pre-flight (one-time)
 
-- [ ] Build current `main`; `ctest` green (116 tests as of the step-A
-      merge), `uv run mkdocs build --strict` clean.
+- [ ] Build current `main`; `ctest` fully green,
+      `uv run mkdocs build --strict` clean.
 - [ ] Actuator power cutoff within reach; workspace clear. Current
       mode throughout — the arm free-falls until the gravity hold
       lands, exactly as x7_track.
@@ -25,9 +25,9 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
 - [ ] Run WITH the checked-in P1 reference — without `--anchor-ref`
       nothing enforces the canonical posture and the first survey
       would silently establish an arbitrary anchor as "P1"
-      (~2.5 min worst case; the app refuses on its own — settle,
-      soft-limit band, temperature/voltage, anchor, budget — and names
-      the reason):
+      (~2.7 min worst case including the setup allowance; the app
+      refuses on its own — settle, soft-limit band,
+      temperature/voltage, anchor, budget — and names the reason):
 
   ```sh
   ./build/apps/x7_ident --joint 1 --anchor-ref config/postures/p1.json \
@@ -64,8 +64,14 @@ Same session or after cooldown — the pre-run gate enforces the
 cooldown automatically; just rerun.
 
 - [ ] Up-sweep: ascending grid around the survey peak, plus the
-      half-amplitude repeat of the peak dwell appended (`f@amp` with
-      half the amplitude the survey table reports there):
+      half-amplitude repeat of the peak dwell appended. Replace BOTH
+      placeholders from the survey's dwell summary: `<half-amp>` is
+      half the amplitude the survey ACTUALLY ran at the peak (a
+      headroom-reduced survey makes it less than 0.075 Nm). An
+      unreplaced placeholder refuses to run rather than dropping the
+      dwell. Refinement runs reference the survey's sidecar, not the
+      canonical file — that keeps the combined dataset inside the
+      merge guard (see the protocol's anchor-reference policy):
 
   ```sh
   ./build/apps/x7_ident --joint 1 --anchor-ref p1_j1_survey.csv.dwells.json \
@@ -91,8 +97,10 @@ cooldown automatically; just rerun.
 
 ## 5. Expand the campaign
 
-- [ ] Joints 3 and 5 at P1 (survey → analyze → refine, same pattern).
-- [ ] All three joints at P2, plus the P2 re-placement micro-test
+- [ ] Joints 3 and 5 at P1 (survey → analyze → refine, same pattern;
+      each first survey gates on `config/postures/p1.json`).
+- [ ] All three joints at P2 — each first survey gates on
+      `config/postures/p2.json` — plus the P2 re-placement micro-test
       (repeat the survey after deliberately re-placing the arm) — this
       calibrates the ±0.02 rad tolerance empirically.
 - [ ] P3, then P4: nominal vectors; the FIRST session's settled anchor

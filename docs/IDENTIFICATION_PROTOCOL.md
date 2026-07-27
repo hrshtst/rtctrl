@@ -42,10 +42,17 @@ within **±0.02 rad per joint** (`--anchor-ref`).
 | P3 | extended endpoint region (nominal) | `0.00, -0.60, 0.00, -0.80, 0.00, -0.30, 0.00, 0.00` |
 | P4 | near-horizontal max extension (nominal) | `0.00, -1.30, 0.00, -0.35, 0.00, -0.15, 0.00, 0.00` |
 
-P1 and P2 have CHECKED-IN reference files: every P1/P2 run — including
-the very first survey — passes `--anchor-ref config/postures/p1.json`
-(resp. `p2.json`), so no run can silently establish an arbitrary
-posture as canonical.
+P1 and P2 have CHECKED-IN reference files, used in a two-step policy:
+the FIRST run of a session set (the survey) passes
+`--anchor-ref config/postures/p1.json` (resp. `p2.json`), so no run
+can silently establish an arbitrary posture as canonical; every
+SUBSEQUENT run (the refinement sweeps) passes that survey's
+`.dwells.json` sidecar, preserving the actually-settled anchor so the
+combined dataset stays within the analysis merge guard's ±0.02 rad of
+itself. Accepted consequence: a refinement anchor can sit up to
+~0.04 rad from the canonical vector in the worst chain, while the
+dataset remains internally coherent and its survey is within 0.02 rad
+of canonical.
 
 Work in the proven→new order P1 → P2 → P3 → P4. P3/P4 are nominal
 design targets: on the FIRST session at each, the actually-settled
@@ -99,14 +106,20 @@ gate.
    verdicts, and read the peak frequencies from the mode table.
 
 2. **Refinement up-sweep** — ascending grid around the peak, PLUS the
-   half-amplitude repeat of the peak dwell appended (`f@amp` with half
-   the amplitude the survey table reports for that frequency):
+   half-amplitude repeat of the peak dwell appended (`f@amp` with HALF
+   the amplitude the survey ACTUALLY ran at that frequency — read it
+   from the survey's dwell summary; a headroom-reduced survey
+   amplitude makes it less than 0.075 Nm. An unreplaced placeholder
+   refuses to run rather than dropping the dwell):
 
    ```sh
    ./build/apps/x7_ident --joint 1 --anchor-ref p1_j1_survey.csv.dwells.json \
-       --freqs "3.75,3.9,4.05,4.2,4.35,4.5,4.65,4.8,4.95,5.1,5.25,4.5@0.075" \
+       --freqs "3.75,3.9,4.05,4.2,4.35,4.5,4.65,4.8,4.95,5.1,5.25,<peak>@<half-amp>" \
        --label p1-j1-up --log p1_j1_up.csv
    ```
+
+   (e.g. `4.5@0.075` — correct only if the survey ran 0.150 Nm at
+   4.5 Hz.)
 
 3. **Refinement down-sweep** — the same grid in DESCENDING order, a
    separate invocation:
@@ -154,8 +167,9 @@ uv run --project tools tools/ident_analysis.py \
   Dwell verdicts come from the `.dwells.json` sidecars: skipped or
   incomplete dwells are dropped, low-confidence dwells are excluded
   from the mode fits and flagged.
-- `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band
-  (both the 4–5 Hz and ~13 Hz peaks from a single survey) — fitted
+- `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band —
+  the 4–5 Hz and ~13 Hz bands when both appear; the ~13 Hz gear band
+  may be weak or absent on joint 1 (probe joint 5 covers it) — fitted
   frequency and damping with grid confidence intervals, per-dwell FRF
   (τ_meas primary; the delay-corrected SUBMITTED TOTAL command
   secondary; their ratio = the actuator transfer for the notch phase
