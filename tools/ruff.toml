@@ -1,0 +1,6 @@
+# Pin the rule set the codebase is validated against (classic ruff
+# defaults). Newer ruff releases broaden their defaults (0.16.0 added
+# EXE/PLC/ISC/B findings on audited code); widening the set here is a
+# deliberate decision, not a side effect of a version bump.
+[lint]
+select = ["E4", "E7", "E9", "F"]
