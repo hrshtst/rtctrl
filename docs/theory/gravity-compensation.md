@@ -89,25 +89,28 @@ $i_k = \tau_k / k_{t,k}$, and the servos run in current mode
 ## Verification
 
 - **Gradient identity (unit test).** For a random gravity-loaded pose,
-  each component of the computed $\tau_8$ is compared against a
-  central finite difference of the potential energy,
+    each component of the computed $\tau_8$ is compared against a
+    central finite difference of the potential energy,
 
-  ```math
-  \tau_i \overset{!}{=}
-  \frac{U(q + \varepsilon e_i) - U(q - \varepsilon e_i)}{2\varepsilon},
-  ```
+    ```math
+    \tau_i \overset{!}{=}
+    \frac{U(q + \varepsilon e_i) - U(q - \varepsilon e_i)}{2\varepsilon},
+    ```
 
-  with $U$ evaluated independently from forward kinematics
-  (link masses × COM heights). Agreement to $10^{-5}$ validates the
-  RNEA path *and* the $E/E^\mathsf{T}$ mapping in one shot
-  (`tests/unit/gravity_test.cpp`).
+    with $U$ evaluated independently from forward kinematics
+    (link masses × COM heights). Agreement to $10^{-5}$ validates the
+    RNEA path *and* the $E/E^\mathsf{T}$ mapping in one shot
+    (`tests/unit/gravity_test.cpp`).
+
 - **Structural checks.** At the upright zero pose, joints with
   vertical axes (pan/twist chain) must see exactly zero gravity
   torque.
+
 - **Float acceptance (sim, through the bridge).** Under
   `GravityComp` in current mode the simulated arm holds a strongly
   gravity-loaded pose within 0.05 rad over 10 s
   (`tests/integration/gravity_sim_test.cpp`).
+
 - **Hardware.** `apps/x7_float` runs the same controller on the robot
   and prints the current-derived torque estimate vs. the prediction
   ($k_t i_{\text{meas}}$ vs. $g(q)$) each second. On the physical
