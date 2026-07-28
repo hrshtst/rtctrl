@@ -9,7 +9,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Init required submodules
         run: |
@@ -27,7 +27,7 @@ jobs:
       # regressions via `uv run --project tools` (hermetic: the ctest
       # sets UV_CACHE_DIR into the build tree)
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
 
       - name: Bootstrap mi-lib
         run: MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" ./tools/bootstrap_milib.sh
