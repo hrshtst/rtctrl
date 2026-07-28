@@ -74,14 +74,26 @@ A controller is one function, written once, run anywhere:
 #include "rtctrl/arm/runner.hpp"
 
 struct MyController : arm::Controller {
+  explicit MyController(const arm::JointState& start) {
+    zVecCopyNC(start.q.get(), home.q.get());  // capture home ONCE
+  }
   void update(const arm::JointState& state, arm::JointCommand& cmd,
               double t) override {
+    (void)state;
     cmd.mode = arm::ControlMode::Position;      // or Velocity / Current
-    zVecCopyNC(state.q.get(), cmd.q.get());     // e.g. hold + offset
-    zVecElemNC(cmd.q.get(), 6) = 0.3 * std::sin(t);
+    zVecCopyNC(home.q.get(), cmd.q.get());      // hold home + offset
+    const double ramp = std::min(1.0, t / 3.0); // no step at t = 0
+    zVecElemNC(cmd.q.get(), 6) += 0.3 * ramp * std::sin(t);
   }
+  arm::JointState home;
 };
 ```
+
+Two safety habits are baked into that shape (they are what
+`examples/x7_wave.cpp` does): the reference is anchored to a
+*captured* posture, never an absolute value that would command a jump
+from wherever the arm actually is, and the offset ramps in from zero
+so the first command equals the measured posture.
 
 **In simulation** (roki forward dynamics, deterministic, no hardware):
 
@@ -92,8 +104,10 @@ arm::SimArm::Options opt;
 opt.initial_q8 = {0, 0.6, 0, -1.2, 0, -0.5, 0, 0.2};
 arm::SimArm sim(opt);
 sim.setMode(arm::ControlMode::Position);
-sim.activate();                       // no motion on activation
-MyController c;
+sim.activate();                       // no motion commanded
+arm::JointState start;
+sim.readState(start);
+MyController c(start);
 arm::run(sim, c, /*seconds=*/10.0);   // read → update → write → step
 ```
 
@@ -103,6 +117,7 @@ arm::run(sim, c, /*seconds=*/10.0);   // read → update → write → step
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/port.hpp"
 #include "rtctrl/hw/crane_x7.hpp"
+#include "x7_common.hpp"  // apps/ — the shared verified-shutdown guard
 
 auto config = hw::Config::load("config/crane_x7.toml");
 dxl::Port port(config.port, config.baudrate);
@@ -110,11 +125,24 @@ hw::CraneX7 hardware(port, config);
 hardware.onEscalate([&port] { port.close(); });  // deadman → bus silence
 
 arm::RealArm robot(hardware);
-robot.setMode(arm::ControlMode::Position);  // must match the config's modes
-robot.activate();     // verifies servos, arms watchdogs, snaps goals
-arm::run(robot, c, 10.0);
-robot.deactivate();
+if (!robot.setMode(arm::ControlMode::Position)) return 1;  // must match config
+if (!robot.activate()) return 1;  // verifies servos, arms watchdogs, snaps goals
+// Verified shutdown from here on: CraneX7's DESTRUCTOR deliberately
+// does not torque off, so every exit after activation must deactivate
+// and CHECK the result — the x7_* apps share x7::ShutdownGuard
+// (apps/x7_common.hpp), which also silences the bus on an unclean
+// deactivation so the servo watchdogs halt the arm.
+x7::ShutdownGuard shutdown{hardware};
+arm::JointState start;
+if (!robot.readState(start)) { shutdown.run(); return 1; }
+MyController c(start);
+const bool ok = arm::run(robot, c, 10.0);
+const bool clean = shutdown.run();  // deactivate + verify; quiesce on failure
+return ok && clean ? 0 : 1;
 ```
+
+(`examples/x7_wave.cpp` is this exact program, runnable against
+`dxl_emu` or the robot.)
 
 `readState` gives positions, velocities, and torque estimates
 ($\hat\tau = k_t\,i$); `step()` blocks on the background read-write
@@ -165,6 +193,9 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
 - Conventional Commits; a commit is a module plus its tests.
 - Canonical joint order everywhere above the `dxl` layer.
 - SI units (rad, rad/s, Nm, A, V) outside `dxl/conversions.hpp`;
-  raw servo units never leak upward.
+  raw servo units never leak upward — the deliberate exceptions are
+  the servo-parameter passthroughs (operating-mode codes and the raw
+  profile registers on `CraneX7`), which stay in register units by
+  design.
 - New mi-lib quirks belong in the implementation plan's findings and
   the project memory — several cost hours to discover.

@@ -153,7 +153,8 @@ where every non-textbook term answers a specific measured failure:
 - **PD low-pass** $F_{lp}$ (50 ms): the gear trains resonate at
   ~13 Hz — a *non-collocated* loop (output-shaft encoder, motor-side
   torque, elastic gearing between) whose phase, after the 100 Hz bus
-  loop's ~2 cycles of delay, makes every feedback term pump that mode.
+  loop's ~2 cycles of delay, turns delayed feedback from damping into
+  excitation at that mode.
   The filter removes loop gain there; the smooth feedforward passes
   unfiltered. The filter pole also caps usable stiffness
   ($\sqrt{K_p/J}$ must stay below it): $K_p \approx 6$, not the 20 an
@@ -185,14 +186,20 @@ extends into configurations whose first structural mode (~4–5 Hz,
 shoulder gear compliance against the extended arm's inertia) is
 *actively pumped* by this loop — it grew even after the trajectory
 rates were held at proven levels, so it is a loop property, not input
-excitation. The mechanism is phase, not gain: the mode sits ABOVE the
-PD filter's 3.2 Hz corner (1/(2π·0.05 s)) — inside its cut region —
-yet the D path accumulates roughly 117° of lag there (≈55° from the
-50 ms PD low-pass, ≈30° from the 20 ms velocity filter, ≈32° from the
-~2-cycle bus pipeline), so past 90° the nominal damping *injects*
-energy into the mode. Broad low-passing bought 13 Hz protection at the
-price of the 4–5 Hz phase margin; more of it makes this worse, not
-better. `x7_track` caps its scale accordingly.
+excitation. The mechanism needs both phase AND gain: the mode sits
+ABOVE the PD filter's 3.2 Hz corner (1/(2π·0.05 s)) — inside its cut
+region — yet the D path accumulates roughly 117° of lag there (≈55°
+from the 50 ms PD low-pass, ≈30° from the 20 ms velocity filter, ≈32°
+from the ~2-cycle bus pipeline), so past 90° the D path's *residual
+gain* injects energy instead of removing it. Whether the loop
+actually oscillates is then an energy balance — injected D-path power
+against structural damping — and at full scale that balance was
+observed net positive (runs 7–8 diverged). More low-passing is not a
+monotonic cure: it deepens the lag while also cutting the gain; the
+shipped corner bought 13 Hz protection at the price of the 4–5 Hz
+phase margin. The quantitative budget and the energy argument are in
+[flexible-mode identification](identification.md). `x7_track` caps
+its scale accordingly.
 
 **Pass-1 remediation (instrumentation & hardening).** Following the
 post-completion review, the loop was made observable and its timing

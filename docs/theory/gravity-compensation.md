@@ -32,14 +32,22 @@ more advanced torque controllers.
 ## Stability
 
 The closed loop conserves kinetic energy
-$T = \tfrac12 \dot q^\mathsf{T} M(q) \dot q$ exactly (using the
-skew-symmetry of $\dot M - 2C$):
+$T = \tfrac12 \dot q^\mathsf{T} M(q) \dot q$ exactly. Differentiating
+$T$ produces two terms — the $\tfrac12\dot q^\mathsf{T}\dot M\dot q$
+term must not be dropped; it is what the skew-symmetry of
+$\dot M - 2C$ cancels against:
 
 ```math
-\dot T = \dot q^\mathsf{T}\!\left(\tau - C\dot q - g\right)
-       = \dot q^\mathsf{T}\left(g(q) - C\dot q - g(q)\right) = 0
-\quad\text{(along the compensated dynamics)} .
+\dot T
+= \dot q^\mathsf{T} M \ddot q + \tfrac12\,\dot q^\mathsf{T}\dot M\dot q
+= \dot q^\mathsf{T}\!\left(\tau - C\dot q - g\right)
+  + \tfrac12\,\dot q^\mathsf{T}\dot M\dot q
+= \dot q^\mathsf{T}(\tau - g)
+  + \tfrac12\,\dot q^\mathsf{T}\big(\dot M - 2C\big)\dot q
+= \dot q^\mathsf{T}(\tau - g),
 ```
+
+which vanishes along the compensated dynamics $\tau = g(q)$.
 
 With any physical dissipation $D\dot q$ (joint friction, motor
 damping — always present on the real robot, and represented by the
@@ -101,10 +109,16 @@ $i_k = \tau_k / k_{t,k}$, and the servos run in current mode
   gravity-loaded pose within 0.05 rad over 10 s
   (`tests/integration/gravity_sim_test.cpp`).
 - **Hardware.** `apps/x7_float` runs the same controller on the robot
-  and prints measured vs. predicted torque
+  and prints the current-derived torque estimate vs. the prediction
   ($k_t i_{\text{meas}}$ vs. $g(q)$) each second. On the physical
   CRANE-X7 the arm floats and is back-drivable; static agreement was
-  within a few hundredths of a Nm on all joints.
+  within a few hundredths of a Nm on all joints. Read that agreement
+  for what it is: both sides share the same nominal $k_t$ (commands
+  divide by it, the estimate multiplies by it), so it verifies the
+  servo's *current loop* tracking the commanded current — not
+  output-shaft torque; friction and gearbox efficiency sit outside
+  the comparison. The physical float itself is the output-side
+  evidence that $g(q)$ is close enough.
 
 ## Limitations
 

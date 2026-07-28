@@ -108,8 +108,9 @@ full pipeline recovers 4.51 Hz / $\zeta$ 0.033 and 13.01 Hz /
 $\zeta$ 0.058 from it, which validated probe, logging, and analysis
 against known truth before hardware.
 
-One geometric fact matters more than any other below: the XM430's
-magnetic encoder sits on the **output shaft**, after the gearbox. The
+One geometric fact matters more than any other below: the XM-series
+servo's magnetic encoder (the probed joint 1 is an XM540-W270; the
+rest are XM430-W350) sits on the **output shaft**, after the gearbox. The
 sensor is collocated with the link, so gear wind-up
 $\delta = \theta_m - \theta_l$ — the elastic state itself — is
 invisible; the encoder only sees the mode when the *output* moves.
@@ -158,8 +159,10 @@ require a MIMO estimator with all torques as inputs; for the notch
 design the controller-conditioned receptance *under the shipped
 tuning* was the operationally relevant object anyway.
 
-Two variants are computed: the primary uses measured torque (current
-$\times$ torque constant, sampled at the same events as $q$), the
+Two variants are computed: the primary uses the current-derived
+torque estimate (measured current $\times$ nominal torque constant,
+sampled at the same events as $q$ — it verifies against the current
+loop, not output-shaft torque), the
 secondary uses the commanded total delay-corrected by the
 receipt-matched apply latency — and their ratio is itself a
 deliverable, the commanded→measured **actuator transfer** (it
@@ -239,10 +242,12 @@ which is linear in $(c, d)$ for fixed $(f_n, \zeta)$ — so the fit
 scans a fine $(f_n, \zeta)$ grid, solves the linear subproblem at each
 point, and keeps the residual minimum. The reported intervals are the
 grid extent of the residual-profile band
-$\mathrm{res} \le \mathrm{res}_{\min}\,(1 + 2/\nu)$, with $\nu$ the
-fit's degrees of freedom — a *heuristic* uncertainty band: without a
-calibrated noise model there is no likelihood behind it, so read it as
-a relative sharpness indicator, not a statistical confidence interval. The survey grid alone cannot
+$\mathrm{res} \le \mathrm{res}_{\min}\,(1 + 2/\nu)$, with
+$\nu = N - 4$ a *heuristic scale parameter* (for complex observations
+and complex $c, d$ it is not a conventional residual-DoF count) — a
+heuristic uncertainty band: without a calibrated noise model there is
+no likelihood behind it, so read it as a relative sharpness
+indicator, not a statistical confidence interval. The survey grid alone cannot
 produce damping: the half-power width of a $\zeta = 0.03$ mode at
 4.5 Hz is
 
@@ -321,7 +326,8 @@ stationary small-signal current probe up to the 0.30 Nm hard cap.**
   the output shaft simply does not move. The demodulated responses
   were numerical zeros ($\sim 10^{-16}\,\mathrm{rad}$).
 - The pilot stepped one 4.5 Hz dwell through 0.20 / 0.25 / 0.30 Nm.
-  Torque was delivered faithfully (measured 0.201 / 0.251 / 0.302 Nm),
+  The commanded current was delivered faithfully (current-derived
+  torque 0.201 / 0.251 / 0.302 Nm),
   and the responses stayed noise: 22 / 68 / 38 µrad against
   run-measured floors of 423 / 733 / 1051 µrad (response-to-floor
   ratios 0.05 / 0.09 / 0.04), non-monotonic in amplitude where a real

@@ -106,8 +106,8 @@ $k_t$ (gearbox included):
 \qquad
 k_t =
 \begin{cases}
-1.783\ \mathrm{Nm/A} & \text{XM430-W350 (all joints but 2)},\\
-2.409\ \mathrm{Nm/A} & \text{XM540-W270 (joint 2)}.
+1.783\ \mathrm{Nm/A} & \text{XM430-W350 (all other joints)},\\
+2.409\ \mathrm{Nm/A} & \text{XM540-W270 (canonical joint 1, shoulder tilt)}.
 \end{cases}
 ```
 
@@ -116,6 +116,8 @@ controller torques to current commands, and conversely estimates
 $\hat\tau = k_t\, i_{\text{measured}}$ from the measured current
 (`RealArm::readState`). The constants are nominal values from the
 manufacturer data; friction and gear efficiency are not modeled, which
-bounds the fidelity of $\hat\tau$ (measured on hardware to be a few
-percent at static poses — see the M7 notes in the
+bounds the fidelity of $\hat\tau$ as an *output-torque* estimate. The
+few-percent static agreement observed on hardware verifies the current
+loop against the same nominal $k_t$ used to command it — not the
+output torque itself (see the M7 notes in the
 [implementation plan](../IMPLEMENTATION_PLAN.md)).

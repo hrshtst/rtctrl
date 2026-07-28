@@ -511,9 +511,10 @@ design assumptions failed on hardware together:
 
 - **Excitation**: the amplitude rule's 0.005 rad target assumed a
   free linear plant. At a gravity-held stationary posture the probe
-  sits below joint 1's effective stiction/deadband; the XM430's
-  encoder is on the OUTPUT shaft, so gear-train wind-up from the
-  motor-side probe is invisible and the output simply does not move.
+  sits below joint 1's effective stiction/deadband; the XM-series
+  encoder (joint 1 is an XM540-W270) is on the OUTPUT shaft, so
+  gear-train wind-up from the motor-side probe is invisible and the
+  output simply does not move.
 - **Observability**: the 3.6e-5 rad analytic noise floor assumed the
   encoder dithers across counts. A stationary joint is tick-frozen —
   a constant signal demodulates to numerical zero, and the unforced

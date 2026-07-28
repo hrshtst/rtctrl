@@ -32,7 +32,9 @@ rtctrl — C++17 control library for the CRANE-X7 7-DOF arm (mi-lib dynamics, Dy
 - Conventional Commits, committed straight to `main` and pushed; a commit is a
   module plus its tests.
 - Canonical 8-DOF joint order everywhere above the `dxl` layer; SI units (rad,
-  Nm, A, V) outside `dxl/conversions.hpp` — raw servo units never leak upward.
+  Nm, A, V) outside `dxl/conversions.hpp` — raw servo units never leak upward
+  (deliberate exceptions: operating-mode codes and the raw profile-register
+  passthroughs on `CraneX7`).
 - Testing ladder (the project's core rule): pure logic → Catch2 unit test in
   `tests/unit/`; anything touching the bus → `emu::FakePacketIO`, new wire
   behavior → the pty fixture in `tests/integration/`; anything producing motion

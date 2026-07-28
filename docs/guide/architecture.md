@@ -60,11 +60,11 @@ for dynamics) — never on `dxl`/`hw`/`emu` directly.
 
 ```
 include/rtctrl/{dxl,model,arm,hw,emu}/   public headers (src/ mirrors)
-apps/         dxl_inspect, dxl_emu, x7_onoff/read/set_param/move_simple/float/track/track_sim
-examples/     make_motion (kinematic .zvs), x7_wave (bridge demo)
+apps/         dxl_inspect, dxl_emu, x7_onoff/read/set_param/move_simple/float/pose/track/track_sim/ident/ident_sim
+examples/     make_motion, make_pose (kinematic .zvs), x7_wave (bridge demo)
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed)
-config/crane_x7.toml   deployment config: bus, joints, limits, margins
-tools/        port_model.py (uv), bootstrap_milib.sh, milib_config/
+config/       crane_x7.toml (bus, joints, limits, margins), postures/
+tools/        port_model.py, ident_analysis.py (uv), bootstrap_milib.sh, milib_config/
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
 docs/         this documentation
 third_party/  pinned submodules (mi-lib stack, DynamixelSDK, URDF source)

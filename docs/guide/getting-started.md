@@ -27,7 +27,12 @@ git submodule update --init third_party/zeda third_party/zm \
     third_party/crane_x7_description
 # (add third_party/zx11 third_party/roki-gl for rk_pen/rk_anim)
 
-./tools/bootstrap_milib.sh          # builds mi-lib into ~/usr
+# core set only — matches the submodules initialized above (the
+# script's default list includes zx11/roki-gl and exits if their
+# submodules are missing); drop MILIB_LIBS after initializing those
+# two if you want the viewers
+MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" \
+    ./tools/bootstrap_milib.sh      # builds mi-lib into ~/usr
 export PATH="$HOME/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HOME/usr/lib:$LD_LIBRARY_PATH"
 
@@ -53,8 +58,9 @@ scripts; Catch2 and toml++ are fetched and pinned automatically.
 ./build/apps/dxl_inspect --port /tmp/ttyDXL dump 8
 ```
 
-Every `x7_*` app accepts the same `--port /tmp/ttyDXL` — the entire
-hardware workflow can be rehearsed offline.
+Every hardware `x7_*` app accepts the same `--port /tmp/ttyDXL` — the
+entire hardware workflow can be rehearsed offline. (The `*_sim` twins
+run pure simulation and take no bus arguments.)
 
 **2. Torque cycle and a first motion against the emulator:**
 

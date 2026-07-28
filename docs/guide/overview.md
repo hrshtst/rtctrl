@@ -62,7 +62,7 @@ finger (see [dynamics foundations](../theory/dynamics-foundations.md)).
 | CRANE-X7 model for mi-lib (`models/crane_x7/crane_x7.ztk`) | generated from the URDF, verified against it numerically and in `rk_pen` |
 | Robust IK (`IkSolver`) | error-damped LM, structured results; converges at reachable singular poses, reports unreachable ones explicitly |
 | Dynamics simulator (`SimArm`) | plain-roki FD with reflected motor inertia; deterministic |
-| Motor comm layer + emulator | full XM register map, indirect-address sync IO, wire-level emulator |
+| Motor comm layer + emulator | the supported XM register subset (what this project uses), indirect-address sync IO, wire-level emulator |
 | Hardware layer (`CraneX7`, `RealArm`) | vendor parity + background RW thread + layered watchdog safety (servo bus watchdog; host deadman on stale commands or frozen feedback), verified on the physical arm |
 | Gravity compensation | proven by gradient tests, sim float, and hardware float |
 | Computed-torque tracking | sim RMS 0.005 rad (3× better than bare PD); hardware-accepted at RMS ≈ 0.02 rad within the reduced-speed envelope — see the [theory notes](../theory/computed-torque.md) for the hardware-hardened law and the scale cap |
