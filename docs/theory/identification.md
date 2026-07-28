@@ -92,10 +92,12 @@ Its elastic mode has
 
 both written for $b = 0$. A nonzero link damping adds its own
 contribution to the total modal damping, so the $\zeta$ above is the
-*coupling* contribution, below the total; $\omega_0$ itself remains
-the undamped stiffness/inertia natural frequency regardless of $b$ —
-damping only shifts the *damped oscillation* frequency slightly below
-it, $\omega_d = \omega_0\sqrt{1-\zeta^2}$. $J_l$ is configuration-dependent (the arm's inertia
+*coupling* contribution, below the total $\zeta_{\text{tot}}$;
+$\omega_0$ itself remains the undamped stiffness/inertia natural
+frequency regardless of $b$. In an equivalent lightly damped modal
+approximation (with link–ground damping the two-mass system is not
+exactly an isolated SDOF mode), the damped oscillation frequency sits
+slightly below it, $\omega_d \approx \omega_0\sqrt{1-\zeta_{\text{tot}}^2}$. $J_l$ is configuration-dependent (the arm's inertia
 about the joint changes with posture), which is why the mode is
 *posture-dependent* and the campaign planned four postures P1–P4. The
 simulation twin (`apps/two_mass_arm.hpp`) plants exactly this model
