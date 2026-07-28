@@ -67,6 +67,7 @@ nav:
       - Dynamics foundations: theory/dynamics-foundations.md
       - Gravity compensation: theory/gravity-compensation.md
       - Computed torque: theory/computed-torque.md
+      - Flexible-mode identification: theory/identification.md
   - Hardware:
       - Bring-up checklist: HARDWARE_BRINGUP.md
       - Identification protocol: IDENTIFICATION_PROTOCOL.md

@@ -24,6 +24,10 @@ wire protocol.
 - [Computed-torque control](theory/computed-torque.md) —
   inverse-dynamics feedforward tracking: law, error dynamics,
   trajectories, results, and what the hardware taught us
+- [Flexible-mode identification](theory/identification.md) — the
+  mathematics of the closed campaign: why delayed damping pumps the
+  4–5 Hz mode, the stepped-sine/least-squares method, observability
+  limits, and the experimentally scoped null result
 
 ## Hardware
 

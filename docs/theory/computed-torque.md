@@ -223,7 +223,9 @@ supported boundary** (see IDENTIFICATION_PLAN.md, Closure).
   at its first gate — joint 1 at P1 is stiction-locked below the
   output encoder's resolution under a stationary current probe up to
   its hard cap (other routes untested; closed by decision — see
-  IDENTIFICATION_PLAN.md, Closure). That regime belongs to
+  IDENTIFICATION_PLAN.md, Closure). The theory, method mathematics,
+  and quantified results are in
+  [flexible-mode identification](identification.md). That regime belongs to
   position-mode tracking (servo-internal kHz loops), keeping current
   mode for what it does best: gravity compensation, hand-guiding, and
   moderate-envelope tracking. Input shaping can only reduce REFERENCE
