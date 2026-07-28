@@ -37,7 +37,11 @@ added after the inner update; the sum re-clamps to the hardware τ_max with a
 **Primary estimator — direct ratio, no de-embedding** (review correction C2): the D8
 telemetry logs the TOTAL applied torque, so the plant FRF is F{q_link}/F{τ_total} per
 dwell — a closed loop with known injection needs no controller model when both plant
-input and output are measured. Two variants: (a) τ_meas-based (measured current × kt,
+input and output are measured. *(Superseded wording: on the multijoint arm this scalar
+ratio is an apparent, controller-conditioned driving-point receptance — equal to the
+true FRF only where cross-joint feedback torques are negligible; the tuning merge guard
+exists for exactly this reason. Derivation:
+[theory/identification.md](theory/identification.md).)* Two variants: (a) τ_meas-based (measured current × kt,
 sampled at the same feedback events as q — perfectly aligned; PRIMARY); (b)
 commanded-based, phase-corrected by the receipt-map `first_apply_delay`. The ratio
 (b)/(a) is itself a deliverable: the commanded→measured actuator transfer for the notch
@@ -104,7 +108,8 @@ budget on its own; see the session-budget partitions), paired for analysis throu
 the anchor-reference gate; the peak dwell additionally repeats once at HALF
 amplitude (gear compliance/backlash are amplitude-dependent — a linearity
 spot-check, flagged in the output when the FRF point moves); the analysis reports
-per-dwell fit residuals and confidence intervals, and a mode-table entry without
+per-dwell fit residuals and confidence intervals *(delivered as heuristic
+residual-profile bands — see theory/identification.md)*, and a mode-table entry without
 refinement data is marked survey-confidence only.
 
 **Posture identity** (rounds 2–3): hand placement is not reproducible by itself, and
@@ -116,7 +121,8 @@ P3/P4 nominal. The app takes `--anchor-ref <summary.json>` (or the documented
 vector): after settling it compares the settled anchor per joint and REFUSES to run
 outside tolerance, printing the deltas. The analysis refuses to combine runs whose
 recorded anchors differ beyond tolerance AND flags repeat runs whose fitted peak
-shifts by more than the fit's confidence interval even when the anchors pass — the
+shifts by more than the fit's confidence interval *(the heuristic residual-profile
+band, as implemented)* even when the anchors pass — the
 protocol includes a posture-sensitivity micro-test (P2 survey repeated after
 deliberate re-placement) to calibrate the tolerance empirically.
 
@@ -353,7 +359,8 @@ emulator smoke → hardware)
    per-dwell dt-weighted least-squares fit on [1, t, sin φ, cos φ]; direct-ratio
    FRF (τ_meas primary; commanded + delay-corrected secondary; their ratio = actuator
    transfer); all-joint participation vectors (every joint's q is in the CSV); complex
-   SDOF fit with per-dwell residuals and confidence intervals; repeat-dwell /
+   SDOF fit with per-dwell residuals and confidence intervals *(delivered as heuristic
+   residual-profile bands)*; repeat-dwell /
    up-vs-down / half-amplitude consistency checks flagged in the output; ANCHOR MERGE
    GUARD — refuses to combine runs whose recorded anchors differ beyond the ±0.02 rad
    tolerance; per-posture mode table (JSON + markdown) with survey-only entries marked

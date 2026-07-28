@@ -514,6 +514,10 @@ def mode_entry(band: list[Dwell], all_dwells: list[Dwell],
     return {
         "f_n_hz": fn,
         "zeta": zeta,
+        # legacy key names kept for compatibility: the values are
+        # HEURISTIC residual-profile bands (see sdof_fit), not
+        # calibrated confidence intervals — the table-level
+        # uncertainty_semantics field states this in the output
         "f_n_ci_hz": list(fn_ci),
         "zeta_ci": list(z_ci),
         "fit_residual_rad_per_nm": resid,
@@ -656,6 +660,11 @@ def main() -> int:
         # the floor this analysis actually applied — recorded so the
         # usability verdict is reproducible from the table alone
         "obs_floor_rad": args.obs_floor_rad,
+        # the *_ci_* key names are legacy: their values are heuristic
+        # residual-profile bands, not calibrated confidence intervals
+        "uncertainty_semantics":
+            "heuristic residual-profile bands (legacy *_ci_* keys); "
+            "no calibrated noise model",
         # non-empty = the mode-fit gate refused: there are NO modes in
         # this table by decision, not by absence of peaks — the dwell
         # rows and actuator transfer below remain valid measurements
@@ -716,7 +725,7 @@ def main() -> int:
             continue
         lines.append(
             f"- mode **{m['f_n_hz']:.2f} Hz**, zeta **{m['zeta']:.4f}** "
-            f"(CI {m['f_n_ci_hz'][0]:.2f}-{m['f_n_ci_hz'][1]:.2f} Hz, "
+            f"(band {m['f_n_ci_hz'][0]:.2f}-{m['f_n_ci_hz'][1]:.2f} Hz, "
             f"{m['zeta_ci'][0]:.4f}-{m['zeta_ci'][1]:.4f}) — "
             f"**{m['confidence'].upper()}**"
             + (": " + "; ".join(m["missing_evidence"])

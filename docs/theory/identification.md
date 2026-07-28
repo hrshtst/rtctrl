@@ -90,10 +90,12 @@ Its elastic mode has
 \left(\text{equivalently } \frac{C_g}{2}\sqrt{\tfrac{1/J_m + 1/J_l}{K_g}}\right),
 ```
 
-both written for $b = 0$: a nonzero link damping adds its own
-contribution to the total modal damping, so where $b$ is not
-negligible these are the *coupling* frequency and damping, slightly
-below the totals. $J_l$ is configuration-dependent (the arm's inertia
+both written for $b = 0$. A nonzero link damping adds its own
+contribution to the total modal damping, so the $\zeta$ above is the
+*coupling* contribution, below the total; $\omega_0$ itself remains
+the undamped stiffness/inertia natural frequency regardless of $b$ —
+damping only shifts the *damped oscillation* frequency slightly below
+it, $\omega_d = \omega_0\sqrt{1-\zeta^2}$. $J_l$ is configuration-dependent (the arm's inertia
 about the joint changes with posture), which is why the mode is
 *posture-dependent* and the campaign planned four postures P1–P4. The
 simulation twin (`apps/two_mass_arm.hpp`) plants exactly this model
