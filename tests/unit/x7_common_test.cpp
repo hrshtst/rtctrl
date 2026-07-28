@@ -173,13 +173,11 @@ TEST_CASE("parseCli: duplicates last-wins; bare argv is defaults",
     CHECK(cli.port_override.empty());
     CHECK(cli.rest.empty());
   }
-  SECTION("documented limitation: a token equal to a flag name is "
-          "always the flag") {
+  SECTION("a flag name in value position means the value is missing") {
+    // review finding: consuming "--port" as a config filename
+    // contradicted the documented always-a-flag rule
     Argv a{"--config", "--port"};
-    const auto cli = x7::parseCli(a.argc(), a.argv());
-    CHECK(cli.ok);
-    CHECK(cli.config_path == "--port");
-    CHECK(cli.rest.empty());
+    CHECK_FALSE(x7::parseCli(a.argc(), a.argv()).ok);
   }
 }
 

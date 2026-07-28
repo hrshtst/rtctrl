@@ -42,6 +42,14 @@ catch_discover_tests(integration_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS integration)
 
+# CLI narrowing regression (review finding): a --joint value beyond
+# int range truncated into a VALID joint index (4294967296 -> 0) and
+# the app proceeded; it must reject before any configuration loading.
+add_test(NAME x7_ident_rejects_oversized_joint
+  COMMAND x7_ident --joint 4294967296)
+set_tests_properties(x7_ident_rejects_oversized_joint PROPERTIES
+  PASS_REGULAR_EXPRESSION "--joint rejected" LABELS unit)
+
 # Dataset-integrity regressions for the offline analysis (frozen vs
 # live-integrator merge refusal, frozen-bias record validity). The
 # build-local uv cache keeps the test hermetic — restricted

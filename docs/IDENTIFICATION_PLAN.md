@@ -406,8 +406,9 @@ emulator smoke → hardware)
 - `uv run mkdocs build --strict` clean.
 - **Hardware protocol (operator)**: P1 mild anchor first — survey run on joint 1,
   verify the achieved noise floor and dwell verdicts in the analysis output BEFORE any
-  refinement run or new posture; then per the protocol doc. Every run produces the
-  full telemetry; any abort names its cause.
+  refinement run or new posture; then per the protocol doc. Every abort names its
+  cause; when `--log` is given, the primary CSV records the capture/probe controller
+  run — setup-phase refusals are console-only (see the protocol's abort table).
 
 ## Out of scope
 

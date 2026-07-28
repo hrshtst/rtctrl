@@ -9,12 +9,27 @@ using model::kCanonicalDof;
 double RealArm::dt() const { return hw_.options().control_cycle_s; }
 
 bool RealArm::activate() {
-  if (!hw_.activate()) return false;
-  if (!hw_.startThread()) {
-    hw_.deactivate();  // never leave a torqued arm behind a failure
+  // startThread() constructs a std::thread, which can throw AFTER
+  // hardware torque is already enabled — and the apps' shutdown
+  // guards only exist once activate() has returned. A throw here must
+  // therefore perform the verified shutdown itself: deactivate, and
+  // on an unclean (or throwing) deactivation request quiescence so
+  // the armed servo Bus Watchdogs halt the arm (review finding).
+  try {
+    if (!hw_.activate()) return false;
+    if (!hw_.startThread()) {
+      hw_.deactivate();  // never leave a torqued arm behind a failure
+      return false;
+    }
+    return true;
+  } catch (...) {
+    try {
+      if (!hw_.deactivate()) hw_.requestQuiesce();
+    } catch (...) {
+      hw_.requestQuiesce();
+    }
     return false;
   }
-  return true;
 }
 
 bool RealArm::deactivate() { return hw_.deactivate(); }

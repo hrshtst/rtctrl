@@ -26,18 +26,22 @@ struct Cli {
 };
 
 // Order-independent and strict: --config/--port are consumed wherever
-// they appear on the command line (a token literally equal to one of
-// them is always treated as the flag, never as another flag's value),
-// and a flag missing its value is an error — never a silent positional
-// (review finding: the old front-only parse let `x7_track 0.5 --port X`
-// feed "--port" through atof into the scale).
+// they appear on the command line, and a flag missing its value is an
+// error — never a silent positional (review finding: the old
+// front-only parse let `x7_track 0.5 --port X` feed "--port" through
+// atof into the scale). A token literally equal to --config/--port is
+// always treated as the flag, never as another flag's value: in value
+// position it means the value is missing, which is an error.
 inline Cli parseCli(int argc, char* argv[]) {
   Cli cli;
   for (int i = 1; i < argc; ++i) {
     const bool is_config = std::strcmp(argv[i], "--config") == 0;
     const bool is_port = std::strcmp(argv[i], "--port") == 0;
     if (is_config || is_port) {
-      if (i + 1 >= argc) {
+      const bool value_is_flag =
+          i + 1 < argc && (std::strcmp(argv[i + 1], "--config") == 0 ||
+                           std::strcmp(argv[i + 1], "--port") == 0);
+      if (i + 1 >= argc || value_is_flag) {
         std::fprintf(stderr, "%s requires a value\n", argv[i]);
         cli.ok = false;
         return cli;

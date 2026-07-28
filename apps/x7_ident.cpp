@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -121,10 +122,15 @@ int main(int argc, char* argv[]) {
   const char* const* argv_rest = cli.rest.data();
   for (int i = 0; i < argn; ++i) {
     if (std::strcmp(argv_rest[i], "--joint") == 0 && i + 1 < argn) {
+      // validate the LONG before narrowing: on this platform
+      // 4294967296 would truncate to joint 0 (review finding)
       long j = -1;
-      if (!x7::parseStrictLong(argv_rest[++i], &j)) {
-        std::fprintf(stderr, "--joint rejected: one integer index "
-                             "required\n");
+      if (!x7::parseStrictLong(argv_rest[++i], &j) || j < 0 ||
+          j >= model::kCanonicalDof) {
+        std::fprintf(stderr,
+                     "--joint rejected: one canonical index in [0, %d] "
+                     "required\n",
+                     model::kCanonicalDof - 1);
         return 1;
       }
       probe_joint = static_cast<int>(j);
@@ -266,6 +272,44 @@ int main(int argc, char* argv[]) {
     model::ChainModel chain("models/crane_x7/crane_x7.ztk");
     model::JointMap map(chain);
 
+    // RAII over the position-phase ACTIVATED interval (review finding:
+    // the abort was a manually called lambda, so an exception during
+    // placement, gravity computation, or the mode switch bypassed it
+    // entirely). Armed after the position activation; stays armed
+    // through the in-place switch until the session shutdown guard
+    // below takes over, so no activated instant is uncovered. Every
+    // position-phase abort must VERIFY its shutdown: a failed
+    // deactivation leaves the failed servos torqued with their Bus
+    // Watchdogs armed (by design), so the guard silences the bus — the
+    // watchdogs halt them — and tells the operator the truth.
+    struct PositionPhaseGuard {
+      rtctrl::hw::CraneX7* hw;
+      bool armed = false;
+      // deliberate abort: verified deactivation, disarms the guard
+      bool abort() {
+        armed = false;
+        bool clean = false;
+        try {
+          clean = hw->deactivate();
+        } catch (...) {
+          clean = false;
+        }
+        if (!clean) {
+          hw->requestQuiesce();
+          std::fprintf(stderr,
+                       "SHUTDOWN FAULT: position-phase deactivation "
+                       "incomplete — bus silenced; still-torqued "
+                       "servos' Bus Watchdogs will halt them; verify "
+                       "the arm is limp before approaching\n");
+        }
+        return clean;
+      }
+      void dismiss() { armed = false; }
+      ~PositionPhaseGuard() {
+        if (armed) abort();
+      }
+    } pos_guard{session.arm.get()};
+
     if (pose_first) {
       // EARLY budget refusal, before ANY motion (review finding: the
       // old check ran after placement had already moved the robot).
@@ -302,23 +346,9 @@ int main(int argc, char* argv[]) {
                      session.arm->lastError().c_str());
         return 1;
       }
-      // Every position-phase abort must VERIFY its shutdown: a failed
-      // deactivation leaves the failed servos torqued with their Bus
-      // Watchdogs still armed (by design) — they halt on the bus
-      // silence when this program exits, but the operator must be told
-      // the truth about the state (review finding: one path claimed
-      // "released" while the arm was still held).
-      const auto positionPhaseAbort = [&session]() -> bool {
-        const bool clean = session.arm->deactivate();
-        if (!clean) {
-          std::fprintf(stderr,
-                       "SHUTDOWN FAULT: position-phase deactivation "
-                       "incomplete — still-torqued servos keep their "
-                       "Bus Watchdogs armed and will halt on bus "
-                       "silence at exit; verify the arm is limp "
-                       "before approaching\n");
-        }
-        return clean;
+      pos_guard.armed = true;  // the arm is now servo-held
+      const auto positionPhaseAbort = [&pos_guard]() -> bool {
+        return pos_guard.abort();
       };
       // Health gate BEFORE motion (review finding: an overheated arm
       // must not perform the placement move first).
@@ -384,12 +414,15 @@ int main(int argc, char* argv[]) {
                          "the arm has been deactivated\n");
           }
         } else {
+          pos_guard.dismiss();  // mid-sequence failure already released
           std::fprintf(stderr,
                        "the switch failed mid-sequence and released "
                        "the arm — check it before rerunning\n");
         }
         return 1;
       }
+      // the arm stays ACTIVE in current mode: pos_guard remains armed
+      // until the session shutdown guard below takes over
       // keep session.config consistent with the switched arm
       for (auto& joint : session.config.joints) joint.operating_mode = 0;
     }
@@ -414,39 +447,31 @@ int main(int argc, char* argv[]) {
     if (!robot.activate()) {
       std::fprintf(stderr, "activation failed: %s\n",
                    hw->lastError().c_str());
+      // RealArm::activate() has already performed the verified
+      // shutdown for its own failure modes
+      pos_guard.dismiss();
       return 1;
     }
-    const auto t_activate = std::chrono::steady_clock::now();
-    // Independent session watchdog: expiry does exactly one thing —
-    // requestQuiesce() + report. Bus silence trips the servo Bus
-    // Watchdogs; the watchdog never calls deactivate() or touches the
-    // port (neither is concurrency-safe against a blocked shutdown).
-    x7::SessionWatchdog watchdog(
-        std::chrono::milliseconds(
-            static_cast<long>(1e3 * x7::kTQuiesceS)),
-        [hw] {
-          hw->requestQuiesce();
-          std::fprintf(stderr,
-                       "SESSION WATCHDOG: T_quiesce reached — bus "
-                       "silenced; servo watchdogs will halt the arm\n");
-        });
-    const auto sinceActivation = [&t_activate] {
-      return std::chrono::duration<double>(
-                 std::chrono::steady_clock::now() - t_activate)
-          .count();
-    };
+    // Declared BEFORE the guard so it destructs AFTER it: the guard's
+    // run() may disarm the watchdog, so the watchdog must outlive the
+    // guard on every path, including exception unwind. Emplaced only
+    // after the guard exists — its thread construction can throw
+    // (review finding).
+    std::optional<x7::SessionWatchdog> watchdog;
     // Every post-activation exit funnels through this — INCLUDING an
     // exception unwinding to the outer catch (the destructor runs the
     // same path; a review finding showed exceptions bypassed it). A
     // deactivation that could not CONFIRM zero + torque-off on every
     // servo leaves the failed servos' Bus Watchdogs armed — silence
     // the bus so they fire, and say so loudly; the run must then not
-    // report success. The session watchdog disarms only after the
-    // shutdown attempt (its deadline covers deactivation).
+    // report success. Constructed IMMEDIATELY after activation, BEFORE
+    // the session watchdog whose thread construction can throw (review
+    // finding); the watchdog is linked in below and disarms only after
+    // the shutdown attempt (its deadline covers deactivation).
     struct ShutdownGuard {
       arm::RealArm& robot;
       rtctrl::hw::CraneX7* hw;
-      x7::SessionWatchdog& watchdog;
+      x7::SessionWatchdog* watchdog = nullptr;
       bool done = false;
       bool run() {
         done = true;
@@ -468,14 +493,37 @@ int main(int argc, char* argv[]) {
                        "before approaching; power-cycle before the "
                        "next run.\n");
         }
-        watchdog.disarm();
+        if (watchdog != nullptr) watchdog->disarm();
         return clean;
       }
       ~ShutdownGuard() {
         if (done) return;
         run();
       }
-    } shutdown{robot, hw, watchdog};
+    } shutdown{robot, hw};
+    // the session guard now owns the active arm; the position-phase
+    // guard's watch ends here
+    pos_guard.dismiss();
+    const auto t_activate = std::chrono::steady_clock::now();
+    // Independent session watchdog: expiry does exactly one thing —
+    // requestQuiesce() + report. Bus silence trips the servo Bus
+    // Watchdogs; the watchdog never calls deactivate() or touches the
+    // port (neither is concurrency-safe against a blocked shutdown).
+    watchdog.emplace(
+        std::chrono::milliseconds(
+            static_cast<long>(1e3 * x7::kTQuiesceS)),
+        [hw] {
+          hw->requestQuiesce();
+          std::fprintf(stderr,
+                       "SESSION WATCHDOG: T_quiesce reached — bus "
+                       "silenced; servo watchdogs will halt the arm\n");
+        });
+    shutdown.watchdog = &*watchdog;
+    const auto sinceActivation = [&t_activate] {
+      return std::chrono::duration<double>(
+                 std::chrono::steady_clock::now() - t_activate)
+          .count();
+    };
 
     arm::JointState start;
     if (!robot.readState(start)) {
