@@ -18,7 +18,15 @@ bool RealArm::activate() {
   try {
     if (!hw_.activate()) return false;
     if (!hw_.startThread()) {
-      hw_.deactivate();  // never leave a torqued arm behind a failure
+      // never leave a torqued arm behind a failure — and VERIFY: an
+      // unclean (or throwing) deactivation must quiesce the bus so
+      // the armed servo watchdogs halt the arm (review finding; this
+      // path is reachable with mixed operating modes)
+      try {
+        if (!hw_.deactivate()) hw_.requestQuiesce();
+      } catch (...) {
+        hw_.requestQuiesce();
+      }
       return false;
     }
     return true;
