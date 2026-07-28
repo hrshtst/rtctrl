@@ -99,7 +99,9 @@ provides `expand` ($q_9 = E q_8$), `reduce`, and `reduceTorque`
 class Arm {
   int dof();                    // 8
   double dt();                  // control period
-  bool activate();              // torque on, safety armed, NO motion
+  bool activate();              // torque on, safety armed; holds in
+                                // position mode, zero-current in
+                                // current mode unless preloaded
   bool deactivate();            // gentle release — NOT an e-stop
   bool setMode(ControlMode);    // Position=3 / Velocity=1 / Current=0
   bool readState(JointState&);  // q, dq, tau (est.), t

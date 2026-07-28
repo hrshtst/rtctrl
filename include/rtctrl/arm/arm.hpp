@@ -14,9 +14,13 @@ class Arm {
   virtual int dof() const = 0;
   virtual double dt() const = 0;  // control period [s]
 
-  // Torque on; clamps the goal to the present posture so activation
-  // causes no motion. On real hardware this also arms safety (soft
-  // gains, servo Bus Watchdog).
+  // Torque on. Activation never COMMANDS motion, but only position
+  // mode holds the arm: goals snap to the present posture there. In
+  // current mode the initial goal is ZERO current — the arm is
+  // unsupported and can fall under gravity until the controller's
+  // first command, unless a preload was staged (see
+  // CraneX7::setActivationCurrentPreload). On real hardware this also
+  // arms safety (soft gains, servo Bus Watchdog).
   virtual bool activate() = 0;
   // Zero commands, torque off. NOT an emergency stop.
   virtual bool deactivate() = 0;

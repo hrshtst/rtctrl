@@ -290,7 +290,8 @@ emulator smoke → hardware)
    extensions/retries), anchor-reference gate
    (`--anchor-ref`, ±0.02 rad/joint), ident CSV writer (full D8 block + per-row
    `dwell_id, dwell_phase, probe_joint, probe_hz, probe_amp, probe_phase, probe_tau,
-   probe_clipped, resp_amp_est` + per-joint `temp, volt`; `#` header gains
+   cmd_total, probe_clipped, resp_amp_est, dwell_attempt` + per-joint `temp, volt`;
+   `#` header gains
    `--label`, anchor q, planned amplitudes, tuning snapshot) + per-dwell JSON
    summary sidecar (online I/Q per joint, verdicts, anchor vector). New
    `tests/unit/ident_common_test.cpp`: state-machine timing on scripted mocks, clamp

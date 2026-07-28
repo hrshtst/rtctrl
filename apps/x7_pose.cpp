@@ -1,10 +1,10 @@
-// Positioning aid for the identification campaign: moves the arm to a
-// canonical posture in POSITION mode so the operator sees the real
-// target on hardware, holds it there, then goes limp on request while
-// the operator supports the arm. x7_ident then runs UNCHANGED (its
-// settle gate and +/-0.02 rad anchor gate still do the verifying) —
-// hand placement reduces to briefly steadying an already-posed arm
-// through the torque-off.
+// Positioning aid: moves the arm to a canonical posture in POSITION
+// mode so the operator sees the real target on hardware, holds it,
+// then goes limp on request while the operator supports the arm. The
+// PRIMARY campaign flow was `x7_ident --pose-first` (integrated
+// placement, no hands); this app remains for visually confirming a
+// posture and for the manual-fallback handover, where x7_ident's
+// settle and +/-0.02 rad anchor gates still do the verifying.
 //
 // SAFETY: the arm is servo-stiff during the move and DROPS under
 // gravity the moment it goes limp — support the shoulder and elbow

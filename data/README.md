@@ -15,3 +15,10 @@ demodulation values cited by `docs/IDENTIFICATION_PLAN.md`'s Closure
 section and its addenda; raw timing and sample-level claims (apply
 delays, encoder-count behavior, overrun/I/O counts) require the
 archived CSVs.
+
+Fields reflect the code version that wrote each sidecar: the three
+`p1_hold_s050_fz_r*` files carry `integral_frozen_at_capture: 1`
+without a `frozen_bias_nm` vector (they predate bias recording), and
+the analyzer deliberately refuses them for exactly that reason —
+their frozen biases are recoverable from the archived raw CSVs'
+integral column.

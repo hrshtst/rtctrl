@@ -44,11 +44,11 @@ bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
 | `p1_hold_s050_r2.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_hold_s050_r2.csv.dwells.json`) | `7b058704c9d08dec10e951baebaf8f84be1895b2663fa491ebf1630fc8187822` |
 | `p1_hold_s050_r3.csv` \* | Hold session 2 run 3 (live integrator): hunting recurrence | `fceefa570b83f36085637577ba40dbfd3cbb9ff1cb61bf7305fecf80f52175e6` |
 | `p1_hold_s050_r3.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_hold_s050_r3.csv.dwells.json`) | `61cdf4aef3d01e68dfda9f99c6cf08d107a01b6857932dd8ab5e3598c107cc7e` |
-| `p1_hold_s050_fz_r1.csv` \* | Frozen-integral qualifying hold 1/3 PASSED (30 s) | `309460038b22681c62985f20e0bcc8888c71fe7cde6411b973feb64ab7f6d7e4` |
+| `p1_hold_s050_fz_r1.csv` \* | Frozen-integral qualifying hold 1/3 PASSED (30 s) (sidecar predates bias recording — analyzer refuses it by design) | `309460038b22681c62985f20e0bcc8888c71fe7cde6411b973feb64ab7f6d7e4` |
 | `p1_hold_s050_fz_r1.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_hold_s050_fz_r1.csv.dwells.json`) | `59dc021ef89bdd11c7ff056c43c33099b74f84df38dfddfe4908d1921715acc0` |
-| `p1_hold_s050_fz_r2.csv` \* | Frozen-integral qualifying hold 2/3 PASSED (30 s) | `a8e9319369a269f7507de86aedd2a3318fdad4bbec8c9f4a74e7c6d21c6ec4be` |
+| `p1_hold_s050_fz_r2.csv` \* | Frozen-integral qualifying hold 2/3 PASSED (30 s) (sidecar predates bias recording — analyzer refuses it by design) | `a8e9319369a269f7507de86aedd2a3318fdad4bbec8c9f4a74e7c6d21c6ec4be` |
 | `p1_hold_s050_fz_r2.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_hold_s050_fz_r2.csv.dwells.json`) | `00031606dc4a784d158dccf9700c43b538a260ece3fee1527974be64c5962677` |
-| `p1_hold_s050_fz_r3.csv` \* | Frozen-integral qualifying hold 3/3 PASSED (30 s) | `7d212604bff0c2a6e2d5d67afd9bc87614d628c2f77a6830b10d282fbcd7b93f` |
+| `p1_hold_s050_fz_r3.csv` \* | Frozen-integral qualifying hold 3/3 PASSED (30 s) (sidecar predates bias recording — analyzer refuses it by design) | `7d212604bff0c2a6e2d5d67afd9bc87614d628c2f77a6830b10d282fbcd7b93f` |
 | `p1_hold_s050_fz_r3.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_hold_s050_fz_r3.csv.dwells.json`) | `4ac40feb740937f1c55d272078c8af31409abb3a482a11834e7c3d5e0beedcfb` |
 | `p1_hold_prod_r1.csv` \* | Production-path equivalence hold PASSED (30/30 s) | `8902128f52e8dc9e7ffbce555459f765030dfdf5df6fdf8f9e87cd88000838f9` |
 | `p1_hold_prod_r1.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_hold_prod_r1.csv.dwells.json`) | `d18f28dbd79dcf45a867eea4aa27ab58441f646e6be4821eba45ba1de360d0bd` |

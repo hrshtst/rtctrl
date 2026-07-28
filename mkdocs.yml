@@ -76,5 +76,6 @@ nav:
       - Implementation plan: IMPLEMENTATION_PLAN.md
       - Remediation plan: REMEDIATION_PLAN.md
       - Identification plan: IDENTIFICATION_PLAN.md
+      - Consistency remediation plan: CONSISTENCY_REMEDIATION_PLAN.md
       - Data archive manifest: DATA_ARCHIVE.md
       - Vendor parity: PARITY.md

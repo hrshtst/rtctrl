@@ -39,8 +39,10 @@ Every hardware app runs identically against the emulator
 
 **Safety is layered and assumes failure.** Torque can only be enabled
 through an activation sequence that verifies servo identity and
-firmware, snaps goals to the present posture (no motion on power-up),
-and arms the servo-side Bus Watchdog. A host-side deadman
+firmware, snaps goals to the present values (no motion is commanded;
+position mode holds the posture, while current-mode activation is
+zero-current — the app must support the arm immediately or stage a
+gravity preload), and arms the servo-side Bus Watchdog. A host-side deadman
 independently watches the *command* stream — because reads alone keep
 the servo watchdog fed — and escalates to full bus silence, which
 provably forces the servos to halt themselves. None of this replaces

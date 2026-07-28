@@ -148,7 +148,10 @@ bool CraneX7::activateSteps() {
         dxl::currentToAmps(static_cast<std::int16_t>(current_limit_raw)));
   }
 
-  // Snap goals to the present posture so torque-on causes no motion.
+  // Snap goals to the present posture so torque-on commands no motion.
+  // This HOLDS the arm only in position mode: current-mode goals are
+  // zero (or the staged preload) — the arm is otherwise unsupported
+  // until the first controller command.
   std::vector<dxl::Feedback> present;
   if (!readAll(present)) {
     last_error_ = "present-state read failed";

@@ -66,7 +66,10 @@ SimArm::~SimArm() { zMatFree(mass_mat_); }
 double SimArm::fingerBDis() const { return q9_[map_.rokiOffsetFingerB()]; }
 
 bool SimArm::activate() {
-  // Hold the present posture: no motion on activation.
+  // No motion is COMMANDED on activation: position-mode goals snap to
+  // the present posture (held); current-mode goals initialize to zero
+  // torque, so the simulated arm falls under gravity once stepped —
+  // same contract as the hardware.
   for (int i = 0; i < kCanonicalDof; ++i) {
     zVecElemNC(cmd_.q.get(), i) = q9_[map_.rokiOffset(i)];
     zVecElemNC(cmd_.dq.get(), i) = 0.0;

@@ -28,8 +28,8 @@ namespace rtctrl::hw {
 //     requires firmware >= 38 on every servo; otherwise activation
 //     fails. The watchdog counts reads too, so it cannot catch a host
 //     whose reads continue while command writes stall — that is layer 2:
-//  2. The host-side deadman: feedCommand() marks each successful command
-//     write; checkDeadman() escalates once the last one is older than
+//  2. The host-side deadman: each successful command write feeds it;
+//     checkDeadman() escalates once the last one is older than
 //     the timeout — best-effort zero + torque off, then STOP ALL BUS
 //     TRAFFIC (onEscalate, e.g. dxl::Port::close), which guarantees
 //     layer 1 fires on the servos.
@@ -77,10 +77,14 @@ class CraneX7 {
 
   // Verifies ids/models/firmware, programs indirect maps and operating
   // modes (torque off), snaps goals to present, sets the active gains,
-  // arms the servo Bus Watchdogs, then enables torque. No motion
-  // results. Returns false (with lastError()) on any mismatch — and a
-  // mid-sequence failure best-effort releases every servo the sequence
-  // may already have touched (no partially torqued arm).
+  // arms the servo Bus Watchdogs, then enables torque. No motion is
+  // COMMANDED — but only position mode holds the posture: current-mode
+  // goals snap to zero current, so the arm is unsupported until the
+  // first controller command unless setActivationCurrentPreload staged
+  // a gravity current. Returns false (with lastError()) on any
+  // mismatch — and a mid-sequence failure best-effort releases every
+  // servo the sequence may already have touched (no partially torqued
+  // arm).
   bool activate();
 
   // Going limp gently: limp gains, zero goal currents, torque off,

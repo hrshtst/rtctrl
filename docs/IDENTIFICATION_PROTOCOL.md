@@ -198,7 +198,9 @@ that moves.
 | `ABORTED: <hard fault>` | thermal/voltage/gate/deviation/saturation/stale/latency/I/O | do NOT simply rerun — resolve the cause (cool down, re-place, inspect telemetry) |
 | `SESSION WATCHDOG` message | bus silenced at T_quiesce; servo watchdogs halted the arm | treat as a hard fault; power-cycle if needed |
 
-Every abort names its cause; every run leaves the full telemetry.
+Every abort names its cause. When `--log` is provided, the primary CSV
+records the capture/probe controller run. Earlier refusals do not
+create that CSV; manual settling may leave the separate `.settle` log.
 
 ## Analysis and outputs
 
@@ -213,12 +215,18 @@ uv run --project tools tools/ident_analysis.py \
   **controller-specific**: on a multivariable arm the other joints'
   coherent feedback torques are coupled inputs that the primary
   estimator's denominator does not contain, so a gain change changes
-  the reported FRF. Every sidecar records the complete tuning
-  (gains, scales, filter constants, and the EFFECTIVE frozen-integral
-  mode) plus the ACTUAL frozen bias vector — run state, surfaced for
-  repeatability comparisons (compare repeat-survey peaks alongside it;
-  observed joint-2 bias varied −0.109 to −0.427 Nm across qualifying
-  holds) but never a merge criterion. The mode table carries the
+  the reported FRF. A sidecar records the complete tuning as of the
+  code version that wrote it: the EFFECTIVE frozen-integral mode, the
+  ACTUAL frozen bias vector, and `amp_eff_nm` appear from the versions
+  that introduced them — the qualification-era sidecars
+  (`p1_hold_s050*`) predate some fields, and the analyzer deliberately
+  refuses any sidecar that claims a freeze without the bias vector.
+  The bias vector is run state, surfaced for repeatability comparisons
+  (compare repeat-survey peaks alongside it; joint-2 bias varied
+  −0.109 to −0.427 Nm across the qualifying holds — from their
+  raw-CSV integral column, per-run −0.1088 / −0.4173 / −0.4268 Nm,
+  as those sidecars predate bias recording) but never a merge
+  criterion. The mode table carries the
   tuning as the `controller` record; transferring results to a
   different tuning (e.g. x7_track's) must be demonstrated, not
   assumed. Dwell verdicts

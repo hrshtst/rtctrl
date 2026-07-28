@@ -29,6 +29,12 @@ wire protocol.
 
 - [Bring-up checklist](HARDWARE_BRINGUP.md) — the ordered physical
   procedure, safety rules, watchdog drill, troubleshooting
+- [Identification protocol](IDENTIFICATION_PROTOCOL.md) — the
+  stepped-sine operator procedure (campaign closed 2026-07-28;
+  retained as the historical record)
+- [Identification campaign checklist](IDENTIFICATION_CAMPAIGN.md) —
+  the concrete run order and outcomes, including the stop condition
+  that closed the campaign
 
 ## Project records
 
@@ -36,6 +42,16 @@ wire protocol.
   history)
 - [Implementation plan](IMPLEMENTATION_PLAN.md) — the approved
   milestone plan, updated with outcomes and hardware findings
+- [Remediation plan](REMEDIATION_PLAN.md) — pass-1 instrumentation and
+  hardening of the torque loop (complete; pass 2 closed with a null
+  result)
+- [Identification plan](IDENTIFICATION_PLAN.md) — the pass-2 design
+  record, its addenda, and the Closure section (the 0.6 cap is final)
+- [Consistency remediation plan](CONSISTENCY_REMEDIATION_PLAN.md) —
+  the post-closure audit fixes: verified shutdown, strict CLI, and
+  documentation truth
+- [Data archive manifest](DATA_ARCHIVE.md) — every archived hardware
+  dataset's role and SHA-256; bare-filename citations resolve here
 - [Vendor parity](PARITY.md) — `rt_manipulators_cpp` capabilities
   mapped to their rtctrl equivalents and proving tests, plus the
   consciously simplified vendor surface

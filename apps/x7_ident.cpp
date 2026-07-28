@@ -5,8 +5,11 @@
 // pipeline with x7_ident_sim first.
 //
 // SAFETY: current mode. Power cutoff in reach, workspace clear. The
-// posture is HAND-PLACED with the arm limp, held by activation +
-// gravity comp, and verified still by the strict settle gate. One
+// PRIMARY flow is --pose-first: position-mode placement onto the
+// anchor, an in-place switch to current mode with a gravity preload,
+// then capture under the restoring controller — no hands needed. The
+// FALLBACK is hand placement of the limp arm, held by activation +
+// gravity comp and verified still by the strict settle gate. One
 // probe joint, one posture per invocation — the session duration
 // budget (T_stop 177.5 s) is enforced at three levels: pre-activation
 // schedule refusal, post-settle admission against the activation
@@ -209,10 +212,12 @@ int main(int argc, char* argv[]) {
   if (!std::isfinite(pose_vel)) pose_vel = 0.25;
   pose_vel = std::clamp(pose_vel, 0.05, 0.5);
   // Unforced-hold diagnostic (the stabilization procedure): strict
-  // validation, --scale0 is REQUIRED with --hold (the zero sentinel
-  // would silently run the known-failing effective scale 1.0 — review
-  // finding), and it exists ONLY here so arbitrary survey tuning
-  // cannot slip into the campaign (the FRFs are controller-specific).
+  // validation. --scale0 is an OPTIONAL diagnostic override restricted
+  // to --hold; when absent, the zero sentinel selects the QUALIFIED
+  // identification default kIdentScale0 (0.5) — not the shipped scale
+  // and not 1.0 (both pre-qualification claims are obsolete). The
+  // override exists ONLY here so arbitrary survey tuning cannot slip
+  // into the campaign (the FRFs are controller-specific).
   const bool hold_mode = hold_given;
   if (hold_mode) {
     if (!pose_first) {

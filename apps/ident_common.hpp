@@ -208,7 +208,7 @@ inline std::vector<DwellSpec> buildSchedule(
 // carries its HALF-amplitude peak repeat (the linearity spot-check)
 // inside one invocation, e.g. "--freqs 3.9,4.2,4.5,4.8,4.5@0.075".
 // STRICT: any malformed entry, non-finite value, or frequency outside
-// [0.5, 30] Hz rejects the WHOLE list — a silently truncated schedule
+// [0.5, 20] Hz rejects the WHOLE list — a silently truncated schedule
 // (e.g. an unreplaced "<peak>@<half-amp>" placeholder) must refuse to
 // run, not proceed without its dwells (review finding).
 struct FreqSpec {
@@ -627,8 +627,9 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     // monitors live; any violation fails. Per-joint maxima are
     // reported for the tuning decision.
     double hold_only_s = 0.0;
-    // Diagnostic-scoped joint-0 PD gain-scale override (0 = shipped
-    // kGainScale). Restricted to the hold diagnostic by the app: the
+    // Diagnostic-scoped joint-0 PD gain-scale override (0 = the
+    // qualified identification default kIdentScale0, 0.5).
+    // Restricted to the hold diagnostic by the app: the
     // FRFs are CONTROLLER-SPECIFIC (a multivariable arm: other joints'
     // coherent feedback torques are coupled inputs the primary
     // estimator's denominator does not contain), so the campaign runs

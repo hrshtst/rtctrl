@@ -14,7 +14,9 @@ A C++17 control library for the
   path is covered in CI — no robot required
 - **Layered safety**: servo-side Bus Watchdog plus a host deadman
   (stale commands or frozen feedback) that escalates to bus silence;
-  activation cannot cause motion
+  activation never commands motion (current-mode activation is
+  zero-current — apps must command support immediately or explicitly
+  stage a preload)
 
 Robotics computation is delegated to
 [mi-lib](https://github.com/mi-lib), motor communication to

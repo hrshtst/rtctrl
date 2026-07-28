@@ -23,8 +23,9 @@ rationale in [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md).
       before re-enable). The manual fallback is current mode
       throughout and free-falls until the gravity hold lands.
 - [ ] Optional dry run without the arm to see the output shape:
-      `dxl_emu` in one terminal, then
-      `x7_ident --port <link> --joint 1 --freqs "5,8"` in another.
+      `./build/apps/dxl_emu` in one terminal, then
+      `./build/apps/x7_ident --port <link> --joint 1 --freqs "5,8"`
+      in another.
 
 ## 2. Stabilize the anchor hold FIRST (required)
 
