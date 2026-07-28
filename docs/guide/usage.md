@@ -111,13 +111,18 @@ MyController c(start);
 arm::run(sim, c, /*seconds=*/10.0);   // read → update → write → step
 ```
 
-**On the robot** (identical controller code):
+**On the robot** (identical controller code; this listing is written
+as an in-repo program — the verified-shutdown guard it uses is the
+apps' shared plumbing, not part of the installed library API):
 
 ```cpp
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/port.hpp"
 #include "rtctrl/hw/crane_x7.hpp"
-#include "x7_common.hpp"  // apps/ — the shared verified-shutdown guard
+// Repository-internal: the x7_* apps' shared plumbing lives under
+// apps/, NOT in the installed rtctrl:: API — in-repo programs include
+// it relatively (examples/ does exactly this):
+#include "../apps/x7_common.hpp"
 
 auto config = hw::Config::load("config/crane_x7.toml");
 dxl::Port port(config.port, config.baudrate);
@@ -141,7 +146,8 @@ const bool clean = shutdown.run();  // deactivate + verify; quiesce on failure
 return ok && clean ? 0 : 1;
 ```
 
-(`examples/x7_wave.cpp` is this exact program, runnable against
+(`examples/x7_wave.cpp` is a complete example using this pattern —
+including the `apps/` header the same relative way — runnable against
 `dxl_emu` or the robot.)
 
 `readState` gives positions, velocities, and torque estimates
