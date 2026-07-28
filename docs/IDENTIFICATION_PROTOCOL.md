@@ -256,7 +256,9 @@ uv run --project tools tools/ident_analysis.py \
 - `p1_j1.mode_table.json` / `.md`: ONE entry per detected mode band —
   the 4–5 Hz and ~13 Hz bands when both appear; the ~13 Hz gear band
   may be weak or absent on joint 1 (probe joint 5 covers it) — fitted
-  frequency and damping with grid confidence intervals, per-dwell FRF
+  frequency and damping with heuristic grid uncertainty bands (a
+  residual-profile extent, not calibrated confidence intervals),
+  per-dwell FRF
   (τ_meas primary; the delay-corrected SUBMITTED TOTAL command
   secondary; their ratio = the actuator transfer for the notch phase
   budget), all-joint participation vector, fit residuals, and repeat /

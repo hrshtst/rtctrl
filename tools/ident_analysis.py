@@ -6,7 +6,8 @@ demodulation on the regressors [1, t, sin(phi), cos(phi)] over the
 MEASURE windows, the direct-ratio FRF (tau_meas primary; the SUBMITTED
 TOTAL commanded torque, delay-corrected, secondary; their ratio = the
 actuator transfer), all-joint participation vectors, complex SDOF fits
-per detected mode band with residuals and grid confidence intervals,
+per detected mode band with residuals and heuristic grid uncertainty
+bands (residual-profile extents, not calibrated confidence intervals),
 repeat-visit and half-amplitude consistency checks, the anchor merge
 guard (+/-0.02 rad), and per-posture mode tables.
 
@@ -337,8 +338,11 @@ def sdof_fit(
 ) -> tuple[float, float, float, tuple[float, float], tuple[float, float]]:
     """Complex SDOF fit on a fine local grid: H(f) ~ c*G(f) + d with
     G = 1/(fn^2 - f^2 + 2 j zeta fn f); c, d solved by linear least
-    squares per (f_n, zeta) candidate, best residual wins. CIs are the
-    grid extent of the Delta-chi^2 <= chi^2_min * 2/(N-4) band."""
+    squares per (f_n, zeta) candidate, best residual wins. The
+    reported bands are the grid extent of the residual profile
+    res <= res_min * (1 + 2/(N-4)) — a HEURISTIC uncertainty band
+    (no calibrated noise model), not a statistical confidence
+    interval."""
     fn_grid = np.arange(max(0.5, freqs.min() * 0.8), freqs.max() * 1.2, 0.01)
     z_grid = np.geomspace(0.005, 0.3, 120)
     best = (0.0, 0.0)

@@ -49,10 +49,15 @@ the mode is
 \;>\; 0 \quad \text{for } \varphi > 90^\circ,
 ```
 
-so at $117^\circ$ the "damping" *injects* energy: the loop is an
-oscillator, not a regulator, at that frequency. Input shaping cannot
-fix this — it only reduces reference excitation, and this instability
-is internal to the feedback loop.
+so at $117^\circ$ the D-path *injects* energy at the mode instead of
+removing it. That alone proves the term is destabilizing — whether the
+*whole* loop goes unstable depends on the full modal energy balance,
+including structural damping and the remaining controller terms. On
+this hardware the balance was observed to be net positive at full
+scale: runs 7–8 self-excited coherently and diverged until manually
+power-cut. Input shaping cannot repair a net-positive internal
+balance — it only reduces how hard the *reference* excites the mode —
+which is why lifting the cap required a redesign of the loop itself.
 
 The remedy would be a notch or phase-compensated D-path — but designing
 one requires knowing, per posture, the mode frequency $f_n$, damping
@@ -85,14 +90,19 @@ Its elastic mode has
 \left(\text{equivalently } \frac{C_g}{2}\sqrt{\tfrac{1/J_m + 1/J_l}{K_g}}\right),
 ```
 
-and $J_l$ is configuration-dependent (the arm's inertia about the
-joint changes with posture), which is why the mode is *posture-
-dependent* and the campaign planned four postures P1–P4. The
-simulation twin (`apps/two_mass_arm.hpp`) plants exactly this model —
-4.5 Hz, $\zeta = 0.03$ on joint 1 and 13 Hz, $\zeta = 0.05$ on
-joint 5 — and the full pipeline recovers 4.51 Hz / $\zeta$ 0.033 and
-13.01 Hz / $\zeta$ 0.058 from it, which validated probe, logging, and
-analysis against known truth before hardware.
+both written for $b = 0$: a nonzero link damping adds its own
+contribution to the total modal damping, so where $b$ is not
+negligible these are the *coupling* frequency and damping, slightly
+below the totals. $J_l$ is configuration-dependent (the arm's inertia
+about the joint changes with posture), which is why the mode is
+*posture-dependent* and the campaign planned four postures P1–P4. The
+simulation twin (`apps/two_mass_arm.hpp`) plants exactly this model
+with a nonzero $b_l$ — the quoted 4.5 Hz, $\zeta = 0.03$ on joint 1
+and 13 Hz, $\zeta = 0.05$ on joint 5 are the coupling-damping
+*targets* that set $C_g$, not exact total modal dampings — and the
+full pipeline recovers 4.51 Hz / $\zeta$ 0.033 and 13.01 Hz /
+$\zeta$ 0.058 from it, which validated probe, logging, and analysis
+against known truth before hardware.
 
 One geometric fact matters more than any other below: the XM430's
 magnetic encoder sits on the **output shaft**, after the gearbox. The
@@ -116,31 +126,40 @@ is added to one joint at a time, one dwell per frequency over the
 survey grid $\{2,\dots,20\}\,\mathrm{Hz}$.
 
 Closed-loop identification usually requires de-embedding the
-controller. It does not here, because the telemetry records the
-**total applied torque**. Writing the plant as
-$Q(j\omega) = G(j\omega)\,T_{\text{tot}}(j\omega)$ where
-$T_{\text{tot}} = T_p + T_{\text{fb}}$ is probe plus feedback
-reaction, both $Q$ and $T_{\text{tot}}$ are *measured* — so the
-direct ratio
+controller. Recording the **total applied torque** removes most of
+that need: for a *single-input* plant
+$Q(j\omega) = G(j\omega)\,T_{\text{tot}}(j\omega)$ with
+$T_{\text{tot}} = T_p + T_{\text{fb}}$ (probe plus feedback
+reaction), both $Q$ and $T_{\text{tot}}$ are measured, so the direct
+ratio recovers $G$ exactly, closed loop or not. On the multijoint
+arm, however, the output is a matrix relation
+$Q_j = \sum_k G_{jk} T_k$, and the scalar estimator
 
 ```math
-\hat G(j\omega) \;=\; \frac{\mathcal{F}\{q\}(j\omega)}
-                           {\mathcal{F}\{\tau_{\text{tot}}\}(j\omega)}
+\hat G_j(j\omega)
+\;=\; \frac{\mathcal{F}\{q_j\}}{\mathcal{F}\{\tau_{\text{tot},j}\}}
+\;=\; G_{jj} \;+\; \sum_{k\neq j} G_{jk}\,
+      \frac{T_k(j\omega)}{T_j(j\omega)}
+
 ```
 
-is the plant FRF with no controller model at all. Two variants are
-computed: the primary uses measured torque (current $\times$ torque
-constant, sampled at the same events as $q$), the secondary uses the
-commanded total delay-corrected by the receipt-matched apply latency —
-and their ratio is itself a deliverable, the commanded→measured
-**actuator transfer** (it survived the campaign; see the conclusion).
+is an **apparent, controller-conditioned driving-point receptance**:
+it equals the true $G_{jj}$ only where the other joints' coherent
+feedback torques $T_k$ are negligible. This is exactly why the
+measured FRF is **controller-specific** — the cross terms carry the
+tuning — so runs under different tunings are not one dataset, and the
+analysis refuses to merge them (the sidecar records the full tuning;
+`same_tuning` is a merge gate). A tuning-independent $G_{jj}$ would
+require a MIMO estimator with all torques as inputs; for the notch
+design the controller-conditioned receptance *under the shipped
+tuning* was the operationally relevant object anyway.
 
-One caution the campaign taught: the resulting FRF is
-**controller-specific** on a multivariable arm. The other joints'
-coherent feedback torques are coupled inputs that this scalar ratio's
-denominator does not contain, so runs under different tunings are not
-one dataset — the analysis refuses to merge them (the sidecar records
-the full tuning; `same_tuning` is a merge gate).
+Two variants are computed: the primary uses measured torque (current
+$\times$ torque constant, sampled at the same events as $q$), the
+secondary uses the commanded total delay-corrected by the
+receipt-matched apply latency — and their ratio is itself a
+deliverable, the commanded→measured **actuator transfer** (it
+survived the campaign; see the conclusion).
 
 **Amplitude rule.** Off resonance a free inertia responds with
 $|G| \approx 1/(\hat J\omega^2)$, so to target a response amplitude
@@ -184,18 +203,24 @@ conditioning.
 Before the window opens, an **adaptive pre-measure hold** waits out
 the onset transient, which decays as $e^{-\zeta\omega_0 t}$ with time
 constant $1/(\zeta\omega_0) \approx 1.2\,\mathrm{s}$ at 4.5 Hz,
-$\zeta = 0.03$. The hold accepts when two consecutive one-period block
-estimates agree,
+$\zeta = 0.03$. The hold accepts only when two consecutive one-period
+block estimates agree *and* both clear the calibrated floor,
 
 ```math
 \frac{|\hat Z_k - \hat Z_{k-1}|}
-     {\max(|\hat Z_k|, |\hat Z_{k-1}|, Z_{\text{floor}})} \;<\; 0.1 ,
+     {\max(|\hat Z_k|, |\hat Z_{k-1}|, Z_{\text{floor}})} \;<\; 0.1
+\qquad\text{and}\qquad
+\min(|\hat Z_k|, |\hat Z_{k-1}|) \;\ge\; Z_{\text{floor}} ,
 ```
 
 on *both* signals, with per-signal floors calibrated from the unforced
 lead-in (three times the RMS of one-period block magnitudes with the
 probe off), bounded to $[1, 4]\,\mathrm{s}$; a timeout marks the dwell
-low-confidence rather than blocking the run.
+low-confidence rather than blocking the run. The second condition is
+load-bearing: two near-zero blocks trivially "agree", so without the
+floor requirement a tick-frozen signal would be *falsely accepted* —
+with it, zero-response dwells time out into low-confidence instead,
+which is exactly the honest verdict the null survey produced.
 
 ## From FRF points to modes
 
@@ -208,8 +233,12 @@ H(f) \;\approx\; \frac{c}{\,f_n^2 - f^2 + 2j\zeta f_n f\,} + d,
 
 which is linear in $(c, d)$ for fixed $(f_n, \zeta)$ — so the fit
 scans a fine $(f_n, \zeta)$ grid, solves the linear subproblem at each
-point, and keeps the residual minimum; confidence intervals are the
-grid extent of the $\Delta\chi^2$ band. The survey grid alone cannot
+point, and keeps the residual minimum. The reported intervals are the
+grid extent of the residual-profile band
+$\mathrm{res} \le \mathrm{res}_{\min}\,(1 + 2/\nu)$, with $\nu$ the
+fit's degrees of freedom — a *heuristic* uncertainty band: without a
+calibrated noise model there is no likelihood behind it, so read it as
+a relative sharpness indicator, not a statistical confidence interval. The survey grid alone cannot
 produce damping: the half-power width of a $\zeta = 0.03$ mode at
 4.5 Hz is
 
@@ -302,18 +331,23 @@ stationary small-signal current probe up to the 0.30 Nm hard cap.**
   stiction is highest.
 
 **What was measured cleanly.** The actuator transfer came out as a
-textbook pure delay: magnitude $1.00$–$1.05$ flat across 2–20 Hz and
+textbook pure delay — magnitude $1.00$–$1.05$ flat across 2–20 Hz and
 phase falling linearly from $-8^\circ$ to $-76^\circ$, i.e.
 $e^{-j\omega T_d}$ with
 
 ```math
 T_d \;\approx\; \frac{76^\circ}{360^\circ \times 20\,\mathrm{Hz}}
-\;\approx\; 10.6\,\mathrm{ms},
+\;\approx\; 10.6\,\mathrm{ms}
 ```
 
-consistent with the receipt-measured one-cycle apply delay
-(~9.9 ms). Any future compensator design has its actuator phase
-budget. The campaign also produced the first empirical stationary
+— and this slope is measured *after* the command has already been
+delay-corrected by the receipt-matched apply delay (~9.9 ms), so it is
+an **additional** lag, not a confirmation of that one: it sits on the
+measurement side (the reported current lags the applied torque by
+about one more read cycle) or in the timing model, and the raw
+command→measured-torque lag is the sum, roughly two control cycles
+(~20 ms; the uncorrected 20 Hz phase is $\approx -147^\circ$). A
+compensator phase budget must count both parts. The campaign also produced the first empirical stationary
 noise floors (0.4–1.1 mrad — 10–30× the analytic figure, because
 ambient motion is only 1–2 counts) and the qualified hold controller.
 

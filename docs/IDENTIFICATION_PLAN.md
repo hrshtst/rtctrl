@@ -513,9 +513,11 @@ design assumptions failed on hardware together:
   lead-in's floor calibration degenerates the same way (~1e-15),
   which is why every adaptive hold timed out: the SNR truly was
   unresolved. What the survey DID measure cleanly is the
-  commanded→measured actuator transfer (magnitude ~1.0 flat 2–20 Hz,
-  phase −8° to −76°, consistent with the recorded ~9.9 ms
-  first-apply delay) — a real notch-phase-budget deliverable.
+  commanded→measured actuator transfer (magnitude ~1.0 flat 2–20 Hz;
+  phase −8° to −76° AFTER the receipt-matched ~9.9 ms apply-delay
+  correction — i.e. a further ~10.6 ms of report-side/effective
+  delay; total command→measured lag ≈ two cycles) — a real
+  notch-phase-budget deliverable.
 
 Consequences (reviewer-directed): the analysis REFUSES mode fitting
 without at least five confident dwells above an explicit
@@ -605,9 +607,11 @@ concrete need for scale > 0.6. That judgment is the owner decision
 above, not an experimentally established impossibility.
 
 **What survives the closure.** The commanded→measured actuator
-transfer (magnitude ~1.00–1.05 flat across 2–20 Hz, phase −8° to
-−76°, consistent with the measured ~9.9 ms one-cycle apply delay) —
-the phase-budget input for any future compensator; the first
+transfer (magnitude ~1.00–1.05 flat across 2–20 Hz; phase −8° to
+−76° AFTER the receipt-matched ~9.9 ms apply-delay correction, i.e.
+a further ~10.6 ms of report-side/effective delay — total
+command→measured lag ≈ two cycles) — the phase-budget input for any
+future compensator, both parts counted; the first
 empirical stationary-hold noise floors (0.4–1.1 mrad, 10–30× the
 analytic figure — the servo encoder cannot support small-signal
 stationary work); the session-safety machinery (deadline ladder,
