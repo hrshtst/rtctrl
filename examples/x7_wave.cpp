@@ -39,7 +39,18 @@ struct WaveController : arm::Controller {
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
-  const double duration_s = cli.argi < argc ? std::atof(argv[cli.argi]) : 15.0;
+  if (!cli.ok) return 1;
+  double duration_s = 15.0;
+  if (cli.rest.size() > 1) {
+    std::fprintf(stderr, "usage: x7_wave [--config path] [--port dev] "
+                         "[seconds]\n");
+    return 1;
+  }
+  if (!cli.rest.empty() &&
+      !x7::parseStrictDouble(cli.rest[0], &duration_s)) {
+    std::fprintf(stderr, "invalid duration: %s\n", cli.rest[0]);
+    return 1;
+  }
 
   try {
     auto session = x7::openSession(cli);
@@ -50,14 +61,23 @@ int main(int argc, char* argv[]) {
                    session.arm->lastError().c_str());
       return 1;
     }
+    x7::ShutdownGuard shutdown{*session.arm};
     arm::JointState start;
-    if (!robot.readState(start)) return 1;
+    if (!robot.readState(start)) {
+      std::fprintf(stderr, "initial state read failed — aborting\n");
+      shutdown.run();
+      return 1;
+    }
     WaveController controller(start);
 
     std::printf("waving for %.0f s (Ctrl-C safe: deadman + watchdogs)\n",
                 duration_s);
     const bool ok = arm::run(robot, controller, duration_s);
-    robot.deactivate();
+    const bool clean = shutdown.run();
+    if (!clean) {
+      std::printf("SHUTDOWN FAULT (run %s)\n", ok ? "done" : "ABORTED");
+      return 1;
+    }
     std::printf("%s\n", ok ? "done" : "ABORTED");
     return ok ? 0 : 1;
   } catch (const std::exception& e) {

@@ -77,17 +77,6 @@ std::vector<x7::FreqSpec> defaultSurvey() {
   return specs;
 }
 
-// Strict full-token numeric parsing: atof() turned "--hold garbage"
-// into zero — which silently selected the normal survey instead of
-// refusing (review finding).
-bool parseStrictDouble(const char* text, double* out) {
-  char* end = nullptr;
-  const double v = std::strtod(text, &end);
-  if (end == text || *end != '\0' || !std::isfinite(v)) return false;
-  *out = v;
-  return true;
-}
-
 void printDwellSummary(const x7::IdentRun& run) {
   for (const auto& r : run.results()) {
     // a retried dwell's accepted window ran at the REDUCED amplitude —
@@ -113,6 +102,7 @@ void printDwellSummary(const x7::IdentRun& run) {
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
+  if (!cli.ok) return 1;
   int probe_joint = -1;
   std::vector<x7::FreqSpec> freqs = defaultSurvey();
   bool freqs_given = false;
@@ -124,12 +114,20 @@ int main(int argc, char* argv[]) {
   bool hold_given = false;
   bool scale0_given = false;
   std::string label, log_path, anchor_ref_path;
-  for (int i = cli.argi; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--joint") == 0 && i + 1 < argc) {
-      probe_joint = std::atoi(argv[++i]);
-    } else if (std::strcmp(argv[i], "--freqs") == 0 && i + 1 < argc) {
+  const int argn = static_cast<int>(cli.rest.size());
+  const char* const* argv_rest = cli.rest.data();
+  for (int i = 0; i < argn; ++i) {
+    if (std::strcmp(argv_rest[i], "--joint") == 0 && i + 1 < argn) {
+      long j = -1;
+      if (!x7::parseStrictLong(argv_rest[++i], &j)) {
+        std::fprintf(stderr, "--joint rejected: one integer index "
+                             "required\n");
+        return 1;
+      }
+      probe_joint = static_cast<int>(j);
+    } else if (std::strcmp(argv_rest[i], "--freqs") == 0 && i + 1 < argn) {
       freqs_given = true;
-      if (!x7::parseFreqList(argv[++i], &freqs)) {
+      if (!x7::parseFreqList(argv_rest[++i], &freqs)) {
         std::fprintf(stderr,
                      "--freqs rejected (nothing runs on a truncated "
                      "schedule): every entry must be f or f@amp with "
@@ -137,44 +135,45 @@ int main(int argc, char* argv[]) {
                      x7::kFreqMinHz, x7::kFreqMaxHz);
         return 1;
       }
-    } else if (std::strcmp(argv[i], "--amp") == 0 && i + 1 < argc) {
-      if (!x7::parseAmpCap(argv[++i], &a_cap)) {
+    } else if (std::strcmp(argv_rest[i], "--amp") == 0 && i + 1 < argn) {
+      if (!x7::parseAmpCap(argv_rest[++i], &a_cap)) {
         std::fprintf(stderr,
                      "--amp rejected: one finite value in [%.2f, %.2f] "
                      "Nm required\n",
                      x7::kAmpFloorNm, x7::kAmpCapHardNm);
         return 1;
       }
-    } else if (std::strcmp(argv[i], "--label") == 0 && i + 1 < argc) {
-      label = argv[++i];
-    } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
-      log_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--anchor-ref") == 0 && i + 1 < argc) {
-      anchor_ref_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--pose-first") == 0) {
+    } else if (std::strcmp(argv_rest[i], "--label") == 0 && i + 1 < argn) {
+      label = argv_rest[++i];
+    } else if (std::strcmp(argv_rest[i], "--log") == 0 && i + 1 < argn) {
+      log_path = argv_rest[++i];
+    } else if (std::strcmp(argv_rest[i], "--anchor-ref") == 0 &&
+               i + 1 < argn) {
+      anchor_ref_path = argv_rest[++i];
+    } else if (std::strcmp(argv_rest[i], "--pose-first") == 0) {
       pose_first = true;
-    } else if (std::strcmp(argv[i], "--vel") == 0 && i + 1 < argc) {
-      if (!parseStrictDouble(argv[++i], &pose_vel)) {
+    } else if (std::strcmp(argv_rest[i], "--vel") == 0 && i + 1 < argn) {
+      if (!x7::parseStrictDouble(argv_rest[++i], &pose_vel)) {
         std::fprintf(stderr, "--vel rejected: one finite value "
                              "required\n");
         return 1;
       }
-    } else if (std::strcmp(argv[i], "--hold") == 0 && i + 1 < argc) {
+    } else if (std::strcmp(argv_rest[i], "--hold") == 0 && i + 1 < argn) {
       hold_given = true;
-      if (!parseStrictDouble(argv[++i], &hold_s)) {
+      if (!x7::parseStrictDouble(argv_rest[++i], &hold_s)) {
         std::fprintf(stderr, "--hold rejected: one finite duration in "
                              "[5, 120] s required\n");
         return 1;
       }
-    } else if (std::strcmp(argv[i], "--scale0") == 0 && i + 1 < argc) {
+    } else if (std::strcmp(argv_rest[i], "--scale0") == 0 && i + 1 < argn) {
       scale0_given = true;
-      if (!parseStrictDouble(argv[++i], &scale0)) {
+      if (!x7::parseStrictDouble(argv_rest[++i], &scale0)) {
         std::fprintf(stderr, "--scale0 rejected: one finite value in "
                              "[0.05, 1.0) required\n");
         return 1;
       }
     } else {
-      std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
+      std::fprintf(stderr, "unknown argument: %s\n", argv_rest[i]);
       return 1;
     }
   }
@@ -446,7 +445,15 @@ int main(int argc, char* argv[]) {
       bool done = false;
       bool run() {
         done = true;
-        const bool clean = robot.deactivate();
+        // deactivate() is not noexcept (it allocates and joins a
+        // thread): a throw must still quiesce and report, and must
+        // not slip past the done latch (review finding)
+        bool clean = false;
+        try {
+          clean = robot.deactivate();
+        } catch (...) {
+          clean = false;
+        }
         if (!clean) {
           hw->requestQuiesce();
           std::fprintf(stderr,
@@ -461,15 +468,15 @@ int main(int argc, char* argv[]) {
       }
       ~ShutdownGuard() {
         if (done) return;
-        try {
-          run();
-        } catch (...) {
-        }
+        run();
       }
     } shutdown{robot, hw, watchdog};
 
     arm::JointState start;
     if (!robot.readState(start)) {
+      std::fprintf(stderr,
+                   "initial state read failed after activation — "
+                   "aborting\n");
       shutdown.run();
       return 1;
     }
@@ -537,6 +544,8 @@ int main(int argc, char* argv[]) {
       }
     }
     if (!robot.readState(start)) {
+      std::fprintf(stderr,
+                   "post-settle state read failed — aborting\n");
       shutdown.run();
       return 1;
     }

@@ -14,7 +14,8 @@ add_executable(unit_tests
   unit/track_common_test.cpp
   unit/two_mass_arm_test.cpp
   unit/session_watchdog_test.cpp
-  unit/ident_common_test.cpp)
+  unit/ident_common_test.cpp
+  unit/x7_common_test.cpp)
 target_link_libraries(unit_tests PRIVATE rtctrl::rtctrl Catch2::Catch2WithMain)
 # track_common_test exercises the app-layer orchestration (settle gate,
 # TrackingRun latency verification) directly from apps/ — headers only.

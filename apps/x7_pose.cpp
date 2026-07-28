@@ -47,15 +47,21 @@ bool enterPressed() {
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
+  if (!cli.ok) return 1;
   std::string posture_path;
   double vel = 0.25;
-  for (int i = cli.argi; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--posture") == 0 && i + 1 < argc) {
-      posture_path = argv[++i];
-    } else if (std::strcmp(argv[i], "--vel") == 0 && i + 1 < argc) {
-      vel = std::atof(argv[++i]);
+  const auto& rest = cli.rest;
+  for (std::size_t i = 0; i < rest.size(); ++i) {
+    if (std::strcmp(rest[i], "--posture") == 0 && i + 1 < rest.size()) {
+      posture_path = rest[++i];
+    } else if (std::strcmp(rest[i], "--vel") == 0 &&
+               i + 1 < rest.size()) {
+      if (!x7::parseStrictDouble(rest[++i], &vel)) {
+        std::fprintf(stderr, "--vel: invalid value %s\n", rest[i]);
+        return 1;
+      }
     } else {
-      std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
+      std::fprintf(stderr, "unknown argument: %s\n", rest[i]);
       return 1;
     }
   }
@@ -63,7 +69,6 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "--posture <file> is required\n");
     return 1;
   }
-  if (!std::isfinite(vel)) vel = 0.25;
   vel = std::clamp(vel, 0.05, 0.5);
   double posture[model::kCanonicalDof];
   if (!x7::loadAnchorRef(posture_path, posture)) {
@@ -80,13 +85,14 @@ int main(int argc, char* argv[]) {
                    arm.lastError().c_str());
       return 1;
     }
+    x7::ShutdownGuard shutdown{arm};
 
     // converging placement: goal-offset iterations close the friction
     // sag so "reached" means the MEASURED posture
     const auto placed = x7::movePose(arm, posture, vel, 0.01, 5);
     if (!placed.ok) {
       std::fprintf(stderr, "placement failed — deactivating\n");
-      arm.deactivate();
+      shutdown.run();
       return 1;
     }
     if (!placed.converged) {
@@ -109,12 +115,16 @@ int main(int argc, char* argv[]) {
     (void)n;
     while (!enterPressed()) {
       if (!arm.writePositions(placed.hold_goal) && arm.escalated()) {
+        shutdown.run();
         return 1;
       }
-      if (!arm.checkDeadman()) return 1;
+      if (!arm.checkDeadman()) {
+        shutdown.run();
+        return 1;
+      }
       usleep(kCycleUs);
     }
-    const bool clean = arm.deactivate();
+    const bool clean = shutdown.run();
     std::printf("%s — the arm is limp. Catch the drop, start x7_ident "
                 "immediately, and RELEASE fully the moment it prints "
                 "its release cue (its gravity hold floats — sustained "

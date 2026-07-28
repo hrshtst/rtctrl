@@ -4,6 +4,7 @@
 // Usage: x7_set_param [--config path] [--port dev]
 //                     [--p-gain N] [--profile-vel N] [--profile-acc N]
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,37 +33,76 @@ void dumpParams(x7::Session& session) {
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
+  if (!cli.ok) return 1;
+  // strict parsing with register-range validation BEFORE narrowing
+  // (review finding: atol garbage wrote P-gain 0 to the servos, and
+  // out-of-range values narrowed silently)
   long p_gain = -1, profile_vel = -1, profile_acc = -1;
-  for (int i = cli.argi; i < argc - 1; ++i) {
-    if (std::strcmp(argv[i], "--p-gain") == 0) p_gain = std::atol(argv[i + 1]);
-    if (std::strcmp(argv[i], "--profile-vel") == 0)
-      profile_vel = std::atol(argv[i + 1]);
-    if (std::strcmp(argv[i], "--profile-acc") == 0)
-      profile_acc = std::atol(argv[i + 1]);
+  for (std::size_t i = 0; i < cli.rest.size(); ++i) {
+    long* dst = nullptr;
+    long max = 0;
+    if (std::strcmp(cli.rest[i], "--p-gain") == 0) {
+      dst = &p_gain;
+      max = UINT16_MAX;
+    } else if (std::strcmp(cli.rest[i], "--profile-vel") == 0) {
+      dst = &profile_vel;
+      max = UINT32_MAX;
+    } else if (std::strcmp(cli.rest[i], "--profile-acc") == 0) {
+      dst = &profile_acc;
+      max = UINT32_MAX;
+    } else {
+      std::fprintf(stderr, "unknown argument: %s\n", cli.rest[i]);
+      return 1;
+    }
+    if (i + 1 >= cli.rest.size()) {
+      std::fprintf(stderr, "%s requires a value\n", cli.rest[i]);
+      return 1;
+    }
+    if (!x7::parseStrictLong(cli.rest[++i], dst) || *dst < 0 ||
+        *dst > max) {
+      std::fprintf(stderr, "%s: invalid value %s (range 0..%ld)\n",
+                   cli.rest[i - 1], cli.rest[i], max);
+      return 1;
+    }
   }
 
   try {
     auto session = x7::openSession(cli);
     std::printf("-- before --\n");
     dumpParams(session);
+    // every REQUESTED write must succeed — a failed parameter write
+    // exiting 0 hid real bus problems (review finding)
     bool wrote = false;
+    bool all_ok = true;
     if (p_gain >= 0) {
-      wrote |= session.arm->writePositionPGain(
-          static_cast<std::uint16_t>(p_gain));
+      wrote = true;
+      if (!session.arm->writePositionPGain(
+              static_cast<std::uint16_t>(p_gain))) {
+        std::fprintf(stderr, "--p-gain write FAILED\n");
+        all_ok = false;
+      }
     }
     if (profile_vel >= 0) {
-      wrote |= session.arm->writeProfileVelocity(
-          static_cast<std::uint32_t>(profile_vel));
+      wrote = true;
+      if (!session.arm->writeProfileVelocity(
+              static_cast<std::uint32_t>(profile_vel))) {
+        std::fprintf(stderr, "--profile-vel write FAILED\n");
+        all_ok = false;
+      }
     }
     if (profile_acc >= 0) {
-      wrote |= session.arm->writeProfileAcceleration(
-          static_cast<std::uint32_t>(profile_acc));
+      wrote = true;
+      if (!session.arm->writeProfileAcceleration(
+              static_cast<std::uint32_t>(profile_acc))) {
+        std::fprintf(stderr, "--profile-acc write FAILED\n");
+        all_ok = false;
+      }
     }
     if (wrote) {
       std::printf("-- after --\n");
       dumpParams(session);
     }
-    return 0;
+    return all_ok ? 0 : 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;

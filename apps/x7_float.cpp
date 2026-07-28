@@ -55,7 +55,18 @@ struct ReportingGravityComp : arm::GravityComp {
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
-  const double duration_s = cli.argi < argc ? std::atof(argv[cli.argi]) : 30.0;
+  if (!cli.ok) return 1;
+  double duration_s = 30.0;
+  if (cli.rest.size() > 1) {
+    std::fprintf(stderr, "usage: x7_float [--config path] [--port dev] "
+                         "[seconds]\n");
+    return 1;
+  }
+  if (!cli.rest.empty() &&
+      !x7::parseStrictDouble(cli.rest[0], &duration_s)) {
+    std::fprintf(stderr, "invalid duration: %s\n", cli.rest[0]);
+    return 1;
+  }
 
   try {
     // gravity compensation runs in current (torque) mode
@@ -70,12 +81,17 @@ int main(int argc, char* argv[]) {
                    session.arm->lastError().c_str());
       return 1;
     }
+    x7::ShutdownGuard shutdown{*session.arm};
     ReportingGravityComp controller(chain, map);
     std::printf("floating for %.0f s — the arm is back-drivable; keep the "
                 "power cutoff in reach\n",
                 duration_s);
     const bool ok = arm::run(robot, controller, duration_s);
-    robot.deactivate();
+    const bool clean = shutdown.run();
+    if (!clean) {
+      std::printf("SHUTDOWN FAULT (run %s)\n", ok ? "done" : "ABORTED");
+      return 1;
+    }
     std::printf("%s\n", ok ? "done" : "ABORTED");
     return ok ? 0 : 1;
   } catch (const std::exception& e) {

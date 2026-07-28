@@ -73,21 +73,54 @@ namespace model = rtctrl::model;
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
+  if (!cli.ok) return 1;
   double scale = 0.6;
+  bool scale_given = false;
   // Hardware defaults — see header for how they were chosen.
   double kp = x7::tuning::kKp, kd = x7::tuning::kKd, ki = x7::tuning::kKi;
   std::string log_path;
-  for (int i = cli.argi; i < argc; ++i) {
-    if (std::strcmp(argv[i], "--kp") == 0 && i + 1 < argc) {
-      kp = std::atof(argv[++i]);
-    } else if (std::strcmp(argv[i], "--kd") == 0 && i + 1 < argc) {
-      kd = std::atof(argv[++i]);
-    } else if (std::strcmp(argv[i], "--ki") == 0 && i + 1 < argc) {
-      ki = std::atof(argv[++i]);
-    } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
-      log_path = argv[++i];
+  // STRICT: an unknown flag used to fall through atof() into the
+  // positional scale — a typo silently ran the arm at minimum scale
+  // (review finding).
+  const auto& rest = cli.rest;
+  for (std::size_t i = 0; i < rest.size(); ++i) {
+    double* flag_dst = nullptr;
+    if (std::strcmp(rest[i], "--kp") == 0) {
+      flag_dst = &kp;
+    } else if (std::strcmp(rest[i], "--kd") == 0) {
+      flag_dst = &kd;
+    } else if (std::strcmp(rest[i], "--ki") == 0) {
+      flag_dst = &ki;
+    } else if (std::strcmp(rest[i], "--log") == 0) {
+      if (i + 1 >= rest.size()) {
+        std::fprintf(stderr, "--log requires a value\n");
+        return 1;
+      }
+      log_path = rest[++i];
+      continue;
+    } else if (rest[i][0] == '-' && rest[i][1] == '-') {
+      std::fprintf(stderr, "unknown argument: %s\n", rest[i]);
+      return 1;
     } else {
-      scale = std::atof(argv[i]);
+      if (scale_given) {
+        std::fprintf(stderr, "unexpected argument: %s\n", rest[i]);
+        return 1;
+      }
+      if (!x7::parseStrictDouble(rest[i], &scale)) {
+        std::fprintf(stderr, "invalid scale: %s\n", rest[i]);
+        return 1;
+      }
+      scale_given = true;
+      continue;
+    }
+    if (i + 1 >= rest.size()) {
+      std::fprintf(stderr, "%s requires a value\n", rest[i]);
+      return 1;
+    }
+    if (!x7::parseStrictDouble(rest[++i], flag_dst)) {
+      std::fprintf(stderr, "%s: invalid value %s\n", rest[i - 1],
+                   rest[i]);
+      return 1;
     }
   }
   // Beyond ~0.6 the excursion extends the arm into configurations
@@ -129,8 +162,13 @@ int main(int argc, char* argv[]) {
                    session.arm->lastError().c_str());
       return 1;
     }
+    x7::ShutdownGuard shutdown{*session.arm};
     arm::JointState start;
-    if (!robot.readState(start)) return 1;
+    if (!robot.readState(start)) {
+      std::fprintf(stderr, "initial state read failed — aborting\n");
+      shutdown.run();
+      return 1;
+    }
 
     // Current-mode activation leaves goal currents at zero — the arm is
     // in free fall until the first controller command. Hold it with
@@ -157,10 +195,14 @@ int main(int argc, char* argv[]) {
       std::fprintf(stderr, "settle phase %s — aborting\n",
                    settled.io_ok ? "did not reach quiescence"
                                  : "aborted");
-      robot.deactivate();
+      shutdown.run();
       return 1;
     }
-    if (!robot.readState(start)) return 1;
+    if (!robot.readState(start)) {
+      std::fprintf(stderr, "post-settle state read failed — aborting\n");
+      shutdown.run();
+      return 1;
+    }
 
     // Refuse to control a joint parked inside its soft-limit margin:
     // the current gate blocks one whole torque direction there, and the
@@ -177,7 +219,7 @@ int main(int argc, char* argv[]) {
                      "mid-range and rerun\n",
                      i, model::canonicalJoints()[i].urdf_joint, q,
                      lo[i], hi[i]);
-        robot.deactivate();
+        shutdown.run();
         return 1;
       }
     }
@@ -245,7 +287,7 @@ int main(int argc, char* argv[]) {
     // Safe transition FIRST: on an abort (observer veto included) the
     // background thread is still healthily retransmitting the last
     // torque command — reporting must not delay going limp.
-    robot.deactivate();
+    const bool clean = shutdown.run();
     const auto stats = session.arm->cycleStats();
     tracking.report();
     if (log) std::fclose(log);
@@ -255,6 +297,10 @@ int main(int argc, char* argv[]) {
                 static_cast<unsigned long long>(stats.overruns),
                 static_cast<unsigned long long>(stats.read_failures),
                 static_cast<unsigned long long>(stats.write_failures));
+    if (!clean) {
+      std::printf("SHUTDOWN FAULT (run %s)\n", ok ? "done" : "ABORTED");
+      return 1;
+    }
     std::printf("%s\n", ok ? "done" : "ABORTED");
     return ok ? 0 : 1;
   } catch (const std::exception& e) {
