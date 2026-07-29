@@ -64,6 +64,12 @@ add_test(NAME ident_analysis_merge_guards
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)
 
+# x7_float --log must fail fast (before any bus contact) on a missing
+# value or unopenable path.
+add_test(NAME x7_float_rejects_valueless_log COMMAND x7_float --log)
+set_tests_properties(x7_float_rejects_valueless_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+
 # EFL study smoke: one held-out case end-to-end. --case output must
 # declare itself NONCANONICAL — only the complete unfiltered matrix
 # from a clean tree may be promoted to data/efl_study/results.json.
