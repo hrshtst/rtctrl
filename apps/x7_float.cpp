@@ -14,12 +14,16 @@
 //   servo's lagged estimate — and current-derived tau_meas), THIS
 //   CYCLE'S REQUEST (tau_request, the g(q) command, with its receipt:
 //   submitted_seq / submission_time / accepted — it is applied LATER),
-//   and the LATEST APPLIED command as of that feedback (tau_applied
-//   with the hardware clamp/gate flags). tau_meas and tau_request in
-//   one row are therefore NOT the same instant — compare tau_meas
-//   against the applied columns. Raw hardware CSVs land at the repo
-//   root gitignored and belong in the private archive
-//   (docs/DATA_ARCHIVE.md); use a unique filename per attempt.
+//   and the LATEST APPLIED command in the COHERENT SNAPSHOT
+//   (tau_applied with the hardware clamp/gate flags). The applied
+//   record may POSTDATE this row's feedback — the producer reads
+//   before it writes — so tau_meas vs tau_applied in one row is not a
+//   causal pair either: use the SIGNED feedback_minus_latest_apply
+//   column (negative = the apply happened after the feedback
+//   timestamp) to order the events before comparing torques. Raw
+//   hardware CSVs land at the repo root gitignored and belong in the
+//   private archive (docs/DATA_ARCHIVE.md); use a unique filename per
+//   attempt.
 
 #include <cmath>
 #include <cstdio>
@@ -80,12 +84,18 @@ struct FloatLogObserver : arm::CycleObserver {
                const arm::CommandReceipt& receipt) override {
     if (log_ == nullptr) return true;
     const auto& applied = cmds.applied;
-    std::fprintf(log_, "%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu", t,
-                 state.t, static_cast<unsigned long long>(state.seq),
+    // Timing fields as in x7_track's log: the latest apply may
+    // POSTDATE this row's feedback (the producer reads before it
+    // writes), so the offset is signed; both are meaningful only when
+    // applied_valid = 1.
+    std::fprintf(log_, "%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu,%.6f,%.6f",
+                 t, state.t, static_cast<unsigned long long>(state.seq),
                  static_cast<unsigned long long>(receipt.submitted_seq),
                  receipt.submission_time, receipt.accepted ? 1 : 0,
                  applied.valid ? 1 : 0,
-                 static_cast<unsigned long long>(applied.target_seq));
+                 static_cast<unsigned long long>(applied.target_seq),
+                 applied.valid ? applied.latest_time : 0.0,
+                 applied.valid ? state.t - applied.latest_time : 0.0);
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       std::fprintf(log_, ",%.6f,%.6f,%.4f,%.4f,%.4f,%d,%d",
                    zVecElemNC(state.q.get(), i),
@@ -110,10 +120,15 @@ std::FILE* openFloatLog(const std::string& path) {
                "# events per row: FEEDBACK (feedback_time/feedback_seq, "
                "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
                "(submitted_seq/submission_time/accepted, tau_request — "
-               "applied LATER) | LATEST APPLIED as of this feedback "
-               "(applied_valid/applied_seq, tau_applied, clamped/gated)\n");
+               "applied LATER) | LATEST APPLIED in the coherent "
+               "snapshot (applied_valid/applied_seq/latest_apply_time, "
+               "tau_applied, clamped/gated). feedback_minus_latest_apply "
+               "is SIGNED: the producer reads before it writes, so the "
+               "latest apply may post-date this row's feedback; applied "
+               "fields are meaningful only when applied_valid=1.\n");
   std::fprintf(log, "t,feedback_time,feedback_seq,submitted_seq,"
-                    "submission_time,accepted,applied_valid,applied_seq");
+                    "submission_time,accepted,applied_valid,applied_seq,"
+                    "latest_apply_time,feedback_minus_latest_apply");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
     std::fprintf(log,
                  ",q%d,dqservo%d,tau_meas%d,tau_request%d,tau_applied%d,"
