@@ -10,14 +10,21 @@
 > untouched, experimental code outside the public API, no changes to
 > the preregistered numbers.
 
-*Status: PROPOSED, revised 2026-07-29 across three external
-implementation-review rounds (round 1: four blocking findings, four
-corrections; round 2: torque-limit source, executable verdict
-formulas, modal censoring, untracked-file cleanliness; round 3:
-censored-growth case, flexible-case coverage in C2/C3, exact
-least-squares amplitude fit; round 4: explicit single-mode fixtures,
-complete C4 comparator ordering, frozen development pose — all
-integrated below). No milestone implemented.*
+*Status: IMPLEMENTED and EXECUTED 2026-07-29 (EFL-0 through EFL-2;
+canonical results in `data/efl_study/results.json`, report in
+[theory/computed-torque.md](theory/computed-torque.md)). The plan was
+revised across four external implementation-review rounds before
+implementation (round 1: four blocking findings, four corrections;
+round 2: torque-limit source, executable verdict formulas, modal
+censoring, untracked-file cleanliness; round 3: censored-growth case,
+flexible-case coverage in C2/C3, exact least-squares amplitude fit;
+round 4: explicit single-mode fixtures, complete C4 comparator
+ordering, frozen development pose). One deviation surfaced at
+execution and is recorded here: the preregistered selection produced
+NO surviving EFL-host gain candidate, a path the plan had not
+enumerated — the runner records it as a study result (explicit
+not-run failures on dependent cells, decision null with a note),
+never as a provenance defect.*
 
 ## Reuse map
 

@@ -79,7 +79,10 @@ feedforward variant instead:
 - it is one RNEA call per cycle, cheap at any rate.
 
 The price is that the error dynamics are only approximately linear;
-for the CRANE-X7's speeds this is far below other error sources.
+for the CRANE-X7's speeds this is far below other error sources. The
+exact variant was never hardware-tested here; a preregistered offline
+study of it is recorded in
+[the offline EFL study](#offline-exact-feedback-linearization-study-2026-07-29).
 
 ## Reference trajectories
 
@@ -215,6 +218,61 @@ with a null result at its first gate (joint 1 at P1 stiction-locked
 below the output encoder's resolution under a stationary current
 probe up to its hard cap): **the 0.6 scale cap is the final
 supported boundary** (see IDENTIFICATION_PLAN.md, Closure).
+
+## Offline exact-feedback-linearization study (2026-07-29)
+
+An external-reviewer-directed, preregistered offline study asked
+whether exact feedback linearization — the rigid model evaluated at
+the measured state, feedback in the acceleration domain — offers a
+useful advantage over the shipped practical law. Simulation only: no
+hardware, no `x7_track` changes, the 0.6 cap untouched. Study
+definition: [ENVELOPE_STABILITY_PLAN.md](../ENVELOPE_STABILITY_PLAN.md);
+frozen constants and implementation:
+[EFL_STUDY_IMPLEMENTATION_PLAN.md](../EFL_STUDY_IMPLEMENTATION_PLAN.md);
+canonical machine-readable table: `data/efl_study/results.json`.
+
+**Verdict: negative — the study stopped at its preregistered gain
+gate.** Findings by fixture family:
+
+- **Rigid development scenario.** Every EFL-host grid pair
+  (ω_n ∈ {4, 6, 8} rad/s, ζ ∈ {0.7, 1.0}) completed without
+  saturation but with 0.139–0.149 rad peak error against the
+  practical baseline's 0.043 rad (RMS 0.043–0.044 vs 0.0092), so the
+  preregistered selection discarded all six candidates and the
+  held-out EFL cells record explicit not-run failures. The error
+  concentrates on the moving joints and is worst at the wrist, whose
+  true inertia is dominated by the reflected rotor inertia the ID
+  model omits: acceleration-domain feedback emits
+  $\tau = M_{\text{model}}(q)\,v$, so its loop gain collapses by
+  exactly the unmodeled inertia ratio — largest precisely where the
+  model is weakest. The comparison design still attributes cleanly:
+  measured-state evaluation IS better than desired-state evaluation
+  at identical gains (DESIRED-host peaked 0.37–1.32 rad), but the
+  advantage does not survive the unmodeled rotor inertia. The
+  torque-space practical law is immune to the normalization because
+  its per-joint gains were tuned against the true inertia, and its
+  integrator absorbs the residual.
+- **Delayed and disturbed cases.** Not evaluable for EFL (no
+  surviving gains, per preregistration). The practical baselines are
+  recorded for the record: the two-cycle-delay, quantized loop from
+  P1 carries a 0.376 rad transient peak (L1) that the incident-pose
+  start does not (L2: 0.029), and ±0.8 Nm constant disturbance on
+  joint 1 settles in 1.6–1.9 s to ~4 mrad steady error — the clamped
+  integrator doing exactly its documented job.
+- **Flexible screens.** Not evaluable for EFL. The PRACTICAL-GF
+  baselines are informative on their own: the planted 4.5 Hz ζ 0.03
+  mode decays strongly under the practical law (fitted modal rate
+  −1.56 s⁻¹), while the planted 13 Hz ζ 0.05 mode shows slight
+  GROWTH (+0.10 s⁻¹) in the non-collocated fixture — a marginal
+  energy input consistent with the delayed-D-path mechanism this
+  chapter documents, reproduced in miniature by the screen.
+
+**Decision (offline scope only):** further offline EFL work is not
+justified. Meeting the preregistered stop conditions, EFL would need
+at least a reflected-rotor-inertia model term (and the M7 friction
+feedforward) before it could compete — new modeling work that belongs
+to a separate proposal, not an extension of this study. No hardware
+flag, no default change, and no cap change follow from any of this.
 
 ## Limitations and outlook
 

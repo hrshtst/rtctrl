@@ -6,7 +6,16 @@
 > operation, change `x7_track`, reopen pass-2 identification, or alter the
 > final 0.6 excursion-scale cap.
 
-*Status: PROPOSED 2026-07-28. No study milestone has been executed.*
+*Status: EXECUTED and CLOSED 2026-07-29 with a NEGATIVE result at the
+preregistered gain gate — no EFL-host grid candidate matched the
+practical baseline's peak error on the development scenario (the
+unmodeled reflected rotor inertia collapses the acceleration-domain
+loop gain at the wrist), so the held-out EFL cells record explicit
+not-run failures per preregistration. Canonical result table:
+`data/efl_study/results.json`; report:
+[theory/computed-torque.md](theory/computed-torque.md), "Offline
+exact-feedback-linearization study". No hardware was run; `x7_track`
+and the 0.6 cap are unchanged.*
 
 ## Question and scope
 
