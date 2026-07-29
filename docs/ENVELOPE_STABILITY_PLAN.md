@@ -8,9 +8,11 @@
 
 *Status: EXECUTED and CLOSED 2026-07-29 with a NEGATIVE result at the
 preregistered gain gate — no EFL-host grid candidate matched the
-practical baseline's peak error on the development scenario (the
-unmodeled reflected rotor inertia collapses the acceleration-domain
-loop gain at the wrist), so the held-out EFL cells record explicit
+practical baseline's peak error on the development scenario
+(consistent with the simulation's reflected-rotor-inertia term
+collapsing the acceleration-domain loop gain at the wrist — an
+inference, see the results record), so the held-out EFL cells record
+explicit
 not-run failures per preregistration. Canonical result table:
 `data/efl_study/results.json`; results record:
 [EFL_STUDY_RESULTS.md](EFL_STUDY_RESULTS.md); report:

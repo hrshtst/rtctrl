@@ -60,21 +60,32 @@ null with a note. All 28 cells are present.
 
 ## Attribution
 
-The comparison design attributes the failure cleanly:
+One comparison is established by the design; the rest is inference:
 
-- **Measured-state evaluation genuinely helps.** At identical gains,
-  EFL-host beats DESIRED-host by 3–10× in peak error — evaluating the
-  model at the measured state is the better half of the idea.
-- **The advantage does not survive the unmodeled reflected rotor
-  inertia.** Both acceleration-domain forms emit
-  $\tau = M_{\text{model}}(q)\,v$; the plant adds ~0.05 kg·m² of
-  reflected rotor inertia per joint that the ID model omits. At the
-  wrist (link-side inertia ~5·10⁻⁴ kg·m²) the feedback's effective
-  gain collapses by roughly that ~100× ratio — the errors concentrate
-  on the moving joints, worst at the wrist, nearly independent of the
-  gain choice. The practical law is immune: its torque-space gains
-  were tuned against the true plant, and its integrator absorbs the
-  residual.
+- **Established: measured-state evaluation genuinely helps.** At
+  identical gains, EFL-host beats DESIRED-host by 2.5–9.4× in peak
+  error — evaluating the model at the measured state is the better
+  half of the idea.
+- **Inferred: the remaining gap is consistent with the simulation's
+  unmodeled reflected rotor inertia — the leading explanation, not
+  an experimentally isolated cause.** Both acceleration-domain forms
+  emit $\tau = M_{\text{model}}(q)\,v$, and the simulated plant adds
+  a uniform 0.05 kg·m² reflected rotor inertia per joint
+  (`SimArm::Options::reflected_inertia` — an engineering ESTIMATE
+  pending M7 identification, not an identified hardware parameter)
+  that the ID model omits. A feedback-gain collapse where the added
+  inertia dominates the modeled inertia is mechanically consistent
+  with the observed pattern: errors concentrated on the moving
+  joints, worst at the wrist (whose local link-side inertia sits
+  orders of magnitude below the added term — a local, uncoupled
+  comparison, not the configuration-dependent joint-space mass
+  matrix), and nearly independent of the gain choice. The study did
+  NOT isolate it: there was no `reflected_inertia = 0` ablation, no
+  controller model carrying the same added inertia, and PRACTICAL
+  differs from EFL-host in more than model evaluation (torque-space
+  gains, filtering, per-joint scaling, integration). A
+  matched-inertia ablation would be the isolating experiment; it
+  belongs to a separate proposal.
 
 ## Baseline byproducts (recorded for the record)
 

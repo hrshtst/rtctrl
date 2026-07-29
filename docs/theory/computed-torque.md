@@ -240,18 +240,21 @@ gate.** Findings by fixture family:
   practical baseline's 0.043 rad (RMS 0.043–0.044 vs 0.0092), so the
   preregistered selection discarded all six candidates and the
   held-out EFL cells record explicit not-run failures. The error
-  concentrates on the moving joints and is worst at the wrist, whose
-  true inertia is dominated by the reflected rotor inertia the ID
-  model omits: acceleration-domain feedback emits
-  $\tau = M_{\text{model}}(q)\,v$, so its loop gain collapses by
-  exactly the unmodeled inertia ratio — largest precisely where the
-  model is weakest. The comparison design still attributes cleanly:
-  measured-state evaluation IS better than desired-state evaluation
-  at identical gains (DESIRED-host peaked 0.37–1.32 rad), but the
-  advantage does not survive the unmodeled rotor inertia. The
-  torque-space practical law is immune to the normalization because
-  its per-joint gains were tuned against the true inertia, and its
-  integrator absorbs the residual.
+  concentrates on the moving joints and is worst at the wrist. What
+  the comparison design establishes: measured-state evaluation IS
+  better than desired-state evaluation at identical gains
+  (DESIRED-host peaked 0.37–1.32 rad — 2.5–9.4× worse). The leading
+  explanation for the remaining gap — consistent with, but not
+  experimentally isolated by this study — is the simulation's
+  reflected rotor inertia (a uniform 0.05 kg·m² engineering
+  assumption per joint, pending M7 identification) that the ID model
+  omits: acceleration-domain feedback emits
+  $\tau = M_{\text{model}}(q)\,v$, so unmodeled inertia bleeds loop
+  gain exactly where the model is weakest, while the torque-space
+  practical law is unaffected (its per-joint gains were tuned against
+  the plant as it is, and its integrator absorbs the residual).
+  Isolating the cause would need a matched-inertia ablation — see
+  the [results record](../EFL_STUDY_RESULTS.md).
 - **Delayed and disturbed cases.** Not evaluable for EFL (no
   surviving gains, per preregistration). The practical baselines are
   recorded for the record: the two-cycle-delay, quantized loop from
