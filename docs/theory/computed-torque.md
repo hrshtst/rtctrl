@@ -204,6 +204,20 @@ phase margin. The quantitative budget and the energy argument are in
 [flexible-mode identification](identification.md). `x7_track` caps
 its scale accordingly.
 
+**Operational status (2026-07-28): `x7_track` is PARKED.** A
+scale-0.5 session never left the settle phase: from a compact resting
+posture the pan grew a 4.33 Hz oscillation from ~50 to ~350 mrad
+peak-to-peak within a second of torque-on (operator power cut; settle
+telemetry archive pending). The settle controller's damping path
+shares the same lag budget (20 ms velocity filter, 50 ms output
+filter, ~2-cycle bus pipeline), so inside the supported envelope its
+damping turned into excitation — and no code or configuration change
+preceded the failure. Hardware operation of `x7_track` is suspended
+until a reviewer-approved settle-phase fix lands (see
+[HARDWARE_BRINGUP.md](../HARDWARE_BRINGUP.md)); the parking is an
+operational suspension and does not alter the 0.6 cap's status as
+the supported boundary.
+
 **Pass-1 remediation (instrumentation & hardening).** Following the
 post-completion review, the loop was made observable and its timing
 monitored and bounded — see [REMEDIATION_PLAN.md](../REMEDIATION_PLAN.md):

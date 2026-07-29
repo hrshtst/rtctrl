@@ -106,10 +106,12 @@ Further **offline** EFL work is not justified (preregistered stop
 condition: competitiveness would require at least a
 reflected-rotor-inertia model term, plus the M7 friction
 feedforward — new modeling that belongs to a separate proposal). No
-hardware flag, no `x7_track` change, no cap change. The
-settle-phase pan instability observed on hardware 2026-07-28 remains
-OPEN and unaddressed by this study; `x7_track` stays parked pending
-its own reviewer-gated fix.
+hardware flag, no `x7_track` change, no cap change. The settle-phase
+pan instability observed on hardware 2026-07-28 is outside this
+study's scope and remains OPEN; the authoritative operational status
+(`x7_track` PARKED) is recorded in
+[HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md) and the theory chapter,
+not here.
 
 ## Provenance and reproducibility
 

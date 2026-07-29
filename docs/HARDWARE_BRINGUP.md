@@ -96,6 +96,20 @@ reasons live in the
 [computed-torque theory notes](theory/computed-torque.md#what-the-hardware-taught-us).
 Feature coverage is mapped in [PARITY.md](PARITY.md).
 
+> **`x7_track` is PARKED (2026-07-28 incident) — do NOT run it on
+> hardware, at any scale.** A scale-0.5 session never left the settle
+> phase: from a compact resting posture the pan (canonical joint 0)
+> anti-damped at 4.33 Hz, growing ~50 → ~350 mrad peak-to-peak within
+> a second of torque-on, and the operator cut power (settle telemetry
+> archive pending per [DATA_ARCHIVE.md](DATA_ARCHIVE.md)). The
+> failure precedes the scale argument — no scale is safe — and no
+> code or configuration change preceded it: the exposure is a
+> property of the shipped settle loop at that posture. Parking stands
+> until a reviewer-approved settle-phase fix lands. `x7_wave` and
+> `x7_float` are unaffected (position mode / pure gravity
+> compensation, neither contains the settle damping loop); the
+> post-incident recovery ladder is steps 1–6 above plus `x7_float`.
+
 ## Troubleshooting
 
 - `no response from id N`: check baud (3 Mbps), cabling, power.
