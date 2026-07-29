@@ -8,6 +8,7 @@ so its applied record must be strictly older than this cycle's own
 submission), and the internal consistency of the signed
 feedback-to-apply offset."""
 import csv
+import math
 import sys
 
 DOF = 8
@@ -31,14 +32,17 @@ assert len(rows) >= 100, f"only {len(rows)} rows for a 2 s float"
 STARTUP_ROWS = 2  # applied telemetry may lag activation briefly
 valid_seen = 0
 for k, r in enumerate(rows):
-    # every declared column parses as its declared kind
+    # every declared column parses as its declared kind; floats must
+    # be FINITE — float('nan') parses, so parsing alone would let
+    # non-finite telemetry through (review finding)
     for col in expected:
         if col in BOOLEAN:
             assert r[col] in ("0", "1"), (k, col, r[col])
         elif col in INTEGER:
             int(r[col])
         else:
-            float(r[col])
+            assert math.isfinite(float(r[col])), (
+                f"row {k}: non-finite {col} = {r[col]}")
     assert r["accepted"] == "1", "unaccepted submission in a clean run"
     if k >= STARTUP_ROWS:
         # a log whose applied telemetry never materializes must FAIL
