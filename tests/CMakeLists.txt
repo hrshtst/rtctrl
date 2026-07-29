@@ -63,3 +63,12 @@ add_test(NAME ident_analysis_merge_guards
     uv run --project tools python tools/test_ident_analysis.py
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)
+
+# EFL study smoke: one held-out case end-to-end. --case output must
+# declare itself NONCANONICAL — only the complete unfiltered matrix
+# from a clean tree may be promoted to data/efl_study/results.json.
+add_test(NAME x7_efl_study_smoke
+  COMMAND x7_efl_study --case F4 --out ${CMAKE_BINARY_DIR}/efl_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_efl_study_smoke PROPERTIES
+  PASS_REGULAR_EXPRESSION "NONCANONICAL" LABELS integration)
