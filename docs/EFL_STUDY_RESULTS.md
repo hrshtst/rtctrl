@@ -69,7 +69,9 @@ One comparison is established by the design; the rest is inference:
 - **Inferred: the remaining gap is consistent with the simulation's
   unmodeled reflected rotor inertia — the leading explanation, not
   an experimentally isolated cause.** Both acceleration-domain forms
-  emit $\tau = M_{\text{model}}(q)\,v$, and the simulated plant adds
+  emit $\tau = M_{\text{model}}(q_{\text{eval}})\,v$ (with
+  $q_{\text{eval}} = q$ for EFL-host and $q_d$ for DESIRED-host), and
+  the simulated plant adds
   a uniform 0.05 kg·m² reflected rotor inertia per joint
   (`SimArm::Options::reflected_inertia` — an engineering ESTIMATE
   pending M7 identification, not an identified hardware parameter)
