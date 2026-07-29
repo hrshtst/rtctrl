@@ -1,6 +1,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <limits>
+
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/emu/fake_packet_io.hpp"
@@ -138,6 +140,24 @@ TEST_CASE("SI profile setters convert, truncate, and clamp like the "
   // the raw passthrough still reaches the special 0 deliberately
   REQUIRE(arm.writeProfileVelocity(0));
   CHECK(bus.find(2)->peek(reg::kProfileVelocity) == 0);
+
+  // vendor operation order at a quantization boundary: the
+  // precomputed-factor form yields 1.9999999999999998 -> 1 here; the
+  // algebraically equal x*60/denominator form yields exactly 2.0 -> 2
+  // (review finding)
+  CHECK(dxl::profileVelocityFromRadPerSec(0.047961647844804174) == 1);
+
+  // safe on ANY double — the vendor's own cast is undefined behavior
+  // on these inputs (review finding)
+  constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  CHECK(dxl::profileVelocityFromRadPerSec(kNan) == 1);
+  CHECK(dxl::profileVelocityFromRadPerSec(-kInf) == 1);
+  CHECK(dxl::profileVelocityFromRadPerSec(-1e300) == 1);
+  CHECK(dxl::profileVelocityFromRadPerSec(kInf) == 32767);
+  CHECK(dxl::profileAccelerationFromRadPerSec2(kNan) == 1);
+  CHECK(dxl::profileAccelerationFromRadPerSec2(-kInf) == 1);
+  CHECK(dxl::profileAccelerationFromRadPerSec2(kInf) == 32767);
 }
 
 TEST_CASE("current commands gate at position limits", "[hw][modes]") {

@@ -70,11 +70,13 @@ set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)
 add_test(NAME x7_set_param_rejects_negative_si
   COMMAND x7_set_param --profile-vel-si -1.0)
 set_tests_properties(x7_set_param_rejects_negative_si PROPERTIES
-  PASS_REGULAR_EXPRESSION "invalid value" LABELS unit)
+  PASS_REGULAR_EXPRESSION "invalid value"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 add_test(NAME x7_set_param_rejects_raw_and_si
   COMMAND x7_set_param --profile-vel 100 --profile-vel-si 1.0)
 set_tests_properties(x7_set_param_rejects_raw_and_si PROPERTIES
-  PASS_REGULAR_EXPRESSION "not both" LABELS unit)
+  PASS_REGULAR_EXPRESSION "not both"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 
 # x7_float --log must fail fast, BEFORE any bus contact: a missing
 # value, a flag-looking value ("--log --bogus" must not create

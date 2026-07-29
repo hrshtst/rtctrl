@@ -16,26 +16,35 @@ inline constexpr double kAccelerationUnitRevPerMinSq = 214.577;
 inline constexpr double kCurrentUnitAmps = 0.00269;
 inline constexpr double kVoltageUnitVolts = 0.1;
 
-// SI -> profile-register conversions, vendor-exact (rt_manipulators'
-// DynamixelX::to_profile_velocity/acceleration): TRUNCATING, clamped
-// to [1, 32767]. Register 0 means MAXIMUM (no profile limit) on the X
-// series, so a nonpositive SI request maps to the SLOWEST profile (1),
-// never to the unlimited zero — reaching 0 takes the raw setters.
+// SI -> profile-register conversions, vendor-exact for every valid
+// input (rt_manipulators' DynamixelX::to_profile_velocity/
+// acceleration): the PRECOMPUTED reciprocal factor multiplies the SI
+// value — the algebraically equal x*60/denominator form rounds
+// differently and changes truncation at quantization boundaries
+// (review finding; regression in hw_modes_test) — then the result
+// truncates, clamped to [1, 32767]. Register 0 means MAXIMUM (no
+// profile limit) on the X series, so a nonpositive request maps to
+// the SLOWEST profile (1); reaching 0 takes the raw setters. Unlike
+// the vendor's, these are additionally SAFE on any double: NaN and
+// negative/huge values are handled BEFORE the narrowing cast, whose
+// out-of-range behavior is undefined (review finding).
 inline constexpr std::uint32_t kProfileRegisterMax = 32767;
+inline constexpr double kProfileVelocityFactor =
+    1.0 / (kVelocityUnitRevPerMin * 2.0 * M_PI / 60.0);
+inline constexpr double kProfileAccelerationFactor =
+    1.0 / (kAccelerationUnitRevPerMinSq * 2.0 * M_PI / 3600.0);
 inline std::uint32_t profileVelocityFromRadPerSec(double rad_per_sec) {
-  const double raw =
-      rad_per_sec * 60.0 / (kVelocityUnitRevPerMin * 2.0 * M_PI);
+  const double raw = kProfileVelocityFactor * rad_per_sec;
+  if (!(raw >= 1.0)) return 1u;  // NaN, nonpositive, sub-LSB
   if (raw > kProfileRegisterMax) return kProfileRegisterMax;
-  const auto truncated = static_cast<std::int64_t>(raw);
-  return truncated <= 0 ? 1u : static_cast<std::uint32_t>(truncated);
+  return static_cast<std::uint32_t>(raw);
 }
 inline std::uint32_t profileAccelerationFromRadPerSec2(
     double rad_per_sec2) {
-  const double raw = rad_per_sec2 * 3600.0 /
-                     (kAccelerationUnitRevPerMinSq * 2.0 * M_PI);
+  const double raw = kProfileAccelerationFactor * rad_per_sec2;
+  if (!(raw >= 1.0)) return 1u;  // NaN, nonpositive, sub-LSB
   if (raw > kProfileRegisterMax) return kProfileRegisterMax;
-  const auto truncated = static_cast<std::int64_t>(raw);
-  return truncated <= 0 ? 1u : static_cast<std::uint32_t>(truncated);
+  return static_cast<std::uint32_t>(raw);
 }
 
 inline double pulseToRad(std::int32_t pulse) {
