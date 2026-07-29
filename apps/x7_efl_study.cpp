@@ -52,7 +52,7 @@ namespace {
 
 // ------------------------- preregistered constants (frozen; see plan)
 
-constexpr const char* kSchemaVersion = "1";
+constexpr const char* kSchemaVersion = "2";
 constexpr const char* kModelPath = "models/crane_x7/crane_x7.ztk";
 constexpr const char* kP1Path = "config/postures/p1.json";
 
@@ -344,6 +344,36 @@ RunResult runCell(model::ChainModel& chain, const model::JointMap& map,
   }
 }
 
+// ------------------------------------------- plant configurations
+
+// ONE source for both plant construction and result-table emission —
+// the canonical table must carry the actual plant parameters, not
+// descriptive strings (review finding).
+arm::SimArm::Options rigidOptions(const double* pose) {
+  arm::SimArm::Options o;
+  o.model_path = kModelPath;
+  o.initial_q8.assign(pose, pose + kCanonicalDof);
+  return o;
+}
+
+// EXPLICIT single-mode fixture (review round 4): every joint stiff
+// and well damped, ONLY the probe joint carries the planted mode.
+x7::TwoMassArm::Options flexOptions(int probe, double f_hz,
+                                    double zeta_mode, double j_l) {
+  x7::TwoMassArm::Options o;
+  for (auto& p : o.joints) {
+    p = x7::TwoMassArm::plantMode(0.1, 0.05, 40.0, 0.5);
+  }
+  o.joints[probe] = x7::TwoMassArm::plantMode(j_l, 0.05, f_hz,
+                                              zeta_mode);
+  return o;
+}
+
+x7::TwoMassArm::Options flexOptionsFor(const std::string& case_id) {
+  return case_id == "F4" ? flexOptions(0, 4.5, 0.03, 0.4)
+                         : flexOptions(5, 13.0, 0.05, 0.01);
+}
+
 // ------------------------------------------------------ provenance
 
 std::string runGit(const char* args) {
@@ -423,10 +453,7 @@ int main(int argc, char* argv[]) {
     };
     std::vector<GridRow> grid;
     auto rigid_arm = [&](const double* pose) {
-      arm::SimArm::Options o;
-      o.model_path = kModelPath;
-      o.initial_q8.assign(pose, pose + kCanonicalDof);
-      return std::make_unique<arm::SimArm>(o);
+      return std::make_unique<arm::SimArm>(rigidOptions(pose));
     };
     // practical baseline on the identical scenario (the discard rule
     // compares against its peak error)
@@ -516,17 +543,8 @@ int main(int argc, char* argv[]) {
     };
     std::vector<CellResult> cells;
 
-    auto flex_arm = [&](int probe, double f_hz, double zeta_mode,
-                        double j_l) {
-      x7::TwoMassArm::Options o;
-      // EXPLICIT single-mode fixture (review round 4): every joint
-      // stiff and well damped, ONLY the probe joint carries the mode.
-      for (auto& p : o.joints) {
-        p = x7::TwoMassArm::plantMode(0.1, 0.05, 40.0, 0.5);
-      }
-      o.joints[probe] = x7::TwoMassArm::plantMode(j_l, 0.05, f_hz,
-                                                  zeta_mode);
-      return std::make_unique<x7::TwoMassArm>(o);
+    auto flex_arm = [&](const std::string& case_id) {
+      return std::make_unique<x7::TwoMassArm>(flexOptionsFor(case_id));
     };
 
     for (const auto& cd : case_defs) {
@@ -578,8 +596,7 @@ int main(int argc, char* argv[]) {
           s.modal_f_hz = f4 ? 4.5 : 13.0;
           s.probe_joint = f4 ? 0 : 5;
           s.score_joint = s.probe_joint;
-          tma = f4 ? flex_arm(0, 4.5, 0.03, 0.4)
-                   : flex_arm(5, 13.0, 0.05, 0.01);
+          tma = flex_arm(cd.id);
           tma->deflectGear(s.probe_joint, kDeflectionRad);
           x7::LaggedArmOptions lo;
           lo.delay_cycles = kDelayCycles;
@@ -839,6 +856,69 @@ int main(int argc, char* argv[]) {
       }
     };
 
+    auto emitPose = [&](const double* pose) {
+      j.beginArray();
+      for (int i = 0; i < kCanonicalDof; ++i) j.value(pose[i]);
+      j.endArray();
+    };
+    auto emitSimPlant = [&] {
+      const arm::SimArm::Options o;  // rigidOptions differs only in
+                                     // pose/model path, emitted above
+      j.beginObject();
+      j.key("type");
+      j.value("SimArm");
+      j.key("model_path");
+      j.value(kModelPath);
+      j.key("sim_dt");
+      j.value(o.sim_dt);
+      j.key("control_dt");
+      j.value(o.control_dt);
+      j.key("reflected_inertia_kgm2");
+      j.value(o.reflected_inertia);
+      j.key("numeric_damping_ratio");
+      j.value(o.numeric_damping_ratio);
+      j.key("finger_couple_k");
+      j.value(o.couple_k);
+      j.key("finger_couple_c");
+      j.value(o.couple_c);
+      j.key("effort_limit8");
+      j.beginArray();
+      for (const double v : o.effort_limit8) j.value(v);
+      j.endArray();
+      j.endObject();
+    };
+    auto emitFlexPlant = [&](const x7::TwoMassArm::Options& o) {
+      j.beginObject();
+      j.key("type");
+      j.value("TwoMassArm");
+      j.key("sim_dt");
+      j.value(o.sim_dt);
+      j.key("control_dt");
+      j.value(o.control_dt);
+      j.key("effort_limit8");
+      j.beginArray();
+      for (const double v : o.effort_limit8) j.value(v);
+      j.endArray();
+      j.key("joints");
+      j.beginArray();
+      for (const auto& p : o.joints) {
+        j.beginObject();
+        j.key("j_m");
+        j.value(p.j_m);
+        j.key("j_l");
+        j.value(p.j_l);
+        j.key("k_g");
+        j.value(p.k_g);
+        j.key("c_g");
+        j.value(p.c_g);
+        j.key("b_l");
+        j.value(p.b_l);
+        j.endObject();
+      }
+      j.endArray();
+      j.endObject();
+    };
+
     j.key("grid");
     j.beginArray();
     {
@@ -847,6 +927,10 @@ int main(int argc, char* argv[]) {
       j.value("PRACTICAL");
       j.key("scenario");
       j.value("development");
+      j.key("start_pose");
+      emitPose(kDevPose);
+      j.key("plant_params");
+      emitSimPlant();
       emitRun(base_r);
       j.endObject();
     }
@@ -860,6 +944,10 @@ int main(int argc, char* argv[]) {
       j.value(g.zeta);
       j.key("scenario");
       j.value("development");
+      j.key("start_pose");
+      emitPose(kDevPose);
+      j.key("plant_params");
+      emitSimPlant();
       emitRun(g.r);
       j.endObject();
     }
@@ -904,12 +992,26 @@ int main(int argc, char* argv[]) {
         j.endObject();
       }
       j.key("plant");
-      j.value(flexible ? "TwoMassArm single planted mode"
-                       : "SimArm rigid");
+      j.value(flexible ? "TwoMassArm" : "SimArm");
+      j.key("plant_params");
+      if (flexible) {
+        emitFlexPlant(flexOptionsFor(c.case_id));
+      } else {
+        emitSimPlant();
+      }
       j.key("start");
       j.value(c.case_id == "R2" || c.case_id == "L2"
                   ? "incident pose"
                   : (flexible ? "zero pose" : "P1"));
+      j.key("start_pose");
+      if (flexible) {
+        const double zeros[kCanonicalDof] = {};
+        emitPose(zeros);
+      } else if (c.case_id == "R2" || c.case_id == "L2") {
+        emitPose(kIncidentPose);
+      } else {
+        emitPose(p1);
+      }
       j.key("scale");
       j.value(flexible ? 0.0 : kScale);
       j.key("delay_cycles");

@@ -72,3 +72,11 @@ add_test(NAME x7_efl_study_smoke
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_efl_study_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "NONCANONICAL" LABELS integration)
+# ...and the JSON itself must be well-formed, explicitly noncanonical,
+# and schema-complete (review finding: the stdout regex alone would
+# pass on malformed output).
+add_test(NAME x7_efl_study_smoke_json
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/efl_smoke_check.py
+          ${CMAKE_BINARY_DIR}/efl_smoke/results.json)
+set_tests_properties(x7_efl_study_smoke_json PROPERTIES
+  DEPENDS x7_efl_study_smoke LABELS integration)
