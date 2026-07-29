@@ -861,14 +861,15 @@ int main(int argc, char* argv[]) {
       for (int i = 0; i < kCanonicalDof; ++i) j.value(pose[i]);
       j.endArray();
     };
-    auto emitSimPlant = [&] {
-      const arm::SimArm::Options o;  // rigidOptions differs only in
-                                     // pose/model path, emitted above
+    // Takes the SAME options object the plant was constructed from
+    // (rigidOptions) — an independent default-construction here could
+    // silently go stale against a future override (review finding).
+    auto emitSimPlant = [&](const arm::SimArm::Options& o) {
       j.beginObject();
       j.key("type");
       j.value("SimArm");
       j.key("model_path");
-      j.value(kModelPath);
+      j.value(o.model_path);
       j.key("sim_dt");
       j.value(o.sim_dt);
       j.key("control_dt");
@@ -930,7 +931,7 @@ int main(int argc, char* argv[]) {
       j.key("start_pose");
       emitPose(kDevPose);
       j.key("plant_params");
-      emitSimPlant();
+      emitSimPlant(rigidOptions(kDevPose));
       emitRun(base_r);
       j.endObject();
     }
@@ -947,7 +948,7 @@ int main(int argc, char* argv[]) {
       j.key("start_pose");
       emitPose(kDevPose);
       j.key("plant_params");
-      emitSimPlant();
+      emitSimPlant(rigidOptions(kDevPose));
       emitRun(g.r);
       j.endObject();
     }
@@ -991,13 +992,15 @@ int main(int argc, char* argv[]) {
         j.value(kd_sel);
         j.endObject();
       }
+      const double* rigid_pose =
+          c.case_id == "R2" || c.case_id == "L2" ? kIncidentPose : p1;
       j.key("plant");
       j.value(flexible ? "TwoMassArm" : "SimArm");
       j.key("plant_params");
       if (flexible) {
         emitFlexPlant(flexOptionsFor(c.case_id));
       } else {
-        emitSimPlant();
+        emitSimPlant(rigidOptions(rigid_pose));
       }
       j.key("start");
       j.value(c.case_id == "R2" || c.case_id == "L2"
@@ -1007,10 +1010,8 @@ int main(int argc, char* argv[]) {
       if (flexible) {
         const double zeros[kCanonicalDof] = {};
         emitPose(zeros);
-      } else if (c.case_id == "R2" || c.case_id == "L2") {
-        emitPose(kIncidentPose);
       } else {
-        emitPose(p1);
+        emitPose(rigid_pose);
       }
       j.key("scale");
       j.value(flexible ? 0.0 : kScale);
