@@ -80,5 +80,6 @@ nav:
       - Consistency remediation plan: CONSISTENCY_REMEDIATION_PLAN.md
       - Offline EFL study (definition): ENVELOPE_STABILITY_PLAN.md
       - EFL study implementation plan: EFL_STUDY_IMPLEMENTATION_PLAN.md
+      - EFL study results: EFL_STUDY_RESULTS.md
       - Data archive manifest: DATA_ARCHIVE.md
       - Vendor parity: PARITY.md

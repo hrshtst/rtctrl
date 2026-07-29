@@ -12,7 +12,8 @@ practical baseline's peak error on the development scenario (the
 unmodeled reflected rotor inertia collapses the acceleration-domain
 loop gain at the wrist), so the held-out EFL cells record explicit
 not-run failures per preregistration. Canonical result table:
-`data/efl_study/results.json`; report:
+`data/efl_study/results.json`; results record:
+[EFL_STUDY_RESULTS.md](EFL_STUDY_RESULTS.md); report:
 [theory/computed-torque.md](theory/computed-torque.md), "Offline
 exact-feedback-linearization study". No hardware was run; `x7_track`
 and the 0.6 cap are unchanged.*
