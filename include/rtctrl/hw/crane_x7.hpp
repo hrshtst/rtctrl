@@ -249,8 +249,15 @@ class CraneX7 {
   // targets are updated to current/preload.
   bool switchToCurrentModeWithPreload(const std::vector<double>& amps);
 
-  // Per-servo parameter writes (all joints).
+  // Per-servo parameter writes (all joints). The profile setters come
+  // in two forms: RAW register passthroughs (deliberate register-level
+  // work — 0 means MAXIMUM on the X series) and SI variants matching
+  // the vendor API's conversion exactly (truncating, clamped to
+  // [1, 32767]; nonpositive requests select the SLOWEST profile,
+  // never the unlimited zero).
   bool writePositionPGain(std::uint16_t gain);
+  bool writeProfileVelocityRadPerSec(double rad_per_sec);
+  bool writeProfileAccelerationRadPerSec2(double rad_per_sec2);
   bool writeProfileVelocity(std::uint32_t raw);
   bool writeProfileAcceleration(std::uint32_t raw);
 

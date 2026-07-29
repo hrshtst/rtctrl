@@ -64,6 +64,18 @@ add_test(NAME ident_analysis_merge_guards
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)
 
+# SI profile flags: strict nonnegative doubles; raw and SI forms of
+# one register are mutually exclusive. Both reject before any bus
+# contact.
+add_test(NAME x7_set_param_rejects_negative_si
+  COMMAND x7_set_param --profile-vel-si -1.0)
+set_tests_properties(x7_set_param_rejects_negative_si PROPERTIES
+  PASS_REGULAR_EXPRESSION "invalid value" LABELS unit)
+add_test(NAME x7_set_param_rejects_raw_and_si
+  COMMAND x7_set_param --profile-vel 100 --profile-vel-si 1.0)
+set_tests_properties(x7_set_param_rejects_raw_and_si PROPERTIES
+  PASS_REGULAR_EXPRESSION "not both" LABELS unit)
+
 # x7_float --log must fail fast, BEFORE any bus contact: a missing
 # value, a flag-looking value ("--log --bogus" must not create
 # ./--bogus and proceed — review finding), and an unopenable path all

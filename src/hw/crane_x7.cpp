@@ -763,6 +763,16 @@ bool CraneX7::writePositionPGain(std::uint16_t gain) {
   return true;
 }
 
+bool CraneX7::writeProfileVelocityRadPerSec(double rad_per_sec) {
+  return writeProfileVelocity(
+      dxl::profileVelocityFromRadPerSec(rad_per_sec));
+}
+
+bool CraneX7::writeProfileAccelerationRadPerSec2(double rad_per_sec2) {
+  return writeProfileAcceleration(
+      dxl::profileAccelerationFromRadPerSec2(rad_per_sec2));
+}
+
 bool CraneX7::writeProfileVelocity(std::uint32_t raw) {
   for (const auto& joint : config_.joints) {
     if (!io_.write32(joint.id, reg::kProfileVelocity.addr, raw).ok()) {

@@ -12,8 +12,31 @@ namespace rtctrl::dxl {
 inline constexpr double kPulsesPerRevolution = 4096.0;
 inline constexpr std::int32_t kHomePulse = 2048;  // raw at 0 rad
 inline constexpr double kVelocityUnitRevPerMin = 0.229;
+inline constexpr double kAccelerationUnitRevPerMinSq = 214.577;
 inline constexpr double kCurrentUnitAmps = 0.00269;
 inline constexpr double kVoltageUnitVolts = 0.1;
+
+// SI -> profile-register conversions, vendor-exact (rt_manipulators'
+// DynamixelX::to_profile_velocity/acceleration): TRUNCATING, clamped
+// to [1, 32767]. Register 0 means MAXIMUM (no profile limit) on the X
+// series, so a nonpositive SI request maps to the SLOWEST profile (1),
+// never to the unlimited zero — reaching 0 takes the raw setters.
+inline constexpr std::uint32_t kProfileRegisterMax = 32767;
+inline std::uint32_t profileVelocityFromRadPerSec(double rad_per_sec) {
+  const double raw =
+      rad_per_sec * 60.0 / (kVelocityUnitRevPerMin * 2.0 * M_PI);
+  if (raw > kProfileRegisterMax) return kProfileRegisterMax;
+  const auto truncated = static_cast<std::int64_t>(raw);
+  return truncated <= 0 ? 1u : static_cast<std::uint32_t>(truncated);
+}
+inline std::uint32_t profileAccelerationFromRadPerSec2(
+    double rad_per_sec2) {
+  const double raw = rad_per_sec2 * 3600.0 /
+                     (kAccelerationUnitRevPerMinSq * 2.0 * M_PI);
+  if (raw > kProfileRegisterMax) return kProfileRegisterMax;
+  const auto truncated = static_cast<std::int64_t>(raw);
+  return truncated <= 0 ? 1u : static_cast<std::uint32_t>(truncated);
+}
 
 inline double pulseToRad(std::int32_t pulse) {
   return (pulse - kHomePulse) * (2.0 * M_PI / kPulsesPerRevolution);

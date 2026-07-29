@@ -107,6 +107,39 @@ TEST_CASE("current commands clamp to the effort limit minus margin",
   CHECK(dxl::currentToAmps(raw1) == Approx(expect1).epsilon(0.01));
 }
 
+TEST_CASE("SI profile setters convert, truncate, and clamp like the "
+          "vendor API",
+          "[hw][modes]") {
+  const auto config = configWithMode(3);
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.activate());
+
+  // 1 rad/s = 41.70 velocity LSBs -> TRUNCATED to 41 (vendor parity)
+  REQUIRE(arm.writeProfileVelocityRadPerSec(1.0));
+  CHECK(bus.find(2)->peek(reg::kProfileVelocity) == 41);
+  CHECK(bus.find(9)->peek(reg::kProfileVelocity) == 41);  // all joints
+  // 0 must select the SLOWEST profile, never register 0 (= MAXIMUM on
+  // the X series); huge requests saturate at 32767
+  REQUIRE(arm.writeProfileVelocityRadPerSec(0.0));
+  CHECK(bus.find(2)->peek(reg::kProfileVelocity) == 1);
+  REQUIRE(arm.writeProfileVelocityRadPerSec(1e9));
+  CHECK(bus.find(2)->peek(reg::kProfileVelocity) == 32767);
+
+  // 1 rad/s^2 = 2.67 acceleration LSBs -> truncated to 2
+  REQUIRE(arm.writeProfileAccelerationRadPerSec2(1.0));
+  CHECK(bus.find(2)->peek(reg::kProfileAcceleration) == 2);
+  REQUIRE(arm.writeProfileAccelerationRadPerSec2(-3.0));
+  CHECK(bus.find(2)->peek(reg::kProfileAcceleration) == 1);
+  REQUIRE(arm.writeProfileAccelerationRadPerSec2(1e9));
+  CHECK(bus.find(2)->peek(reg::kProfileAcceleration) == 32767);
+
+  // the raw passthrough still reaches the special 0 deliberately
+  REQUIRE(arm.writeProfileVelocity(0));
+  CHECK(bus.find(2)->peek(reg::kProfileVelocity) == 0);
+}
+
 TEST_CASE("current commands gate at position limits", "[hw][modes]") {
   // The soft-limit gate in current mode — the behavior PARITY.md cites
   // for the vendor's software position-limit rule; previously only the
