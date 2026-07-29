@@ -257,8 +257,9 @@ gate.** Findings by fixture family:
   recorded for the record: the two-cycle-delay, quantized loop from
   P1 carries a 0.376 rad transient peak (L1) that the incident-pose
   start does not (L2: 0.029), and ±0.8 Nm constant disturbance on
-  joint 1 settles in 1.6–1.9 s to ~4 mrad steady error — the clamped
-  integrator doing exactly its documented job.
+  joint 1 reaches its first qualifying dwell at 1.9 s (D+) and 0.53 s
+  (D−), settling to ~4 mrad steady error — the clamped integrator
+  doing exactly its documented job.
 - **Flexible screens.** Not evaluable for EFL. The PRACTICAL-GF
   baselines are informative on their own: the planted 4.5 Hz ζ 0.03
   mode decays strongly under the practical law (fitted modal rate
