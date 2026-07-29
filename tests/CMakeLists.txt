@@ -80,3 +80,13 @@ add_test(NAME x7_efl_study_smoke_json
           ${CMAKE_BINARY_DIR}/efl_smoke/results.json)
 set_tests_properties(x7_efl_study_smoke_json PROPERTIES
   DEPENDS x7_efl_study_smoke LABELS integration)
+# --zvs writes one rk_anim motion file per SimArm-based run (passive
+# logging). 14 = the 13 development-grid runs plus R1's PRACTICAL cell
+# (the acceleration-domain R1 cells are not-run under the recorded
+# no-surviving-candidate outcome; the TwoMassArm screens never emit).
+add_test(NAME x7_efl_study_zvs_smoke
+  COMMAND x7_efl_study --case R1 --zvs
+          --out ${CMAKE_BINARY_DIR}/efl_zvs_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_efl_study_zvs_smoke PROPERTIES
+  PASS_REGULAR_EXPRESSION "zvs motion files: 14" LABELS integration)

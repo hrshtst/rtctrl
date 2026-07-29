@@ -10,6 +10,12 @@
 //           is ALWAYS noncanonical; only the complete unfiltered
 //           matrix from a clean worktree at the built HEAD may be
 //           promoted to data/efl_study/results.json.
+//   --zvs   additionally write one .zvs motion file per SimArm-based
+//           run (the grid and the rigid held-out cells), playable
+//           with: rk_anim models/crane_x7/crane_x7.ztk <file>.
+//           Passive logging — no effect on any metric or on
+//           canonicality. The TwoMassArm screens are not a roki
+//           chain and produce none.
 //
 // There are deliberately NO tuning knobs: every number is frozen in
 // the plan documents and pinned here as constants.
@@ -33,6 +39,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/model/zvs_writer.hpp"
 #include "study_metrics.hpp"
 #include "two_mass_arm.hpp"
 
@@ -396,11 +403,14 @@ std::string runGit(const char* args) {
 int main(int argc, char* argv[]) {
   std::string out_dir = "build/efl_study";
   std::string only_case;
+  bool want_zvs = false;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
       out_dir = argv[++i];
     } else if (std::strcmp(argv[i], "--case") == 0 && i + 1 < argc) {
       only_case = argv[++i];
+    } else if (std::strcmp(argv[i], "--zvs") == 0) {
+      want_zvs = true;
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return 1;
@@ -455,6 +465,12 @@ int main(int argc, char* argv[]) {
     auto rigid_arm = [&](const double* pose) {
       return std::make_unique<arm::SimArm>(rigidOptions(pose));
     };
+    // --zvs: one motion file per SimArm run, named after its trace CSV.
+    auto zvs_for = [](std::string csv) {
+      csv.replace(csv.size() - 4, 4, ".zvs");
+      return csv;
+    };
+    int zvs_files = 0;
     // practical baseline on the identical scenario (the discard rule
     // compares against its peak error)
     CellSpec base;
@@ -462,6 +478,13 @@ int main(int argc, char* argv[]) {
     base.traj = &dev_trip;
     base.duration = dev_trip.duration();
     auto base_arm = rigid_arm(kDevPose);
+    std::unique_ptr<model::ZvsWriter> base_zvs;
+    if (want_zvs) {
+      base_zvs = std::make_unique<model::ZvsWriter>(
+          zvs_for(out_dir + "/grid_practical.csv"));
+      base_arm->logTo(base_zvs.get());
+      ++zvs_files;
+    }
     const auto base_r = runCell(chain, map, *base_arm, base,
                                 out_dir + "/grid_practical.csv");
     for (const double omega : kOmegaGrid) {
@@ -477,6 +500,12 @@ int main(int argc, char* argv[]) {
           char name[128];
           std::snprintf(name, sizeof name, "%s/grid_%s_w%g_z%g.csv",
                         out_dir.c_str(), kindName(kind), omega, zeta);
+          std::unique_ptr<model::ZvsWriter> zvs;
+          if (want_zvs) {
+            zvs = std::make_unique<model::ZvsWriter>(zvs_for(name));
+            plant->logTo(zvs.get());
+            ++zvs_files;
+          }
           grid.push_back({omega, zeta, kind,
                           runCell(chain, map, *plant, s, name)});
         }
@@ -643,6 +672,12 @@ int main(int argc, char* argv[]) {
         std::string trace = out_dir + "/case_" + cd.id + "_" +
                             kindName(kind) + ".csv";
         std::replace(trace.begin(), trace.end(), '+', 'p');
+        std::unique_ptr<model::ZvsWriter> zvs;
+        if (want_zvs && sim) {  // TwoMassArm is not a roki chain
+          zvs = std::make_unique<model::ZvsWriter>(zvs_for(trace));
+          sim->logTo(zvs.get());
+          ++zvs_files;
+        }
         cells.push_back(
             {cd.id, kind, runCell(chain, map, robot, s, trace)});
         std::printf("case %-3s %-12s rms %.5f peak %.5f tau_peak %.3f "
@@ -1068,6 +1103,10 @@ int main(int argc, char* argv[]) {
     std::fclose(f);
 
     std::printf("results: %s\n", json_path.c_str());
+    if (want_zvs) {
+      std::printf("zvs motion files: %d (play: rk_anim %s <file>)\n",
+                  zvs_files, kModelPath);
+    }
     if (have_decision) {
       std::printf("decision: C1 %d C2 %d C3 %d C4 %d -> %s\n", c1, c2,
                   c3, c4, promising ? "PROMISING" : "NOT promising");
