@@ -64,11 +64,35 @@ add_test(NAME ident_analysis_merge_guards
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)
 
-# x7_float --log must fail fast (before any bus contact) on a missing
-# value or unopenable path.
+# x7_float --log must fail fast, BEFORE any bus contact: a missing
+# value, a flag-looking value ("--log --bogus" must not create
+# ./--bogus and proceed — review finding), and an unopenable path all
+# reject without a session (no "bus:" line).
 add_test(NAME x7_float_rejects_valueless_log COMMAND x7_float --log)
 set_tests_properties(x7_float_rejects_valueless_log PROPERTIES
   PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+add_test(NAME x7_float_rejects_flag_as_log_value
+  COMMAND x7_float --log --bogus)
+set_tests_properties(x7_float_rejects_flag_as_log_value PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+add_test(NAME x7_track_rejects_flag_as_log_value
+  COMMAND x7_track --log --bogus)
+set_tests_properties(x7_track_rejects_flag_as_log_value PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+add_test(NAME x7_float_rejects_unopenable_log
+  COMMAND x7_float --log /nonexistent-rtctrl-dir/f.csv 1)
+set_tests_properties(x7_float_rejects_unopenable_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "cannot open log file"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+
+# End-to-end log validation over the pty emulator: structure, event
+# semantics, and produced rows (check_float_log.py).
+add_test(NAME x7_float_log_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/float_log_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_float>
+          ${CMAKE_BINARY_DIR}/float_log_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_log_smoke PROPERTIES LABELS integration)
 
 # EFL study smoke: one held-out case end-to-end. --case output must
 # declare itself NONCANONICAL — only the complete unfiltered matrix

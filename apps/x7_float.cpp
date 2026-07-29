@@ -8,12 +8,18 @@
 // (gravity_sim_test): drift < 0.05 rad over 10 s.
 //
 // Usage: x7_float [--config path] [--port dev] [--log out.csv] [seconds]
-//   --log writes per-cycle telemetry for offline inspection: t,
-//   feedback time/seq, then per joint q, dq_servo (the servo's lagged
-//   estimate), tau_meas (current-derived), tau_cmd (the g(q) command).
-//   Raw hardware CSVs land at the repo root gitignored and belong in
-//   the private archive (docs/DATA_ARCHIVE.md); use a unique filename
-//   per attempt.
+//   --log writes one row per cycle through the CycleObserver — AFTER
+//   writeCommand, so each row pairs three distinct events explicitly:
+//   the FEEDBACK snapshot the cycle started from (q, dqservo — the
+//   servo's lagged estimate — and current-derived tau_meas), THIS
+//   CYCLE'S REQUEST (tau_request, the g(q) command, with its receipt:
+//   submitted_seq / submission_time / accepted — it is applied LATER),
+//   and the LATEST APPLIED command as of that feedback (tau_applied
+//   with the hardware clamp/gate flags). tau_meas and tau_request in
+//   one row are therefore NOT the same instant — compare tau_meas
+//   against the applied columns. Raw hardware CSVs land at the repo
+//   root gitignored and belong in the private archive
+//   (docs/DATA_ARCHIVE.md); use a unique filename per attempt.
 
 #include <cmath>
 #include <cstdio>
@@ -35,24 +41,12 @@ namespace {
 
 struct ReportingGravityComp : arm::GravityComp {
   ReportingGravityComp(model::ChainModel& chain,
-                       const model::JointMap& map, std::FILE* log)
-      : GravityComp(chain, map), chain_(chain), map_(map), log_(log) {}
+                       const model::JointMap& map)
+      : GravityComp(chain, map), chain_(chain), map_(map) {}
 
   void update(const arm::JointState& state, arm::JointCommand& cmd,
               double t) override {
     GravityComp::update(state, cmd, t);
-    if (log_ != nullptr) {
-      std::fprintf(log_, "%.4f,%.6f,%llu", t, state.t,
-                   static_cast<unsigned long long>(state.seq));
-      for (int i = 0; i < model::kCanonicalDof; ++i) {
-        std::fprintf(log_, ",%.6f,%.6f,%.4f,%.4f",
-                     zVecElemNC(state.q.get(), i),
-                     zVecElemNC(state.dq.get(), i),
-                     zVecElemNC(state.tau.get(), i),
-                     zVecElemNC(cmd.tau.get(), i));
-      }
-      std::fprintf(log_, "\n");
-    }
     if (t - last_report_ >= 1.0) {
       last_report_ = t;
       chain_.gravityTorque(map_, state.q.get(), predicted_.get());
@@ -67,17 +61,64 @@ struct ReportingGravityComp : arm::GravityComp {
 
   model::ChainModel& chain_;
   const model::JointMap& map_;
-  std::FILE* log_;
   model::ZVector predicted_{model::kCanonicalDof};
   double last_report_ = -1.0;
+};
+
+// Per-cycle telemetry via the CycleObserver — invoked AFTER
+// writeCommand, so the row carries this cycle's receipt (was the
+// request accepted?) and the pre-write snapshot's latest-applied
+// record, keeping the three events distinguishable (review finding:
+// logging inside update() recorded a request before knowing whether
+// it was ever accepted or applied).
+struct FloatLogObserver : arm::CycleObserver {
+  explicit FloatLogObserver(std::FILE* log) : log_(log) {}
+
+  bool observe(double t, const arm::JointState& state,
+               const arm::CommandSnapshot& cmds,
+               const arm::JointCommand& cmd,
+               const arm::CommandReceipt& receipt) override {
+    if (log_ == nullptr) return true;
+    const auto& applied = cmds.applied;
+    std::fprintf(log_, "%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu", t,
+                 state.t, static_cast<unsigned long long>(state.seq),
+                 static_cast<unsigned long long>(receipt.submitted_seq),
+                 receipt.submission_time, receipt.accepted ? 1 : 0,
+                 applied.valid ? 1 : 0,
+                 static_cast<unsigned long long>(applied.target_seq));
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      std::fprintf(log_, ",%.6f,%.6f,%.4f,%.4f,%.4f,%d,%d",
+                   zVecElemNC(state.q.get(), i),
+                   zVecElemNC(state.dq.get(), i),
+                   zVecElemNC(state.tau.get(), i),
+                   zVecElemNC(cmd.tau.get(), i),
+                   applied.valid ? applied.applied[i] : 0.0,
+                   (applied.flags[i] & arm::kCmdClamped) ? 1 : 0,
+                   (applied.flags[i] & arm::kCmdGated) ? 1 : 0);
+    }
+    std::fprintf(log_, "\n");
+    return true;
+  }
+
+  std::FILE* log_;
 };
 
 std::FILE* openFloatLog(const std::string& path) {
   std::FILE* log = std::fopen(path.c_str(), "w");
   if (log == nullptr) return nullptr;
-  std::fprintf(log, "t,feedback_time,feedback_seq");
+  std::fprintf(log,
+               "# events per row: FEEDBACK (feedback_time/feedback_seq, "
+               "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
+               "(submitted_seq/submission_time/accepted, tau_request — "
+               "applied LATER) | LATEST APPLIED as of this feedback "
+               "(applied_valid/applied_seq, tau_applied, clamped/gated)\n");
+  std::fprintf(log, "t,feedback_time,feedback_seq,submitted_seq,"
+                    "submission_time,accepted,applied_valid,applied_seq");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
-    std::fprintf(log, ",q%d,dqservo%d,tau_meas%d,tau_cmd%d", i, i, i, i);
+    std::fprintf(log,
+                 ",q%d,dqservo%d,tau_meas%d,tau_request%d,tau_applied%d,"
+                 "clamped%d,gated%d",
+                 i, i, i, i, i, i, i);
   }
   std::fprintf(log, "\n");
   return log;
@@ -94,7 +135,12 @@ int main(int argc, char* argv[]) {
   const auto& rest = cli.rest;
   for (std::size_t i = 0; i < rest.size(); ++i) {
     if (std::strcmp(rest[i], "--log") == 0) {
-      if (i + 1 >= rest.size()) {
+      // A flag-looking next token is a MISSING value, not a filename —
+      // otherwise "--log --bogus" silently creates ./--bogus and
+      // proceeds toward the hardware session (review finding). A
+      // genuinely flag-like filename can be written as ./--name.
+      if (i + 1 >= rest.size() ||
+          std::strncmp(rest[i + 1], "--", 2) == 0) {
         std::fprintf(stderr, "--log requires a value\n");
         return 1;
       }
@@ -139,11 +185,13 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     x7::ShutdownGuard shutdown{*session.arm};
-    ReportingGravityComp controller(chain, map, log);
+    ReportingGravityComp controller(chain, map);
+    FloatLogObserver observer(log);
     std::printf("floating for %.0f s — the arm is back-drivable; keep the "
                 "power cutoff in reach\n",
                 duration_s);
-    const bool ok = arm::run(robot, controller, duration_s);
+    const bool ok = arm::run(robot, controller, duration_s,
+                             log != nullptr ? &observer : nullptr);
     const bool clean = shutdown.run();
     if (log != nullptr) std::fclose(log);
     if (!clean) {

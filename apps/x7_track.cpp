@@ -99,7 +99,11 @@ int main(int argc, char* argv[]) {
     } else if (std::strcmp(rest[i], "--ki") == 0) {
       flag_dst = &ki;
     } else if (std::strcmp(rest[i], "--log") == 0) {
-      if (i + 1 >= rest.size()) {
+      // A flag-looking next token is a MISSING value, not a filename
+      // (same rule as parseCli and x7_float; "--log --bogus" must not
+      // create ./--bogus and proceed).
+      if (i + 1 >= rest.size() ||
+          std::strncmp(rest[i + 1], "--", 2) == 0) {
         std::fprintf(stderr, "--log requires a value\n");
         return 1;
       }
