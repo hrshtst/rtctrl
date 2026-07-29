@@ -1,5 +1,17 @@
 # Tracked evidence sidecars
 
+Two kinds of evidence live here, with different provenance:
+
+- **Hardware evidence sidecars** (`*.dwells.json`, this directory) —
+  summaries of raw hardware telemetry whose time series live in the
+  operator's private archive (below).
+- **Simulation-study results** (`efl_study/`) — CANONICAL,
+  self-contained outputs of preregistered offline studies. No hardware
+  was involved, so the private-archive rule does not apply; the JSON
+  itself is the authoritative evidence and records the exact commit,
+  clean-worktree status, and invocation that produced it (see
+  `efl_study/README.md`).
+
 The `.dwells.json` files here are the per-run summary sidecars of the
 hardware identification campaign (2026-07-27): the complete controller
 tuning record, per-dwell verdicts, demodulated estimates, frozen-bias
