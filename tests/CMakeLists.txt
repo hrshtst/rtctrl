@@ -13,6 +13,7 @@ add_executable(unit_tests
   unit/computed_torque_test.cpp
   unit/track_common_test.cpp
   unit/two_mass_arm_test.cpp
+  unit/lagged_arm_test.cpp
   unit/session_watchdog_test.cpp
   unit/ident_common_test.cpp
   unit/x7_common_test.cpp)

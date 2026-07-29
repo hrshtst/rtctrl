@@ -51,110 +51,13 @@
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
+#include "lagged_arm.hpp"
 #include "track_common.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;
 
-namespace {
-
-// Adds the real control loop's lag to an ideal SimArm: commands land
-// one cycle late, and reported velocity is low-passed (the servo's
-// internal estimator) then quantized to the Dynamixel LSB.
-struct LaggedArm : arm::Arm {
-  static constexpr double kVelLsb = 0.229 * 2.0 * M_PI / 60.0;  // [rad/s]
-  static constexpr double kPosLsb = 2.0 * M_PI / 4096.0;        // [rad]
-
-  LaggedArm(arm::SimArm& inner, double vel_tau)
-      : inner_(inner), vel_tau_(vel_tau) {}
-
-  int dof() const override { return inner_.dof(); }
-  double dt() const override { return inner_.dt(); }
-  bool activate() override { return inner_.activate(); }
-  bool deactivate() override { return inner_.deactivate(); }
-  bool setMode(arm::ControlMode mode) override {
-    return inner_.setMode(mode);
-  }
-
-  bool readState(arm::JointState& state,
-                 arm::CommandSnapshot* cmds = nullptr) override {
-    if (!inner_.readState(state)) return false;
-    const double alpha = dt() / (vel_tau_ + dt());
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      dq_filt_[i] += alpha * (zVecElemNC(state.dq.get(), i) - dq_filt_[i]);
-      zVecElemNC(state.dq.get(), i) =
-          std::round(dq_filt_[i] / kVelLsb) * kVelLsb;
-      zVecElemNC(state.q.get(), i) =
-          std::round(zVecElemNC(state.q.get(), i) / kPosLsb) * kPosLsb;
-    }
-    // The wrapper owns the command records: its lag makes application
-    // ASYNCHRONOUS, so the inner sim's synchronous records would
-    // misattribute the current request to the previous command's
-    // sequence.
-    if (cmds != nullptr) {
-      cmds->applied = applied_rec_;
-      cmds->last_attempt = attempt_rec_;
-    }
-    return true;
-  }
-
-  bool writeCommand(const arm::JointCommand& cmd,
-                    arm::CommandReceipt* receipt = nullptr) override {
-    const std::uint64_t this_seq = ++wrapper_seq_;
-    const double now = inner_.time();
-    bool ok = true;
-    if (!primed_) {  // first cycle passes through, as activation snaps
-      primed_ = true;
-      ok = inner_.writeCommand(cmd);
-      if (ok) adoptInnerRecords(this_seq, now);
-    } else {
-      // the PENDING command (accepted one cycle ago) reaches the
-      // actuator now — ITS sequence becomes the applied sequence
-      ok = inner_.writeCommand(pending_);
-      if (ok) adoptInnerRecords(pending_seq_, now);
-    }
-    copy(cmd, pending_);
-    pending_seq_ = this_seq;
-    if (receipt != nullptr) *receipt = {ok, this_seq, now};
-    return ok;
-  }
-
-  bool step() override { return inner_.step(); }
-
- private:
-  static void copy(const arm::JointCommand& from, arm::JointCommand& to) {
-    to.mode = from.mode;
-    zVecCopyNC(from.q.get(), to.q.get());
-    zVecCopyNC(from.dq.get(), to.dq.get());
-    zVecCopyNC(from.tau.get(), to.tau.get());
-  }
-
-  // Take the inner sim's freshly synthesized records (they carry the
-  // clamp truth) but stamp them with the WRAPPER's sequence.
-  void adoptInnerRecords(std::uint64_t wrapper_seq, double now) {
-    arm::JointState dummy;
-    arm::CommandSnapshot snap;
-    inner_.readState(dummy, &snap);
-    applied_rec_ = snap.applied;
-    applied_rec_.target_seq = wrapper_seq;
-    applied_rec_.first_time = applied_rec_.latest_time = now;
-    attempt_rec_ = snap.last_attempt;
-    attempt_rec_.target_seq = wrapper_seq;
-    attempt_rec_.time = now;
-  }
-
-  arm::SimArm& inner_;
-  double vel_tau_;
-  arm::JointCommand pending_;
-  std::uint64_t pending_seq_ = 0;
-  std::uint64_t wrapper_seq_ = 0;
-  bool primed_ = false;
-  arm::AppliedTargetRecord applied_rec_;
-  arm::WriteAttemptRecord attempt_rec_;
-  double dq_filt_[model::kCanonicalDof] = {};
-};
-
-}  // namespace
+using x7::LaggedArm;
 
 int main(int argc, char* argv[]) {
   double scale = 1.0;
