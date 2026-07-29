@@ -155,13 +155,15 @@ inline Settling settlingMetrics(const std::vector<double>& t,
     if (t[k] < t_end) continue;
     if (std::abs(e[k]) <= band) {
       if (in_band_since < 0.0) in_band_since = t[k];
-      if (!out.settled && t[k] - in_band_since >= dwell_s) {
+      if (t[k] - in_band_since >= dwell_s) {
+        // The FIRST qualifying dwell latches (frozen definition) — a
+        // later excursion never voids it (review finding).
         out.settled = true;
         out.settle_time = in_band_since - t_end;
+        break;
       }
     } else {
       in_band_since = -1.0;
-      out.settled = false;  // a later excursion voids an earlier dwell
     }
   }
   if (n > 0) {

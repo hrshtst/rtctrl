@@ -129,6 +129,24 @@ TEST_CASE("settling metrics follow the frozen definitions",
   REQUIRE_THAT(s2.steady_state_err, WithinAbs(0.02, 1e-12));
 }
 
+TEST_CASE("the first qualifying dwell latches through later excursions",
+          "[study_metrics]") {
+  // in band [4.53, 5.20) — a full 0.5 s dwell qualifies at 5.03 —
+  // then an excursion [5.20, 5.60), then reacquisition. The frozen
+  // definition keeps the FIRST dwell (review finding: the old code
+  // reported the final reacquisition instead).
+  std::vector<double> t, e;
+  sample([](double tt) {
+    if (tt < 4.53) return 0.05;
+    if (tt < 5.20) return 0.005;
+    if (tt < 5.60) return 0.05;
+    return 0.002;
+  }, 4.0, 8.0, &t, &e);
+  const auto s = study::settlingMetrics(t, e, 4.0, 0.01, 0.5, 1.0);
+  REQUIRE(s.settled);
+  REQUIRE_THAT(s.settle_time, WithinAbs(0.53, 0.02));
+}
+
 TEST_CASE("decision-rule booleans flip on each criterion independently",
           "[study_metrics]") {
   auto pass_case = [](const char* id, bool in_s) {
