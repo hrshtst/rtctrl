@@ -21,10 +21,10 @@ stabilizes.)
 | `set_position(s)` | `writePositions` / `setTargetPositions` (limit-clamped) | `hw_test` clamp case |
 | `set_velocity/velocities` | `writeVelocities` (velocity-limit clamp + position gating) | `hw_modes_test` |
 | `set_current(s)` | `writeCurrents` (effort→A and servo CurrentLimit clamp + gating) | `hw_modes_test` |
-| software pos-limit rule for vel/current modes | positional gating in the limited writers; rejects commands without fresh feedback | `hw_modes_test` |
-| write 0 vel/current on stop | `stopThread` | `thread_test` zeroing case |
-| `write_position_pid_gain` / profiles | `writePositionPGain/writeProfileVelocity/Acceleration` | `x7_set_param` on hardware |
-| operating modes 0/1/3 from config | `operating_mode` per joint in TOML; mode-checked writers | `hw_modes_test` rejections |
+| software pos-limit rule for vel/current modes | positional gating in the limited writers; requires previously ACQUIRED feedback (a command with no feedback ever read is rejected; persistent read failures escalate via the bounded-failure deadman policy — there is deliberately no per-command freshness gate) | `hw_modes_test` gating cases (velocity AND current modes) + no-feedback rejections |
+| write 0 vel/current on stop | `stopThread` | `thread_test` zeroing cases (velocity and current; non-vacuous: fresh submissions, no escalation, nonzero goal proven immediately before the stop) |
+| `write_position_pid_gain` / `write_velocity_pi_gain` / SI-unit profile setters | `writePositionPGain` (position P only — see omissions); profiles in BOTH forms: raw register passthroughs and `writeProfileVelocityRadPerSec` / `writeProfileAccelerationRadPerSec2` with the vendor-exact truncation, [1, 32767] clamp, and slowest-not-unlimited zero semantics | `hw_modes_test` SI-profile case; `x7_set_param` on hardware |
+| operating modes 0/1/3 from config (the vendor also supports mode 5 — see omissions) | `operating_mode` per joint in TOML; mode-checked writers | `hw_modes_test` rejections |
 | mock-injected `Communicator` for tests | `dxl::PacketIO` seam + `emu::FakePacketIO` + pty emulator (tests the *unmodified* SDK too) | entire `emu` suite |
 
 ## Kinematics / dynamics (vendor `kinematics.hpp`, samples02/03)
@@ -35,7 +35,7 @@ stabilizes.)
 | numerical IK (LM) | `IkSolver` (roki LM + error-damped solver, structured `IkResult`) | `ik_test` incl. singular + unreachable |
 | analytic 3-DOF IK (samples03) | not ported — the robust numerical solver covers the use case; add analytic seeds later if speed demands | — |
 | gravity compensation (samples03) | `arm::GravityComp` (`rkChainID_G`-based, canonical 8↔9 mapping) | `gravity_test` (potential-gradient identity), `gravity_sim_test`, `apps/x7_float` on hardware (measured vs predicted within ~0.03 Nm) |
-| Jacobian utilities | roki `rkChainLinkWldLinJacobi` et al. via `ChainModel::chain()` | used from M7 on |
+| Jacobian utilities | available through the raw roki escape hatch (`ChainModel::chain()`), currently UNWRAPPED and UNUSED — no rtctrl call or test exercises that surface; wrap when task-space control needs it | — |
 
 ## Samples
 
@@ -56,10 +56,20 @@ plan's post-completion review notes):
   joint order *is* the project's coordinate contract (`Config::load`
   now rejects any other ordering). Sub-group control has no CRANE-X7
   use case here yet; add named groups if one appears.
-- **Full PID/feedforward gain writers** — only the position P gain and
-  the profile velocity/acceleration are exposed (the soft-start knobs
-  activation needs). rtctrl's dynamics controllers do their feedback
-  host-side in torque mode instead of tuning servo-internal loops.
+- **Position I/D and velocity PI gain writers** — the vendor exposes
+  position PID and velocity PI writers (it has NO feedforward-gain
+  writers); rtctrl exposes only the position P gain (the soft-start
+  knob activation needs). rtctrl's dynamics controllers do their
+  feedback host-side in torque mode instead of tuning servo-internal
+  loops, and `dxl_inspect` reaches any register raw when a one-off
+  tuning experiment demands it. Add dedicated writers only if
+  servo-loop tuning becomes an operational workflow.
+- **Current-based position mode (operating mode 5)** — the vendor
+  supports it; rtctrl's config deliberately rejects it
+  (`src/hw/config.cpp`). Supporting it properly needs a command
+  model, activation/limit behavior, and `RealArm` semantics of its
+  own — not merely permitting the configuration value. Add it when a
+  concrete use case appears.
 - **Analytic 3-DOF IK** — see the table above (robust numerical solver
   covers the use case).
 - **FastSyncRead (0x8A)** — the port uses ordinary `GroupSyncRead`:
