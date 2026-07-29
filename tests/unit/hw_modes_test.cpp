@@ -107,6 +107,30 @@ TEST_CASE("current commands clamp to the effort limit minus margin",
   CHECK(dxl::currentToAmps(raw1) == Approx(expect1).epsilon(0.01));
 }
 
+TEST_CASE("current commands gate at position limits", "[hw][modes]") {
+  // The soft-limit gate in current mode — the behavior PARITY.md cites
+  // for the vendor's software position-limit rule; previously only the
+  // velocity-mode gate was pinned (review finding).
+  const auto config = configWithMode(0);  // current mode
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.activate());
+  std::vector<dxl::Feedback> fb;
+  REQUIRE(arm.readAll(fb));
+
+  // joint parked at its upper limit: outward (positive) torque-driving
+  // current is zeroed, inward passes
+  bus.find(2)->poke(reg::kPresentPosition, 4095);
+  REQUIRE(arm.readAll(fb));
+  REQUIRE(arm.writeCurrents(std::vector<double>(8, 0.5)));
+  CHECK(static_cast<std::int16_t>(bus.find(2)->peek(reg::kGoalCurrent)) ==
+        0);
+  REQUIRE(arm.writeCurrents(std::vector<double>(8, -0.5)));
+  CHECK(static_cast<std::int16_t>(bus.find(2)->peek(reg::kGoalCurrent)) <
+        0);
+}
+
 TEST_CASE("velocity commands without feedback are rejected", "[hw][modes]") {
   const auto config = configWithMode(1);
   auto bus = busFor(config);

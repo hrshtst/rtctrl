@@ -112,6 +112,39 @@ TEST_CASE("RealArm drives the bridge through the wire protocol",
   REQUIRE(arm.deactivate());
 }
 
+TEST_CASE("stopThread zeroes current goals", "[thread]") {
+  // The current-mode twin of the velocity case below — the zeroing
+  // exists for both modes but only velocity was pinned (review
+  // finding). The pre-stop check proves a nonzero goal was actually
+  // flowing before the stop zeroed it.
+  auto config = hw::Config::load("config/crane_x7.toml");
+  for (auto& joint : config.joints) joint.operating_mode = 0;
+  BusFixture fixture(config);
+  config.port = fixture.path();
+  dxl::Port port(config.port, config.baudrate);
+  hw::CraneX7 arm(port, config);
+
+  REQUIRE(arm.activate());
+  REQUIRE(arm.startThread());
+  // Keep the submission stream FRESH: a single submission followed by
+  // a 300 ms sleep trips the 250 ms deadman mid-sleep, whose
+  // escalation zeroes the goals itself — the post-stop check would
+  // then pass vacuously.
+  for (int k = 0; k < 6; ++k) {
+    arm.setTargetCurrents(std::vector<double>(8, 0.3));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  REQUIRE_FALSE(arm.escalated());
+  CHECK(static_cast<std::int16_t>(
+            fixture.bus().find(2)->peek(reg::kGoalCurrent)) != 0);
+  arm.stopThread();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto goal = static_cast<std::int16_t>(
+      fixture.bus().find(2)->peek(reg::kGoalCurrent));
+  CHECK(goal == 0);
+  arm.deactivate();
+}
+
 TEST_CASE("stopThread zeroes velocity goals", "[thread]") {
   auto config = hw::Config::load("config/crane_x7.toml");
   for (auto& joint : config.joints) joint.operating_mode = 1;
@@ -122,8 +155,18 @@ TEST_CASE("stopThread zeroes velocity goals", "[thread]") {
 
   REQUIRE(arm.activate());
   REQUIRE(arm.startThread());
-  arm.setTargetVelocities(std::vector<double>(8, 0.5));
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  // Fresh submissions + the escalation and nonzero pre-stop checks:
+  // the original single-submission form let the 250 ms deadman zero
+  // the goals during the sleep, so the post-stop zero check proved
+  // nothing about stopThread (found while adding the current-mode
+  // twin above).
+  for (int k = 0; k < 6; ++k) {
+    arm.setTargetVelocities(std::vector<double>(8, 0.5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  REQUIRE_FALSE(arm.escalated());
+  CHECK(static_cast<std::int32_t>(
+            fixture.bus().find(2)->peek(reg::kGoalVelocity)) != 0);
   arm.stopThread();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   const auto goal = static_cast<std::int32_t>(
