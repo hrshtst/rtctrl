@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # End-to-end x7_float --log validation over the dxl_emu pty, two
 # phases (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2):
-#  1. default config, 2 s, no marker: the position-hold -> preloaded
-#     switch startup and the log contract at scale 1.0 (ends normally
-#     before the 8 s marker deadline);
+#  1. default config, no marker: the position-hold -> preloaded switch
+#     startup, the log contract at scale 1.0, AND the marker-timeout
+#     abort path (exit nonzero at ~8 s with the void-attempt message —
+#     short durations are rejected outright, so this IS the no-marker
+#     behavior);
 #  2. vendor-scale config with a piped release marker at ~1 s: the run
 #     must self-terminate 5 s after the marker, and every applied
 #     torque must equal scale * tau_request — the end-to-end proof the
@@ -25,7 +27,21 @@ for _ in $(seq 1 50); do
 done
 [ -e "$LINK" ] || { echo "emulator link never appeared"; exit 1; }
 
-"$FLOAT" --port "$LINK" --log "$OUT/float.csv" 2 < /dev/null
+# Phase 1: durations below deadline+window are now rejected, so the
+# no-marker path IS the marker-timeout abort — exercise it end-to-end:
+# exit nonzero, the void-attempt message, and a valid log up to ~8 s.
+set +e
+PHASE1=$("$FLOAT" --port "$LINK" --log "$OUT/float.csv" 15 \
+  < /dev/null 2>&1)
+RC=$?
+set -e
+if [ "$RC" -eq 0 ]; then
+  echo "expected the marker-timeout abort, got success"
+  exit 1
+fi
+echo "$PHASE1" | grep -q "NO release marker" || {
+  echo "missing the marker-timeout message:"; echo "$PHASE1"; exit 1;
+}
 python3 "$(dirname "$0")/check_float_log.py" "$OUT/float.csv"
 
 (sleep 1; echo) | "$FLOAT" --config config/crane_x7_vendor_scale.toml \

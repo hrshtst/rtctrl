@@ -273,6 +273,19 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  // The marker-anchored protocol needs room for the 8 s marker
+  // deadline plus the 5 s evaluation window; a shorter run would end
+  // "normally" without either, silently bypassing the marker guarantee
+  // on hardware (review finding). Rejected BEFORE any bus contact.
+  if (duration_s < kMarkerDeadlineS + kEvaluationWindowS) {
+    std::fprintf(stderr,
+                 "duration %.0f s is shorter than the marker deadline "
+                 "+ evaluation window (%.0f s) — the marker-anchored "
+                 "protocol requires at least that\n",
+                 duration_s, kMarkerDeadlineS + kEvaluationWindowS);
+    return 1;
+  }
+
   // Open the log BEFORE any bus contact: a bad path must fail without
   // ever torquing the arm. (Headers follow once the config is loaded.)
   std::FILE* log = nullptr;
@@ -357,10 +370,16 @@ int main(int argc, char* argv[]) {
       // position mode — deactivate and verify; a mid-sequence failure
       // has already best-effort released it.
       if (session.arm->activated()) {
-        shutdown.run();
-        std::fprintf(stderr, "the switch was refused before any "
-                             "torque-off; the arm has been "
-                             "deactivated\n");
+        // "deactivated" only when the verified shutdown actually
+        // SUCCEEDED — a false reassurance after a SHUTDOWN FAULT
+        // could send the operator toward a still-torqued arm (review
+        // finding); on failure the guard has already reported the
+        // fault and silenced the bus.
+        if (shutdown.run()) {
+          std::fprintf(stderr, "the switch was refused before any "
+                               "torque-off; the arm has been "
+                               "deactivated\n");
+        }
       } else {
         std::fprintf(stderr, "the switch failed mid-sequence and "
                              "released the arm — check it before "
