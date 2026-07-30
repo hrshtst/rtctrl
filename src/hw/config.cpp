@@ -67,8 +67,20 @@ Config Config::load(const std::string& toml_path) {
     joint.effort_limit = (*t)["effort_limit"].value_or(0.0);
     joint.pos_limit_margin = (*t)["pos_limit_margin"].value_or(0.0);
     joint.current_limit_margin = (*t)["current_limit_margin"].value_or(0.0);
-    joint.command_torque_scale =
-        (*t)["command_torque_scale"].value_or(1.0);
+    // Distinguish ABSENT (default 1.0) from PRESENT-BUT-INVALID:
+    // toml++'s value_or() silently substitutes the default when the
+    // node exists with an incompatible type, which would restore the
+    // unsafe 1.0 on a typo like a quoted number (review finding).
+    if (const auto node = (*t)["command_torque_scale"]) {
+      const auto scale = node.value<double>();
+      if (!scale) {
+        throw std::runtime_error(
+            "Config: joint '" + joint.name +
+            "' has a non-numeric command_torque_scale — a malformed "
+            "value must fail, not silently become 1.0");
+      }
+      joint.command_torque_scale = *scale;
+    }
     config.joints.push_back(std::move(joint));
   }
 

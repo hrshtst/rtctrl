@@ -15,6 +15,7 @@ add_executable(unit_tests
   unit/two_mass_arm_test.cpp
   unit/lagged_arm_test.cpp
   unit/command_current_test.cpp
+  unit/vendor_gravity_test.cpp
   unit/efl_test.cpp
   unit/study_metrics_test.cpp
   unit/session_watchdog_test.cpp
@@ -95,9 +96,23 @@ add_test(NAME x7_track_rejects_flag_as_log_value
 set_tests_properties(x7_track_rejects_flag_as_log_value PROPERTIES
   PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
 add_test(NAME x7_float_rejects_unopenable_log
-  COMMAND x7_float --log /nonexistent-rtctrl-dir/f.csv 1)
+  COMMAND x7_float --log /nonexistent-rtctrl-dir/f.csv 20)
 set_tests_properties(x7_float_rejects_unopenable_log PROPERTIES
   PASS_REGULAR_EXPRESSION "cannot open log file"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# The marker-anchored protocol needs deadline + window; a shorter run
+# would bypass the marker guarantee (review finding).
+add_test(NAME x7_float_rejects_short_duration COMMAND x7_float 2)
+set_tests_properties(x7_float_rejects_short_duration PROPERTIES
+  PASS_REGULAR_EXPRESSION "shorter than the marker deadline"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# A malformed command_torque_scale must reject before any bus contact
+# at the APPLICATION level too (review finding).
+add_test(NAME x7_float_rejects_malformed_scale
+  COMMAND x7_float --config tests/data/crane_x7_bad_scale.toml 20
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_rejects_malformed_scale PROPERTIES
+  PASS_REGULAR_EXPRESSION "command_torque_scale"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 
 # End-to-end log validation over the pty emulator: structure, event

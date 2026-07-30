@@ -80,6 +80,39 @@ TEST_CASE("command_torque_scale validates to [0.5, 1.0] before bus "
   REQUIRE_NOTHROW(ok.validate());
 }
 
+TEST_CASE("a malformed scale type fails loudly, never silently 1.0",
+          "[hw][calibration]") {
+  // toml++'s value_or() would substitute the default on a wrong-typed
+  // node; a quoted number must throw (review finding).
+  REQUIRE_THROWS_AS(
+      hw::Config::load("tests/data/crane_x7_bad_scale.toml"),
+      std::runtime_error);
+}
+
+TEST_CASE("the vendor-scale config matches deployment field-for-field "
+          "except the scale",
+          "[hw][calibration]") {
+  // Drift guard (review finding): a later safety-limit, margin, bus,
+  // or joint change to the deployment config must not leave the
+  // mandatory M-GC3 configuration stale.
+  const auto a = hw::Config::load("config/crane_x7.toml");
+  const auto b = hw::Config::load("config/crane_x7_vendor_scale.toml");
+  REQUIRE(a.port == b.port);
+  REQUIRE(a.baudrate == b.baudrate);
+  REQUIRE(a.joints.size() == b.joints.size());
+  for (std::size_t i = 0; i < a.joints.size(); ++i) {
+    REQUIRE(a.joints[i].name == b.joints[i].name);
+    REQUIRE(a.joints[i].id == b.joints[i].id);
+    REQUIRE(a.joints[i].model_number == b.joints[i].model_number);
+    REQUIRE(a.joints[i].operating_mode == b.joints[i].operating_mode);
+    REQUIRE(a.joints[i].velocity_limit == b.joints[i].velocity_limit);
+    REQUIRE(a.joints[i].effort_limit == b.joints[i].effort_limit);
+    REQUIRE(a.joints[i].pos_limit_margin == b.joints[i].pos_limit_margin);
+    REQUIRE(a.joints[i].current_limit_margin ==
+            b.joints[i].current_limit_margin);
+  }
+}
+
 TEST_CASE("the vendor-scale config carries the full vendor ratios",
           "[hw][calibration]") {
   const auto config =
