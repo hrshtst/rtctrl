@@ -335,7 +335,7 @@ All four preregistered conditions PASSED, evaluated over
 | condition | bound | measured (worst joint) |
 |---|---|---|
 | peak per-joint speed | ≤ 0.1 rad/s | 0.024 rad/s (one velocity LSB) |
-| displacement from release posture | ≤ 0.05 rad | 0.0123 rad (j2, at the hand-off) |
+| displacement from release posture | ≤ 0.05 rad | 0.0123 rad (j2, peaking at t = 6.72 s, mid-window) |
 | gate/clamp events | 0 | 0 (window AND whole run) |
 | final-second drift | ≤ 0.01 rad | 0.0015 rad (one position LSB) |
 
@@ -343,10 +343,12 @@ The console agreement print showed measured ≈ scale × predicted
 throughout (j1 ≈ 0.67×, j3 ≈ 0.80×) — the calibrated scale visible on
 hardware exactly as designed. Contrast with the 2026-07-29 failed
 run: same controller family, same arm; the untouched arm previously
-peaked at 2.37 rad/s and rode its limits, and now sits within one
-encoder count. Remaining in this milestone: the back-drive feel check
-(separate runs; not acceptance evidence), then the reviewer + owner
-decision on default adoption and un-parking.
+peaked at 2.37 rad/s and rode its limits — now the final-second
+drift is within ONE position count and the total release-relative
+excursion is EIGHT counts (12.3 mrad). Remaining in this milestone:
+the back-drive feel check (separate runs; not acceptance evidence),
+then the reviewer + owner decision on default adoption and
+un-parking.
 
 ## Non-goals and cautions
 
