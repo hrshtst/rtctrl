@@ -43,8 +43,12 @@ postures with the incident request reproduced exactly,
 preload/cyclic continuity, the two-phase emulator float
 (marker-timeout abort AND late-marker window completion,
 tau_applied = scale × tau_request end-to-end), `gravity_sim_test`
-unchanged. **M-GC3 not started** — hardware stays parked pending
-sign-off.*
+unchanged. **M-GC1 and M-GC2 SIGNED OFF by the external reviewer
+(2026-07-30)** — 186/186 tests and the strict docs build
+independently reproduced. **M-GC3 is READY for the owner-run
+hardware session** per its protocol (vendor-scale config mandatory,
+marker-first release, displacement-bounded acceptance); the parking
+remains in force until it passes.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -205,8 +209,10 @@ only then run a conservative, displacement-bounded hardware test.
      generator committed at `tests/fixtures/vendor_gravity_dump.cpp`,
      outputs frozen in `tests/unit/vendor_gravity_test.cpp`. The
      per-joint model difference is bounded by a **POST-HOC engineering
-     envelope** — max(0.06 Nm, 9 % of |τ_rtctrl|), the 9 % being the
-     development-set maximum relative difference (7.0 %) plus margin —
+     envelope** — max(0.06 Nm, 9 % of |τ_rtctrl|), the 9 % sitting
+     1.7 percentage points above the development-set maximum among
+     percentage-controlled cells (7.3 %; floor-governed low-torque
+     cells show larger percentages) —
      set from four DEVELOPMENT postures and then EVALUATED on three
      HELD-OUT postures (the P1 anchor, the tracking-acceptance goal,
      a moderate spread), where it holds with ≥ 11 % headroom

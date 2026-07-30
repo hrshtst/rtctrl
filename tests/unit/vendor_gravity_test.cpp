@@ -13,8 +13,11 @@
 // Envelope provenance (review finding: an envelope set after seeing
 // the data must not masquerade as preregistered): the bound below is
 // a POST-HOC engineering envelope, set from the four DEVELOPMENT
-// postures as max(0.06 Nm, 9 % of |tau_rtctrl|) — 9 % being the
-// development-set maximum relative difference (7.0 %) plus margin —
+// postures as max(0.06 Nm, 9 % of |tau_rtctrl|) — 9 % sitting 1.7
+// percentage points above the development-set maximum among
+// PERCENTAGE-CONTROLLED cells (7.3 %, float posture joint 2:
+// 1.219612 vs 1.130716 Nm; low-torque cells show larger percentages
+// but are governed by the 0.06 Nm floor) —
 // and then EVALUATED on the three HELD-OUT postures, where it holds
 // with >= 11 % headroom (held-out maxima: 8.0 % relative, 0.128 Nm
 // absolute at the highest-load posture). A flat 0.10 Nm development
