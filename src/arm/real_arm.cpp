@@ -1,6 +1,7 @@
 #include "rtctrl/arm/real_arm.hpp"
 
 #include "rtctrl/dxl/conversions.hpp"
+#include "rtctrl/hw/command_current.hpp"
 
 namespace rtctrl::arm {
 
@@ -95,9 +96,11 @@ bool RealArm::writeCommand(const JointCommand& cmd,
       break;
     case ControlMode::Current:
       for (int i = 0; i < kCanonicalDof; ++i) {
-        // torque command -> current through the per-model constant
-        values[i] = zVecElemNC(cmd.tau.get(), i) /
-                    dxl::torqueConstant(hw_.config().joints[i].model_number);
+        // torque command -> current through THE shared calibrated
+        // boundary (scale applied exactly once; see
+        // rtctrl/hw/command_current.hpp)
+        values[i] = hw::commandCurrentFromTorque(hw_.config().joints[i],
+                                                 zVecElemNC(cmd.tau.get(), i));
       }
       ok = hw_.setTargetCurrents(values, &seq, &time);
       break;

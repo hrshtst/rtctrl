@@ -2,6 +2,7 @@
 
 #include <toml++/toml.hpp>
 
+#include <cmath>
 #include <stdexcept>
 
 #include "rtctrl/dxl/control_table.hpp"
@@ -66,6 +67,8 @@ Config Config::load(const std::string& toml_path) {
     joint.effort_limit = (*t)["effort_limit"].value_or(0.0);
     joint.pos_limit_margin = (*t)["pos_limit_margin"].value_or(0.0);
     joint.current_limit_margin = (*t)["current_limit_margin"].value_or(0.0);
+    joint.command_torque_scale =
+        (*t)["command_torque_scale"].value_or(1.0);
     config.joints.push_back(std::move(joint));
   }
 
@@ -124,6 +127,19 @@ void Config::validate() const {
     if (joint.pos_limit_margin < 0.0 || joint.current_limit_margin < 0.0) {
       throw std::runtime_error("Config: joint '" + joint.name +
                                "' has a negative safety margin");
+    }
+    // Command-torque calibration interval, preregistered in
+    // docs/GRAVITY_CALIBRATION_PLAN.md M-GC1: attenuation only. The
+    // rejection happens here — before any bus contact — and is
+    // re-checked by the CraneX7 constructor like every other field.
+    if (!std::isfinite(joint.command_torque_scale) ||
+        joint.command_torque_scale < 0.5 ||
+        joint.command_torque_scale > 1.0) {
+      throw std::runtime_error(
+          "Config: joint '" + joint.name +
+          "' has command_torque_scale outside [0.5, 1.0] (the "
+          "gravity-calibration remediation permits attenuation only; "
+          "see docs/GRAVITY_CALIBRATION_PLAN.md)");
     }
   }
 }

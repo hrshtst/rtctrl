@@ -63,6 +63,7 @@
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/dxl/conversions.hpp"
+#include "rtctrl/hw/command_current.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
@@ -390,8 +391,11 @@ int main(int argc, char* argv[]) {
       chain.gravityTorque(map, q_meas.get(), tau_g.get());
       std::vector<double> preload(model::kCanonicalDof);
       for (int i = 0; i < model::kCanonicalDof; ++i) {
-        preload[i] = tau_g[i] / rtctrl::dxl::torqueConstant(
-                                    session.config.joints[i].model_number);
+        // through THE shared calibrated boundary — the preload must
+        // carry the same scale as the cyclic commands that follow it
+        // (rtctrl/hw/command_current.hpp; scale applied exactly once)
+        preload[i] = rtctrl::hw::commandCurrentFromTorque(
+            session.config.joints[i], tau_g[i]);
       }
       // Minimal in-place transition (review finding: the rebuild path
       // repeated the FULL activation — verification, indirect maps,

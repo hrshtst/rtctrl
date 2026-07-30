@@ -14,6 +14,7 @@ add_executable(unit_tests
   unit/track_common_test.cpp
   unit/two_mass_arm_test.cpp
   unit/lagged_arm_test.cpp
+  unit/command_current_test.cpp
   unit/efl_test.cpp
   unit/study_metrics_test.cpp
   unit/session_watchdog_test.cpp
