@@ -53,3 +53,11 @@ python3 "$(dirname "$0")/check_float_log.py" "$OUT/float.csv"
   --port "$LINK" --log "$OUT/float_vendor.csv" 15
 python3 "$(dirname "$0")/check_float_log.py" --vendor \
   "$OUT/float_vendor.csv"
+
+# Phase 3: feel-check mode — marker required as ever, but the session
+# runs to the OUTER deadline; the log must self-mark run_mode:
+# feel-check (never acceptance evidence).
+(sleep 1; echo) | "$FLOAT" --port "$LINK" \
+  --log "$OUT/float_feel.csv" --feel 15
+python3 "$(dirname "$0")/check_float_log.py" --feel \
+  "$OUT/float_feel.csv"

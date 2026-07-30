@@ -31,19 +31,25 @@ VENDOR_SCALES[1] = 0.669167
 
 args = sys.argv[1:]
 vendor = "--vendor" in args
+feel = "--feel" in args
 path = [a for a in args if not a.startswith("--")][0]
 
 lines = open(path).read().splitlines()
 comments = []
 while lines and lines[0].startswith("#"):
     comments.append(lines.pop(0))
-assert comments and comments[0].startswith("# events per row:"), \
+assert any(c.startswith("# events per row:") for c in comments), \
     "semantics header missing"
 scale_lines = [c for c in comments
                if c.startswith("# command_torque_scale:")]
 assert scale_lines, "scale header missing"
 scales = [float(v) for v in scale_lines[0].split(":", 1)[1].split()]
 assert len(scales) == DOF
+mode_lines = [c for c in comments if c.startswith("# run_mode:")]
+assert mode_lines, "run_mode header missing"
+run_mode = mode_lines[0].split(":", 1)[1].strip()
+# a feel-check log must never pass as acceptance evidence
+assert run_mode == ("feel-check" if feel else "acceptance"), run_mode
 
 rows = list(csv.DictReader(lines))
 expected = list(SHARED) + [f"{c}{i}" for i in range(DOF) for c in PER_JOINT]
@@ -111,9 +117,15 @@ if vendor:
                 f"{tau_req}")
             checked += 1
     assert checked > 100, "too few scaled-torque comparisons"
+elif feel:
+    assert t_marker is not None, "feel-check run without a marker"
+    t_end = float(rows[-1]["t"])
+    assert t_end >= 14.5, f"feel session ended early ({t_end})"
+    assert len(rows) >= 1400, f"only {len(rows)} rows for a 15 s feel run"
 else:
     assert t_marker is None, "unexpected release marker in phase 1"
 
 print("float log ok: %d rows, %d columns, %d applied-valid%s" %
       (len(rows), len(expected), valid_seen,
-       ", vendor-scale verified" if vendor else ""))
+       ", vendor-scale verified" if vendor
+       else (", feel-check mode" if feel else "")))

@@ -363,9 +363,15 @@ was deliberately checked in both directions, (2) resistance felt
 reasonably symmetric, and (3) there were no notchy spots away from
 the limits and no autonomous motion; otherwise repeat runs cover the
 unchecked joints (one joint per run, waiting ~1 s after the
-`floating` prompt before pressing ENTER). Only with that
-confirmation does the milestone reduce to the reviewer + owner
-decision on default adoption and un-parking.
+`floating` prompt before pressing ENTER). To make careful per-joint
+coverage practical, `x7_float --feel` (added POST-SIGN-OFF, flagged
+here for reviewer awareness) keeps the marker contract unchanged but
+runs the session to the commanded outer deadline instead of ending
+5 s after the marker; feel logs self-mark `# run_mode: feel-check`
+and the log checker rejects cross-use in both directions, so they
+can never read as acceptance evidence. Only with the operator's
+three-point confirmation does the milestone reduce to the reviewer +
+owner decision on default adoption and un-parking.
 
 ## Non-goals and cautions
 

@@ -32,7 +32,15 @@
 // the switch the run aborts (the commanded duration is only the outer
 // deadline).
 //
-// Usage: x7_float [--config path] [--port dev] [--log out.csv] [seconds]
+// Usage: x7_float [--config path] [--port dev] [--log out.csv]
+//                 [--feel] [seconds]
+//   --feel: feel-check mode for the M-GC3 back-drive confirmation.
+//   The marker contract is UNCHANGED (press ENTER while supporting
+//   within 8 s or the run aborts), but the session then runs to the
+//   commanded outer deadline instead of ending 5 s after the marker —
+//   room to back-drive each joint carefully. The log self-marks
+//   "# run_mode: feel-check" and is NEVER acceptance evidence; the
+//   acceptance protocol (no --feel) is unchanged.
 //   --log writes one row per cycle through the CycleObserver — AFTER
 //   writeCommand, so each row pairs three distinct events explicitly:
 //   the FEEDBACK snapshot the cycle started from (q, dqservo — the
@@ -141,8 +149,8 @@ constexpr double kMinDurationS = 15.0;
 // it was ever accepted or applied). Also owns the release-marker
 // detection and the marker-anchored termination.
 struct FloatLogObserver : arm::CycleObserver {
-  FloatLogObserver(std::FILE* log, ReleaseMarker* marker)
-      : log_(log), marker_(marker) {}
+  FloatLogObserver(std::FILE* log, ReleaseMarker* marker, bool feel)
+      : log_(log), marker_(marker), feel_(feel) {}
 
   bool observe(double t, const arm::JointState& state,
                const arm::CommandSnapshot& cmds,
@@ -188,8 +196,9 @@ struct FloatLogObserver : arm::CycleObserver {
     // the full evaluation window is always logged; a run past the
     // marker deadline without a marker is an aborted test. (The
     // enforced minimum duration guarantees these branches are always
-    // reachable before the outer deadline.)
-    if (marker_->released &&
+    // reachable before the outer deadline.) Feel-check mode keeps the
+    // marker deadline but runs to the OUTER deadline after the marker.
+    if (!feel_ && marker_->released &&
         t >= marker_->t_released + kEvaluationWindowS) {
       marker_->window_complete = true;
       return false;
@@ -203,6 +212,7 @@ struct FloatLogObserver : arm::CycleObserver {
 
   std::FILE* log_;
   ReleaseMarker* marker_;
+  bool feel_;
 };
 
 // fopen only — BEFORE any bus contact, so a bad path fails without
@@ -212,7 +222,12 @@ std::FILE* openFloatLogFile(const std::string& path) {
   return std::fopen(path.c_str(), "w");
 }
 
-void writeFloatLogHeader(std::FILE* log, const hw::Config& config) {
+void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
+                         bool feel) {
+  // The log self-classifies: a feel-check log must never be readable
+  // as acceptance evidence.
+  std::fprintf(log, "# run_mode: %s\n",
+               feel ? "feel-check" : "acceptance");
   std::fprintf(log,
                "# events per row: FEEDBACK (feedback_time/feedback_seq, "
                "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
@@ -250,10 +265,13 @@ int main(int argc, char* argv[]) {
   if (!cli.ok) return 1;
   double duration_s = 30.0;
   bool duration_given = false;
+  bool feel_mode = false;
   std::string log_path;
   const auto& rest = cli.rest;
   for (std::size_t i = 0; i < rest.size(); ++i) {
-    if (std::strcmp(rest[i], "--log") == 0) {
+    if (std::strcmp(rest[i], "--feel") == 0) {
+      feel_mode = true;
+    } else if (std::strcmp(rest[i], "--log") == 0) {
       // A flag-looking next token is a MISSING value, not a filename —
       // otherwise "--log --bogus" silently creates ./--bogus and
       // proceeds toward the hardware session (review finding). A
@@ -308,7 +326,9 @@ int main(int argc, char* argv[]) {
     // the present posture) — no free-fall instant. The switch to
     // current mode below carries the calibrated gravity preload.
     auto session = x7::openSession(cli, /*operating_mode_override=*/3);
-    if (log != nullptr) writeFloatLogHeader(log, session.config);
+    if (log != nullptr) {
+      writeFloatLogHeader(log, session.config, feel_mode);
+    }
     std::printf("command_torque_scale:");
     for (const auto& joint : session.config.joints) {
       std::printf(" %.6f", joint.command_torque_scale);
@@ -405,35 +425,57 @@ int main(int argc, char* argv[]) {
     }
     ReleaseMarker marker;
     ReportingGravityComp controller(chain, map);
-    FloatLogObserver observer(log, &marker);
-    std::printf("floating (outer deadline %.0f s) — press ENTER while "
-                "still supporting to mark release (deadline %.0f s), "
-                "then release on the cue; the run ends %.0f s after "
-                "the marker\n",
-                duration_s, kMarkerDeadlineS, kEvaluationWindowS);
-    arm::run(robot, controller, duration_s, &observer);
+    FloatLogObserver observer(log, &marker, feel_mode);
+    if (feel_mode) {
+      std::printf("FEEL-CHECK session (outer deadline %.0f s) — press "
+                  "ENTER while still supporting (deadline %.0f s), "
+                  "release on the cue, then back-drive each joint; the "
+                  "run lasts until the deadline\n",
+                  duration_s, kMarkerDeadlineS);
+    } else {
+      std::printf("floating (outer deadline %.0f s) — press ENTER "
+                  "while still supporting to mark release (deadline "
+                  "%.0f s), then release on the cue; the run ends "
+                  "%.0f s after the marker\n",
+                  duration_s, kMarkerDeadlineS, kEvaluationWindowS);
+    }
+    const bool ran = arm::run(robot, controller, duration_s, &observer);
     const bool clean = shutdown.run();
     if (log != nullptr) std::fclose(log);
-    // Verdict: ONLY a completed evaluation window is success (review
-    // finding: the old ran-based form could print "done" after a
-    // marker whose window the outer deadline truncated). A marker
-    // without a completed window, a marker timeout, and a runner
-    // failure are all distinct aborted outcomes.
+    // Verdict. Acceptance: ONLY a completed evaluation window is
+    // success (review finding: a ran-based form could print "done"
+    // after a marker whose window the outer deadline truncated).
+    // Feel-check: success is the marker followed by the session
+    // reaching its outer deadline. Marker timeout and runner failure
+    // abort in both modes.
+    const bool success_pending =
+        feel_mode ? (ran && marker.released && !marker.marker_timeout)
+                  : marker.window_complete;
     if (!clean) {
       std::printf("SHUTDOWN FAULT (run %s)\n",
-                  marker.window_complete ? "done" : "ABORTED");
+                  success_pending ? "done" : "ABORTED");
       return 1;
-    }
-    if (marker.window_complete) {
-      std::printf("evaluation window complete (marker at %.2f s) — "
-                  "done\n", marker.t_released);
-      return 0;
     }
     if (marker.marker_timeout) {
       std::printf("NO release marker within %.0f s — aborted test "
                   "(void attempt, arm deactivated)\n",
                   kMarkerDeadlineS);
       return 1;
+    }
+    if (feel_mode) {
+      if (success_pending) {
+        std::printf("feel-check session complete (marker at %.2f s; "
+                    "NOT acceptance evidence) — done\n",
+                    marker.t_released);
+        return 0;
+      }
+      std::printf("ABORTED\n");
+      return 1;
+    }
+    if (marker.window_complete) {
+      std::printf("evaluation window complete (marker at %.2f s) — "
+                  "done\n", marker.t_released);
+      return 0;
     }
     if (marker.released) {
       std::printf("evaluation window INCOMPLETE (marker at %.2f s, "
