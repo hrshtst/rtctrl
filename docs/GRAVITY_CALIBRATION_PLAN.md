@@ -508,10 +508,21 @@ Findings:
   decidable offline — that is precisely the M7 per-joint calibration
   experiment's question.
 
-Item 3 of the directed step — operator-event timestamps and raw
-goal/present-current counts in the float log, so each j1 notch can
-be correlated with current behavior on the NEXT powered run — is
-DIRECTED and pending implementation.
+Item 3 of the directed step is IMPLEMENTED (same-day commit): after
+the release marker, every further ENTER press logs an OPERATOR EVENT
+MARK (`operator_event` column; the row's `t` is the event timestamp,
+with a console echo), and every row carries RAW goal/present-current
+counts per joint (`goal_cnt`/`present_cnt` — goal from the latest
+applied record, present from feedback, reconstructed through the
+wire's own dxl conversion at the 2.69 mA LSB; a deliberate raw-unit
+exception confined to this log). The log checker admits both column
+contracts — v1 for the archived 2026-07-30 sessions, v2 for
+everything the current binary writes — and on v2 enforces
+event-after-marker ordering and count/torque consistency; the
+emulator smoke drives two post-release event marks end-to-end. This
+readies the NEXT powered j1 session (once un-parked) to correlate
+each felt notch with count-level current behavior; the parking
+itself is unchanged.
 
 ## Non-goals and cautions
 

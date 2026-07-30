@@ -56,8 +56,24 @@ python3 "$(dirname "$0")/check_float_log.py" --vendor \
 
 # Phase 3: feel-check mode — marker required as ever, but the session
 # runs to the OUTER deadline; the log must self-mark run_mode:
-# feel-check (never acceptance evidence).
-(sleep 1; echo) | "$FLOAT" --config config/crane_x7_vendor_scale.toml \
+# feel-check (never acceptance evidence). The two extra ENTERs after
+# the marker are OPERATOR EVENT MARKS (reviewer-directed notch
+# instrumentation) — they must land as operator_event rows strictly
+# after the release marker (the checker enforces ordering; the count
+# is asserted below).
+(sleep 1; echo; sleep 3; echo; sleep 2; echo) | \
+  "$FLOAT" --config config/crane_x7_vendor_scale.toml \
   --port "$LINK" --log "$OUT/float_feel.csv" --feel 15
 python3 "$(dirname "$0")/check_float_log.py" --feel \
   "$OUT/float_feel.csv"
+python3 - "$OUT/float_feel.csv" <<'EOF'
+import csv
+import sys
+rows = list(csv.DictReader(
+    ln for ln in open(sys.argv[1]) if not ln.startswith("#")))
+events = [float(r["t"]) for r in rows if r["operator_event"] == "1"]
+assert len(events) == 2, f"expected 2 operator event marks: {events}"
+t_marker = next(float(r["t"]) for r in rows if r["released"] == "1")
+assert all(t > t_marker for t in events), (t_marker, events)
+print(f"operator event marks at {events} (marker {t_marker})")
+EOF

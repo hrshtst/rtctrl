@@ -1,10 +1,20 @@
 """Validates an x7_float --log CSV: the event-semantics and scale
-headers, the column contract (11 shared + 7 per joint), numeric/
-Boolean well-formedness with finiteness for every declared column,
-acceptance on every submission, applied telemetry becoming and staying
-valid after startup, the STRICT pre-submission sequencing invariant,
-the signed feedback-to-apply offset's self-consistency, and the
-release-marker column (monotone 0 -> 1).
+headers, the column contract, numeric/Boolean well-formedness with
+finiteness for every declared column, acceptance on every submission,
+applied telemetry becoming and staying valid after startup, the STRICT
+pre-submission sequencing invariant, the signed feedback-to-apply
+offset's self-consistency, and the release-marker column (monotone
+0 -> 1).
+
+Two column contracts are admitted: v1 (11 shared + 7 per joint — the
+pre-instrumentation format of every archived 2026-07-30 session) and
+v2 (v1 plus operator_event and per-joint goal_cnt/present_cnt — the
+reviewer-directed notch-correlation instrumentation; every log the
+current binary writes). On v2 the added invariants are enforced:
+operator_event only after the release marker, and both raw-count
+columns consistent with their SI torque columns through the nominal
+torque constant and the 2.69 mA LSB (half a count plus print-rounding
+tolerance).
 
 With --vendor (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2): additionally
 requires the vendor-equivalent scales in the header, a released
@@ -23,9 +33,18 @@ SHARED = ("t", "feedback_time", "feedback_seq", "submitted_seq",
           "latest_apply_time", "feedback_minus_latest_apply", "released")
 PER_JOINT = ("q", "dqservo", "tau_meas", "tau_request", "tau_applied",
              "clamped", "gated")
+SHARED_V2 = SHARED + ("operator_event",)
+PER_JOINT_V2 = PER_JOINT + ("goal_cnt", "present_cnt")
 BOOLEAN = {"accepted", "applied_valid", "released"} | {
     f"{c}{i}" for i in range(DOF) for c in ("clamped", "gated")}
 INTEGER = {"feedback_seq", "submitted_seq", "applied_seq"}
+
+# raw-count consistency (v2): nominal torque constants and the
+# goal/present-current LSB mirror dxl/conversions.hpp; tolerance is
+# half a count (lround's boundary) plus the %.4f torque print rounding
+KT_NOMINAL = [1.783, 2.409] + [1.783] * 6
+CURRENT_LSB_A = 0.00269
+CNT_TOL = 0.52
 
 VENDOR_SCALES = [0.810455] * DOF
 VENDOR_SCALES[1] = 0.669167
@@ -92,19 +111,30 @@ if not legacy:
     assert requested_s is not None, "duration_s header missing"
 
 rows = list(csv.DictReader(lines))
-expected = list(SHARED) + [f"{c}{i}" for i in range(DOF) for c in PER_JOINT]
-assert list(rows[0].keys()) == expected, "column contract violated"
+expected_v1 = list(SHARED) + [
+    f"{c}{i}" for i in range(DOF) for c in PER_JOINT]
+expected_v2 = list(SHARED_V2) + [
+    f"{c}{i}" for i in range(DOF) for c in PER_JOINT_V2]
+header_row = list(rows[0].keys())
+v2 = header_row == expected_v2
+assert v2 or header_row == expected_v1, "column contract violated"
+expected = expected_v2 if v2 else expected_v1
+booleans = BOOLEAN | ({"operator_event"} if v2 else set())
+integers = INTEGER | (
+    {f"{c}{i}" for i in range(DOF) for c in ("goal_cnt", "present_cnt")}
+    if v2 else set())
 assert len(rows) >= 100, f"only {len(rows)} rows"
 
 STARTUP_ROWS = 2  # applied telemetry may lag activation briefly
 valid_seen = 0
 prev_released = 0
 t_marker = None
+event_rows = 0
 for k, r in enumerate(rows):
     for col in expected:
-        if col in BOOLEAN:
+        if col in booleans:
             assert r[col] in ("0", "1"), (k, col, r[col])
-        elif col in INTEGER:
+        elif col in integers:
             int(r[col])
         else:
             assert math.isfinite(float(r[col])), (
@@ -115,6 +145,26 @@ for k, r in enumerate(rows):
     if released == 1 and t_marker is None:
         t_marker = float(r["t"])
     prev_released = released
+    if v2:
+        # the marker protocol orders every operator event AFTER the
+        # release marker; the raw counts must be the SI torque columns
+        # re-expressed through the nominal constant and the LSB
+        if r["operator_event"] == "1":
+            assert released == 1, (
+                f"row {k}: operator_event before the release marker")
+            event_rows += 1
+        for i in range(DOF):
+            per_count = KT_NOMINAL[i] * CURRENT_LSB_A
+            present = float(r[f"tau_meas{i}"]) / per_count
+            assert abs(present - int(r[f"present_cnt{i}"])) <= CNT_TOL, (
+                f"row {k}: present_cnt{i} inconsistent with tau_meas")
+            if r["applied_valid"] == "1":
+                goal = float(r[f"tau_applied{i}"]) / per_count
+                assert abs(goal - int(r[f"goal_cnt{i}"])) <= CNT_TOL, (
+                    f"row {k}: goal_cnt{i} inconsistent with tau_applied")
+            else:
+                assert r[f"goal_cnt{i}"] == "0", (
+                    f"row {k}: goal_cnt{i} nonzero before applied_valid")
     if k >= STARTUP_ROWS:
         assert r["applied_valid"] == "1", (
             f"row {k}: applied telemetry still invalid after startup")
@@ -176,7 +226,8 @@ else:
     assert legacy or t_marker is None, \
         "unexpected release marker in phase 1"
 
-print("float log ok: %d rows, %d columns, %d applied-valid%s" %
+print("float log ok: %d rows, %d columns, %d applied-valid%s%s" %
       (len(rows), len(expected), valid_seen,
+       ", %d operator events" % event_rows if v2 else "",
        ", vendor-scale verified" if vendor
        else (", feel-check mode" if feel else "")))

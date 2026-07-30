@@ -60,7 +60,15 @@
 //   causal pair either: use the SIGNED feedback_minus_latest_apply
 //   column to order the events before comparing torques. With a
 //   command scale s < 1 the agreement print and tau_applied read
-//   ~s × tau_request BY DESIGN — the scale is finally visible. Raw
+//   ~s × tau_request BY DESIGN — the scale is finally visible.
+//   Reviewer-directed instrumentation (back-drive exceptions): after
+//   the release marker, every further ENTER press is an OPERATOR
+//   EVENT MARK — operator_event=1 on that row, its t the event
+//   timestamp — so a felt notch can be correlated with current
+//   behavior; goal_cnt/present_cnt carry the RAW servo current counts
+//   (goal from the latest applied record, present from feedback),
+//   reconstructed exactly through the wire's own dxl conversion (a
+//   deliberate raw-unit exception confined to this log). Raw
 //   hardware CSVs land at the repo root gitignored and belong in the
 //   private archive (docs/DATA_ARCHIVE.md); use a unique filename per
 //   attempt.
@@ -78,6 +86,7 @@
 #include "rtctrl/arm/gravity_comp.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
+#include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/hw/command_current.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
@@ -168,30 +177,43 @@ constexpr double kVendorScaleTol = 1e-6;
 // it was ever accepted or applied). Also owns the release-marker
 // detection and the marker-anchored termination.
 struct FloatLogObserver : arm::CycleObserver {
-  FloatLogObserver(std::FILE* log, ReleaseMarker* marker, bool feel,
+  FloatLogObserver(std::FILE* log, ReleaseMarker* marker,
+                   const hw::Config* config, bool feel,
                    double outer_deadline_s)
-      : log_(log), marker_(marker), feel_(feel),
+      : log_(log), marker_(marker), config_(config), feel_(feel),
         outer_deadline_s_(outer_deadline_s) {}
 
   bool observe(double t, const arm::JointState& state,
                const arm::CommandSnapshot& cmds,
                const arm::JointCommand& cmd,
                const arm::CommandReceipt& receipt) override {
-    if (!marker_->released && pollReleaseKey()) {
-      marker_->released = true;
-      marker_->t_released = t;
-      if (feel_) {
-        // The acceptance cue would mislead here: after 5 s NOTHING
-        // ends — an operator expecting a limp arm could be surprised
-        // by a still-torqued one (review finding).
-        std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
-                    "FEEL-CHECK continues, TORQUE REMAINS ENABLED "
-                    "until the outer deadline (%.0f s)\n",
-                    t, outer_deadline_s_);
+    bool event_mark = false;
+    if (pollReleaseKey()) {
+      if (!marker_->released) {
+        marker_->released = true;
+        marker_->t_released = t;
+        if (feel_) {
+          // The acceptance cue would mislead here: after 5 s NOTHING
+          // ends — an operator expecting a limp arm could be surprised
+          // by a still-torqued one (review finding).
+          std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
+                      "FEEL-CHECK continues, TORQUE REMAINS ENABLED "
+                      "until the outer deadline (%.0f s); press ENTER "
+                      "again at each notch to log an EVENT MARK\n",
+                      t, outer_deadline_s_);
+        } else {
+          std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
+                      "%.0f s evaluation window started\n",
+                      t, kEvaluationWindowS);
+        }
       } else {
-        std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
-                    "%.0f s evaluation window started\n",
-                    t, kEvaluationWindowS);
+        // Post-release ENTER = operator event mark
+        // (reviewer-directed instrumentation, back-drive exceptions):
+        // the row's t timestamps the sensation so a felt notch can be
+        // correlated offline with count-level current behavior.
+        // Presses landing within one cycle merge into one mark.
+        event_mark = true;
+        std::printf("EVENT MARK recorded (t=%.2f s)\n", t);
       }
     }
     if (log_ != nullptr) {
@@ -201,7 +223,7 @@ struct FloatLogObserver : arm::CycleObserver {
       // writes), so the offset is signed; both are meaningful only
       // when applied_valid = 1.
       std::fprintf(log_,
-                   "%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu,%.6f,%.6f,%d",
+                   "%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu,%.6f,%.6f,%d,%d",
                    t, state.t,
                    static_cast<unsigned long long>(state.seq),
                    static_cast<unsigned long long>(receipt.submitted_seq),
@@ -210,16 +232,33 @@ struct FloatLogObserver : arm::CycleObserver {
                    static_cast<unsigned long long>(applied.target_seq),
                    applied.valid ? applied.latest_time : 0.0,
                    applied.valid ? state.t - applied.latest_time : 0.0,
-                   marker_->released ? 1 : 0);
+                   marker_->released ? 1 : 0, event_mark ? 1 : 0);
       for (int i = 0; i < model::kCanonicalDof; ++i) {
-        std::fprintf(log_, ",%.6f,%.6f,%.4f,%.4f,%.4f,%d,%d",
+        // RAW goal/present current counts (reviewer-directed
+        // instrumentation — a deliberate raw-unit exception in this
+        // log only): the wire path converts SI amps with
+        // dxl::ampsToCurrent (lround at the 2.69 mA LSB) and feedback
+        // amps are count × LSB exactly, so reconverting the SI
+        // telemetry through the SAME function reproduces the wire's
+        // int16 (a 1-ulp round-trip on the applied record; an exact
+        // half-count boundary is the only — measure-zero — exception).
+        const double kt = rtctrl::dxl::torqueConstant(
+            config_->joints[i].model_number);
+        const int goal_cnt =
+            applied.valid
+                ? rtctrl::dxl::ampsToCurrent(applied.applied[i] / kt)
+                : 0;
+        const int present_cnt = rtctrl::dxl::ampsToCurrent(
+            zVecElemNC(state.tau.get(), i) / kt);
+        std::fprintf(log_, ",%.6f,%.6f,%.4f,%.4f,%.4f,%d,%d,%d,%d",
                      zVecElemNC(state.q.get(), i),
                      zVecElemNC(state.dq.get(), i),
                      zVecElemNC(state.tau.get(), i),
                      zVecElemNC(cmd.tau.get(), i),
                      applied.valid ? applied.applied[i] : 0.0,
                      (applied.flags[i] & arm::kCmdClamped) ? 1 : 0,
-                     (applied.flags[i] & arm::kCmdGated) ? 1 : 0);
+                     (applied.flags[i] & arm::kCmdGated) ? 1 : 0,
+                     goal_cnt, present_cnt);
       }
       std::fprintf(log_, "\n");
     }
@@ -243,6 +282,7 @@ struct FloatLogObserver : arm::CycleObserver {
 
   std::FILE* log_;
   ReleaseMarker* marker_;
+  const hw::Config* config_;  // per-joint model numbers for the counts
   bool feel_;
   double outer_deadline_s_;
 };
@@ -274,7 +314,13 @@ void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
                "latest apply may post-date this row's feedback; applied "
                "fields are meaningful only when applied_valid=1. "
                "released flips to 1 at the operator's marker, which "
-               "PRECEDES the physical release.\n");
+               "PRECEDES the physical release. operator_event marks a "
+               "post-release ENTER press on its row (the row's t is "
+               "the operator's event timestamp). goal_cnt/present_cnt "
+               "are RAW servo current counts (goal from the LATEST "
+               "APPLIED record, 0 while applied_valid=0; present from "
+               "this row's feedback), reconstructed through the "
+               "wire's own conversion at the 2.69 mA LSB.\n");
   std::fprintf(log, "# command_torque_scale:");
   for (const auto& joint : config.joints) {
     std::fprintf(log, " %.6f", joint.command_torque_scale);
@@ -283,12 +329,12 @@ void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
   std::fprintf(log, "t,feedback_time,feedback_seq,submitted_seq,"
                     "submission_time,accepted,applied_valid,applied_seq,"
                     "latest_apply_time,feedback_minus_latest_apply,"
-                    "released");
+                    "released,operator_event");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
     std::fprintf(log,
                  ",q%d,dqservo%d,tau_meas%d,tau_request%d,tau_applied%d,"
-                 "clamped%d,gated%d",
-                 i, i, i, i, i, i, i);
+                 "clamped%d,gated%d,goal_cnt%d,present_cnt%d",
+                 i, i, i, i, i, i, i, i, i);
   }
   std::fprintf(log, "\n");
 }
@@ -497,12 +543,15 @@ int main(int argc, char* argv[]) {
     }
     ReleaseMarker marker;
     ReportingGravityComp controller(chain, map);
-    FloatLogObserver observer(log, &marker, feel_mode, duration_s);
+    FloatLogObserver observer(log, &marker, &session.config, feel_mode,
+                              duration_s);
     if (feel_mode) {
       std::printf("FEEL-CHECK session (outer deadline %.0f s) — press "
                   "ENTER while still supporting (deadline %.0f s), "
                   "release on the cue, then back-drive each joint; the "
-                  "run lasts until the deadline\n",
+                  "run lasts until the deadline. After release, press "
+                  "ENTER again at each notch — every press is logged "
+                  "as a timestamped EVENT MARK\n",
                   duration_s, kMarkerDeadlineS);
     } else {
       std::printf("floating (outer deadline %.0f s) — press ENTER "
