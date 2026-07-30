@@ -345,9 +345,16 @@ hardware exactly as designed. Contrast with the 2026-07-29 failed
 run: same controller family, same arm; the untouched arm previously
 peaked at 2.37 rad/s and rode its limits — now the final-second
 drift is within ONE position count and the total release-relative
-excursion is EIGHT counts (12.3 mrad). Remaining in this milestone:
-the back-drive feel check (separate runs; not acceptance evidence),
-then the reviewer + owner decision on default adoption and
+excursion is EIGHT counts (12.3 mrad).
+
+**Back-drive feel check (2026-07-30, `float3.csv` — not acceptance
+evidence):** the operator back-drove the arm during a marker-first
+window (the varying j1/j3 torques in the log are the hand working
+against live compensation; zero gates/clamps, 503/503 accepted) and
+reports the motion DISTINCTLY LIGHTER than the 2026-07-29 failed
+run. Per-joint both-direction coverage is at the operator's
+discretion to confirm or repeat with further runs. Remaining in this
+milestone: the reviewer + owner decision on default adoption and
 un-parking.
 
 ## Non-goals and cautions

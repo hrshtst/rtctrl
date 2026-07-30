@@ -96,3 +96,4 @@ configuration, marker-first release, displacement-bounded acceptance.
 | file | role | sha256 |
 |---|---|---|
 | `float2.csv` | M-GC3 acceptance run: PASSED all four preregistered conditions (peak speed 0.024 rad/s, displacement 0.0123 rad, zero gates/clamps, final-second drift ≤ 0.0015 rad); marker 4.080 s, window complete | `de1f1a3b333b26534b5617d5494a9c194e6e9c4555e32fcbeb81c7b02141fbf1` |
+| `float3.csv` | M-GC3 back-drive feel-check run (operator back-driving during the window — NOT acceptance evidence): reported distinctly lighter than the 2026-07-29 failed run; zero gates/clamps, 503/503 accepted | `f09057f289066be6d60a9154c97f71ba141e7daccd8b993670ba0df3da7726fd` |
