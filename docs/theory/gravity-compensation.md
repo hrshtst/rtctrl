@@ -113,15 +113,25 @@ $i_k = \tau_k / k_{t,k}$, and the servos run in current mode
 
 - **Hardware.** `apps/x7_float` runs the same controller on the robot
   and prints the current-derived torque estimate vs. the prediction
-  ($k_t i_{\text{meas}}$ vs. $g(q)$) each second. On the physical
-  CRANE-X7 the arm floats and is back-drivable; static agreement was
-  within a few hundredths of a Nm on all joints. Read that agreement
-  for what it is: both sides share the same nominal $k_t$ (commands
-  divide by it, the estimate multiplies by it), so it verifies the
-  servo's *current loop* tracking the commanded current — not
-  output-shaft torque; friction and gearbox efficiency sit outside
-  the comparison. The physical float itself is the output-side
-  evidence that $g(q)$ is close enough.
+  ($k_t i_{\text{meas}}$ vs. $g(q)$) each second. In the 2026-07 M7
+  acceptance sessions the arm floated and was back-drivable, with
+  static agreement within a few hundredths of a Nm on all joints.
+  Read that agreement for what it is: both sides share the same
+  nominal $k_t$ (commands divide by it, the estimate multiplies by
+  it), so it verifies the servo's *current loop* tracking the
+  commanded current — not output-shaft torque; friction, gearbox
+  efficiency, and any $k_t$ scale error sit outside the comparison.
+  **Status (2026-07-29): `x7_float` is PARKED.** A float session
+  accelerated the untouched arm toward the upright posture (peak
+  ~2.37 rad/s) — the signature of gravity over-compensation, a
+  failure class the agreement print is structurally blind to. The
+  leading explanation is the torque-to-current calibration (the
+  vendor's empirically tuned constants imply rtctrl commands 23–49 %
+  more current per model-torque); remediation, evidence, and the
+  retest protocol live in
+  [GRAVITY_CALIBRATION_PLAN.md](../GRAVITY_CALIBRATION_PLAN.md).
+  Until that plan's hardware milestone passes, the float claims
+  above are scoped to the M7 sessions.
 
 ## Limitations
 

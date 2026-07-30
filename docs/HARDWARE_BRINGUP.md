@@ -96,19 +96,33 @@ reasons live in the
 [computed-torque theory notes](theory/computed-torque.md#what-the-hardware-taught-us).
 Feature coverage is mapped in [PARITY.md](PARITY.md).
 
-> **`x7_track` is PARKED (2026-07-28 incident) — do NOT run it on
-> hardware, at any scale.** A scale-0.5 session never left the settle
-> phase: from a compact resting posture the pan (canonical joint 0)
-> anti-damped at 4.33 Hz, growing ~50 → ~350 mrad peak-to-peak within
-> a second of torque-on, and the operator cut power (settle telemetry
-> archive pending per [DATA_ARCHIVE.md](DATA_ARCHIVE.md)). The
-> failure precedes the scale argument — no scale is safe — and no
-> code or configuration change preceded it: the exposure is a
-> property of the shipped settle loop at that posture. Parking stands
-> until a reviewer-approved settle-phase fix lands. `x7_wave` and
-> `x7_float` are unaffected (position mode / pure gravity
-> compensation, neither contains the settle damping loop); the
-> post-incident recovery ladder is steps 1–6 above plus `x7_float`.
+> **EVERY current-mode controller is PARKED — do NOT run `x7_track`,
+> `x7_float`, or `x7_ident` on hardware.** Two independent incidents:
+>
+> - **`x7_track` (2026-07-28):** a scale-0.5 session never left the
+>   settle phase — from a compact resting posture the pan (canonical
+>   joint 0) anti-damped at 4.33 Hz, growing ~50 → ~350 mrad
+>   peak-to-peak within a second of torque-on; operator power cut.
+>   The failure precedes the scale argument (no scale is safe) and no
+>   code or configuration change preceded it. Parked until a
+>   reviewer-approved settle-phase fix lands.
+> - **`x7_float` (2026-07-29):** a float session accelerated the
+>   UNTOUCHED arm toward the upright posture (peak ~2.37 rad/s,
+>   joints riding their upper limits) — the signature of gravity
+>   over-compensation; the leading explanation is the
+>   torque-to-current calibration commanding 23–49 % more current
+>   per model-torque than the vendor's empirically tuned constants.
+>   `x7_ident` is parked with it: it runs current mode through the
+>   SAME nominal conversion and stages its own preload (its campaign
+>   is closed, so parking costs nothing). Remediation, evidence, and
+>   the retest protocol:
+>   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
+>
+> Telemetry of both incidents: archive pending per
+> [DATA_ARCHIVE.md](DATA_ARCHIVE.md). `x7_wave`, `x7_move_simple`,
+> `x7_pose`, `x7_read`, and `x7_onoff` remain usable (position mode
+> or no torque; none touches the current-command path); the
+> post-incident recovery ladder is steps 1–6 above.
 
 ## Troubleshooting
 

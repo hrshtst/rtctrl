@@ -23,12 +23,11 @@ scope, config validation; round 2: M-GC3 calibrated-config mandate,
 explicit conversion formula, logged release marker with numerical
 drift bound, scale interval capped at 1.0; round 3: release marker
 must PRECEDE the physical release, marker-anchored run termination,
-execution-status correction). **NO milestone executed.** The round-2
-revision prematurely claimed the operator-facing parking was done —
-it is NOT: until M-GC0 runs, HARDWARE_BRINGUP.md still presents
-`x7_float` as safe and the theory chapter still claims a successful
-hardware float. Executing M-GC0's parking edits is the FIRST action
-once this plan clears review.*
+execution-status correction). Reviewer-confirmed ready 2026-07-30.
+**M-GC0's operator-facing parking is EXECUTED in the commit that
+carries this status line** (HARDWARE_BRINGUP notice, theory-chapter
+scoping, x7_float banner); the float1.csv archive and the offline
+analysis complete M-GC0. M-GC1 onward not started.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archive pending)
 

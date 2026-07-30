@@ -7,6 +7,14 @@
 // arm lightly on the first run. Verified in sim first
 // (gravity_sim_test): drift < 0.05 rad over 10 s.
 //
+// PARKED (2026-07-29): do NOT run on hardware until the gravity
+// calibration lands (docs/GRAVITY_CALIBRATION_PLAN.md). A float
+// session accelerated the UNTOUCHED arm toward the upright posture
+// (peak ~2.37 rad/s) — gravity over-compensation; the nominal
+// torque-to-current constants command 23-49% more current per
+// model-torque than the vendor's empirically tuned values, and this
+// app's agreement print is structurally blind to that failure class.
+//
 // Usage: x7_float [--config path] [--port dev] [--log out.csv] [seconds]
 //   --log writes one row per cycle through the CycleObserver — AFTER
 //   writeCommand, so each row pairs three distinct events explicitly:
