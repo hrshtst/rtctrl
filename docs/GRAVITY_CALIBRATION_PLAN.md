@@ -34,7 +34,7 @@ the 15 s minimum duration (round 6: window-completion is the ONLY
 success verdict, so an outer deadline can never truncate an
 evaluation into a false "done"; late-marker regression in the smoke)
 and honest shutdown messaging, the marker with anchored
-termination — **awaiting the reviewer's sign-off**. **M-GC2's
+termination. **M-GC2's
 automated gates are GREEN**, now including the INDEPENDENT vendor
 fixture (revised gate above; round 6: post-hoc envelope labeling,
 held-out evaluation, per-model current tolerances, reproducible
