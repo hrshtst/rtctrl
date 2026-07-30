@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 #include "rtctrl/arm/arm.hpp"
@@ -55,8 +56,14 @@ inline bool run(Arm& arm, Controller& controller, double duration,
   CommandSnapshot cmds;
   CommandReceipt receipt;
   const double dt = arm.dt();
-  const long max_cycles =
-      static_cast<long>(4.0 * duration / (dt > 0.0 ? dt : 1e-3)) + 8;
+  // Clamped BEFORE the cast: a huge finite duration must not convert
+  // out of long's range (undefined behavior — review finding). 1e9
+  // cycles sits far beyond any legitimate session while staying
+  // representable.
+  const long max_cycles = static_cast<long>(std::min(
+                              4.0 * duration / (dt > 0.0 ? dt : 1e-3),
+                              1.0e9)) +
+                          8;
   // The very first read may carry an arbitrarily old sample (e.g. the
   // activation-era read), so neither the time origin nor the interval
   // policy may derive from it: it is controlled at t = 0 (commands must

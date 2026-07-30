@@ -40,12 +40,13 @@
 //   commanded outer deadline instead of ending 5 s after the marker —
 //   room to back-drive each joint carefully. TORQUE REMAINS ENABLED
 //   until that deadline (the release cue says so). Duration is
-//   bounded to 60 s (one joint per run needs no more), and a
-//   CALIBRATED configuration (command_torque_scale < 1.0 on every
-//   joint) is required BEFORE bus contact — the known-failed all-1.0
-//   default is refused. The log self-marks "# run_mode: feel-check"
-//   and is NEVER acceptance evidence; the acceptance protocol (no
-//   --feel) is unchanged.
+//   bounded to 60 s in EVERY mode (acceptance runs self-terminate at
+//   marker + 5 s regardless), and feel mode requires the APPROVED
+//   vendor calibration vector (±1e-6) BEFORE bus contact — the
+//   known-failed all-1.0 default, near-1 lookalikes, and
+//   under-supporting low scales are all refused. The log self-marks
+//   "# run_mode: feel-check" and is NEVER acceptance evidence; the
+//   acceptance protocol (no --feel) is unchanged.
 //   --log writes one row per cycle through the CycleObserver — AFTER
 //   writeCommand, so each row pairs three distinct events explicitly:
 //   the FEEDBACK snapshot the cycle started from (q, dqservo — the
@@ -145,10 +146,19 @@ constexpr double kMarkerDeadlineS = 8.0;    // after the mode switch
 // deadline + window, the runner's outer check could end the run before
 // the observer saw marker + window).
 constexpr double kMinDurationS = 15.0;
-// Feel-check upper bound (reviewed): one joint per run needs no more,
-// and an unbounded torqued session with a healthy command stream would
-// never trip any watchdog (review finding).
-constexpr double kMaxFeelDurationS = 60.0;
+// GLOBAL upper bound (reviewed): one feel joint per run needs no
+// more, acceptance runs self-terminate at marker + 5 s anyway, an
+// unbounded torqued session with a healthy command stream never trips
+// any watchdog, and a huge duration reaches the runner's
+// floating-to-long cycle conversion (review findings).
+constexpr double kMaxDurationS = 60.0;
+// The APPROVED M-GC3 calibration vector (mirrors
+// config/crane_x7_vendor_scale.toml and the log checker): feel mode
+// requires exactly this — near-1 values are effectively the failed
+// calibration, very low values under-support the arm.
+constexpr double kVendorScaleXm430 = 0.810455;
+constexpr double kVendorScaleXm540 = 0.669167;
+constexpr double kVendorScaleTol = 1e-6;
 
 // Per-cycle telemetry via the CycleObserver — invoked AFTER
 // writeCommand, so the row carries this cycle's receipt (was the
@@ -334,13 +344,14 @@ int main(int argc, char* argv[]) {
                  duration_s, kMinDurationS);
     return 1;
   }
-  if (feel_mode && duration_s > kMaxFeelDurationS) {
+  if (duration_s > kMaxDurationS) {
     std::fprintf(stderr,
-                 "feel-check duration %.0f s exceeds the reviewed "
-                 "%.0f s bound — a torqued session with a healthy "
-                 "command stream never trips a watchdog, and one "
-                 "joint per run needs no more\n",
-                 duration_s, kMaxFeelDurationS);
+                 "duration %.0f s exceeds the reviewed %.0f s bound — "
+                 "acceptance runs end at marker + 5 s regardless, one "
+                 "feel joint per run needs no more, and a torqued "
+                 "session with a healthy command stream never trips a "
+                 "watchdog\n",
+                 duration_s, kMaxDurationS);
     return 1;
   }
 
@@ -363,13 +374,22 @@ int main(int argc, char* argv[]) {
     if (feel_mode) {
       const auto probe = hw::Config::load(cli.config_path);
       for (const auto& joint : probe.joints) {
-        if (joint.command_torque_scale >= 1.0) {
+        // Not merely "< 1.0" (review finding: 0.999 is effectively
+        // the failed calibration, and 0.5 would under-support): the
+        // APPROVED vendor vector, within a fixed tolerance.
+        const double expected =
+            joint.model_number == rtctrl::dxl::kModelXm540W270
+                ? kVendorScaleXm540
+                : kVendorScaleXm430;
+        if (std::fabs(joint.command_torque_scale - expected) >
+            kVendorScaleTol) {
           std::fprintf(stderr,
-                       "feel-check mode requires a CALIBRATED "
-                       "configuration (command_torque_scale < 1.0 on "
-                       "every joint); joint '%s' carries %.6f — use "
+                       "feel-check mode requires the APPROVED vendor "
+                       "calibration (%.6f for this servo model); "
+                       "joint '%s' carries %.6f — use "
                        "config/crane_x7_vendor_scale.toml\n",
-                       joint.name.c_str(), joint.command_torque_scale);
+                       expected, joint.name.c_str(),
+                       joint.command_torque_scale);
           return 1;
         }
       }

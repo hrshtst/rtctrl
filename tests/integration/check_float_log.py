@@ -13,6 +13,7 @@ marker), and tau_applied == scale * tau_request on every applied row —
 the end-to-end proof that the calibration applies exactly once through
 the RealArm command path."""
 import csv
+import hashlib
 import math
 import sys
 
@@ -29,13 +30,27 @@ INTEGER = {"feedback_seq", "submitted_seq", "applied_seq"}
 VENDOR_SCALES = [0.810455] * DOF
 VENDOR_SCALES[1] = 0.669167
 
+# The ONLY files --legacy admits, bound by SHA-256 with a fixed role
+# (review finding: an unbound --legacy let the archived back-drive log
+# validate as acceptance evidence, and admitted arbitrary headerless
+# files).
+LEGACY_EVIDENCE = {
+    # float2.csv — the M-GC3 acceptance run: legacy acceptance-vendor
+    "de1f1a3b333b26534b5617d5494a9c194e6e9c4555e32fcbeb81c7b02141fbf1":
+        "acceptance-vendor",
+    # float3.csv — the back-drive session: NEVER acceptance evidence
+    "f09057f289066be6d60a9154c97f71ba141e7daccd8b993670ba0df3da7726fd":
+        "backdrive",
+}
+
 args = sys.argv[1:]
 vendor = "--vendor" in args
 feel = "--feel" in args
 legacy = "--legacy" in args  # pre-run_mode archived evidence ONLY
 path = [a for a in args if not a.startswith("--")][0]
 
-lines = open(path).read().splitlines()
+raw = open(path, "rb").read()
+lines = raw.decode().splitlines()
 comments = []
 while lines and lines[0].startswith("#"):
     comments.append(lines.pop(0))
@@ -48,6 +63,9 @@ scales = [float(v) for v in scale_lines[0].split(":", 1)[1].split()]
 assert len(scales) == DOF
 mode_lines = [c for c in comments if c.startswith("# run_mode:")]
 if mode_lines:
+    # a header-bearing log is NEVER legacy — --legacy must not weaken
+    # classification for any new log (review finding)
+    assert not legacy, "--legacy rejected: this log carries run_mode"
     run_mode = mode_lines[0].split(":", 1)[1].strip()
     # a feel-check log must never pass as acceptance evidence
     assert run_mode == ("feel-check" if feel else "acceptance"), run_mode
@@ -55,7 +73,19 @@ else:
     # --legacy admits ONLY the pre-run_mode archived evidence
     # (float2/float3, 2026-07-30); new logs always carry the header,
     # so classification is never weakened for them.
-    assert legacy, "run_mode header missing (use --legacy only for "                    "pre-run_mode archived evidence)"
+    assert legacy, "run_mode header missing (use --legacy only for " \
+                   "pre-run_mode archived evidence)"
+    role = LEGACY_EVIDENCE.get(hashlib.sha256(raw).hexdigest())
+    assert role is not None, (
+        "--legacy admits ONLY the archived float2/float3 evidence "
+        "(unknown SHA-256)")
+    assert not feel, "--legacy never validates as a feel log"
+    if role == "acceptance-vendor":
+        assert vendor, "float2 must be validated with --vendor"
+    else:
+        assert not vendor, (
+            "the archived back-drive log must NEVER validate as "
+            "acceptance evidence")
 dur_lines = [c for c in comments if c.startswith("# duration_s:")]
 requested_s = float(dur_lines[0].split(":", 1)[1]) if dur_lines else None
 if not legacy:

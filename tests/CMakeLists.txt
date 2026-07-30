@@ -165,9 +165,26 @@ add_test(NAME x7_float_rejects_long_feel COMMAND x7_float --feel 90)
 set_tests_properties(x7_float_rejects_long_feel PROPERTIES
   PASS_REGULAR_EXPRESSION "exceeds the reviewed"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# ...and the bound is GLOBAL: a huge acceptance duration must not
+# reach the runner's floating-to-long cycle conversion (review
+# finding).
+add_test(NAME x7_float_rejects_long_acceptance COMMAND x7_float 100000)
+set_tests_properties(x7_float_rejects_long_acceptance PROPERTIES
+  PASS_REGULAR_EXPRESSION "exceeds the reviewed"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 add_test(NAME x7_float_rejects_uncalibrated_feel
   COMMAND x7_float --feel 30
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_float_rejects_uncalibrated_feel PROPERTIES
-  PASS_REGULAR_EXPRESSION "requires a CALIBRATED configuration"
+  PASS_REGULAR_EXPRESSION "APPROVED vendor calibration"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# near-1 scales pass Config validation but are effectively the failed
+# calibration — feel mode requires the EXACT approved vector (review
+# finding: a '< 1.0' gate accepted 0.999).
+add_test(NAME x7_float_rejects_near_one_feel
+  COMMAND x7_float --config tests/data/crane_x7_near_one_scale.toml
+          --feel 30
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_rejects_near_one_feel PROPERTIES
+  PASS_REGULAR_EXPRESSION "APPROVED vendor calibration"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
