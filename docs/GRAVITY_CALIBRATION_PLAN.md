@@ -45,10 +45,12 @@ preload/cyclic continuity, the two-phase emulator float
 tau_applied = scale × tau_request end-to-end), `gravity_sim_test`
 unchanged. **M-GC1 and M-GC2 SIGNED OFF by the external reviewer
 (2026-07-30)** — 186/186 tests and the strict docs build
-independently reproduced. **M-GC3 is READY for the owner-run
-hardware session** per its protocol (vendor-scale config mandatory,
-marker-first release, displacement-bounded acceptance); the parking
-remains in force until it passes.*
+independently reproduced. **M-GC3 acceptance run PASSED
+(2026-07-30, `float2.csv` — see the Addendum): all four
+preregistered conditions with wide margins.** Remaining in M-GC3:
+the back-drive feel check, then the reviewer + owner decision on
+default adoption and un-parking; the parking remains in force until
+that decision.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -316,6 +318,35 @@ physical joint = canonical + 1). The untouched pre-gate interval is
   incident's `track9.csv`/`track9.csv.settle`) carry manifest rows
   with SHA-256 in [DATA_ARCHIVE.md](DATA_ARCHIVE.md),
   `incidents-2026-07/` section.
+
+## Addendum — M-GC3 acceptance run (2026-07-30, PASSED)
+
+Run: `x7_float --config config/crane_x7_vendor_scale.toml --log
+float2.csv 15` from a compact posture; startup print confirmed the
+vendor scales; the arm was held through activation and the preloaded
+switch; marker at t = 4.080 s (pressed while supporting, released on
+the cue); self-termination at 9.090 s; 911/911 submissions accepted;
+telemetry archived (`gravity-calibration/float2.csv`,
+[DATA_ARCHIVE.md](DATA_ARCHIVE.md)).
+
+All four preregistered conditions PASSED, evaluated over
+[t_marker, t_marker + 5 s]:
+
+| condition | bound | measured (worst joint) |
+|---|---|---|
+| peak per-joint speed | ≤ 0.1 rad/s | 0.024 rad/s (one velocity LSB) |
+| displacement from release posture | ≤ 0.05 rad | 0.0123 rad (j2, at the hand-off) |
+| gate/clamp events | 0 | 0 (window AND whole run) |
+| final-second drift | ≤ 0.01 rad | 0.0015 rad (one position LSB) |
+
+The console agreement print showed measured ≈ scale × predicted
+throughout (j1 ≈ 0.67×, j3 ≈ 0.80×) — the calibrated scale visible on
+hardware exactly as designed. Contrast with the 2026-07-29 failed
+run: same controller family, same arm; the untouched arm previously
+peaked at 2.37 rad/s and rode its limits, and now sits within one
+encoder count. Remaining in this milestone: the back-drive feel check
+(separate runs; not acceptance evidence), then the reviewer + owner
+decision on default adoption and un-parking.
 
 ## Non-goals and cautions
 

@@ -86,3 +86,13 @@ collides with the M8 entry above; the numbering continues runs 1–8).
 | `track9.csv` | 2026-07-28 x7_track scale-0.5 attempt: settle-phase pan anti-damping at 4.33 Hz, manual power cut; the run's (nearly empty) tracking log | `9969dc95a14f70b97a97fa89657623e5bc6ad12678c298259be4c317f311a7ca` |
 | `track9.csv.settle` | settle-phase telemetry of the above: the 4.33 Hz growth 50 → 350 mrad p-p; basis of the settle-incident investigation | `ab599c6dbaf1e3ca5afa74b6bb055e7adae3ddfebf17c96ca6a2c87383a4d641` |
 | `float1.csv` | 2026-07-29 FAILED x7_float test: untouched arm climbed upright (peak ~2.37 rad/s); basis of GRAVITY_CALIBRATION_PLAN.md's M-GC0 addendum | `6e0f72a74adaf5db129053a37ceb1724e60b738181ff1c23b01156012247b6fe` |
+
+## `gravity-calibration/` — M-GC3 calibrated float tests (2026-07-30)
+
+Evidence of the gravity-calibration remediation's hardware milestone
+(`docs/GRAVITY_CALIBRATION_PLAN.md`, M-GC3): the vendor-scale
+configuration, marker-first release, displacement-bounded acceptance.
+
+| file | role | sha256 |
+|---|---|---|
+| `float2.csv` | M-GC3 acceptance run: PASSED all four preregistered conditions (peak speed 0.024 rad/s, displacement 0.0123 rad, zero gates/clamps, final-second drift ≤ 0.0015 rad); marker 4.080 s, window complete | `de1f1a3b333b26534b5617d5494a9c194e6e9c4555e32fcbeb81c7b02141fbf1` |
