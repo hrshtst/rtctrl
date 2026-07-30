@@ -13,6 +13,12 @@
 // reproducible). The FK-agreement cross-check against rtctrl's model
 // is a LIVE assertion in the unit test (frozen link-8 positions).
 //
+// With --replay (reviewer-directed sim step, back-drive exceptions):
+// reads postures q0..q6 [rad], whitespace-separated, one per stdin
+// line, and prints the vendor per-joint currents [A] per line — the
+// same computation and embedded cross-check as the fixture mode.
+// tools/replay_compare.py drives it over recorded feel logs.
+//
 // NOT part of the normal build (needs Eigen3 and the vendored tree).
 // Regenerate from the repo root with:
 //
@@ -27,12 +33,56 @@
 //     -o /tmp/vendor_gravity_dump && /tmp/vendor_gravity_dump
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include "rt_manipulators_cpp/kinematics.hpp"
 #include "rt_manipulators_cpp/kinematics_utils.hpp"
 #include "rt_manipulators_cpp/link.hpp"
 #include "rt_manipulators_dynamics.hpp"
-int main() {
+
+namespace {
+
+// One posture through the vendor pipeline: set q, FK, gravity
+// recursion, then the EMBEDDED static-sum cross-check. Returns false
+// (with a stderr diagnostic) on any failure.
+bool vendorCurrentsChecked(std::vector<manipulators_link::Link>& links,
+                           const samples03_dynamics::torque_to_current_t& t2c,
+                           const double* kt, const std::vector<double>& q,
+                           kinematics_utils::q_list_t& q_list) {
+  for (int i = 0; i < 7; ++i) links[2 + i].q = q[i];
+  kinematics::forward_kinematics(links, 1);
+  if (!samples03_dynamics::gravity_compensation(links, 8, t2c, q_list)) {
+    std::fprintf(stderr, "vendor computation failed\n");
+    return false;
+  }
+  // EMBEDDED cross-check: the recursion must equal an independent
+  // static torque sum over the SAME FK state (route masses 2..8)
+  Eigen::Vector3d g(0, 0, -9.8);
+  int idx = 0;
+  for (const auto& [id, cur] : q_list) {
+    Eigen::Vector3d n = Eigen::Vector3d::Zero();
+    for (int k = static_cast<int>(id); k <= 8; ++k) {
+      const Eigen::Vector3d com_w = links[k].p + links[k].R * links[k].c;
+      n += (com_w - links[id].p).cross(links[k].m * g);
+    }
+    const Eigen::Vector3d axis_w = links[id].R * links[id].a;
+    const double tau_static = -axis_w.dot(n);
+    if (std::fabs(tau_static - cur * kt[idx]) > 1e-4) {
+      std::fprintf(stderr,
+                   "CROSS-CHECK FAILED id %d: recursion %.6f vs "
+                   "static %.6f\n",
+                   static_cast<int>(id), cur * kt[idx], tau_static);
+      return false;
+    }
+    ++idx;
+  }
+  return true;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const bool replay = argc > 1 && std::strcmp(argv[1], "--replay") == 0;
   auto links = kinematics_utils::parse_link_config_file(
       "rt_manipulators_cpp/samples/samples03/config/crane-x7_links.csv");
   kinematics::forward_kinematics(links, 1);
@@ -40,6 +90,27 @@ int main() {
       {2, 1.0 / 2.20}, {3, 1.0 / 3.60}, {4, 1.0 / 2.20}, {5, 1.0 / 2.20},
       {6, 1.0 / 2.20}, {7, 1.0 / 2.20}, {8, 1.0 / 2.20}};
   const double kt[] = {2.20, 3.60, 2.20, 2.20, 2.20, 2.20, 2.20};
+
+  if (replay) {
+    // Posture stream mode: every line is checked by the same embedded
+    // static sum as the fixture postures — a divergent replay aborts
+    // instead of emitting silently wrong currents.
+    std::vector<double> q(7);
+    long lines = 0;
+    while (std::scanf("%lf %lf %lf %lf %lf %lf %lf", &q[0], &q[1], &q[2],
+                      &q[3], &q[4], &q[5], &q[6]) == 7) {
+      kinematics_utils::q_list_t q_list;
+      if (!vendorCurrentsChecked(links, t2c, kt, q, q_list)) return 1;
+      for (const auto& [id, cur] : q_list) std::printf("%.9f ", cur);
+      std::printf("\n");
+      ++lines;
+    }
+    std::fprintf(stderr,
+                 "replay: %ld postures, static-sum cross-check PASSED\n",
+                 lines);
+    return lines > 0 ? 0 : 1;
+  }
+
   const std::vector<std::vector<double>> postures = {
       // development postures (used to set the engineering envelope)
       {0, 0, 0, 0, 0, 0, 0},
@@ -51,34 +122,8 @@ int main() {
       {0.4, 0.7, -0.3, -1.2, 0.3, -0.6, 0.5},
       {0.3, -0.9, 0.8, -1.2, 0.5, 0.4, 0.3}};
   for (const auto& p : postures) {
-    for (int i = 0; i < 7; ++i) links[2 + i].q = p[i];
-    kinematics::forward_kinematics(links, 1);
     kinematics_utils::q_list_t q_list;
-    if (!samples03_dynamics::gravity_compensation(links, 8, t2c, q_list)) {
-      std::fprintf(stderr, "vendor computation failed\n");
-      return 1;
-    }
-    // EMBEDDED cross-check: the recursion must equal an independent
-    // static torque sum over the SAME FK state (route masses 2..8)
-    Eigen::Vector3d g(0, 0, -9.8);
-    int idx = 0;
-    for (const auto& [id, cur] : q_list) {
-      Eigen::Vector3d n = Eigen::Vector3d::Zero();
-      for (int k = static_cast<int>(id); k <= 8; ++k) {
-        const Eigen::Vector3d com_w = links[k].p + links[k].R * links[k].c;
-        n += (com_w - links[id].p).cross(links[k].m * g);
-      }
-      const Eigen::Vector3d axis_w = links[id].R * links[id].a;
-      const double tau_static = -axis_w.dot(n);
-      if (std::fabs(tau_static - cur * kt[idx]) > 1e-4) {
-        std::fprintf(stderr,
-                     "CROSS-CHECK FAILED id %d: recursion %.6f vs "
-                     "static %.6f\n",
-                     static_cast<int>(id), cur * kt[idx], tau_static);
-        return 1;
-      }
-      ++idx;
-    }
+    if (!vendorCurrentsChecked(links, t2c, kt, p, q_list)) return 1;
     std::printf("    {");
     for (const auto& [id, cur] : q_list) std::printf("%.9f, ", cur);
     std::printf("},  // link8 p: %.6f %.6f %.6f\n", links[8].p.x(),

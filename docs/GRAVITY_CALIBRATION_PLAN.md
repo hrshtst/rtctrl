@@ -47,10 +47,12 @@ unchanged. **M-GC1 and M-GC2 SIGNED OFF by the external reviewer
 (2026-07-30)** — 186/186 tests and the strict docs build
 independently reproduced. **M-GC3 acceptance run PASSED
 (2026-07-30, `float2.csv` — see the Addendum): all four
-preregistered conditions with wide margins.** Remaining in M-GC3:
-the back-drive feel check, then the reviewer + owner decision on
-default adoption and un-parking; the parking remains in force until
-that decision.*
+preregistered conditions with wide margins.** **M-GC3 overall
+remains OPEN (reviewer disposition 2026-07-30): "objective
+acceptance passed; subjective feel failed on j1 and
+inconclusive/failed on j4"** — see the back-drive record below. The
+vendor scales are NOT adopted as the default and the parking of
+`x7_float`/`x7_ident` remains in force.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -414,8 +416,102 @@ disposition:**
   non-issues: consistent with ordinary gear friction dominating on
   low-gravity joints.
 
-The back-drive requirement therefore remains OPEN pending the
-reviewer's disposition of the j1 and j4 exceptions.
+**Reviewer disposition (2026-07-30): the subjective back-drive
+criterion FAILED; M-GC3 remains OPEN.** j1 fails "no notchy spots";
+j4 fails reasonable directional symmetry (motion toward +1.3 rad
+after letting go also counts as autonomous motion); j3/j6 PASS on
+the operator's judgment (greater but symmetric resistance is
+acceptable); j0/j2/j5 no issue. Accepted log separation: j1's notch
+is NOT explained by position gating, command rejection, or a
+host-command discontinuity (zero gate events, smooth applied torque,
+maximum cycle-to-cycle change 0.029 Nm), and command quantization
+(~0.0065 Nm per goal count in nominal units) is too small for a
+pronounced random lockup — remaining suspects are XM540 current
+regulation and load-dependent drivetrain friction. Position gates
+occurred during j0 (92 cycles), j4 (853, substantial dwell near both
+±2.8 rad ends), and j6 (91); endpoint sensations are excluded from
+smoothness judgment. j4's bias is judged likely
+compensation-induced: ≈ +0.04 Nm was applied around the initial
+posture, enough to move a nearly gravity-neutral wrist whose true
+required torque is smaller.
+
+**Power-off differential check (2026-07-30, arm supported, power
+off, mid-range):** the operator found NO mechanical notch in j1 and
+NO directional bias in j4. Reviewer reading: both effects are
+torque-ENABLED phenomena — which does not prove software origin,
+because energizing j1 loads its gearbox and can expose
+load-dependent friction that is absent when limp. j1 therefore
+remains a FAILURE with the suspects above; j4's bias remains
+attributed to the compensation.
+
+Recorded status (reviewer wording): **"objective acceptance passed;
+subjective feel failed on j1 and inconclusive/failed on j4."** The
+vendor scales are NOT adopted as the default; `x7_float` and
+`x7_ident` STAY PARKED. A powered A/B against the UNMODIFIED vendor
+sample is ruled out — it retains the unsafe zero-current startup
+interval; any powered comparison must use the reviewed preload and
+safety path.
+
+### Addendum — reviewer-directed simulation step: model replay over the recorded trajectories (2026-07-30, offline, EXECUTED)
+
+Method (items 1–2 of the reviewer's directed next step): rtctrl's
+side is taken from the logs themselves — `tau_request` at the
+measured posture each cycle, converted to amps exactly as the
+command boundary does (i = command_torque_scale · τ / kt_nominal,
+`hw::commandCurrentFromTorque`). The vendor side is recomputed at
+the identical postures by the in-tree fixture generator
+(`tests/fixtures/vendor_gravity_dump.cpp`) in its `--replay`
+posture-stream mode, which runs the embedded static-torque-sum
+cross-check on EVERY replayed posture. Driver:
+`tools/replay_compare.py` (build line in the fixture header; run
+from the repo root):
+
+```
+uv run --project tools tools/replay_compare.py \
+    --replay-bin /tmp/vendor_gravity_dump \
+    feel_j0.csv feel_j1.csv … feel_j6.csv
+```
+
+Inputs are the archived feel logs (SHA-256 manifest rows in
+[DATA_ARCHIVE.md](DATA_ARCHIVE.md)); 6000–6002 rows per trajectory.
+Findings:
+
+- **j1 — the two gravity models agree along the entire sweep;
+  neither can produce a random notch.** Across all seven
+  trajectories the mean current difference stays within ±0.015 A
+  (±5.5 goal counts); the worst instantaneous difference, 0.044 A
+  (16 counts, 0.157 Nm at the vendor kt), occurs at the extremes of
+  the j1 sweep itself where the command reaches ±0.98 A — ≈ 4–5 % of
+  the local command. Both models are smooth functions of posture and
+  the host command stream was smooth, so this CLOSES the
+  gravity-model line for the j1 notch, consistent with the
+  reviewer's suspects (XM540 current regulation, load-dependent
+  drivetrain friction). It also shows a software A/B would not
+  separate anything: the vendor's own algorithm commands nearly
+  identical j1 currents at these postures.
+- **j4 — a consistent PROPORTIONAL disagreement: rtctrl commands
+  ≈ 1.37–1.49 × the vendor model's j4 current at the same
+  postures** (least-squares ratio on the six trajectories with
+  meaningful j4 excursion; worst residual after removing the ratio
+  0.003 A ≈ 1.1 counts). The two mass models predict the SAME odd
+  sin-like shape, but rtctrl's amplitude is ~1.4 × the vendor's: at
+  the j4 sweep extremes rtctrl commands 0.0248 A (9.2 counts) where
+  the vendor model commands 0.0174 A (6.5 counts) — a surplus of up
+  to ≈ +0.017 Nm at the vendor kt if the vendor amplitude is the
+  better estimate. Near the home posture both models are below one
+  count and even disagree in sign (|i| ≤ 0.0015 A — model-floor
+  noise). This QUANTIFIES the reviewer's compensation-bias
+  hypothesis: the entire j4 disagreement lives within 1–3 goal
+  counts, is positive (rtctrl above vendor) on every trajectory, and
+  is the right sign and size to bias a nearly gravity-neutral wrist
+  toward positive q4. Which amplitude matches the real arm is NOT
+  decidable offline — that is precisely the M7 per-joint calibration
+  experiment's question.
+
+Item 3 of the directed step — operator-event timestamps and raw
+goal/present-current counts in the float log, so each j1 notch can
+be correlated with current behavior on the NEXT powered run — is
+DIRECTED and pending implementation.
 
 ## Non-goals and cautions
 
