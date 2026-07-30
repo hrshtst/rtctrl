@@ -384,6 +384,39 @@ header-bearing files rejected. Only with the operator's three-point
 confirmation does the milestone reduce to the reviewer + owner
 decision on default adoption and un-parking.
 
+**Per-joint sessions executed (2026-07-30, `feel_j0.csv` …
+`feel_j6.csv`, archived with manifest rows):** all seven target
+joints covered, bidirectional motion log-confirmed on every target
+(point 1 SATISFIED); no autonomous motion reported or observed; all
+sessions clean (zero gates/clamps, every submission accepted; one
+void j3 attempt correctly aborted at the 8 s marker deadline and was
+rerun). **Points 2 and 3 carry EXCEPTIONS awaiting reviewer
+disposition:**
+
+- **j1 — random notchiness, hard to move (point 3 exception).** The
+  log shows 2680/6002 cycles with the joint stationary under a net
+  commanded torque above 1 Nm — the stick-slip signature of the
+  DOCUMENTED pass-2 finding that j1's gearbox stiction locks the
+  output shaft (the 0.30 Nm stationary probe could not move it;
+  IDENTIFICATION_PLAN.md Closure). Assessment: a pre-existing
+  mechanical property, expected to feel notchy under hand-guiding,
+  not introduced by (and not correctable through) the current
+  calibration.
+- **j4 — tends to move positive, easily to ~+1.3 rad (point 2
+  exception).** The commanded twist gravity is an odd,
+  position-dependent profile peaking at ±0.052 Nm (≈ A·sin(q4):
+  gravity genuinely pushes the twist away from this posture's
+  center), so any small model or scale residual there is
+  friction-comparable and reads as a directional assist by hand.
+  Bounded (≤ 0.052 Nm command ceiling), not safety-relevant;
+  at the fidelity limit of the mass model.
+- j3 and j6 — symmetric bidirectional rigidity, operator-judged
+  non-issues: consistent with ordinary gear friction dominating on
+  low-gravity joints.
+
+The back-drive requirement therefore remains OPEN pending the
+reviewer's disposition of the j1 and j4 exceptions.
+
 ## Non-goals and cautions
 
 - **No damping in the float.** Host-side damping walks into the
