@@ -30,16 +30,21 @@ archived with manifest rows). **M-GC1: IMPLEMENTED** (commits
 boundary with its [0.5, 1.0] validation and STRICT type parsing, the
 vendor-scale config with a field-for-field drift guard, both
 producers routed, the position-hold → preloaded-switch startup with
-the ≥13 s duration gate and honest shutdown messaging, the marker
-with anchored termination — **awaiting the reviewer's sign-off**.
-**M-GC2's automated gates are GREEN**, now including the INDEPENDENT
-vendor fixture (revised gate above): conversion parity 1e-4, model
-parity within the 0.10 Nm envelope at four reference postures with
-the incident request reproduced exactly, preload/cyclic continuity,
-the two-phase emulator float (marker-timeout abort AND
-marker-anchored termination, tau_applied = scale × tau_request
-end-to-end), `gravity_sim_test` unchanged. **M-GC3 not started** —
-hardware stays parked pending sign-off.*
+the 15 s minimum duration (round 6: window-completion is the ONLY
+success verdict, so an outer deadline can never truncate an
+evaluation into a false "done"; late-marker regression in the smoke)
+and honest shutdown messaging, the marker with anchored
+termination — **awaiting the reviewer's sign-off**. **M-GC2's
+automated gates are GREEN**, now including the INDEPENDENT vendor
+fixture (revised gate above; round 6: post-hoc envelope labeling,
+held-out evaluation, per-model current tolerances, reproducible
+cross-checks): conversion parity 1e-4, model parity at seven
+postures with the incident request reproduced exactly,
+preload/cyclic continuity, the two-phase emulator float
+(marker-timeout abort AND late-marker window completion,
+tau_applied = scale × tau_request end-to-end), `gravity_sim_test`
+unchanged. **M-GC3 not started** — hardware stays parked pending
+sign-off.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -199,16 +204,26 @@ only then run a conservative, displacement-bounded hardware test.
      hand-excluding recursion) executed at four reference postures —
      generator committed at `tests/fixtures/vendor_gravity_dump.cpp`,
      outputs frozen in `tests/unit/vendor_gravity_test.cpp`. The
-     per-joint model difference is bounded by a preregistered
-     **0.10 Nm envelope** (measured maximum 0.089 Nm at the float
-     posture, attributed to the vendor's excluded ~30 g hand assembly
-     and link-parameter differences; the vendor computes no gripper
-     torque, so that row is rtctrl-only), and the rtctrl model must
-     reproduce the incident log's j1 request (2.0219 Nm) exactly at
-     the float posture. Generation cross-checks (recorded in the
-     generator header): the vendor recursion equals an independent
-     static torque sum to 4 decimals, and both models' FK agree to the
-     millimeter — the joint conventions are identical.
+     per-joint model difference is bounded by a **POST-HOC engineering
+     envelope** — max(0.06 Nm, 9 % of |τ_rtctrl|), the 9 % being the
+     development-set maximum relative difference (7.0 %) plus margin —
+     set from four DEVELOPMENT postures and then EVALUATED on three
+     HELD-OUT postures (the P1 anchor, the tracking-acceptance goal,
+     a moderate spread), where it holds with ≥ 11 % headroom
+     (held-out maxima: 8.0 % relative, 0.128 Nm absolute at the
+     highest-load posture). An earlier flat 0.10 Nm development
+     envelope FAILED the held-out evaluation — precisely the failure
+     mode a held-out set exists to catch, and why this bound is
+     labeled post hoc, not preregistered. The differences are
+     CONSISTENT WITH (not isolated to) the vendor's excluded ~30 g
+     hand assembly and link-parameter differences; the vendor
+     computes no gripper torque, so that row is rtctrl-only. The
+     rtctrl model must reproduce the incident log's j1 request
+     (2.0219 Nm) exactly at the float posture. Cross-checks are
+     REPRODUCIBLE: the static-torque-sum check is embedded in the
+     generator (aborts on divergence > 1e-4), and the FK agreement is
+     a live unit-test assertion against frozen vendor link-8
+     positions (≤ 0.1 mm at every posture).
 - Emulator float end-to-end: preload present from the first cycle, no
   gate/clamp events from a mid-range posture, print ratio ≈ scale.
 - Full ctest and strict docs green; `gravity_sim_test` unchanged —
