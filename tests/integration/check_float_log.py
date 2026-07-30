@@ -1,12 +1,17 @@
-"""Validates an x7_float --log CSV: the event-semantics header, the
-column contract (10 shared + 7 per joint), a plausible row count for a
-2 s float at 100 Hz, full numeric/Boolean well-formedness of EVERY
-declared column, acceptance on every submission, applied telemetry
-becoming and staying valid after startup, the STRICT pre-submission
-sequencing invariant (the snapshot is read before this cycle's write,
-so its applied record must be strictly older than this cycle's own
-submission), and the internal consistency of the signed
-feedback-to-apply offset."""
+"""Validates an x7_float --log CSV: the event-semantics and scale
+headers, the column contract (11 shared + 7 per joint), numeric/
+Boolean well-formedness with finiteness for every declared column,
+acceptance on every submission, applied telemetry becoming and staying
+valid after startup, the STRICT pre-submission sequencing invariant,
+the signed feedback-to-apply offset's self-consistency, and the
+release-marker column (monotone 0 -> 1).
+
+With --vendor (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2): additionally
+requires the vendor-equivalent scales in the header, a released
+transition, marker-anchored termination (last row ~5 s after the
+marker), and tau_applied == scale * tau_request on every applied row —
+the end-to-end proof that the calibration applies exactly once through
+the RealArm command path."""
 import csv
 import math
 import sys
@@ -14,27 +19,42 @@ import sys
 DOF = 8
 SHARED = ("t", "feedback_time", "feedback_seq", "submitted_seq",
           "submission_time", "accepted", "applied_valid", "applied_seq",
-          "latest_apply_time", "feedback_minus_latest_apply")
+          "latest_apply_time", "feedback_minus_latest_apply", "released")
 PER_JOINT = ("q", "dqservo", "tau_meas", "tau_request", "tau_applied",
              "clamped", "gated")
-BOOLEAN = {"accepted", "applied_valid"} | {
+BOOLEAN = {"accepted", "applied_valid", "released"} | {
     f"{c}{i}" for i in range(DOF) for c in ("clamped", "gated")}
 INTEGER = {"feedback_seq", "submitted_seq", "applied_seq"}
 
-lines = open(sys.argv[1]).read().splitlines()
-assert lines[0].startswith("# events per row:"), "semantics header missing"
-rows = list(csv.DictReader(lines[1:]))
+VENDOR_SCALES = [0.810455] * DOF
+VENDOR_SCALES[1] = 0.669167
 
+args = sys.argv[1:]
+vendor = "--vendor" in args
+path = [a for a in args if not a.startswith("--")][0]
+
+lines = open(path).read().splitlines()
+comments = []
+while lines and lines[0].startswith("#"):
+    comments.append(lines.pop(0))
+assert comments and comments[0].startswith("# events per row:"), \
+    "semantics header missing"
+scale_lines = [c for c in comments
+               if c.startswith("# command_torque_scale:")]
+assert scale_lines, "scale header missing"
+scales = [float(v) for v in scale_lines[0].split(":", 1)[1].split()]
+assert len(scales) == DOF
+
+rows = list(csv.DictReader(lines))
 expected = list(SHARED) + [f"{c}{i}" for i in range(DOF) for c in PER_JOINT]
 assert list(rows[0].keys()) == expected, "column contract violated"
-assert len(rows) >= 100, f"only {len(rows)} rows for a 2 s float"
+assert len(rows) >= 100, f"only {len(rows)} rows"
 
 STARTUP_ROWS = 2  # applied telemetry may lag activation briefly
 valid_seen = 0
+prev_released = 0
+t_marker = None
 for k, r in enumerate(rows):
-    # every declared column parses as its declared kind; floats must
-    # be FINITE — float('nan') parses, so parsing alone would let
-    # non-finite telemetry through (review finding)
     for col in expected:
         if col in BOOLEAN:
             assert r[col] in ("0", "1"), (k, col, r[col])
@@ -44,22 +64,56 @@ for k, r in enumerate(rows):
             assert math.isfinite(float(r[col])), (
                 f"row {k}: non-finite {col} = {r[col]}")
     assert r["accepted"] == "1", "unaccepted submission in a clean run"
+    released = int(r["released"])
+    assert released >= prev_released, f"row {k}: released went backward"
+    if released == 1 and t_marker is None:
+        t_marker = float(r["t"])
+    prev_released = released
     if k >= STARTUP_ROWS:
-        # a log whose applied telemetry never materializes must FAIL
         assert r["applied_valid"] == "1", (
             f"row {k}: applied telemetry still invalid after startup")
     if r["applied_valid"] == "1":
         valid_seen += 1
-        # pre-submission snapshot: STRICTLY older than this submission
         assert int(r["applied_seq"]) < int(r["submitted_seq"]), (
             f"row {k}: applied record not strictly older than its own "
             "cycle's submission")
-        # the signed offset must be self-consistent with its parts
         recomputed = float(r["feedback_time"]) - float(
             r["latest_apply_time"])
         assert abs(recomputed - float(r["feedback_minus_latest_apply"])) \
             < 1e-5, f"row {k}: offset inconsistent with its parts"
 
 assert valid_seen >= len(rows) - STARTUP_ROWS, "too few valid applied rows"
-print("float log ok: %d rows, %d columns, %d applied-valid" %
-      (len(rows), len(expected), valid_seen))
+
+if vendor:
+    for i, s in enumerate(scales):
+        assert abs(s - VENDOR_SCALES[i]) < 1e-9, (
+            f"scale j{i} = {s}, expected {VENDOR_SCALES[i]}")
+    assert t_marker is not None, "no release marker recorded"
+    t_end = float(rows[-1]["t"])
+    assert 4.8 <= t_end - t_marker <= 5.3, (
+        f"run did not terminate ~5 s after the marker "
+        f"(marker {t_marker}, end {t_end})")
+    # the calibration applies EXACTLY once: applied torque (reconverted
+    # through the nominal constant) equals scale * requested torque.
+    # The applied record lags a cycle; gravity varies slowly at hold,
+    # so a small margin covers it plus the current LSB.
+    checked = 0
+    for r in rows:
+        if r["applied_valid"] != "1":
+            continue
+        for i in range(DOF):
+            tau_req = float(r[f"tau_request{i}"])
+            if abs(tau_req) < 0.05:
+                continue
+            tau_app = float(r[f"tau_applied{i}"])
+            assert abs(tau_app - scales[i] * tau_req) < 0.02, (
+                f"j{i}: tau_applied {tau_app} != {scales[i]} * "
+                f"{tau_req}")
+            checked += 1
+    assert checked > 100, "too few scaled-torque comparisons"
+else:
+    assert t_marker is None, "unexpected release marker in phase 1"
+
+print("float log ok: %d rows, %d columns, %d applied-valid%s" %
+      (len(rows), len(expected), valid_seen,
+       ", vendor-scale verified" if vendor else ""))

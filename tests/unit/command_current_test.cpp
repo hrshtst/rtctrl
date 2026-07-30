@@ -46,6 +46,15 @@ TEST_CASE("commandCurrentFromTorque: i = s * tau / kt, exactly",
           Approx(0.669167 * 2.022 / 2.409));
   // sign-preserving for negative torques
   REQUIRE(hw::commandCurrentFromTorque(s, -1.0) < 0.0);
+
+  // M-GC2 vendor-current parity: with the vendor-equivalent scale the
+  // boundary reproduces the vendor's own conversion tau / kt_vendor
+  // within the preregistered 1e-4 relative tolerance (the incident
+  // example: 2.022 Nm on the XM540 shoulder -> 0.562 A, not 0.839 A).
+  REQUIRE(hw::commandCurrentFromTorque(j, 2.022) ==
+          Approx(2.022 / 2.20).epsilon(1e-4));
+  REQUIRE(hw::commandCurrentFromTorque(s, 2.022) ==
+          Approx(2.022 / 3.60).epsilon(1e-4));
 }
 
 TEST_CASE("command_torque_scale validates to [0.5, 1.0] before bus "
