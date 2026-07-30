@@ -106,6 +106,13 @@ add_test(NAME x7_float_rejects_short_duration COMMAND x7_float 2)
 set_tests_properties(x7_float_rejects_short_duration PROPERTIES
   PASS_REGULAR_EXPRESSION "shorter than the marker deadline"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# 13-14 s would fit deadline+window with ZERO margin — the outer
+# deadline could truncate an edge-started window (review finding); the
+# enforced minimum is 15 s.
+add_test(NAME x7_float_rejects_marginless_duration COMMAND x7_float 14)
+set_tests_properties(x7_float_rejects_marginless_duration PROPERTIES
+  PASS_REGULAR_EXPRESSION "shorter than the marker deadline"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 # A malformed command_torque_scale must reject before any bus contact
 # at the APPLICATION level too (review finding).
 add_test(NAME x7_float_rejects_malformed_scale

@@ -44,7 +44,12 @@ echo "$PHASE1" | grep -q "NO release marker" || {
 }
 python3 "$(dirname "$0")/check_float_log.py" "$OUT/float.csv"
 
-(sleep 1; echo) | "$FLOAT" --config config/crane_x7_vendor_scale.toml \
+# Phase 2 pipes the marker LATE (~5.5-6 s of run time; a full 2 s
+# clear of the 8 s deadline so parallel-suite load jitter cannot tip
+# it into a timeout) — the late-marker regression: the evaluation
+# window must still complete in full before the outer deadline (the
+# enforced 15 s minimum guarantees the margin; review finding).
+(sleep 6; echo) | "$FLOAT" --config config/crane_x7_vendor_scale.toml \
   --port "$LINK" --log "$OUT/float_vendor.csv" 15
 python3 "$(dirname "$0")/check_float_log.py" --vendor \
   "$OUT/float_vendor.csv"

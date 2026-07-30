@@ -126,6 +126,12 @@ struct ReleaseMarker {
 
 constexpr double kEvaluationWindowS = 5.0;  // after the marker
 constexpr double kMarkerDeadlineS = 8.0;    // after the mode switch
+// Minimum duration: deadline + window + margin. The margin guarantees
+// the outer deadline can NEVER truncate an evaluation window that
+// started at the deadline's edge (review finding: at exactly
+// deadline + window, the runner's outer check could end the run before
+// the observer saw marker + window).
+constexpr double kMinDurationS = 15.0;
 
 // Per-cycle telemetry via the CycleObserver — invoked AFTER
 // writeCommand, so the row carries this cycle's receipt (was the
@@ -180,9 +186,9 @@ struct FloatLogObserver : arm::CycleObserver {
     }
     // Marker-anchored termination (GRAVITY_CALIBRATION_PLAN M-GC1):
     // the full evaluation window is always logged; a run past the
-    // marker deadline without a marker is an aborted test. Runs whose
-    // commanded duration ends before the deadline (emulator smokes)
-    // finish normally.
+    // marker deadline without a marker is an aborted test. (The
+    // enforced minimum duration guarantees these branches are always
+    // reachable before the outer deadline.)
     if (marker_->released &&
         t >= marker_->t_released + kEvaluationWindowS) {
       marker_->window_complete = true;
@@ -274,15 +280,15 @@ int main(int argc, char* argv[]) {
   }
 
   // The marker-anchored protocol needs room for the 8 s marker
-  // deadline plus the 5 s evaluation window; a shorter run would end
-  // "normally" without either, silently bypassing the marker guarantee
-  // on hardware (review finding). Rejected BEFORE any bus contact.
-  if (duration_s < kMarkerDeadlineS + kEvaluationWindowS) {
+  // deadline plus the 5 s evaluation window PLUS margin, so the outer
+  // deadline can never truncate a window started at the deadline's
+  // edge (review finding). Rejected BEFORE any bus contact.
+  if (duration_s < kMinDurationS) {
     std::fprintf(stderr,
                  "duration %.0f s is shorter than the marker deadline "
-                 "+ evaluation window (%.0f s) — the marker-anchored "
-                 "protocol requires at least that\n",
-                 duration_s, kMarkerDeadlineS + kEvaluationWindowS);
+                 "+ evaluation window + margin (%.0f s minimum) — the "
+                 "marker-anchored protocol requires at least that\n",
+                 duration_s, kMinDurationS);
     return 1;
   }
 
@@ -405,15 +411,17 @@ int main(int argc, char* argv[]) {
                 "then release on the cue; the run ends %.0f s after "
                 "the marker\n",
                 duration_s, kMarkerDeadlineS, kEvaluationWindowS);
-    const bool ran = arm::run(robot, controller, duration_s, &observer);
+    arm::run(robot, controller, duration_s, &observer);
     const bool clean = shutdown.run();
     if (log != nullptr) std::fclose(log);
-    // A marker-completed window is a SUCCESSFUL end (the observer
-    // vetoes the runner to stop the run); a marker timeout is a void
-    // attempt; anything else follows the runner's verdict.
-    const bool ok = marker.window_complete || (ran && !marker.marker_timeout);
+    // Verdict: ONLY a completed evaluation window is success (review
+    // finding: the old ran-based form could print "done" after a
+    // marker whose window the outer deadline truncated). A marker
+    // without a completed window, a marker timeout, and a runner
+    // failure are all distinct aborted outcomes.
     if (!clean) {
-      std::printf("SHUTDOWN FAULT (run %s)\n", ok ? "done" : "ABORTED");
+      std::printf("SHUTDOWN FAULT (run %s)\n",
+                  marker.window_complete ? "done" : "ABORTED");
       return 1;
     }
     if (marker.window_complete) {
@@ -427,8 +435,15 @@ int main(int argc, char* argv[]) {
                   kMarkerDeadlineS);
       return 1;
     }
-    std::printf("%s\n", ok ? "done" : "ABORTED");
-    return ok ? 0 : 1;
+    if (marker.released) {
+      std::printf("evaluation window INCOMPLETE (marker at %.2f s, "
+                  "run ended before marker + %.0f s) — aborted "
+                  "attempt\n",
+                  marker.t_released, kEvaluationWindowS);
+      return 1;
+    }
+    std::printf("ABORTED\n");
+    return 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;
