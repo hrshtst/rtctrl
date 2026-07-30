@@ -16,13 +16,19 @@
 > nominal torque-to-current conversion (M-GC0 records this in the
 > operator-facing documents).
 
-*Status: PROPOSED 2026-07-29; revised same day across two external
+*Status: PROPOSED 2026-07-29; revised same day across three external
 design-review rounds (round 1: preload route, single scaling
 boundary, evidence honesty, displacement-bounded acceptance, parking
 scope, config validation; round 2: M-GC3 calibrated-config mandate,
 explicit conversion formula, logged release marker with numerical
-drift bound, scale interval capped at 1.0). M-GC0's operator-facing
-parking is EXECUTED; other milestones not started.*
+drift bound, scale interval capped at 1.0; round 3: release marker
+must PRECEDE the physical release, marker-anchored run termination,
+execution-status correction). **NO milestone executed.** The round-2
+revision prematurely claimed the operator-facing parking was done —
+it is NOT: until M-GC0 runs, HARDWARE_BRINGUP.md still presents
+`x7_float` as safe and the theory chapter still claims a successful
+hardware float. Executing M-GC0's parking edits is the FIRST action
+once this plan clears review.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archive pending)
 
@@ -144,10 +150,19 @@ only then run a conservative, displacement-bounded hardware test.
 - **Run provenance and release marker in `x7_float`:** the app PRINTS
   the active per-joint command scales at startup and records them in
   the `--log` header, so every log carries its configuration; and it
-  gains an explicit release marker — an operator keypress,
-  acknowledged on the console and recorded as a `released` 0/1 column
-  transition in the CSV — giving the M-GC3 evaluation window an exact
-  logged timestamp instead of a hand-off guess.
+  gains an explicit release marker — an operator keypress recorded as
+  a `released` 0/1 column transition in the CSV. The marker is
+  pressed WHILE STILL SUPPORTING the arm and acknowledged with a
+  console cue; the operator releases ON the cue, so the logged marker
+  slightly PRECEDES the physical release (conservative: the window
+  can only include extra supported time, never miss initial motion —
+  a marker pressed after release would let human reaction delay
+  exclude the sub-second acceleration this incident showed).
+  Marker-anchored termination: the run ends automatically 5 s after
+  the marker (the complete evaluation window is always logged); if no
+  marker arrives within 8 s of the mode switch, the app deactivates
+  and reports an aborted test. The commanded duration is only the
+  outer deadline.
 - **Diagnostic side effect (document it):** with command-side-only
   scaling the agreement print stops being self-cancelling — it shows
   measured ≈ scale × predicted, making the configured scale visible
@@ -176,8 +191,13 @@ only then run a conservative, displacement-bounded hardware test.
 - Protocol per [HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md), plus:
   compact mid-range start posture (every joint clear of the margin
   band), arm lightly supported through activation and the mode
-  switch, short first run (≤ 10 s), hands on, cutoff in reach,
-  unique `--log` name.
+  switch, hands on, cutoff in reach, unique `--log` name. **Timing
+  (matches the M-GC1 marker-anchored termination):** the marker must
+  be pressed within 8 s of the mode switch (else the app aborts and
+  the attempt is void); the evaluation window is the guaranteed 5 s
+  after the marker; the app self-terminates at t_marker + 5 s; the
+  commanded 15 s duration is the explicit OUTER deadline, not the
+  run length.
 - **Mandatory calibrated configuration:** the run is exactly
   `./build/apps/x7_float --config config/crane_x7_vendor_scale.toml
   --log <unique>.csv 15`. The startup print and the log header must
@@ -185,11 +205,14 @@ only then run a conservative, displacement-bounded hardware test.
   a run whose log carries the default all-1.0 scales — the
   configuration of the FAILED run — is INVALID for M-GC3 regardless
   of its outcome.
-- **Release procedure:** the operator supports the arm through the
-  switch, then releases and presses the release key; the marker is
-  recorded as the `released` column transition in the CSV. The
-  untouched evaluation window is [t_release, t_release + 5 s] with
-  t_release taken FROM THE LOG, never from operator notes.
+- **Release procedure (marker FIRST — the order defined in M-GC1):**
+  the operator supports the arm through the switch, presses the
+  release key WHILE STILL SUPPORTING, and releases on the console
+  cue; the marker therefore slightly precedes the physical release,
+  so the window can only include extra supported time and can never
+  miss the initial acceleration. The untouched evaluation window is
+  [t_marker, t_marker + 5 s] with t_marker taken FROM THE LOG's
+  `released` column transition, never from operator notes.
 - **Acceptance — each condition fails INDEPENDENTLY:**
   1. peak per-joint speed in the window > 0.1 rad/s;
   2. per-joint displacement from the release posture > 0.05 rad at
