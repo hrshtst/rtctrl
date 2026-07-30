@@ -72,3 +72,17 @@ bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
 | `p1_j1_amp030.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_j1_amp030.csv.dwells.json`) | `b004cbcfc73111bc38f5e84efb740b3d8c8c9c78f7d9f98e7204b03a1d371a11` |
 
 \* the run's `.dwells.json` sidecar is tracked in-repo under `data/`.
+
+## `incidents-2026-07/` — parked-controller incident telemetry
+
+Evidence of the two incidents that parked the current-mode
+controllers; cited by `docs/GRAVITY_CALIBRATION_PLAN.md`,
+`docs/HARDWARE_BRINGUP.md`, and the theory chapters. `track9.csv` was
+logged as `track.csv` and renamed at archive time (the bare name
+collides with the M8 entry above; the numbering continues runs 1–8).
+
+| file | role | sha256 |
+|---|---|---|
+| `track9.csv` | 2026-07-28 x7_track scale-0.5 attempt: settle-phase pan anti-damping at 4.33 Hz, manual power cut; the run's (nearly empty) tracking log | `9969dc95a14f70b97a97fa89657623e5bc6ad12678c298259be4c317f311a7ca` |
+| `track9.csv.settle` | settle-phase telemetry of the above: the 4.33 Hz growth 50 → 350 mrad p-p; basis of the settle-incident investigation | `ab599c6dbaf1e3ca5afa74b6bb055e7adae3ddfebf17c96ca6a2c87383a4d641` |
+| `float1.csv` | 2026-07-29 FAILED x7_float test: untouched arm climbed upright (peak ~2.37 rad/s); basis of GRAVITY_CALIBRATION_PLAN.md's M-GC0 addendum | `6e0f72a74adaf5db129053a37ceb1724e60b738181ff1c23b01156012247b6fe` |

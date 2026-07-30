@@ -24,12 +24,13 @@ explicit conversion formula, logged release marker with numerical
 drift bound, scale interval capped at 1.0; round 3: release marker
 must PRECEDE the physical release, marker-anchored run termination,
 execution-status correction). Reviewer-confirmed ready 2026-07-30.
-**M-GC0 status: operator-facing parking EXECUTED (commit `cc38079`);
-offline analysis RECORDED (Addendum below); the float1.csv archive —
-an operator action — is the one remaining M-GC0 item.** M-GC1 onward
-not started.*
+**M-GC0 status: COMPLETE — operator-facing parking EXECUTED (commit
+`cc38079`), offline analysis RECORDED (Addendum below), and the
+incident telemetry ARCHIVED with manifest rows
+([DATA_ARCHIVE.md](DATA_ARCHIVE.md), `incidents-2026-07/`).** M-GC1
+onward not started.*
 
-## Incident and evidence (`float1.csv`, 3001 cycles, archive pending)
+## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
 - First ~1.2 s, operator not touching the arm: physical joint 2 moved
   −1.39 → +0.21 rad, joint 3 +1.78 → +2.31 rad, joint 4 −1.74 →
@@ -261,8 +262,10 @@ physical joint = canonical + 1). The untouched pre-gate interval is
   HYPOTHESES. The earlier M7 float pass is reconciled only as a
   hypothesis (compact posture → smaller gravity torques → any
   residual below breakaway); it is not established by this data.
-- **Archive:** `float1.csv` archive pending (operator action, unique
-  name + manifest row per [DATA_ARCHIVE.md](DATA_ARCHIVE.md)).
+- **Archive:** DONE 2026-07-30 — `float1.csv` (and the settle
+  incident's `track9.csv`/`track9.csv.settle`) carry manifest rows
+  with SHA-256 in [DATA_ARCHIVE.md](DATA_ARCHIVE.md),
+  `incidents-2026-07/` section.
 
 ## Non-goals and cautions
 

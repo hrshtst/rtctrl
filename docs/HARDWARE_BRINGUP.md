@@ -118,8 +118,10 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >   the retest protocol:
 >   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
 >
-> Telemetry of both incidents: archive pending per
-> [DATA_ARCHIVE.md](DATA_ARCHIVE.md). `x7_wave`, `x7_move_simple`,
+> Telemetry of both incidents is ARCHIVED with manifest rows —
+> `track9.csv`/`track9.csv.settle` and `float1.csv`, section
+> `incidents-2026-07/` in [DATA_ARCHIVE.md](DATA_ARCHIVE.md).
+> `x7_wave`, `x7_move_simple`,
 > `x7_pose`, `x7_read`, and `x7_onoff` remain usable (position mode
 > or no torque; none touches the current-command path); the
 > post-incident recovery ladder is steps 1–6 above.

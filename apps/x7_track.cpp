@@ -10,9 +10,9 @@
 // PARKED (2026-07-28): do NOT run on hardware until the
 // reviewer-approved settle-phase fix lands. A scale-0.5 session never
 // left the settle phase — the pan anti-damped at 4.33 Hz from a
-// compact resting posture (operator power cut; telemetry archive
-// pending). The failure precedes the scale argument: NO scale is
-// safe. See docs/HARDWARE_BRINGUP.md.
+// compact resting posture (operator power cut; telemetry archived as
+// track9.csv / track9.csv.settle). The failure precedes the scale
+// argument: NO scale is safe. See docs/HARDWARE_BRINGUP.md.
 //
 // Stability, learned the hard way (nine 2026-07-21 hardware runs,
 // logged as track*.csv):

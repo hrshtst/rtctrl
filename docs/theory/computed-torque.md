@@ -208,7 +208,8 @@ its scale accordingly.
 scale-0.5 session never left the settle phase: from a compact resting
 posture the pan grew a 4.33 Hz oscillation from ~50 to ~350 mrad
 peak-to-peak within a second of torque-on (operator power cut; settle
-telemetry archive pending). The settle controller's damping path
+telemetry archived as `track9.csv.settle`). The settle controller's
+damping path
 shares the same lag budget (20 ms velocity filter, 50 ms output
 filter, ~2-cycle bus pipeline), so inside the supported envelope its
 damping turned into excitation — and no code or configuration change
