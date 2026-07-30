@@ -24,10 +24,10 @@ explicit conversion formula, logged release marker with numerical
 drift bound, scale interval capped at 1.0; round 3: release marker
 must PRECEDE the physical release, marker-anchored run termination,
 execution-status correction). Reviewer-confirmed ready 2026-07-30.
-**M-GC0's operator-facing parking is EXECUTED in the commit that
-carries this status line** (HARDWARE_BRINGUP notice, theory-chapter
-scoping, x7_float banner); the float1.csv archive and the offline
-analysis complete M-GC0. M-GC1 onward not started.*
+**M-GC0 status: operator-facing parking EXECUTED (commit `cc38079`);
+offline analysis RECORDED (Addendum below); the float1.csv archive —
+an operator action — is the one remaining M-GC0 item.** M-GC1 onward
+not started.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archive pending)
 
@@ -227,6 +227,42 @@ only then run a conservative, displacement-bounded hardware test.
   released (x7_float first; x7_ident and x7_track have their own
   gates), with the theory chapter and PARITY.md updated to record
   the calibration and its provenance.
+
+## Addendum — M-GC0 offline analysis (2026-07-30)
+
+Scoped to what `float1.csv` supports (canonical joint indices;
+physical joint = canonical + 1). The untouched pre-gate interval is
+**[0, 1.17 s)** — the first position-gate event ends it.
+
+- **Phase 1 — the startup drop.** The controller's FIRST feedback
+  already showed a falling arm: j1 −0.408 rad/s, j3 −0.144, j4
+  −0.264 (current-mode activation commands zero current; the first
+  compensation command followed ~26 ms later, j1 receiving
+  +2.022 Nm). Phase 1 is an implementation gap — the arm was placed
+  at rest, but the controller never saw it at rest — and is NOT
+  itself evidence of miscalibration.
+- **Phase 2 — reversal and climb (the excess-actuation evidence).**
+  Within 60–90 ms of the first command the falling joints REVERSED
+  (j1 at 0.06 s, j3 at 0.09 s) and then accelerated upward for over
+  half a second against gravity: j1 +1.60 rad (−1.393 → +0.204,
+  peak +1.77 rad/s at 0.60 s), j3 +1.76 rad (−1.743 → +0.012, peak
+  +2.37 rad/s at 0.88 s), j2 +0.53 rad (peak +1.41 rad/s at
+  0.22 s). Exact compensation could at most arrest the drop;
+  sustained upward acceleration toward the higher-potential posture
+  requires net torque beyond gravity.
+- **Gate windows.** j3 rode its upper limit for 317 cycles across
+  1.17–11.88 s (the climb's end); j2 for 418 cycles across
+  16.51–20.68 s (during the subsequent hand exploration). Neither
+  window is usable for dynamics analysis.
+- **What is NOT claimed.** No per-joint α is estimated from this
+  log: measured torque is reconstructed through the same nominal
+  constant that produced the command, so the log proves current-loop
+  tracking only. The 0.810455/0.669167 scales remain vendor-derived
+  HYPOTHESES. The earlier M7 float pass is reconciled only as a
+  hypothesis (compact posture → smaller gravity torques → any
+  residual below breakaway); it is not established by this data.
+- **Archive:** `float1.csv` archive pending (operator action, unique
+  name + manifest row per [DATA_ARCHIVE.md](DATA_ARCHIVE.md)).
 
 ## Non-goals and cautions
 
