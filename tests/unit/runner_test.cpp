@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "rtctrl/arm/runner.hpp"
@@ -71,6 +72,25 @@ struct CountingController : arm::Controller {
 };
 
 }  // namespace
+
+TEST_CASE("runner rejects non-finite and nonpositive durations before "
+          "touching the arm",
+          "[runner]") {
+  // NaN survives std::min and a sufficiently negative duration casts
+  // out of long's range — both undefined (review finding). The reject
+  // must precede ANY arm interaction.
+  ScriptedArm robot({{100.0, 1}});
+  CountingController ctl;
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(), 0.0, -5.0}) {
+    CHECK_FALSE(arm::run(robot, ctl, bad));
+  }
+  CHECK(robot.writes == 0);
+  CHECK(robot.steps == 0);
+  CHECK(ctl.updates == 0);
+}
 
 TEST_CASE("runner uses measured time and finishes on it", "[runner]") {
   // 10 ms nominal samples starting at an arbitrary absolute time

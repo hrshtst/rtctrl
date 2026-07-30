@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include "rtctrl/arm/arm.hpp"
@@ -51,6 +52,11 @@ inline constexpr double kMaxSampleInterval = 0.025;  // [s]
 // Returns false on any arm failure, policy abort, or observer veto.
 inline bool run(Arm& arm, Controller& controller, double duration,
                 CycleObserver* observer = nullptr) {
+  // Validate BEFORE any arithmetic: NaN survives std::min and a
+  // sufficiently negative duration produces an out-of-range value —
+  // casting either to long is undefined behavior (review finding).
+  // Rejected before the arm is touched at all.
+  if (!std::isfinite(duration) || duration <= 0.0) return false;
   JointState state;
   JointCommand cmd;
   CommandSnapshot cmds;
