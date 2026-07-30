@@ -348,14 +348,24 @@ drift is within ONE position count and the total release-relative
 excursion is EIGHT counts (12.3 mrad).
 
 **Back-drive feel check (2026-07-30, `float3.csv` — not acceptance
-evidence):** the operator back-drove the arm during a marker-first
-window (the varying j1/j3 torques in the log are the hand working
-against live compensation; zero gates/clamps, 503/503 accepted) and
-reports the motion DISTINCTLY LIGHTER than the 2026-07-29 failed
-run. Per-joint both-direction coverage is at the operator's
-discretion to confirm or repeat with further runs. Remaining in this
-milestone: the reviewer + owner decision on default adoption and
-un-parking.
+evidence): OPEN.** The operator reported distinctly lighter motion.
+The log corroborates bidirectional encoder motion on j0–j6 under
+active compensation, with zero gates/clamps and 503/503 accepted
+submissions. (The logged torque fields are the requested/applied
+gravity compensation and the current-derived motor torque — they do
+NOT measure the operator's external hand torque; the log
+corroborates joint movement under active compensation, not the
+hand's effort.) Because coupled arm motion cannot establish
+deliberate per-joint feel, symmetry, or smoothness, the back-drive
+REQUIREMENT — every arm joint, both directions — remains OPEN
+pending explicit operator confirmation that (1) every joint j0–j6
+was deliberately checked in both directions, (2) resistance felt
+reasonably symmetric, and (3) there were no notchy spots away from
+the limits and no autonomous motion; otherwise repeat runs cover the
+unchecked joints (one joint per run, waiting ~1 s after the
+`floating` prompt before pressing ENTER). Only with that
+confirmation does the milestone reduce to the reviewer + owner
+decision on default adoption and un-parking.
 
 ## Non-goals and cautions
 
