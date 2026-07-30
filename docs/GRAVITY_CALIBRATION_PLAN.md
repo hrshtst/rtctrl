@@ -26,15 +26,20 @@ must PRECEDE the physical release, marker-anchored run termination,
 execution-status correction). Reviewer-confirmed ready 2026-07-30.
 **M-GC0: COMPLETE** (parking `cc38079`, analysis Addendum, telemetry
 archived with manifest rows). **M-GC1: IMPLEMENTED** (commits
-`1d463c8`, `2e31040`) — the shared boundary with its [0.5, 1.0]
-validation, the vendor-scale config, both producers routed, the
-position-hold → preloaded-switch startup, the marker with anchored
-termination — **awaiting the reviewer's sign-off**. **M-GC2's
-automated gates are GREEN**: vendor-current parity within 1e-4,
-preload/cyclic continuity, the two-phase emulator float (marker
-termination, tau_applied = scale × tau_request end-to-end),
-`gravity_sim_test` unchanged, full suite 178/178. **M-GC3 not
-started** — hardware stays parked pending sign-off.*
+`1d463c8`, `2e31040`, plus the round-5 review fixes) — the shared
+boundary with its [0.5, 1.0] validation and STRICT type parsing, the
+vendor-scale config with a field-for-field drift guard, both
+producers routed, the position-hold → preloaded-switch startup with
+the ≥13 s duration gate and honest shutdown messaging, the marker
+with anchored termination — **awaiting the reviewer's sign-off**.
+**M-GC2's automated gates are GREEN**, now including the INDEPENDENT
+vendor fixture (revised gate above): conversion parity 1e-4, model
+parity within the 0.10 Nm envelope at four reference postures with
+the incident request reproduced exactly, preload/cyclic continuity,
+the two-phase emulator float (marker-timeout abort AND
+marker-anchored termination, tau_applied = scale × tau_request
+end-to-end), `gravity_sim_test` unchanged. **M-GC3 not started** —
+hardware stays parked pending sign-off.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -183,9 +188,27 @@ only then run a conservative, displacement-bounded hardware test.
 
 ### M-GC2 — offline validation (exit gate for any hardware)
 
-- Vendor-current parity, automated: with the vendor-equivalent
-  config, commanded currents at reference postures equal the
-  vendor-computed values within **1e-4 relative** tolerance.
+- Vendor parity, automated in TWO parts (revised per review — the
+  original single "1e-4 at reference postures" gate conflated
+  conversion parity with model parity and never exercised the vendor
+  algorithm):
+  1. **Conversion parity** (algebraic): the boundary reproduces the
+     vendor's τ/kt_vendor within 1e-4 relative.
+  2. **Model parity against an INDEPENDENT fixture**: the vendor's OWN
+     gravity algorithm (samples03, in-tree; their link CSV, their
+     hand-excluding recursion) executed at four reference postures —
+     generator committed at `tests/fixtures/vendor_gravity_dump.cpp`,
+     outputs frozen in `tests/unit/vendor_gravity_test.cpp`. The
+     per-joint model difference is bounded by a preregistered
+     **0.10 Nm envelope** (measured maximum 0.089 Nm at the float
+     posture, attributed to the vendor's excluded ~30 g hand assembly
+     and link-parameter differences; the vendor computes no gripper
+     torque, so that row is rtctrl-only), and the rtctrl model must
+     reproduce the incident log's j1 request (2.0219 Nm) exactly at
+     the float posture. Generation cross-checks (recorded in the
+     generator header): the vendor recursion equals an independent
+     static torque sum to 4 decimals, and both models' FK agree to the
+     millimeter — the joint conventions are identical.
 - Emulator float end-to-end: preload present from the first cycle, no
   gate/clamp events from a mid-range posture, print ratio ≈ scale.
 - Full ctest and strict docs green; `gravity_sim_test` unchanged —
