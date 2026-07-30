@@ -24,11 +24,17 @@ explicit conversion formula, logged release marker with numerical
 drift bound, scale interval capped at 1.0; round 3: release marker
 must PRECEDE the physical release, marker-anchored run termination,
 execution-status correction). Reviewer-confirmed ready 2026-07-30.
-**M-GC0 status: COMPLETE — operator-facing parking EXECUTED (commit
-`cc38079`), offline analysis RECORDED (Addendum below), and the
-incident telemetry ARCHIVED with manifest rows
-([DATA_ARCHIVE.md](DATA_ARCHIVE.md), `incidents-2026-07/`).** M-GC1
-onward not started.*
+**M-GC0: COMPLETE** (parking `cc38079`, analysis Addendum, telemetry
+archived with manifest rows). **M-GC1: IMPLEMENTED** (commits
+`1d463c8`, `2e31040`) — the shared boundary with its [0.5, 1.0]
+validation, the vendor-scale config, both producers routed, the
+position-hold → preloaded-switch startup, the marker with anchored
+termination — **awaiting the reviewer's sign-off**. **M-GC2's
+automated gates are GREEN**: vendor-current parity within 1e-4,
+preload/cyclic continuity, the two-phase emulator float (marker
+termination, tau_applied = scale × tau_request end-to-end),
+`gravity_sim_test` unchanged, full suite 178/178. **M-GC3 not
+started** — hardware stays parked pending sign-off.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
