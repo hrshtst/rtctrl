@@ -157,3 +157,17 @@ add_test(NAME x7_efl_study_zvs_smoke
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_efl_study_zvs_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "zvs motion files: 14" LABELS integration)
+
+# Feel-mode operator-safety gates (review findings): duration bounded
+# to 60 s, and the known-failed all-1.0 configuration refused — both
+# BEFORE any bus contact.
+add_test(NAME x7_float_rejects_long_feel COMMAND x7_float --feel 90)
+set_tests_properties(x7_float_rejects_long_feel PROPERTIES
+  PASS_REGULAR_EXPRESSION "exceeds the reviewed"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_rejects_uncalibrated_feel
+  COMMAND x7_float --feel 30
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_rejects_uncalibrated_feel PROPERTIES
+  PASS_REGULAR_EXPRESSION "requires a CALIBRATED configuration"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)

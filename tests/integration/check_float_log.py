@@ -32,6 +32,7 @@ VENDOR_SCALES[1] = 0.669167
 args = sys.argv[1:]
 vendor = "--vendor" in args
 feel = "--feel" in args
+legacy = "--legacy" in args  # pre-run_mode archived evidence ONLY
 path = [a for a in args if not a.startswith("--")][0]
 
 lines = open(path).read().splitlines()
@@ -46,10 +47,19 @@ assert scale_lines, "scale header missing"
 scales = [float(v) for v in scale_lines[0].split(":", 1)[1].split()]
 assert len(scales) == DOF
 mode_lines = [c for c in comments if c.startswith("# run_mode:")]
-assert mode_lines, "run_mode header missing"
-run_mode = mode_lines[0].split(":", 1)[1].strip()
-# a feel-check log must never pass as acceptance evidence
-assert run_mode == ("feel-check" if feel else "acceptance"), run_mode
+if mode_lines:
+    run_mode = mode_lines[0].split(":", 1)[1].strip()
+    # a feel-check log must never pass as acceptance evidence
+    assert run_mode == ("feel-check" if feel else "acceptance"), run_mode
+else:
+    # --legacy admits ONLY the pre-run_mode archived evidence
+    # (float2/float3, 2026-07-30); new logs always carry the header,
+    # so classification is never weakened for them.
+    assert legacy, "run_mode header missing (use --legacy only for "                    "pre-run_mode archived evidence)"
+dur_lines = [c for c in comments if c.startswith("# duration_s:")]
+requested_s = float(dur_lines[0].split(":", 1)[1]) if dur_lines else None
+if not legacy:
+    assert requested_s is not None, "duration_s header missing"
 
 rows = list(csv.DictReader(lines))
 expected = list(SHARED) + [f"{c}{i}" for i in range(DOF) for c in PER_JOINT]
@@ -118,12 +128,23 @@ if vendor:
             checked += 1
     assert checked > 100, "too few scaled-torque comparisons"
 elif feel:
+    # feel mode is M-GC3-specific: the vendor scales are mandatory
+    # (the all-1.0 default is the known-failed configuration)
+    for i, s in enumerate(scales):
+        assert abs(s - VENDOR_SCALES[i]) < 1e-9, (
+            f"feel run without vendor scales (j{i} = {s})")
     assert t_marker is not None, "feel-check run without a marker"
     t_end = float(rows[-1]["t"])
-    assert t_end >= 14.5, f"feel session ended early ({t_end})"
-    assert len(rows) >= 1400, f"only {len(rows)} rows for a 15 s feel run"
+    # the session must have reached its REQUESTED deadline — a
+    # truncated session must not pass (review finding)
+    assert requested_s is not None
+    assert t_end >= requested_s - 0.5, (
+        f"feel session ended at {t_end} s, requested {requested_s} s")
 else:
-    assert t_marker is None, "unexpected release marker in phase 1"
+    # phase-1 smoke expectation only — legacy archived evidence may
+    # legitimately carry a marker (float3's back-drive session)
+    assert legacy or t_marker is None, \
+        "unexpected release marker in phase 1"
 
 print("float log ok: %d rows, %d columns, %d applied-valid%s" %
       (len(rows), len(expected), valid_seen,

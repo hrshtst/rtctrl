@@ -38,9 +38,14 @@
 //   The marker contract is UNCHANGED (press ENTER while supporting
 //   within 8 s or the run aborts), but the session then runs to the
 //   commanded outer deadline instead of ending 5 s after the marker —
-//   room to back-drive each joint carefully. The log self-marks
-//   "# run_mode: feel-check" and is NEVER acceptance evidence; the
-//   acceptance protocol (no --feel) is unchanged.
+//   room to back-drive each joint carefully. TORQUE REMAINS ENABLED
+//   until that deadline (the release cue says so). Duration is
+//   bounded to 60 s (one joint per run needs no more), and a
+//   CALIBRATED configuration (command_torque_scale < 1.0 on every
+//   joint) is required BEFORE bus contact — the known-failed all-1.0
+//   default is refused. The log self-marks "# run_mode: feel-check"
+//   and is NEVER acceptance evidence; the acceptance protocol (no
+//   --feel) is unchanged.
 //   --log writes one row per cycle through the CycleObserver — AFTER
 //   writeCommand, so each row pairs three distinct events explicitly:
 //   the FEEDBACK snapshot the cycle started from (q, dqservo — the
@@ -140,6 +145,10 @@ constexpr double kMarkerDeadlineS = 8.0;    // after the mode switch
 // deadline + window, the runner's outer check could end the run before
 // the observer saw marker + window).
 constexpr double kMinDurationS = 15.0;
+// Feel-check upper bound (reviewed): one joint per run needs no more,
+// and an unbounded torqued session with a healthy command stream would
+// never trip any watchdog (review finding).
+constexpr double kMaxFeelDurationS = 60.0;
 
 // Per-cycle telemetry via the CycleObserver — invoked AFTER
 // writeCommand, so the row carries this cycle's receipt (was the
@@ -149,8 +158,10 @@ constexpr double kMinDurationS = 15.0;
 // it was ever accepted or applied). Also owns the release-marker
 // detection and the marker-anchored termination.
 struct FloatLogObserver : arm::CycleObserver {
-  FloatLogObserver(std::FILE* log, ReleaseMarker* marker, bool feel)
-      : log_(log), marker_(marker), feel_(feel) {}
+  FloatLogObserver(std::FILE* log, ReleaseMarker* marker, bool feel,
+                   double outer_deadline_s)
+      : log_(log), marker_(marker), feel_(feel),
+        outer_deadline_s_(outer_deadline_s) {}
 
   bool observe(double t, const arm::JointState& state,
                const arm::CommandSnapshot& cmds,
@@ -159,9 +170,19 @@ struct FloatLogObserver : arm::CycleObserver {
     if (!marker_->released && pollReleaseKey()) {
       marker_->released = true;
       marker_->t_released = t;
-      std::printf("RELEASED (t=%.2f s) — release the arm NOW; %.0f s "
-                  "evaluation window started\n",
-                  t, kEvaluationWindowS);
+      if (feel_) {
+        // The acceptance cue would mislead here: after 5 s NOTHING
+        // ends — an operator expecting a limp arm could be surprised
+        // by a still-torqued one (review finding).
+        std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
+                    "FEEL-CHECK continues, TORQUE REMAINS ENABLED "
+                    "until the outer deadline (%.0f s)\n",
+                    t, outer_deadline_s_);
+      } else {
+        std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
+                    "%.0f s evaluation window started\n",
+                    t, kEvaluationWindowS);
+      }
     }
     if (log_ != nullptr) {
       const auto& applied = cmds.applied;
@@ -213,6 +234,7 @@ struct FloatLogObserver : arm::CycleObserver {
   std::FILE* log_;
   ReleaseMarker* marker_;
   bool feel_;
+  double outer_deadline_s_;
 };
 
 // fopen only — BEFORE any bus contact, so a bad path fails without
@@ -223,11 +245,14 @@ std::FILE* openFloatLogFile(const std::string& path) {
 }
 
 void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
-                         bool feel) {
+                         bool feel, double duration_s) {
   // The log self-classifies: a feel-check log must never be readable
-  // as acceptance evidence.
+  // as acceptance evidence. The requested duration lets the checker
+  // prove a feel session actually reached its deadline (review
+  // finding: without it a truncated session passed validation).
   std::fprintf(log, "# run_mode: %s\n",
                feel ? "feel-check" : "acceptance");
+  std::fprintf(log, "# duration_s: %.1f\n", duration_s);
   std::fprintf(log,
                "# events per row: FEEDBACK (feedback_time/feedback_seq, "
                "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
@@ -309,6 +334,15 @@ int main(int argc, char* argv[]) {
                  duration_s, kMinDurationS);
     return 1;
   }
+  if (feel_mode && duration_s > kMaxFeelDurationS) {
+    std::fprintf(stderr,
+                 "feel-check duration %.0f s exceeds the reviewed "
+                 "%.0f s bound — a torqued session with a healthy "
+                 "command stream never trips a watchdog, and one "
+                 "joint per run needs no more\n",
+                 duration_s, kMaxFeelDurationS);
+    return 1;
+  }
 
   // Open the log BEFORE any bus contact: a bad path must fail without
   // ever torquing the arm. (Headers follow once the config is loaded.)
@@ -322,12 +356,30 @@ int main(int argc, char* argv[]) {
   }
 
   try {
+    // Feel mode holds torque to the outer deadline, so the
+    // known-failed all-1.0 configuration is refused BEFORE any bus
+    // contact (review finding): every joint must carry a calibrated,
+    // attenuating scale.
+    if (feel_mode) {
+      const auto probe = hw::Config::load(cli.config_path);
+      for (const auto& joint : probe.joints) {
+        if (joint.command_torque_scale >= 1.0) {
+          std::fprintf(stderr,
+                       "feel-check mode requires a CALIBRATED "
+                       "configuration (command_torque_scale < 1.0 on "
+                       "every joint); joint '%s' carries %.6f — use "
+                       "config/crane_x7_vendor_scale.toml\n",
+                       joint.name.c_str(), joint.command_torque_scale);
+          return 1;
+        }
+      }
+    }
     // POSITION-mode session: activation holds the arm (goals snap to
     // the present posture) — no free-fall instant. The switch to
     // current mode below carries the calibrated gravity preload.
     auto session = x7::openSession(cli, /*operating_mode_override=*/3);
     if (log != nullptr) {
-      writeFloatLogHeader(log, session.config, feel_mode);
+      writeFloatLogHeader(log, session.config, feel_mode, duration_s);
     }
     std::printf("command_torque_scale:");
     for (const auto& joint : session.config.joints) {
@@ -425,7 +477,7 @@ int main(int argc, char* argv[]) {
     }
     ReleaseMarker marker;
     ReportingGravityComp controller(chain, map);
-    FloatLogObserver observer(log, &marker, feel_mode);
+    FloatLogObserver observer(log, &marker, feel_mode, duration_s);
     if (feel_mode) {
       std::printf("FEEL-CHECK session (outer deadline %.0f s) — press "
                   "ENTER while still supporting (deadline %.0f s), "

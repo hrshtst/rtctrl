@@ -367,11 +367,18 @@ unchecked joints (one joint per run, waiting ~1 s after the
 coverage practical, `x7_float --feel` (added POST-SIGN-OFF, flagged
 here for reviewer awareness) keeps the marker contract unchanged but
 runs the session to the commanded outer deadline instead of ending
-5 s after the marker; feel logs self-mark `# run_mode: feel-check`
-and the log checker rejects cross-use in both directions, so they
-can never read as acceptance evidence. Only with the operator's
-three-point confirmation does the milestone reduce to the reviewer +
-owner decision on default adoption and un-parking.
+5 s after the marker — with reviewer-directed safety rails: the
+release cue states TORQUE REMAINS ENABLED until the deadline; the
+duration is bounded to 60 s; and a calibrated configuration
+(scale < 1.0 on every joint) is required before bus contact — the
+known-failed all-1.0 default is refused. Feel logs self-mark
+`# run_mode: feel-check` plus the requested `# duration_s`, the
+checker proves the session reached its deadline and rejects
+cross-use in both directions, and the archived pre-run_mode evidence
+(float2/float3) is admitted only through an explicit `--legacy`
+route. Only with the operator's three-point confirmation does the
+milestone reduce to the reviewer + owner decision on default
+adoption and un-parking.
 
 ## Non-goals and cautions
 
