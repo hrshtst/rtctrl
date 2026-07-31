@@ -572,6 +572,49 @@ protocol; the notice in
 [HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md) carries the same
 exception.
 
+**Diagnostic session EXECUTED and VALID (2026-07-31,
+`feel_j1_diag1.csv`, archived with a manifest row; the authorized
+single-session exception is CONSUMED).** `--feel --gate-free`
+passes: 6001 rows, marker at 2.87 s, 9 operator event marks, zero
+clamps, zero gate events on every axis (j3 held bent, ~1.0–1.3 Nm
+commanded, never gated). Count-level findings:
+
+- **Host command: smooth everywhere.** `goal_cnt1` never stepped
+  more than 4 counts (~0.026 Nm nominal) between cycles over the
+  entire run — no host-side discontinuity, confirming the earlier
+  per-cycle torque analysis at count resolution.
+- **Static current delivery: clean.** With j1 stationary (1747
+  cycles, 1313 of them under > 0.8 Nm applied), the XM540 tracked
+  goals up to ~300 counts with error ≤ 7 counts (p95 = 3). There is
+  NO static dropout or regulation failure: a joint held against
+  1–2 Nm receives the commanded current.
+- **Every large current transient is motion-concurrent.** 93
+  single-cycle `present_cnt1` steps exceeded 30 counts (largest 73
+  ≈ 0.47 Nm at nominal kt) — none while stationary. Deviations are
+  biased along the motion direction (corr ≈ +0.19) and cluster at
+  low speeds (breakaway and direction reversals: p95 error 7 counts
+  at |dq| ≤ 0.3 rad/s with max 71, vs 3 counts stationary).
+- **Notch correlation.** All 9 marks sit in moving windows with
+  substantial command magnitude or command reversal (|goal| up to
+  ~300 counts; q1 spanning −1.45..+1.26 rad, mid-range). The two
+  most violent in-window transients (55–56-count single-cycle
+  present steps against ≤ 4-count goal changes) coincide with the
+  31.15 s and 34.93 s marks. By contrast j4-class axes tracked
+  within a few counts throughout (j3 p95 ≈ 3–4 counts under ~1 Nm).
+
+Interpretation: consistent with LOAD-DEPENDENT STICK-SLIP FRICTION
+in the energized XM540 drivetrain as the primary mechanism — static
+delivery is clean, and the current transients appear at breakaway,
+where the loop reacts to the velocity/back-EMF step, adding the
+torque jerk the hand feels as a notch. There is NO evidence for
+spontaneous (static) current-regulation failure and none for a
+host-side cause. What this instrument CANNOT separate is whether
+the breakaway transient is merely the friction's electrical
+signature or an amplifying cause; that discrimination needs a
+controlled experiment (externally driven motion under constant
+current command — M7 family). Disposition of the j1 exception on
+this evidence rests with the reviewer.
+
 ## Non-goals and cautions
 
 - **No damping in the float.** Host-side damping walks into the
