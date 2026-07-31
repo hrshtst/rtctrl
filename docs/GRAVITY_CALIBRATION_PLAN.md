@@ -556,6 +556,22 @@ each felt notch with count-level current behavior; that session is
 VOID on any gate event on ANY axis (disposition revision — validate
 with `--gate-free`), and the parking itself is unchanged.
 
+**Reviewer authorization (2026-07-31; the replay review round closed
+with no remaining findings): ONE diagnostic exception to the
+parking.** A single instrumented, GATE-FREE j1 feel session on the
+vendor configuration is authorized under this protocol: start from a
+posture with every axis — especially j3 — well away from its limits
+and keep them away throughout; press ENTER at EACH felt notch (the
+event marks are the point of the run); any gate event on ANY axis
+makes the attempt VOID (`check_float_log.py --feel --gate-free`) —
+a void attempt is repositioned and rerun under a fresh log
+filename. This exception does NOT constitute general un-parking:
+M-GC3 remains OPEN and the parking of `x7_float`/`x7_ident` (and
+`x7_track`) remains in force outside this single diagnostic
+protocol; the notice in
+[HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md) carries the same
+exception.
+
 ## Non-goals and cautions
 
 - **No damping in the float.** Host-side damping walks into the

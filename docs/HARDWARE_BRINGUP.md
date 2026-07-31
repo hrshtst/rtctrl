@@ -117,6 +117,12 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >   is closed, so parking costs nothing). Remediation, evidence, and
 >   the retest protocol:
 >   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
+>   One reviewer-authorized DIAGNOSTIC EXCEPTION (2026-07-31): a
+>   single instrumented, gate-free j1 feel session on the vendor
+>   configuration, per the plan's j1-diagnostic protocol — every
+>   axis (especially j3) kept away from its limits, each notch
+>   event-marked, any gate on any axis = VOID. NOT general
+>   un-parking.
 >
 > Telemetry of both incidents is ARCHIVED with manifest rows —
 > `track9.csv`/`track9.csv.settle` and `float1.csv`, section
