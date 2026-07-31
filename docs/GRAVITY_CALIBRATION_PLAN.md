@@ -410,7 +410,8 @@ disposition and the power-off check that follow:**
   torque-ENABLED phenomenon (suspects in the disposition below).
 - **j4 — under hand-guiding, tends to move positive, easily to
   ~+1.3 rad (point 2 exception). This was motion under the
-  operator's hand; NO motion after letting go was reported.** The
+  operator's hand — substantial hand-guided motion after the release
+  marker; no hands-off/autonomous motion was reported.** The
   commanded twist gravity is an odd, position-dependent profile
   peaking at ±0.052 Nm (≈ A·sin(q4)), friction-comparable, bounded
   (≤ 0.052 Nm command ceiling), not safety-relevant. The preliminary
@@ -426,16 +427,27 @@ criterion FAILED; M-GC3 remains OPEN.** j1 fails "no notchy spots";
 j4 fails reasonable directional symmetry (with the classification
 rule that motion toward +1.3 rad after letting go WOULD also count
 as autonomous motion — the operator reported the tendency under
-hand-guiding only, and no post-release motion); j3/j6 PASS on
+hand-guiding only; no hands-off/autonomous motion was reported);
+j3/j6 PASS on
 the operator's judgment (greater but symmetric resistance is
-acceptable); j0/j2/j5 no issue. Accepted log separation: j1's notch
-is NOT explained by position gating, command rejection, or a
-host-command discontinuity (zero gate events, smooth applied torque,
-maximum cycle-to-cycle change 0.029 Nm), and command quantization
+acceptable); j0/j2/j5 no issue. Accepted log separation (REVISED
+2026-07-31 — the original "not explained by position gating" was too
+strong): j1-AXIS gating IS excluded — zero j1 gate events in every
+log, smooth j1 applied torque (maximum cycle-to-cycle change
+0.029 Nm), no command rejection — and command quantization
 (~0.0065 Nm per goal count in nominal units) is too small for a
-pronounced random lockup — remaining suspects are XM540 current
-regulation and load-dependent drivetrain friction. Position gates
-occurred during j0 (92 cycles), j4 (853, substantial dwell near both
+pronounced random lockup. CROSS-AXIS gating, however, remains a
+PLAUSIBLE CONFOUNDER: during the j1 session the j3 axis gated for
+18 cycles (t 33.59–58.22 s), most importantly ~33.59–33.76 s, where
+the gate zeroed an ≈ 1.01 Nm j3 gravity command while j1 was
+stationary — on a coupled arm that torque discontinuity could be
+felt while manipulating j1, and the legacy run has no event marks
+to correlate or exclude it. Remaining suspects: XM540 current
+regulation, load-dependent drivetrain friction, and cross-axis gate
+discontinuities. **The NEXT instrumented j1 run is VOID on any gate
+event on ANY axis** (mechanically checkable:
+`check_float_log.py --feel --gate-free`). Position gates occurred
+during j0 (92 cycles), j4 (853, substantial dwell near both
 ±2.8 rad ends), and j6 (91); endpoint sensations are excluded from
 smoothness judgment. j4's bias is judged likely
 compensation-induced: ≈ +0.04 Nm was applied around the initial
@@ -489,7 +501,10 @@ Findings:
   (±5.5 goal counts); the worst instantaneous difference, 0.044 A
   (16 counts, 0.157 Nm at the vendor kt), occurs at the extremes of
   the j1 sweep itself where the command reaches ±0.98 A — ≈ 4–5 % of
-  the local command. Both models are smooth functions of posture and
+  the local command. (That percentage is the HIGH-COMMAND figure: on
+  the lower-load trajectories the amplitude RATIOS differ by roughly
+  10–12 %, though their absolute differences stay small, means
+  within ±5.5 counts.) Both models are smooth functions of posture and
   the host command stream was smooth, so this CLOSES the
   gravity-model line for the j1 notch, consistent with the
   reviewer's suspects (XM540 current regulation, load-dependent
@@ -537,8 +552,9 @@ everything the current binary writes — and on v2 enforces
 event-after-marker ordering and count/torque consistency; the
 emulator smoke drives two post-release event marks end-to-end. This
 readies the NEXT powered j1 session (once un-parked) to correlate
-each felt notch with count-level current behavior; the parking
-itself is unchanged.
+each felt notch with count-level current behavior; that session is
+VOID on any gate event on ANY axis (disposition revision — validate
+with `--gate-free`), and the parking itself is unchanged.
 
 ## Non-goals and cautions
 

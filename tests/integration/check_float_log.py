@@ -16,6 +16,12 @@ row itself is rejected), and both raw-count columns consistent with
 their SI torque columns through the nominal torque constant and the
 2.69 mA LSB (half a count plus print-rounding tolerance).
 
+With --gate-free (GRAVITY_CALIBRATION_PLAN, disposition revision
+2026-07-31): any gate event on ANY axis fails validation — the next
+instrumented j1 notch-correlation session is VOID on one, because a
+cross-axis gate discontinuity (j3 zeroing ~1 Nm during the archived
+j1 session) is a plausible confounder for the felt notch.
+
 With --vendor (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2): additionally
 requires the vendor-equivalent scales in the header, a released
 transition, marker-anchored termination (last row ~5 s after the
@@ -66,6 +72,7 @@ args = sys.argv[1:]
 vendor = "--vendor" in args
 feel = "--feel" in args
 legacy = "--legacy" in args  # pre-run_mode archived evidence ONLY
+gate_free = "--gate-free" in args  # instrumented j1 sessions: VOID on gates
 path = [a for a in args if not a.startswith("--")][0]
 
 raw = open(path, "rb").read()
@@ -140,6 +147,11 @@ for k, r in enumerate(rows):
             assert math.isfinite(float(r[col])), (
                 f"row {k}: non-finite {col} = {r[col]}")
     assert r["accepted"] == "1", "unaccepted submission in a clean run"
+    if gate_free:
+        for i in range(DOF):
+            assert r[f"gated{i}"] == "0", (
+                f"row {k}: gate event on axis {i} — a gate-free session "
+                "was required, this attempt is VOID")
     released = int(r["released"])
     assert released >= prev_released, f"row {k}: released went backward"
     if released == 1 and t_marker is None:
