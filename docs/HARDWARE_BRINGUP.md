@@ -96,8 +96,9 @@ reasons live in the
 [computed-torque theory notes](theory/computed-torque.md#what-the-hardware-taught-us).
 Feature coverage is mapped in [PARITY.md](PARITY.md).
 
-> **EVERY current-mode controller is PARKED — do NOT run `x7_track`,
-> `x7_float`, or `x7_ident` on hardware.** Two independent incidents:
+> **`x7_track` and `x7_ident` are PARKED — do NOT run them on
+> hardware. `x7_float` is UN-PARKED (2026-07-31) under the
+> conditions in its bullet below.** Two independent incidents:
 >
 > - **`x7_track` (2026-07-28):** a scale-0.5 session never left the
 >   settle phase — from a compact resting posture the pan (canonical
@@ -106,23 +107,33 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >   The failure precedes the scale argument (no scale is safe) and no
 >   code or configuration change preceded it. Parked until a
 >   reviewer-approved settle-phase fix lands.
-> - **`x7_float` (2026-07-29):** a float session accelerated the
->   UNTOUCHED arm toward the upright posture (peak ~2.37 rad/s,
->   joints riding their upper limits) — the signature of gravity
->   over-compensation; the leading explanation is the
->   torque-to-current calibration commanding 23–49 % more current
->   per model-torque than the vendor's empirically tuned constants.
->   `x7_ident` is parked with it: it runs current mode through the
->   SAME nominal conversion and stages its own preload (its campaign
->   is closed, so parking costs nothing). Remediation, evidence, and
->   the retest protocol:
+> - **`x7_float` (2026-07-29 incident; UN-PARKED 2026-07-31):** a
+>   float session accelerated the UNTOUCHED arm toward the upright
+>   posture (peak ~2.37 rad/s, joints riding their upper limits) —
+>   gravity over-compensation, root-caused to the torque-to-current
+>   calibration commanding 23–49 % more current per model-torque
+>   than the vendor's empirically tuned constants. The remediation
+>   PASSED its objective acceptance (M-GC3); the subjective
+>   back-drive criterion FAILED and the owner explicitly WAIVED it
+>   (a risk/quality acceptance, not a test pass) covering two
+>   characterized behaviors: the j1 notch (energized actuator-side
+>   behavior, strongly associated with crossing the low-current
+>   transition region q1 ≈ +0.27…+0.53 rad; mechanism not isolated)
+>   and a small j4 positive tendency under hand-guiding (command
+>   ≤ 0.055 Nm). CONDITIONS: `x7_float` refuses to touch the bus
+>   without the approved vendor calibration
+>   (`config/crane_x7_vendor_scale.toml` — default-scale adoption
+>   was declined, so the repo default config remains the
+>   known-failed all-1.0 configuration); the marker protocol is
+>   unchanged; power cutoff within reach; unique `--log` filename
+>   per attempt. Full record:
 >   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
->   One reviewer-authorized DIAGNOSTIC EXCEPTION (2026-07-31): a
->   single instrumented, gate-free j1 feel session on the vendor
->   configuration, per the plan's j1-diagnostic protocol — every
->   axis (especially j3) kept away from its limits, each notch
->   event-marked, any gate on any axis = VOID. NOT general
->   un-parking.
+> - **`x7_ident` remains PARKED** pending its own disposition: it
+>   runs current mode through the SAME conversion and stages its
+>   own preload, but performs autonomous excitation maneuvers with
+>   different operator exposure — un-parking requires a separate
+>   reviewer + owner decision tied to a concrete campaign (its
+>   pass-2 campaign is closed, so parking costs nothing).
 >
 > Telemetry of both incidents is ARCHIVED with manifest rows —
 > `track9.csv`/`track9.csv.settle` and `float1.csv`, section

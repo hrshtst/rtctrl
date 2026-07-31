@@ -47,12 +47,17 @@ unchanged. **M-GC1 and M-GC2 SIGNED OFF by the external reviewer
 (2026-07-30)** — 186/186 tests and the strict docs build
 independently reproduced. **M-GC3 acceptance run PASSED
 (2026-07-30, `float2.csv` — see the Addendum): all four
-preregistered conditions with wide margins.** **M-GC3 overall
-remains OPEN (reviewer disposition 2026-07-30): "objective
-acceptance passed; subjective feel failed on j1 and
-inconclusive/failed on j4"** — see the back-drive record below. The
-vendor scales are NOT adopted as the default and the parking of
-`x7_float`/`x7_ident` remains in force.*
+preregistered conditions with wide margins.** **M-GC3 outcome
+(2026-07-31): objective acceptance PASSED; the subjective
+back-drive criterion FAILED (reviewer disposition 2026-07-30,
+diagnostics 2026-07-31) and was explicitly WAIVED by the owner as a
+risk/quality acceptance of the characterized j1 notch and j4
+tendency — a waiver, not a pass.** Decisions taken: default-scale
+adoption DECLINED (calibration stays per-application);
+**`x7_float` UN-PARKED** with a mode-independent vendor-calibration
+gate; **`x7_ident` remains PARKED** pending its own disposition;
+`x7_track` remains parked regardless. Formal closure pending
+reviewer acknowledgment — see the Decisions record below.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -665,8 +670,8 @@ back-drivability. The reviewer's statement of record:
 > and waive the subjective criterion for deployment; doing so is a
 > risk/quality decision, not a test pass.
 
-**Deployment decisions (OPEN, to be taken SEPARATELY by the
-reviewer + owner):**
+**Deployment decisions (framed by the reviewer, to be taken
+SEPARATELY by the reviewer + owner):**
 
 - `x7_float` — conditional un-parking is technically arguable IF
   the characterized j1 notch and the j4 uncertainty are explicitly
@@ -676,6 +681,36 @@ reviewer + owner):**
 - Default scales — adoption can be considered (they correct the
   CONFIRMED conversion problem), documented as NOT resolving the
   powered j1 characteristic.
+
+**Decisions taken (2026-07-31, owner):**
+
+- **Default scales — adoption DECLINED.** The library keeps only
+  the nominal datasheet constants; the repo default config keeps
+  scale 1.0. Calibration remains a PER-APPLICATION configuration
+  (`config/crane_x7_vendor_scale.toml`) — the vendor-equivalent
+  scales stay hypotheses to be refined or replaced by the M7
+  per-joint experiment. Consequence, handled in the next item: the
+  default config remains the known-failed all-1.0 float
+  configuration.
+- **`x7_float` — UN-PARKED, with the owner's explicit acceptance of
+  the characterized j1 notch and the j4 positive tendency.** This
+  is a risk/quality WAIVER of the failed subjective back-drive
+  criterion, NOT a test pass (the reviewer's statement of record
+  above governs). Because default adoption was declined, the
+  vendor-calibration gate is now MODE-INDEPENDENT: every `x7_float`
+  session refuses any scale vector other than the approved one
+  BEFORE bus contact (previously feel-only; acceptance-mode
+  rejection ctest added; the emulator smoke runs all phases on the
+  vendor config). The known characteristics stay documented in the
+  app banner and [HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md).
+- **`x7_ident` — remains PARKED** pending its own disposition,
+  tied to a concrete campaign (its pass-2 campaign is closed, so
+  parking continues to cost nothing).
+
+M-GC3 outcome as recorded: objective acceptance PASSED; subjective
+back-drive criterion FAILED and explicitly WAIVED by the owner for
+`x7_float` deployment. Formal milestone closure pending the
+reviewer's acknowledgment of these decisions.
 
 ## Non-goals and cautions
 
