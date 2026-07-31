@@ -705,7 +705,11 @@ SEPARATELY by the reviewer + owner):**
   app banner and [HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md).
 - **`x7_ident` — remains PARKED** pending its own disposition,
   tied to a concrete campaign (its pass-2 campaign is closed, so
-  parking continues to cost nothing).
+  parking continues to cost nothing). Owner-confirmed same day:
+  the disposition is deliberately DEFERRED until a concrete
+  campaign exists (most plausibly the M7 friction-identification
+  follow-up, which is also the experiment that could isolate the
+  j1 mechanism).
 
 M-GC3 outcome as recorded: objective acceptance PASSED; subjective
 back-drive criterion FAILED and explicitly WAIVED by the owner for
