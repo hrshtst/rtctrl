@@ -19,8 +19,10 @@
 // <= 0.055 Nm). Default-scale adoption was DECLINED — the repo
 // default config keeps the known-failed all-1.0 scales — so EVERY
 // x7_float session refuses to touch the bus without the APPROVED
-// vendor calibration (config/crane_x7_vendor_scale.toml). x7_ident
-// and x7_track remain parked (separate dispositions).
+// vendor calibration (config/crane_x7_vendor_scale.toml) and a
+// REQUIRED --log file, created exclusively (an existing file is
+// never overwritten). x7_ident and x7_track remain parked (separate
+// dispositions).
 //
 // Startup (M-GC1, the x7_ident pose-first pattern): the arm activates
 // in POSITION mode — servo-held, no free-fall instant — the held
@@ -51,13 +53,18 @@
 //   room to back-drive each joint carefully. TORQUE REMAINS ENABLED
 //   until that deadline (the release cue says so). Duration is
 //   bounded to 60 s in EVERY mode (acceptance runs self-terminate at
-//   marker + 5 s regardless), and feel mode requires the APPROVED
+//   marker + 5 s regardless), and EVERY mode requires the APPROVED
 //   vendor calibration vector (±1e-6) BEFORE bus contact — the
 //   known-failed all-1.0 default, near-1 lookalikes, and
-//   under-supporting low scales are all refused. The log self-marks
-//   "# run_mode: feel-check" and is NEVER acceptance evidence; the
-//   acceptance protocol (no --feel) is unchanged.
-//   --log writes one row per cycle through the CycleObserver — AFTER
+//   under-supporting low scales are all refused (feel-only
+//   originally; mode-independent since the 2026-07-31 un-parking).
+//   The log self-marks "# run_mode: feel-check" and is NEVER
+//   acceptance evidence; the acceptance protocol (no --feel) is
+//   unchanged.
+//   --log is REQUIRED (un-parking condition): the file is created
+//   EXCLUSIVELY — an existing file is refused, never overwritten —
+//   enforcing the unique-filename-per-attempt rule before bus
+//   contact. It writes one row per cycle through the CycleObserver — AFTER
 //   writeCommand, so each row pairs three distinct events explicitly:
 //   the FEEDBACK snapshot the cycle started from (q, dqservo — the
 //   servo's lagged estimate — and current-derived tau_meas), THIS
@@ -86,6 +93,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -298,10 +306,13 @@ struct FloatLogObserver : arm::CycleObserver {
 };
 
 // fopen only — BEFORE any bus contact, so a bad path fails without
-// ever torquing the arm. The headers need the loaded config (the
-// scales), so they are written separately once it exists.
+// ever torquing the arm. EXCLUSIVE creation ("x"): an existing file
+// is refused, never truncated — the unique-filename-per-attempt rule
+// is enforced, not advisory (review finding: the stated un-parking
+// condition was not enforced). The headers need the loaded config
+// (the scales), so they are written separately once it exists.
 std::FILE* openFloatLogFile(const std::string& path) {
-  return std::fopen(path.c_str(), "w");
+  return std::fopen(path.c_str(), "wx");
 }
 
 void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
@@ -411,17 +422,7 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Open the log BEFORE any bus contact: a bad path must fail without
-  // ever torquing the arm. (Headers follow once the config is loaded.)
   std::FILE* log = nullptr;
-  if (!log_path.empty()) {
-    log = openFloatLogFile(log_path);
-    if (log == nullptr) {
-      std::fprintf(stderr, "cannot open log file %s\n", log_path.c_str());
-      return 1;
-    }
-  }
-
   try {
     // EVERY session requires the approved vendor vector BEFORE any
     // bus contact (un-parking decision 2026-07-31): default-scale
@@ -452,6 +453,29 @@ int main(int argc, char* argv[]) {
           return 1;
         }
       }
+    }
+    // The log is REQUIRED and opened BEFORE any bus contact
+    // (un-parking condition, review finding: "unique --log per
+    // attempt" was stated but not enforced): an unlogged hardware
+    // attempt and an accidental overwrite are both refused here.
+    if (log_path.empty()) {
+      std::fprintf(stderr,
+                   "--log is REQUIRED: every x7_float attempt records "
+                   "telemetry under a unique filename\n");
+      return 1;
+    }
+    log = openFloatLogFile(log_path);
+    if (log == nullptr) {
+      if (errno == EEXIST) {
+        std::fprintf(stderr,
+                     "log file %s already exists — never overwritten; "
+                     "use a unique --log filename per attempt\n",
+                     log_path.c_str());
+      } else {
+        std::fprintf(stderr, "cannot open log file %s\n",
+                     log_path.c_str());
+      }
+      return 1;
     }
     // POSITION-mode session: activation holds the arm (goals snap to
     // the present posture) — no free-fall instant. The switch to

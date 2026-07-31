@@ -95,10 +95,32 @@ add_test(NAME x7_track_rejects_flag_as_log_value
   COMMAND x7_track --log --bogus)
 set_tests_properties(x7_track_rejects_flag_as_log_value PROPERTIES
   PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+# The log open now happens after the vendor-calibration gate, so
+# these three run the vendor config from the repo root to reach it.
+# All still fail BEFORE any bus contact.
 add_test(NAME x7_float_rejects_unopenable_log
-  COMMAND x7_float --log /nonexistent-rtctrl-dir/f.csv 20)
+  COMMAND x7_float --config config/crane_x7_vendor_scale.toml
+          --log /nonexistent-rtctrl-dir/f.csv 20
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_float_rejects_unopenable_log PROPERTIES
   PASS_REGULAR_EXPRESSION "cannot open log file"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# --log is REQUIRED (un-parking condition, review finding: the
+# stated unique-filename rule was advisory) ...
+add_test(NAME x7_float_requires_log
+  COMMAND x7_float --config config/crane_x7_vendor_scale.toml 20
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_requires_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log is REQUIRED"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# ...and created EXCLUSIVELY: an existing file (here a stable repo
+# file, which "wx" can never truncate) is refused, not overwritten.
+add_test(NAME x7_float_rejects_existing_log
+  COMMAND x7_float --config config/crane_x7_vendor_scale.toml
+          --log README.md 20
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_rejects_existing_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "already exists"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 # The marker-anchored protocol needs deadline + window; a shorter run
 # would bypass the marker guarantee (review finding).

@@ -20,7 +20,11 @@ FLOAT="$2"
 OUT="$3"
 mkdir -p "$OUT"
 LINK="$OUT/ttyDXL"
-rm -f "$LINK" "$OUT/float.csv" "$OUT/float_vendor.csv"
+# x7_float creates logs EXCLUSIVELY (never overwrites), so every log
+# from a previous run must be cleared or reruns would be refused.
+rm -f "$LINK" "$OUT/float.csv" "$OUT/float_vendor.csv" \
+  "$OUT/float_feel.csv" "$OUT/float_feel_bad.csv" \
+  "$OUT/float_feel_gated.csv"
 "$EMU" --link "$LINK" &
 EMU_PID=$!
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
