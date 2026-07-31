@@ -602,8 +602,10 @@ commanded, never gated). Count-level findings:
   31.15 s and 34.93 s marks. By contrast j4-class axes tracked
   within a few counts throughout (j3 p95 ≈ 3–4 counts under ~1 Nm).
 
-Interpretation: consistent with LOAD-DEPENDENT STICK-SLIP FRICTION
-in the energized XM540 drivetrain as the primary mechanism — static
+Interpretation (session-time read; the reviewer disposition below
+keeps the mechanism UN-ISOLATED — current-loop dynamics versus
+load-dependent drivetrain friction): consistent with load-dependent
+stick-slip friction in the energized XM540 drivetrain — static
 delivery is clean, and the current transients appear at breakaway,
 where the loop reacts to the velocity/back-EMF step, adding the
 torque jerk the hand feels as a notch. There is NO evidence for
@@ -612,8 +614,67 @@ host-side cause. What this instrument CANNOT separate is whether
 the breakaway transient is merely the friction's electrical
 signature or an amplifying cause; that discrimination needs a
 controlled experiment (externally driven motion under constant
-current command — M7 family). Disposition of the j1 exception on
-this evidence rests with the reviewer.
+current command — M7 family).
+
+**Episode-level analysis and reviewer disposition of the diagnostic
+(2026-07-31).** Merging all present-vs-goal excursions ≥ 30 counts
+into episodes yields SEVEN (peaks 35–44 counts), every peak inside
+q1 = +0.268…+0.529 rad — the region where the j1 goal is small
+(±30–54 counts) and crosses zero — with direction-dependent peak
+locations (negative-direction traversals ~+0.27…+0.32 rad,
+positive-direction ~+0.43…+0.53 rad). The reviewer confirmed the
+repeatable pattern (six of the marks follow such an excursion by
+0.62–1.97 s, current recovered to within 0–3 counts of goal by the
+mark rows; the vendor-model replay over this exact trajectory stays
+smooth at ≈ 1.040× with a worst model difference of 13.2 counts —
+an order below the excursions) and set the scope of the claims:
+
+- the sensation is STRONGLY ASSOCIATED WITH REPEATED CROSSINGS of
+  the low-current transition region — not "confined to" it: event
+  timing carries unmeasured human delay, and three marks lacked a
+  same-size precursor;
+- the direction-dependent peak locations are CONSISTENT WITH
+  hysteresis; hysteresis was not isolated experimentally;
+- the band-wise deviations (36–43 counts ≈ 0.35–0.42 Nm at the
+  vendor kt) are NOT a global bound — the largest one-cycle present
+  step was 73 counts (0.47 Nm at nominal kt, ≈ 0.71 Nm at the
+  vendor kt);
+- the host command path is exonerated from discontinuities; the
+  CALIBRATION is not completely exonerated — it may place the
+  actuator in, or amplify, the operating regime where the energized
+  behavior appears;
+- j4's quantified model-amplitude mismatch is consistent with the
+  sensation, but causation was not isolated.
+
+Re-scoping "no notchy spots" after observing notchiness would be a
+POST-HOC WAIVER, not a re-scope that converts the test into a pass;
+the hands-off acceptance run establishes stability, not
+back-drivability. The reviewer's statement of record:
+
+> The subjective j1 criterion remains failed. The follow-up
+> diagnostic characterizes the failure as energized, actuator-side
+> behavior strongly associated with traversing a low-current
+> transition region around q1 ≈ +0.27…+0.53 rad.
+> Direction-dependent transient locations are consistent with
+> hysteresis. Static current delivery, gating, timing,
+> gravity-model continuity, and the host goal/application path are
+> clean. The remaining mechanism — current-loop dynamics versus
+> load-dependent drivetrain friction — was not isolated. The
+> reviewer may explicitly accept this known back-drive limitation
+> and waive the subjective criterion for deployment; doing so is a
+> risk/quality decision, not a test pass.
+
+**Deployment decisions (OPEN, to be taken SEPARATELY by the
+reviewer + owner):**
+
+- `x7_float` — conditional un-parking is technically arguable IF
+  the characterized j1 notch and the j4 uncertainty are explicitly
+  accepted (a risk/quality decision, not a test pass).
+- `x7_ident` — NOT automatically un-parked with `x7_float`; its
+  maneuvers and operator exposure require a separate disposition.
+- Default scales — adoption can be considered (they correct the
+  CONFIRMED conversion problem), documented as NOT resolving the
+  powered j1 characteristic.
 
 ## Non-goals and cautions
 
