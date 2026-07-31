@@ -627,7 +627,8 @@ repeatable pattern (six of the marks follow such an excursion by
 0.62–1.97 s, current recovered to within 0–3 counts of goal by the
 mark rows; the vendor-model replay over this exact trajectory stays
 smooth at ≈ 1.040× with a worst model difference of 13.2 counts —
-an order below the excursions) and set the scope of the claims:
+approximately one-third the size of the 36–43-count excursions,
+and smooth rather than transient) and set the scope of the claims:
 
 - the sensation is STRONGLY ASSOCIATED WITH REPEATED CROSSINGS of
   the low-current transition region — not "confined to" it: event
