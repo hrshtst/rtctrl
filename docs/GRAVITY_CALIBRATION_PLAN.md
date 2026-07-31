@@ -701,8 +701,12 @@ SEPARATELY by the reviewer + owner):**
   session refuses any scale vector other than the approved one
   BEFORE bus contact (previously feel-only; acceptance-mode
   rejection ctest added; the emulator smoke runs all phases on the
-  vendor config). The known characteristics stay documented in the
-  app banner and [HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md).
+  vendor config). The unique-log rule is likewise ENFORCED, not
+  advisory (review finding): `--log` is REQUIRED and the file is
+  created exclusively — an existing file is refused, never
+  overwritten — with rejection ctests for the missing-log and
+  existing-file cases. The known characteristics stay documented in
+  the app banner and [HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md).
 - **`x7_ident` — remains PARKED** pending its own disposition,
   tied to a concrete campaign (its pass-2 campaign is closed, so
   parking continues to cost nothing). Owner-confirmed same day:

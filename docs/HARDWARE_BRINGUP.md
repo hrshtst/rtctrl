@@ -110,10 +110,13 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 > - **`x7_float` (2026-07-29 incident; UN-PARKED 2026-07-31):** a
 >   float session accelerated the UNTOUCHED arm toward the upright
 >   posture (peak ~2.37 rad/s, joints riding their upper limits) —
->   gravity over-compensation, root-caused to the torque-to-current
->   calibration commanding 23–49 % more current per model-torque
->   than the vendor's empirically tuned constants. The remediation
->   PASSED its objective acceptance (M-GC3); the subjective
+>   gravity over-compensation, whose LEADING EXPLANATION is the
+>   torque-to-current calibration commanding 23–49 % more current
+>   per model-torque than the vendor's empirically tuned constants
+>   (not isolated as the sole cause: the passing remediation
+>   combined the calibrated scales with the held-position/preloaded
+>   startup). The COMBINED remediation PASSED its objective
+>   acceptance (M-GC3); the subjective
 >   back-drive criterion FAILED and the owner explicitly WAIVED it
 >   (a risk/quality acceptance, not a test pass) covering two
 >   characterized behaviors: the j1 notch (energized actuator-side
@@ -124,9 +127,11 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >   without the approved vendor calibration
 >   (`config/crane_x7_vendor_scale.toml` — default-scale adoption
 >   was declined, so the repo default config remains the
->   known-failed all-1.0 configuration); the marker protocol is
->   unchanged; power cutoff within reach; unique `--log` filename
->   per attempt. Full record:
+>   known-failed all-1.0 configuration); `--log` is REQUIRED and
+>   created exclusively — an existing file is refused, never
+>   overwritten — so the unique-filename-per-attempt rule is
+>   ENFORCED before bus contact; the marker protocol is unchanged;
+>   power cutoff within reach. Full record:
 >   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
 > - **`x7_ident` remains PARKED** pending its own disposition: it
 >   runs current mode through the SAME conversion and stages its
