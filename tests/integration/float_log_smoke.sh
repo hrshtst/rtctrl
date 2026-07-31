@@ -77,3 +77,27 @@ t_marker = next(float(r["t"]) for r in rows if r["released"] == "1")
 assert all(t > t_marker for t in events), (t_marker, events)
 print(f"operator event marks at {events} (marker {t_marker})")
 EOF
+
+# Negative: an event mark ON the release-transition row must be
+# REJECTED (review finding: released == 1 alone admitted it — the
+# ordering is strict, marker first, events on later rows only).
+python3 - "$OUT/float_feel.csv" "$OUT/float_feel_bad.csv" <<'EOF'
+import csv
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+head = [ln for ln in lines if ln.startswith("#")]
+rows = list(csv.DictReader(
+    ln for ln in lines if not ln.startswith("#")))
+next(r for r in rows if r["released"] == "1")["operator_event"] = "1"
+with open(sys.argv[2], "w", newline="") as f:
+    f.write("\n".join(head) + "\n")
+    w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+    w.writeheader()
+    w.writerows(rows)
+EOF
+if python3 "$(dirname "$0")/check_float_log.py" --feel \
+    "$OUT/float_feel_bad.csv" 2>/dev/null; then
+  echo "checker admitted an event mark on the release-transition row"
+  exit 1
+fi
+echo "transition-row event mark correctly rejected"

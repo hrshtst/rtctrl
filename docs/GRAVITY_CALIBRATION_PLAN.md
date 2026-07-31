@@ -389,37 +389,44 @@ decision on default adoption and un-parking.
 **Per-joint sessions executed (2026-07-30, `feel_j0.csv` …
 `feel_j6.csv`, archived with manifest rows):** all seven target
 joints covered, bidirectional motion log-confirmed on every target
-(point 1 SATISFIED); no autonomous motion reported or observed; all
-sessions clean (zero gates/clamps, every submission accepted; one
-void j3 attempt correctly aborted at the 8 s marker deadline and was
-rerun). **Points 2 and 3 carry EXCEPTIONS awaiting reviewer
-disposition:**
+(point 1 SATISFIED); no autonomous motion reported; zero CLAMPS and
+every submission accepted in every session (one void j3 attempt
+correctly aborted at the 8 s marker deadline and was rerun).
+Position GATES did occur, by axis: j0 92 cycles (its own session),
+j3 18 cycles (during the j1 session), j4 853 cycles (substantial
+dwell near both ±2.8 rad ends), j6 91 cycles; the j1 AXIS itself has
+zero gate events in every log. Per the disposition below, endpoint
+sensations at gated positions are excluded from smoothness judgment.
+**Points 2 and 3 carry EXCEPTIONS. The per-joint notes below were
+the PRELIMINARY assessment and are SUPERSEDED by the reviewer
+disposition and the power-off check that follow:**
 
 - **j1 — random notchiness, hard to move (point 3 exception).** The
   log shows 2680/6002 cycles with the joint stationary under a net
-  commanded torque above 1 Nm — the stick-slip signature of the
-  DOCUMENTED pass-2 finding that j1's gearbox stiction locks the
-  output shaft (the 0.30 Nm stationary probe could not move it;
-  IDENTIFICATION_PLAN.md Closure). Assessment: a pre-existing
-  mechanical property, expected to feel notchy under hand-guiding,
-  not introduced by (and not correctable through) the current
-  calibration.
-- **j4 — tends to move positive, easily to ~+1.3 rad (point 2
-  exception).** The commanded twist gravity is an odd,
-  position-dependent profile peaking at ±0.052 Nm (≈ A·sin(q4):
-  gravity genuinely pushes the twist away from this posture's
-  center), so any small model or scale residual there is
-  friction-comparable and reads as a directional assist by hand.
-  Bounded (≤ 0.052 Nm command ceiling), not safety-relevant;
-  at the fidelity limit of the mass model.
+  commanded torque above 1 Nm. The preliminary reading attributed
+  this to the documented pass-2 gearbox-stiction finding as a
+  pre-existing mechanical property — SUPERSEDED: the power-off check
+  found NO notch with the servo unpowered, so the notch is a
+  torque-ENABLED phenomenon (suspects in the disposition below).
+- **j4 — under hand-guiding, tends to move positive, easily to
+  ~+1.3 rad (point 2 exception). This was motion under the
+  operator's hand; NO motion after letting go was reported.** The
+  commanded twist gravity is an odd, position-dependent profile
+  peaking at ±0.052 Nm (≈ A·sin(q4)), friction-comparable, bounded
+  (≤ 0.052 Nm command ceiling), not safety-relevant. The preliminary
+  "fidelity limit of the mass model" framing is SUPERSEDED by the
+  disposition's compensation-bias attribution and the replay
+  quantification in the Addendum below.
 - j3 and j6 — symmetric bidirectional rigidity, operator-judged
   non-issues: consistent with ordinary gear friction dominating on
-  low-gravity joints.
+  low-gravity joints (disposition: PASS).
 
 **Reviewer disposition (2026-07-30): the subjective back-drive
 criterion FAILED; M-GC3 remains OPEN.** j1 fails "no notchy spots";
-j4 fails reasonable directional symmetry (motion toward +1.3 rad
-after letting go also counts as autonomous motion); j3/j6 PASS on
+j4 fails reasonable directional symmetry (with the classification
+rule that motion toward +1.3 rad after letting go WOULD also count
+as autonomous motion — the operator reported the tendency under
+hand-guiding only, and no post-release motion); j3/j6 PASS on
 the operator's judgment (greater but symmetric resistance is
 acceptable); j0/j2/j5 no issue. Accepted log separation: j1's notch
 is NOT explained by position gating, command rejection, or a
@@ -486,9 +493,11 @@ Findings:
   the host command stream was smooth, so this CLOSES the
   gravity-model line for the j1 notch, consistent with the
   reviewer's suspects (XM540 current regulation, load-dependent
-  drivetrain friction). It also shows a software A/B would not
-  separate anything: the vendor's own algorithm commands nearly
-  identical j1 currents at these postures.
+  drivetrain friction). It also shows a MODEL-ONLY A/B — the vendor
+  gravity algorithm swapped in through the same reviewed runtime
+  path — would not separate anything: it commands nearly identical
+  j1 currents at these postures. (It says nothing about differences
+  in the vendor RUNTIME'S current-loop or timing behavior.)
 - **j4 — a consistent PROPORTIONAL disagreement: rtctrl commands
   ≈ 1.37–1.49 × the vendor model's j4 current at the same
   postures** (least-squares ratio on the six trajectories with
@@ -501,12 +510,19 @@ Findings:
   better estimate. Near the home posture both models are below one
   count and even disagree in sign (|i| ≤ 0.0015 A — model-floor
   noise). This QUANTIFIES the reviewer's compensation-bias
-  hypothesis: the entire j4 disagreement lives within 1–3 goal
-  counts, is positive (rtctrl above vendor) on every trajectory, and
-  is the right sign and size to bias a nearly gravity-neutral wrist
-  toward positive q4. Which amplitude matches the real arm is NOT
-  decidable offline — that is precisely the M7 per-joint calibration
-  experiment's question.
+  hypothesis as an AMPLITUDE MISMATCH, not a universally positive
+  bias: the entire j4 disagreement lives within 1–3 goal counts, and
+  because the surplus is proportional to the ODD gravity profile,
+  the instantaneous difference CHANGES SIGN with q4 — extra positive
+  assistance in the starting/positive-q region, reversing at
+  negative q (in `feel_j4` the largest-magnitude instantaneous delta
+  is −0.0075 A; only the per-trajectory MEANS are positive). The
+  extra amplitude is therefore locally consistent with the reported
+  positive assistance near the starting region, but CANNOT be
+  causally aligned with the reported sensation: the recorded logs
+  predate the event-mark instrumentation. Which amplitude matches
+  the real arm is NOT decidable offline — that is precisely the M7
+  per-joint calibration experiment's question.
 
 Item 3 of the directed step is IMPLEMENTED (same-day commit): after
 the release marker, every further ENTER press logs an OPERATOR EVENT

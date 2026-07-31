@@ -11,10 +11,10 @@ pre-instrumentation format of every archived 2026-07-30 session) and
 v2 (v1 plus operator_event and per-joint goal_cnt/present_cnt — the
 reviewer-directed notch-correlation instrumentation; every log the
 current binary writes). On v2 the added invariants are enforced:
-operator_event only after the release marker, and both raw-count
-columns consistent with their SI torque columns through the nominal
-torque constant and the 2.69 mA LSB (half a count plus print-rounding
-tolerance).
+operator_event STRICTLY after the release-marker row (the transition
+row itself is rejected), and both raw-count columns consistent with
+their SI torque columns through the nominal torque constant and the
+2.69 mA LSB (half a count plus print-rounding tolerance).
 
 With --vendor (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2): additionally
 requires the vendor-equivalent scales in the header, a released
@@ -146,12 +146,16 @@ for k, r in enumerate(rows):
         t_marker = float(r["t"])
     prev_released = released
     if v2:
-        # the marker protocol orders every operator event AFTER the
-        # release marker; the raw counts must be the SI torque columns
-        # re-expressed through the nominal constant and the LSB
+        # the marker protocol orders every operator event STRICTLY
+        # after the release marker — the release-transition row itself
+        # is not admissible (review finding: released == 1 alone let
+        # a transition-row event pass); the raw counts must be the SI
+        # torque columns re-expressed through the nominal constant
+        # and the LSB
         if r["operator_event"] == "1":
-            assert released == 1, (
-                f"row {k}: operator_event before the release marker")
+            assert t_marker is not None and float(r["t"]) > t_marker, (
+                f"row {k}: operator_event not strictly after the "
+                "release marker")
             event_rows += 1
         for i in range(DOF):
             per_count = KT_NOMINAL[i] * CURRENT_LSB_A
