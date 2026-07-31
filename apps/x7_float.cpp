@@ -6,14 +6,21 @@
 // SAFETY: current mode. Keep the power cutoff in reach. Verified in
 // sim first (gravity_sim_test): drift < 0.05 rad over 10 s.
 //
-// PARKED (2026-07-29): do NOT run on hardware until the gravity
-// calibration passes its hardware milestone
-// (docs/GRAVITY_CALIBRATION_PLAN.md M-GC3). A float session
-// accelerated the UNTOUCHED arm toward the upright posture (peak
-// ~2.37 rad/s) — gravity over-compensation; this file now implements
-// the M-GC1 remediation startup, but the parking stands until the
-// displacement-bounded hardware test passes on the vendor-scale
-// configuration.
+// UN-PARKED (2026-07-31, owner decision recorded in
+// docs/GRAVITY_CALIBRATION_PLAN.md; parked 2026-07-29 after gravity
+// over-compensation drove the untouched arm upright at ~2.37 rad/s):
+// the M-GC3 objective acceptance PASSED on the vendor-scale
+// configuration; the subjective back-drive criterion remains FAILED
+// and is WAIVED as an explicit risk/quality acceptance of two
+// characterized behaviors — the j1 notch (energized actuator-side
+// behavior, strongly associated with crossing the low-current
+// transition region q1 ~ +0.27..+0.53 rad; mechanism not isolated)
+// and the small j4 positive bias (model-amplitude mismatch, command
+// <= 0.055 Nm). Default-scale adoption was DECLINED — the repo
+// default config keeps the known-failed all-1.0 scales — so EVERY
+// x7_float session refuses to touch the bus without the APPROVED
+// vendor calibration (config/crane_x7_vendor_scale.toml). x7_ident
+// and x7_track remain parked (separate dispositions).
 //
 // Startup (M-GC1, the x7_ident pose-first pattern): the arm activates
 // in POSITION mode — servo-held, no free-fall instant — the held
@@ -34,6 +41,9 @@
 //
 // Usage: x7_float [--config path] [--port dev] [--log out.csv]
 //                 [--feel] [seconds]
+//   --config MUST carry the approved vendor scales in every mode
+//   (config/crane_x7_vendor_scale.toml) — refused before bus contact
+//   otherwise; the repo default config is deliberately NOT accepted.
 //   --feel: feel-check mode for the M-GC3 back-drive confirmation.
 //   The marker contract is UNCHANGED (press ENTER while supporting
 //   within 8 s or the run aborts), but the session then runs to the
@@ -413,11 +423,14 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    // Feel mode holds torque to the outer deadline, so the
-    // known-failed all-1.0 configuration is refused BEFORE any bus
-    // contact (review finding): every joint must carry a calibrated,
-    // attenuating scale.
-    if (feel_mode) {
+    // EVERY session requires the approved vendor vector BEFORE any
+    // bus contact (un-parking decision 2026-07-31): default-scale
+    // adoption was DECLINED, so the repo default config remains the
+    // known-failed all-1.0 float configuration — an un-parked
+    // x7_float must not be runnable against it by accident. (The
+    // gate began as feel-only — a review finding on torque held to
+    // the outer deadline — and is now mode-independent.)
+    {
       const auto probe = hw::Config::load(cli.config_path);
       for (const auto& joint : probe.joints) {
         // Not merely "< 1.0" (review finding: 0.999 is effectively
@@ -430,7 +443,7 @@ int main(int argc, char* argv[]) {
         if (std::fabs(joint.command_torque_scale - expected) >
             kVendorScaleTol) {
           std::fprintf(stderr,
-                       "feel-check mode requires the APPROVED vendor "
+                       "x7_float requires the APPROVED vendor "
                        "calibration (%.6f for this servo model); "
                        "joint '%s' carries %.6f — use "
                        "config/crane_x7_vendor_scale.toml\n",

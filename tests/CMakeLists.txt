@@ -188,3 +188,14 @@ add_test(NAME x7_float_rejects_near_one_feel
 set_tests_properties(x7_float_rejects_near_one_feel PROPERTIES
   PASS_REGULAR_EXPRESSION "APPROVED vendor calibration"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# Since the 2026-07-31 un-parking decision the vendor-calibration
+# gate is MODE-INDEPENDENT: default-scale adoption was declined, so
+# the repo default config (all-1.0, the known-failed float
+# configuration) must be refused in acceptance mode too — before any
+# bus contact.
+add_test(NAME x7_float_rejects_uncalibrated_acceptance
+  COMMAND x7_float 30
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_float_rejects_uncalibrated_acceptance PROPERTIES
+  PASS_REGULAR_EXPRESSION "APPROVED vendor calibration"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)

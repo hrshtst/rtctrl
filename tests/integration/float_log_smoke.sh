@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# End-to-end x7_float --log validation over the dxl_emu pty, two
-# phases (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2):
-#  1. default config, no marker: the position-hold -> preloaded switch
-#     startup, the log contract at scale 1.0, AND the marker-timeout
-#     abort path (exit nonzero at ~8 s with the void-attempt message —
-#     short durations are rejected outright, so this IS the no-marker
-#     behavior);
-#  2. vendor-scale config with a piped release marker at ~1 s: the run
-#     must self-terminate 5 s after the marker, and every applied
-#     torque must equal scale * tau_request — the end-to-end proof the
-#     calibration is applied exactly once through the RealArm path.
+# End-to-end x7_float --log validation over the dxl_emu pty
+# (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2). Every phase runs the
+# vendor-scale config: since the 2026-07-31 un-parking decision the
+# app refuses any other calibration in EVERY mode before bus contact
+# (default-scale adoption was declined, so the repo default is the
+# known-failed all-1.0 configuration — covered by rejection ctests).
+#  1. no marker: the position-hold -> preloaded switch startup, the
+#     log contract, AND the marker-timeout abort path (exit nonzero
+#     at ~8 s with the void-attempt message — short durations are
+#     rejected outright, so this IS the no-marker behavior);
+#  2. piped release marker at ~1 s: the run must self-terminate 5 s
+#     after the marker, and every applied torque must equal
+#     scale * tau_request — the end-to-end proof the calibration is
+#     applied exactly once through the RealArm path.
 # Run from the repo root (models/ and config/ by relative path).
 set -eu
 EMU="$1"
@@ -31,8 +34,8 @@ done
 # no-marker path IS the marker-timeout abort — exercise it end-to-end:
 # exit nonzero, the void-attempt message, and a valid log up to ~8 s.
 set +e
-PHASE1=$("$FLOAT" --port "$LINK" --log "$OUT/float.csv" 15 \
-  < /dev/null 2>&1)
+PHASE1=$("$FLOAT" --config config/crane_x7_vendor_scale.toml \
+  --port "$LINK" --log "$OUT/float.csv" 15 < /dev/null 2>&1)
 RC=$?
 set -e
 if [ "$RC" -eq 0 ]; then
