@@ -56,8 +56,9 @@ tendency — a waiver, not a pass.** Decisions taken: default-scale
 adoption DECLINED (calibration stays per-application);
 **`x7_float` UN-PARKED** with a mode-independent vendor-calibration
 gate; **`x7_ident` remains PARKED** pending its own disposition;
-`x7_track` remains parked regardless. Formal closure pending
-reviewer acknowledgment — see the Decisions record below.*
+`x7_track` remains parked regardless. **M-GC3 FORMALLY CLOSED
+2026-07-31** — reviewer acknowledgment of the consistency fixes
+(`6cd9f58`, `8427292`); see the Decisions record below.*
 
 ## Incident and evidence (`float1.csv`, 3001 cycles, archived — see [DATA_ARCHIVE.md](DATA_ARCHIVE.md))
 
@@ -715,10 +716,16 @@ SEPARATELY by the reviewer + owner):**
   follow-up, which is also the experiment that could isolate the
   j1 mechanism).
 
-M-GC3 outcome as recorded: objective acceptance PASSED; subjective
-back-drive criterion FAILED and explicitly WAIVED by the owner for
-`x7_float` deployment. Formal milestone closure pending the
-reviewer's acknowledgment of these decisions.
+**M-GC3 FORMALLY CLOSED (reviewer, 2026-07-31)** after the
+consistency fixes `6cd9f58`/`8427292` resolved all held findings.
+Closure record: objective acceptance PASSED; subjective back-drive
+criterion FAILED and explicitly owner-WAIVED for `x7_float`;
+`x7_float` un-parked with enforced vendor-calibration and
+unique-log requirements; default-scale adoption declined;
+`x7_ident` parked by explicit deferral; `x7_track` independently
+parked. The gravity-calibration arc has no remaining findings or
+decisions; the tracking, M7, Doxygen, and telemetry-cleanup items
+remain dormant.
 
 ## Non-goals and cautions
 
