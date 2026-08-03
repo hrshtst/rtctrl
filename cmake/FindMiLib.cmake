@@ -10,9 +10,16 @@
 #   target_link_libraries(tgt PUBLIC MiLib::roki MiLib::roki-fd ...)
 #
 # Cache variables:
-#   MILIB_PREFIX — installation prefix to search first (default: $ENV{HOME}/usr)
+#   MILIB_PREFIX — installation prefix to search first (default: the
+#   MILIB_PREFIX environment variable — e.g. exported by .envrc — else
+#   $ENV{HOME}/usr)
 
-set(MILIB_PREFIX "$ENV{HOME}/usr" CACHE PATH "mi-lib installation prefix")
+if(DEFINED ENV{MILIB_PREFIX})
+  set(_milib_prefix_default "$ENV{MILIB_PREFIX}")
+else()
+  set(_milib_prefix_default "$ENV{HOME}/usr")
+endif()
+set(MILIB_PREFIX "${_milib_prefix_default}" CACHE PATH "mi-lib installation prefix")
 
 set(MiLib_FOUND TRUE)
 

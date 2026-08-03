@@ -3,6 +3,10 @@ project(rtctrl VERSION 0.1.0 LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# build/compile_commands.json for clangd; tools/gen_compile_db.sh merges
+# in the bear-captured mi-lib entries.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 option(RTCTRL_BUILD_TESTS "Build rtctrl tests" ON)
 
 find_package(MiLib REQUIRED COMPONENTS roki roki-fd dzco liw)

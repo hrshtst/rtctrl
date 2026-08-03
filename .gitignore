@@ -1,6 +1,7 @@
 build*/
 compile_commands.json
 .cache/
+.local/
 __pycache__/
 .venv/
 site/
