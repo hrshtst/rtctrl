@@ -25,12 +25,15 @@ flowchart TB
         ME --- PTY
     end
 
+    MOTORS["CRANE-X7 servos<br>(7× XM430-W350, 1× XM540-W270,<br>USB serial bus)"]
+
     C --> SIM
     C --> REAL
     SIM --> MODEL
     REAL --> HW
     MODEL --> MILIB
     HW --> DXL
+    DXL --> MOTORS
     HW -.-> FAKE
     DXL -.-> PTY
 ```
