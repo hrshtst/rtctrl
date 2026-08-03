@@ -36,6 +36,15 @@ class ChainModel {
 
   double totalMass() const;
 
+  // Uniformly scales every link's mass and rotational inertia by
+  // factor (> 0) — a density-style perturbation for model-error
+  // studies (e.g. a deliberately wrong controller model against a
+  // true-model plant). The Newton-Euler torques are linear in the
+  // inertial parameters, so gravityTorque/inverseDynamics outputs
+  // scale by exactly factor at any state; COMs and geometry are
+  // untouched.
+  void scaleMassProperties(double factor);
+
   // Displacement limits of the 1-DOF joint owned by link i (radians).
   double jointMin(int link_index) const;
   double jointMax(int link_index) const;

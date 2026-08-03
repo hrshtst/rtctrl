@@ -211,3 +211,34 @@ TEST_CASE("shipped configuration tracks the x7_track excursion",
     CHECK(wrap.split_delta[j] < std::max(2.0 * wrap.max_delta[j], 0.05));
   }
 }
+
+TEST_CASE("computed torque holds the acceptance bound under mass error",
+          "[tracking][sim]") {
+  // The controller's inverse dynamics runs on a mass/inertia-scaled
+  // model while the plant integrates the true one — the feedforward is
+  // wrong by construction and the PD must absorb it. ±20% must stay
+  // within the same 0.02 rad bound the true-model acceptance uses
+  // (measured ~0.009 rad; cf. examples/x7_ct_mass_error for the study).
+  ZVector q0(kCanonicalDof), qf(kCanonicalDof);
+  const double start[] = {0.0, 0.2, 0.0, -0.4, 0.0, -0.2, 0.0, 0.1};
+  const double goal[] = {0.4, 0.7, -0.3, -1.2, 0.3, -0.6, 0.5, 0.3};
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    q0[i] = start[i];
+    qf[i] = goal[i];
+  }
+  const auto trajectory =
+      MinJerkTrajectory::withVelocityLimit(q0, qf, 1.0, 3.0);
+  const double duration = trajectory.duration() + 1.0;
+
+  for (const double scale : {0.8, 1.2}) {
+    ChainModel wrong(kModelPath);
+    wrong.scaleMassProperties(scale);
+    JointMap map(wrong);
+    ComputedTorque computed(wrong, map, trajectory, 20.0, 2.0);
+    computed.setPdFilterTau(0.0);
+    computed.setIntegral(0.0, 0.0);
+    const double rms = trackingRms(trajectory, computed, duration);
+    INFO("mass scale " << scale << " -> RMS " << rms << " rad");
+    CHECK(rms < 0.02);
+  }
+}

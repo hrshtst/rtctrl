@@ -103,6 +103,18 @@ double ChainModel::totalMass() const {
   return mass;
 }
 
+void ChainModel::scaleMassProperties(double factor) {
+  if (factor <= 0.0) {
+    throw std::invalid_argument(
+        "ChainModel::scaleMassProperties: factor must be > 0");
+  }
+  for (int i = 0; i < rkChainLinkNum(&chain_); ++i) {
+    rkLink* link = rkChainLink(&chain_, i);
+    rkLinkSetMass(link, factor * rkLinkMass(link));
+    zMat3DMulDRC(rkLinkInertia(link), factor);
+  }
+}
+
 double ChainModel::jointMin(int link_index) const {
   rkJoint* joint = rkChainLinkJoint(&chain_, link_index);
   if (rkJointDOF(joint) != 1) {

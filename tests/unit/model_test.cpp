@@ -172,3 +172,30 @@ TEST_CASE("config TOML mirrors the URDF limits in canonical order",
     }
   }
 }
+
+TEST_CASE("mass-property scaling scales gravity torque linearly",
+          "[model]") {
+  // Newton-Euler torques are linear in the inertial parameters, so a
+  // uniform mass/inertia scale must multiply the gravity torque field
+  // by exactly the same factor at any configuration.
+  constexpr double kScale = 1.3;
+  ChainModel truth(kModelPath);
+  ChainModel scaled(kModelPath);
+  scaled.scaleMassProperties(kScale);
+  CHECK(scaled.totalMass() == Approx(kScale * truth.totalMass()));
+
+  JointMap map_truth(truth);
+  JointMap map_scaled(scaled);
+  const double pose[kCanonicalDof] = {0.0, 0.4, 0.2, -0.9,
+                                      0.3, -0.5, 0.4, 0.05};
+  ZVecGuard q(kCanonicalDof), tau(kCanonicalDof), tau_scaled(kCanonicalDof);
+  for (int i = 0; i < kCanonicalDof; ++i) zVecSetElemNC(q.vec, i, pose[i]);
+  truth.gravityTorque(map_truth, q.vec, tau.vec);
+  scaled.gravityTorque(map_scaled, q.vec, tau_scaled.vec);
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    CHECK(zVecElemNC(tau_scaled.vec, i) ==
+          Approx(kScale * zVecElemNC(tau.vec, i)).margin(1e-12));
+  }
+
+  CHECK_THROWS(scaled.scaleMassProperties(0.0));
+}
