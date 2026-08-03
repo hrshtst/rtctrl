@@ -4,8 +4,9 @@ The vendor library's *capabilities* mapped to their rtctrl equivalents
 and the test or example that proves each — functional coverage for
 whole-arm CRANE-X7 control, not a 1:1 API port. Consciously simplified
 or omitted vendor surface is listed at the end. (Vendor reference:
-`rt_manipulators_cpp/rt_manipulators_lib`, deleted after this project
-stabilizes.)
+`third_party/rt_manipulators_cpp/rt_manipulators_lib` — originally slated
+for post-stabilization deletion, kept for reference per the owner's
+2026-08-03 decision.)
 
 ## Hardware class
 

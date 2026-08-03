@@ -1,5 +1,5 @@
 [submodule "rt_manipulators_cpp"]
-	path = rt_manipulators_cpp
+	path = third_party/rt_manipulators_cpp
 	url = https://github.com/rt-net/rt_manipulators_cpp.git
 [submodule "crane_x7_ros"]
 	path = crane_x7_ros
@@ -35,7 +35,7 @@
 	url = https://github.com/mi-lib/roki-gl.git
 	ignore = untracked
 [submodule "mi-lib-tutorial"]
-	path = mi-lib-tutorial
+	path = third_party/mi-lib-tutorial
 	url = https://github.com/mi-lib/mi-lib-tutorial
 [submodule "third_party/zx11"]
 	path = third_party/zx11
