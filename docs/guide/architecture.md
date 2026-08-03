@@ -2,22 +2,37 @@
 
 ## Layers
 
-```
-        controllers (yours)
-              │ Arm / Controller / Runner
-   ┌──────────┴──────────┐
-   │      arm/  L3       │   the sim⇄real BRIDGE
-   │  SimArm    RealArm  │
-   └───┬──────────┬──────┘
-       │          │
- model/ L2      hw/ L4          emu/  (test double)
- roki wrappers  CraneX7,        MotorEmulator
- ChainModel,    safety,   ──►   ├─ FakePacketIO (in-process)
- JointMap, IK,  config          └─ PtyBus (wire-level Protocol 2.0)
- trajectories      │                     ▲
-       │        dxl/ L1  ────────────────┘
-   mi-lib       PacketIO seam, Port(SDK), SyncGroup,
- (roki, zm,…)   control table, conversions
+```mermaid
+flowchart TB
+    C["controllers (yours)"]
+
+    subgraph ARM["arm/ — L3 · the sim⇄real bridge"]
+        direction LR
+        SIM["SimArm"]
+        REAL["RealArm"]
+    end
+
+    MODEL["model/ — L2<br>roki wrappers: ChainModel, JointMap,<br>IkSolver, trajectories"]
+    HW["hw/ — L4<br>CraneX7, safety, Config"]
+    MILIB["mi-lib<br>(roki, zm, …)"]
+    DXL["dxl/ — L1<br>PacketIO seam, Port(SDK), SyncGroup,<br>control table, conversions"]
+
+    subgraph EMU["emu/ — test double"]
+        direction TB
+        ME["MotorEmulator"]
+        FAKE["FakePacketIO<br>(in-process)"]
+        PTY["PtyBus<br>(wire-level Protocol 2.0)"]
+        ME --- FAKE
+        ME --- PTY
+    end
+
+    C -- "Arm · Controller · Runner" --> ARM
+    SIM --> MODEL
+    REAL --> HW
+    MODEL --> MILIB
+    HW --> DXL
+    HW -.-> FAKE
+    DXL -.-> PTY
 ```
 
 - **`dxl/` — motor communication.** `PacketIO` is the abstract
