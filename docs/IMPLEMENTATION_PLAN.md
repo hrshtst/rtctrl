@@ -9,8 +9,8 @@ delegates kinematics/dynamics/simulation to mi-lib (roki/roki-fd), uses Dynamixe
 motor comms, and provides a **bridge** so a controller runs unchanged against the roki-fd
 simulator and the real robot. Reference repos (`rt_manipulators_cpp/`, `crane_x7_ros/`,
 `mi-lib-tutorial/`) will be deleted later; `third_party/*` submodules stay.
-(2026-08-03: `rt_manipulators_cpp/` and `mi-lib-tutorial/` were instead moved under
-`third_party/` and are kept for reference.)
+(2026-08-03: all three were instead moved under `third_party/` and are kept for
+reference.)
 
 **User decisions (2026-07-17):** C++17, CMake, Catch2. mi-lib's zeda-makefile-gen/autotest
 explicitly rejected as too complicated. Config files in **TOML** (not YAML). Third-party
@@ -461,7 +461,7 @@ with the feature it tests, `test:` type reserved for test-only changes).
 - `third_party/DynamixelSDK/control_table/xm430_w350.model` — register data incl. Bus Watchdog (98)
 - `third_party/roki/src/rk_chain.c:334,478` — why rkChainID_G needs non-null rate vectors
 - `third_party/rt_manipulators_cpp/rt_manipulators_lib/{include,src}/` — feature parity reference (kept)
-- `crane_x7_ros/crane_x7_control/config/{manipulator_config.yaml,manipulator_links.csv}` — IDs, gains, torque constants, inertias (copy needed values before deletion)
+- `third_party/crane_x7_ros/crane_x7_control/config/{manipulator_config.yaml,manipulator_links.csv}` — IDs, gains, torque constants, inertias (kept)
 - `third_party/crane_x7_description/urdf/*.xacro` — model source
 
 ## Verification summary

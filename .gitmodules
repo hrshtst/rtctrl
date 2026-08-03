@@ -2,7 +2,7 @@
 	path = third_party/rt_manipulators_cpp
 	url = https://github.com/rt-net/rt_manipulators_cpp.git
 [submodule "crane_x7_ros"]
-	path = crane_x7_ros
+	path = third_party/crane_x7_ros
 	url = https://github.com/rt-net/crane_x7_ros.git
 [submodule "third_party/crane_x7_description"]
 	path = third_party/crane_x7_description
