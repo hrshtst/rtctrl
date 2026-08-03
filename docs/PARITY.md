@@ -97,3 +97,43 @@ plan's post-completion review notes):
   and hardware; motor emulator down to the wire protocol.
 - Structured IK results; canonical joint mapping with virtual-work
   torque reduction.
+
+## Failure behavior: bus loss and actuator power loss
+
+How the two libraries behave through the two failure drills every
+hardware session must anticipate. (Either way, `deactivate()` is not
+an e-stop and the actuator power cutoff stays within reach.)
+
+**USB disconnect — servos powered, bus dead:**
+
+| Vendor (`rt_manipulators_cpp::Hardware`) | rtctrl | Proven by |
+|---|---|---|
+| Nothing: the library never arms a watchdog, so the servos complete the last written goal at profile speed and hold it, torque on, indefinitely; host-side, `read_write_thread` loops printing errors — no failure path clears `thread_enable_` | Servo Bus Watchdog halts motion within 100 ms (mid-profile), locks the goal registers, torque stays on — a freeze, not a fall; host-side, five consecutive failed reads escalate: best-effort release, then the port is closed (one-way latch) | `dxl_test` watchdog cases; `hw_test` escalation cases; bring-up checklist step 5 (USB-pull drill, verified on hardware) |
+
+**Actuator power cutoff — servos dead, bus alive:** the physics is
+identical for both libraries — torque vanishes at the hardware level
+and the arm falls limp; no software changes that. The during and
+after differ:
+
+| Vendor | rtctrl | Proven by |
+|---|---|---|
+| No detection: errors print to `cerr` until the operator kills the process; the session object stays live and willing | Bounded detection (five failed reads → escalation → port closed, `escalated_` latched one-way); the app exits through its shutdown guard | `hw_test` read/write-failure escalation cases; `track9.csv` incident record |
+
+Recovery deserves a fair statement. For the disciplined workflow —
+cut power, kill the host, restart both — the end states are
+*equivalent*: rebooted servos come up torque-off, and a fresh vendor
+session's `torque_on` is jump-safe (XM firmware snaps the goal
+register to present at enable; the library then aligns its host-side
+goals from a sync read). The real difference is **who enforces that
+workflow**. The vendor library keeps a zombie session alive across
+the outage: its thread resumes sync-writing the pre-cut goals the
+moment rebooted servos answer, and a later `torque_on` *without a
+process restart* overwrites the enable-snap with those stale targets
+on the next cycle — a commanded jump to the pre-cut target. Safe by
+convention; the convention erodes under supervisors, retry logic, or
+any long-lived process. rtctrl closes the class by mechanism: an
+escalated session is bus-inert by construction (writers reject, port
+closed, latch is one-way), so the only path back onto the bus is a
+fresh `activate()` that re-verifies the servos and derives its hold
+goal from the arm's *present* posture, never the past. In one line:
+the vendor's recovery safety is procedural, rtctrl's is mechanical.
