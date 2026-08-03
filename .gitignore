@@ -2,6 +2,7 @@ build*/
 compile_commands.json
 .cache/
 .local/
+.envrc.local
 __pycache__/
 .venv/
 site/
