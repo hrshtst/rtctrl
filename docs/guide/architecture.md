@@ -4,10 +4,9 @@
 
 ```mermaid
 flowchart TB
-    C["controllers (yours)"]
+    C["controllers (yours)<br>via Arm · Controller · Runner"]
 
     subgraph ARM["arm/ — L3 · the sim⇄real bridge"]
-        direction LR
         SIM["SimArm"]
         REAL["RealArm"]
     end
@@ -26,7 +25,8 @@ flowchart TB
         ME --- PTY
     end
 
-    C -- "Arm · Controller · Runner" --> ARM
+    C --> SIM
+    C --> REAL
     SIM --> MODEL
     REAL --> HW
     MODEL --> MILIB
