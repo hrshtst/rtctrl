@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Seed-parsing contract of x7_ct_mass_error (review finding on
+# 7f73334): --seed is a uint64 parsed exactly. The double-based
+# parser accepted inf and out-of-range values (UB on conversion) and
+# collapsed seeds above 2^53, silently breaking the advertised
+# bit-reproducibility of a seed.
+set -eu
+BIN="$1"
+OUT="$2"
+mkdir -p "$OUT"
+
+# Rejections: infinity, sign, fraction, 2^64 overflow, empty.
+for bad in inf -1 1.5 18446744073709551616 ""; do
+  if "$BIN" --seed "$bad" --out "$OUT/bad.csv" >/dev/null 2>&1; then
+    echo "accepted invalid seed: '$bad'"
+    exit 1
+  fi
+done
+
+# The uint64 maximum is a valid seed.
+"$BIN" --mass-error 0.2 --com-error 0.01 --seed 18446744073709551615 \
+  --out "$OUT/max.csv" > /dev/null
+
+# 2^53 and 2^53+1 are DISTINCT seeds (indistinguishable as doubles):
+# their perturbed runs must differ.
+"$BIN" --mass-error 0.2 --com-error 0.01 --seed 9007199254740992 \
+  --out "$OUT/p53.csv" > /dev/null
+"$BIN" --mass-error 0.2 --com-error 0.01 --seed 9007199254740993 \
+  --out "$OUT/p53_1.csv" > /dev/null
+if cmp -s "$OUT/p53.csv" "$OUT/p53_1.csv"; then
+  echo "seeds 2^53 and 2^53+1 collapsed to the same run"
+  exit 1
+fi
+echo "seed CLI contract holds"

@@ -16,7 +16,9 @@
 // a given --seed. Scale applies first; both may combine.
 // CSV columns: t, qd0..qd7, q0..q7 (canonical order, rad).
 
+#include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +43,14 @@ bool parseDouble(const char* s, double* out) {
   return end != s && *end == '\0';
 }
 
+// Strict uint64 parse — a double round trip would accept inf, hit UB
+// on out-of-range conversion, and collapse seeds above 2^53.
+bool parseSeed(const char* s, std::uint64_t* out) {
+  const char* end = s + std::strlen(s);
+  const auto res = std::from_chars(s, end, *out);
+  return res.ec == std::errc() && res.ptr == end;
+}
+
 int usage() {
   std::fprintf(stderr,
                "usage: x7_ct_mass_error [--mass-scale s] [--mass-error e] "
@@ -55,7 +65,7 @@ int main(int argc, char* argv[]) {
   double mass_scale = 1.2;
   double mass_error = 0.0;
   double com_error = 0.0;
-  double seed = 1.0;
+  std::uint64_t seed = 1;
   double ki = 0.0;
   std::string out_path = "ct_mass_error.csv";
   for (int i = 1; i < argc; ++i) {
@@ -67,10 +77,7 @@ int main(int argc, char* argv[]) {
     } else if (std::strcmp(argv[i], "--com-error") == 0) {
       if (!has_value || !parseDouble(argv[++i], &com_error)) return usage();
     } else if (std::strcmp(argv[i], "--seed") == 0) {
-      if (!has_value || !parseDouble(argv[++i], &seed) || seed < 0.0 ||
-          seed != std::floor(seed)) {
-        return usage();
-      }
+      if (!has_value || !parseSeed(argv[++i], &seed)) return usage();
     } else if (std::strcmp(argv[i], "--ki") == 0) {
       if (!has_value || !parseDouble(argv[++i], &ki)) return usage();
     } else if (std::strcmp(argv[i], "--out") == 0) {
@@ -105,8 +112,7 @@ int main(int argc, char* argv[]) {
     const double true_mass = ctrl_model.totalMass();
     ctrl_model.scaleMassProperties(mass_scale);
     if (mass_error > 0.0 || com_error > 0.0) {
-      ctrl_model.perturbMassProperties(
-          mass_error, com_error, static_cast<std::uint64_t>(seed));
+      ctrl_model.perturbMassProperties(mass_error, com_error, seed);
     }
     model::JointMap map(ctrl_model);
     arm::ComputedTorque controller(ctrl_model, map, trajectory, 20.0, 2.0);
@@ -163,9 +169,10 @@ int main(int argc, char* argv[]) {
 
     double sum_all = 0.0;
     std::printf("mass-scale %.2f, mass-error %.2f, com-error %.3f m, "
-                "seed %.0f (controller model %.3f kg, true %.3f kg), "
+                "seed %llu (controller model %.3f kg, true %.3f kg), "
                 "ki %.1f, %d cycles -> %s\n",
-                mass_scale, mass_error, com_error, seed,
+                mass_scale, mass_error, com_error,
+                static_cast<unsigned long long>(seed),
                 ctrl_model.totalMass(), true_mass, ki, samples,
                 out_path.c_str());
     for (int i = 0; i < model::kCanonicalDof; ++i) {

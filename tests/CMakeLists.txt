@@ -153,6 +153,15 @@ add_test(NAME x7_float_log_smoke
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_float_log_smoke PROPERTIES LABELS integration)
 
+# x7_ct_mass_error seed CLI contract: uint64 parsed exactly — bad
+# seeds rejected, the maximum accepted, 2^53 vs 2^53+1 distinct.
+add_test(NAME x7_ct_mass_error_cli
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/ct_mass_error_cli.sh
+          $<TARGET_FILE:x7_ct_mass_error>
+          ${CMAKE_BINARY_DIR}/ct_mass_error_cli
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_ct_mass_error_cli PROPERTIES LABELS integration)
+
 # EFL study smoke: one held-out case end-to-end. --case output must
 # declare itself NONCANONICAL — only the complete unfiltered matrix
 # from a clean tree may be promoted to data/efl_study/results.json.
