@@ -1,5 +1,6 @@
 #include "rtctrl/model/chain_model.hpp"
 
+#include <cmath>
 #include <filesystem>
 #include <stdexcept>
 #include <utility>
@@ -104,9 +105,10 @@ double ChainModel::totalMass() const {
 }
 
 void ChainModel::scaleMassProperties(double factor) {
-  if (factor <= 0.0) {
+  // NaN fails every comparison, so test finiteness explicitly.
+  if (!std::isfinite(factor) || factor <= 0.0) {
     throw std::invalid_argument(
-        "ChainModel::scaleMassProperties: factor must be > 0");
+        "ChainModel::scaleMassProperties: factor must be finite and > 0");
   }
   for (int i = 0; i < rkChainLinkNum(&chain_); ++i) {
     rkLink* link = rkChainLink(&chain_, i);

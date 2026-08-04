@@ -3,6 +3,7 @@
 #include <toml++/toml.hpp>
 
 #include <cmath>
+#include <limits>
 #include <set>
 
 #include "rtctrl/model/chain_model.hpp"
@@ -198,4 +199,8 @@ TEST_CASE("mass-property scaling scales gravity torque linearly",
   }
 
   CHECK_THROWS(scaled.scaleMassProperties(0.0));
+  CHECK_THROWS(scaled.scaleMassProperties(-1.0));
+  CHECK_THROWS(scaled.scaleMassProperties(std::nan("")));
+  CHECK_THROWS(scaled.scaleMassProperties(
+      std::numeric_limits<double>::infinity()));
 }

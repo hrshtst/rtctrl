@@ -26,27 +26,51 @@
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;
 
+namespace {
+
+// Strict double parse: the whole token must convert.
+bool parseDouble(const char* s, double* out) {
+  char* end = nullptr;
+  *out = std::strtod(s, &end);
+  return end != s && *end == '\0';
+}
+
+int usage() {
+  std::fprintf(stderr,
+               "usage: x7_ct_mass_error [--mass-scale s] [--ki gain] "
+               "[--out file.csv]\n");
+  return 1;
+}
+
+}  // namespace
+
 int main(int argc, char* argv[]) {
   constexpr const char* kModelPath = "models/crane_x7/crane_x7.ztk";
   double mass_scale = 1.2;
   double ki = 0.0;
   std::string out_path = "ct_mass_error.csv";
-  for (int i = 1; i < argc - 1; ++i) {
+  for (int i = 1; i < argc; ++i) {
+    const bool has_value = i + 1 < argc;
     if (std::strcmp(argv[i], "--mass-scale") == 0) {
-      mass_scale = std::atof(argv[i + 1]);
+      if (!has_value || !parseDouble(argv[++i], &mass_scale)) return usage();
     } else if (std::strcmp(argv[i], "--ki") == 0) {
-      ki = std::atof(argv[i + 1]);
+      if (!has_value || !parseDouble(argv[++i], &ki)) return usage();
     } else if (std::strcmp(argv[i], "--out") == 0) {
-      out_path = argv[i + 1];
+      if (!has_value) return usage();
+      out_path = argv[++i];
+    } else {
+      std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
+      return usage();
     }
   }
 
   try {
-    // The same round trip and gains as the M8 sim acceptance
-    // (tracking_sim_test), so the mass-scale 1.0 run reproduces the
-    // tested baseline. Hardware countermeasures (PD low-pass, friction
-    // integrator) stay off by default: this isolates the model-error
-    // effect in the ideal rigid sim.
+    // The same start/goal postures and gains as the M8 sim acceptance
+    // (tracking_sim_test), on a faster round trip (2 s minimum legs vs
+    // the test's one-way 3 s minimum — the RMS numbers are therefore
+    // NOT directly comparable to the test's). Hardware countermeasures
+    // (PD low-pass, friction integrator) stay off by default: this
+    // isolates the model-error effect in the ideal rigid sim.
     const double start[] = {0.0, 0.2, 0.0, -0.4, 0.0, -0.2, 0.0, 0.1};
     const double goal[] = {0.4, 0.7, -0.3, -1.2, 0.3, -0.6, 0.5, 0.3};
     model::ZVector q0(model::kCanonicalDof), qf(model::kCanonicalDof);
