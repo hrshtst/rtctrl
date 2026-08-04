@@ -9,12 +9,15 @@
 //
 // Usage: x7_ct_mass_error [--mass-scale s] [--mass-error e]
 //                         [--com-error m] [--seed n] [--ki gain]
-//                         [--out file.csv]
+//                         [--out file.csv] [--zvs file.zvs]
 // --mass-scale applies the uniform density-style factor; --mass-error /
 // --com-error add the tutorial-style randomized per-link perturbation
 // (symmetric mass factor, COM offset cube in meters), reproducible for
 // a given --seed. Scale applies first; both may combine.
 // CSV columns: t, qd0..qd7, q0..q7 (canonical order, rad).
+// --zvs additionally logs the MEASURED motion as a 9-coordinate
+// joint-displacement sequence (finger mimic expanded via JointMap) for
+// playback:  rk_anim models/crane_x7/crane_x7.ztk file.zvs
 
 #include <charconv>
 #include <cmath>
@@ -22,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "rtctrl/arm/computed_torque.hpp"
@@ -30,6 +34,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/model/zvs_writer.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;
@@ -54,7 +59,8 @@ bool parseSeed(const char* s, std::uint64_t* out) {
 int usage() {
   std::fprintf(stderr,
                "usage: x7_ct_mass_error [--mass-scale s] [--mass-error e] "
-               "[--com-error m] [--seed n] [--ki gain] [--out file.csv]\n");
+               "[--com-error m] [--seed n] [--ki gain] [--out file.csv] "
+               "[--zvs file.zvs]\n");
   return 1;
 }
 
@@ -68,6 +74,7 @@ int main(int argc, char* argv[]) {
   std::uint64_t seed = 1;
   double ki = 0.0;
   std::string out_path = "ct_mass_error.csv";
+  std::string zvs_path;
   for (int i = 1; i < argc; ++i) {
     const bool has_value = i + 1 < argc;
     if (std::strcmp(argv[i], "--mass-scale") == 0) {
@@ -83,6 +90,9 @@ int main(int argc, char* argv[]) {
     } else if (std::strcmp(argv[i], "--out") == 0) {
       if (!has_value) return usage();
       out_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--zvs") == 0) {
+      if (!has_value) return usage();
+      zvs_path = argv[++i];
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return usage();
@@ -136,6 +146,12 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < model::kCanonicalDof; ++i) std::fprintf(out, ",q%d", i);
     std::fprintf(out, "\n");
 
+    std::unique_ptr<model::ZvsWriter> zvs;
+    model::ZVector q9(model::kModelDof);
+    if (!zvs_path.empty()) {
+      zvs = std::make_unique<model::ZvsWriter>(zvs_path);
+    }
+
     model::ZVector q_d(model::kCanonicalDof);
     arm::JointState state;
     arm::JointCommand cmd;
@@ -163,6 +179,10 @@ int main(int argc, char* argv[]) {
         const double e = q_d[i] - zVecElemNC(state.q.get(), i);
         sum_sq[i] += e * e;
       }
+      if (zvs) {
+        map.expand(state.q.get(), q9.get());
+        zvs->frame(sim.dt(), q9.get());
+      }
       ++samples;
     }
     std::fclose(out);
@@ -182,6 +202,11 @@ int main(int argc, char* argv[]) {
     }
     std::printf("  all-joint RMS %.4f rad\n",
                 std::sqrt(sum_all / (samples * model::kCanonicalDof)));
+    if (zvs) {
+      std::printf("%d zvs frames -> %s\n  view with:  rk_anim "
+                  "models/crane_x7/crane_x7.ztk %s\n",
+                  zvs->frames(), zvs_path.c_str(), zvs_path.c_str());
+    }
     return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());

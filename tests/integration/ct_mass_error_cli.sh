@@ -17,9 +17,21 @@ for bad in inf -1 1.5 18446744073709551616 ""; do
   fi
 done
 
-# The uint64 maximum is a valid seed.
+# --zvs requires a value.
+if "$BIN" --out "$OUT/bad.csv" --zvs >/dev/null 2>&1; then
+  echo "accepted --zvs without a value"
+  exit 1
+fi
+
+# The uint64 maximum is a valid seed; --zvs writes one 9-coordinate
+# frame per control cycle (451 for the fixed round trip).
 "$BIN" --mass-error 0.2 --com-error 0.01 --seed 18446744073709551615 \
-  --out "$OUT/max.csv" > /dev/null
+  --out "$OUT/max.csv" --zvs "$OUT/max.zvs" > /dev/null
+frames=$(wc -l < "$OUT/max.zvs")
+if [ "$frames" -ne 451 ]; then
+  echo "expected 451 zvs frames, got $frames"
+  exit 1
+fi
 
 # 2^53 and 2^53+1 are DISTINCT seeds (indistinguishable as doubles):
 # their perturbed runs must differ.
