@@ -107,7 +107,10 @@ def sweep(binary: pathlib.Path, out: pathlib.Path, seeds: int) -> None:
         for cond, em, ec, ki in CONDITIONS:
             record(cond, em, ec, ki, seed)
     with open(out / "results.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        # LF line endings so a regenerated file byte-matches the
+        # git-normalized tracked copy under data/.
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()),
+                                lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
     print(f"{len(rows)} runs -> {out / 'results.csv'}")
