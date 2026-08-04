@@ -44,9 +44,15 @@ fi
 # and a symlink that dangles until the CSV is created must both be
 # rejected by the post-open equivalent() check.
 rm -f "$OUT/hl.csv" "$OUT/hl.zvs" "$OUT/dang.csv" "$OUT/dang.zvs"
-touch "$OUT/hl.csv" && ln "$OUT/hl.csv" "$OUT/hl.zvs"
+printf 'sentinel\n' > "$OUT/hl.csv" && ln "$OUT/hl.csv" "$OUT/hl.zvs"
 if "$BIN" --out "$OUT/hl.csv" --zvs "$OUT/hl.zvs" >/dev/null 2>&1; then
   echo "accepted a hard-linked --out/--zvs pair"
+  exit 1
+fi
+# The rejection must happen BEFORE the CSV open truncates the shared
+# inode — the pre-existing contents survive.
+if [ "$(cat "$OUT/hl.csv")" != "sentinel" ]; then
+  echo "hard-linked contents were destroyed before rejection"
   exit 1
 fi
 ln -s "$OUT/dang.csv" "$OUT/dang.zvs"  # dangles until the CSV opens

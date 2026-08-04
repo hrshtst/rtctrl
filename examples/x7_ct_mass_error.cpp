@@ -113,6 +113,18 @@ int main(int argc, char* argv[]) {
       std::fprintf(stderr, "--out and --zvs must name distinct files\n");
       return 1;
     }
+    // Pre-open IDENTITY check for the both-already-exist case: a hard
+    // link must be rejected BEFORE fopen truncates the shared inode
+    // (the post-open check would fire too late to save the contents).
+    if (!zvs_path.empty()) {
+      std::error_code ec;
+      if (std::filesystem::exists(out_path, ec) &&
+          std::filesystem::exists(zvs_path, ec) &&
+          std::filesystem::equivalent(out_path, zvs_path, ec)) {
+        std::fprintf(stderr, "--out and --zvs must name distinct files\n");
+        return 1;
+      }
+    }
 
     // The same start/goal postures and gains as the M8 sim acceptance
     // (tracking_sim_test), on a faster round trip (2 s minimum legs vs
