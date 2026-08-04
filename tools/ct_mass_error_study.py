@@ -194,6 +194,53 @@ def report(out: pathlib.Path) -> None:
     print(f"wrote {out / 'study.png'}")
 
 
+def trajectories_figure(out: pathlib.Path) -> None:
+    """Reference vs actual (and error) for the correlated endpoints,
+    rebuilt from the retained per-run trajectory CSVs."""
+    series = [("U0.7", "mass ×0.7", "#2a78d6"),
+              ("base", "true model", "#eb6834"),
+              ("U1.3", "mass ×1.3", "#1baf7a")]
+    data = {c: list(csv.DictReader(open(out / "runs" / f"{c}_s1.csv")))
+            for c, _, _ in series}
+    fig, axes = plt.subplots(2, 2, figsize=(11, 6.4), sharex=True)
+    fig.patch.set_facecolor(SURFACE)
+    for ax in axes.flat:
+        ax.set_facecolor(SURFACE)
+        ax.grid(True, color=GRID, linewidth=0.7)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color(MUTED)
+        ax.tick_params(colors=MUTED, labelsize=9)
+    for col, (j, name) in enumerate(((1, "j1 shoulder tilt"),
+                                     (3, "j3 elbow"))):
+        top, bot = axes[0][col], axes[1][col]
+        t = [float(r["t"]) for r in data["base"]]
+        top.plot(t, [float(r[f"qd{j}"]) for r in data["base"]], color=MUTED,
+                 linewidth=1.6, linestyle=(0, (4, 3)),
+                 label="reference" if col == 0 else None)
+        for cond, label, color in series:
+            q = [float(r[f"q{j}"]) for r in data[cond]]
+            top.plot(t, q, color=color, linewidth=1.8,
+                     label=label if col == 0 else None)
+            err = [(q[k] - float(data[cond][k][f"qd{j}"])) * 1e3
+                   for k in range(len(t))]
+            bot.plot(t, err, color=color, linewidth=1.8)
+        bot.axhline(0.0, color=MUTED, linewidth=0.8)
+        top.set_title(name, color=INK, fontsize=11, loc="left")
+        bot.set_xlabel("t [s]", color=INK, fontsize=10)
+    axes[0][0].set_ylabel("q [rad]", color=INK, fontsize=10)
+    axes[1][0].set_ylabel("tracking error [mrad]", color=INK, fontsize=10)
+    fig.legend(loc="upper right", bbox_to_anchor=(0.99, 0.97),
+               frameon=False, fontsize=9, labelcolor=INK)
+    fig.suptitle(
+        "Correlated mass-error endpoints — reference vs actual, per joint",
+        color=INK, fontsize=11, x=0.02, ha="left")
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(out / "trajectories.png", dpi=140)
+    print(f"wrote {out / 'trajectories.png'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary",
@@ -212,6 +259,7 @@ def main() -> None:
         sweep(args.binary, args.out, args.seeds)
         provenance(args.binary, args.out, args.seeds)
     report(args.out)
+    trajectories_figure(args.out)
 
 
 if __name__ == "__main__":
