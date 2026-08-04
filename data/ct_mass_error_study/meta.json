@@ -1,0 +1,94 @@
+{
+  "generated_utc": "2026-08-04T03:47:36.951921+00:00",
+  "argv": [
+    "tools/ct_mass_error_study.py"
+  ],
+  "git_commit": "e612222b902e1bbcfd4ca41927667b01770e2696",
+  "git_dirty": false,
+  "model": {
+    "path": "models/crane_x7/crane_x7.ztk",
+    "sha256": "ae8af5dc52a12b38132ff78028ac142837e5f08047b4ac2b4694ee69a7e566c5"
+  },
+  "binary": {
+    "path": "/home/atsuta/develop/rtctrl/build/examples/x7_ct_mass_error",
+    "sha256": "e26e5fb4952a976796f5a391696e9d8e4bcf96fb75b90e149b008c2c582ac0e6"
+  },
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20
+  ],
+  "conditions": [
+    [
+      "M10",
+      0.1,
+      0.0,
+      0.0
+    ],
+    [
+      "M20",
+      0.2,
+      0.0,
+      0.0
+    ],
+    [
+      "M30",
+      0.3,
+      0.0,
+      0.0
+    ],
+    [
+      "C05",
+      0.0,
+      0.005,
+      0.0
+    ],
+    [
+      "C10",
+      0.0,
+      0.01,
+      0.0
+    ],
+    [
+      "C20",
+      0.0,
+      0.02,
+      0.0
+    ],
+    [
+      "M20C10",
+      0.2,
+      0.01,
+      0.0
+    ],
+    [
+      "M20C10k",
+      0.2,
+      0.01,
+      6.0
+    ]
+  ],
+  "correlated_scales": [
+    0.7,
+    0.8,
+    1.2,
+    1.3
+  ]
+}

@@ -3,9 +3,12 @@
 *A descriptive simulation study, 2026-08-04. No controller, protocol,
 or gate was changed. Tooling: `examples/x7_ct_mass_error` and
 `tools/ct_mass_error_study.py`; figures and tables below are the
-outputs of the committed study runner (provenance in each run's
-`meta.json`: git commit + dirty flag, model and binary SHA-256,
-seed list).*
+outputs of the committed study runner. The results and provenance
+record behind the committed figures is tracked at
+`data/ct_mass_error_study/` (`results.csv` plus `meta.json`: git
+commit and dirty flag, model and binary SHA-256, seed list), so a
+fresh checkout can audit them without re-running; the seeded sweep
+itself reproduces bit-identically via the command in Method.*
 
 ## Background
 
@@ -84,13 +87,16 @@ tilt) is gravity-dominated, j3 (elbow) acceleration-dominated:
 
 j1's error splits symmetrically with the scale sign and its magnitude
 matches the static-offset arithmetic Δg/Kp (≈0.3–0.5 Nm of gravity
-error over Kp = 20 → the observed ~16 mrad peak). j3's error barely
-moves across the whole sweep — its ~23 mrad, acceleration-correlated
-component is *insensitive to every inertial perturbation tested*. That
-insensitivity is the measured fact; attributing the component to the
-plant's unmodeled reflected motor inertia is a plausible hypothesis
-that has NOT been isolated (no zero-inertia or matched-controller
-ablation has been run — same scoping as the EFL study's).
+error over Kp = 20 → the observed ~16 mrad peak). j3 needs a careful
+statement: only its *aggregate RMS* is comparatively insensitive
+(22.6–23.6 mrad across the sweep) — the error *waveform* does change
+with the scale, by up to 9.6 mrad pointwise from the baseline at both
+endpoints, as the figure shows. The comparative insensitivity of the
+scalar is the measured fact; attributing the dominant,
+acceleration-correlated component to the plant's unmodeled reflected
+motor inertia is a plausible hypothesis that has NOT been isolated
+(no zero-inertia or matched-controller ablation has been run — same
+scoping as the EFL study's).
 
 ### Randomized perturbations (20 seeds per condition)
 
@@ -119,9 +125,11 @@ j1 and all-joint RMS, median [min–max] in mrad:
    correlated runs are *references*, not a proven worst-case
    envelope; nothing here establishes a global extremum.
 2. **No numerical failure or gross divergence occurred in any of the
-   166 runs, and every aggregate RMS stayed within 8.0–8.4 mrad** —
-   within 5 % of the no-error baseline. This is a finite-horizon
-   (~4.5 s) observation; it makes no asymptotic stability claim.
+   166 runs.** The 160 randomized runs' aggregate RMS stayed within
+   8.0–8.4 mrad (within 5 % of the no-error baseline); the four
+   correlated endpoints reach 9.2 mrad, as the endpoint table shows.
+   This is a finite-horizon (~4.5 s) observation; it makes no
+   asymptotic stability claim.
 3. **COM error is the stronger class, millimeter for percent**:
    ±10 mm ≈ ±20 % mass in median j1 effect, and ±20 mm posts the
    worst randomized medians.
@@ -140,5 +148,5 @@ elasticity), so this study bounds model-error sensitivity only —
 per the testing ladder, a sim pass is necessary, never sufficient.
 One trajectory, 20 seeds per condition, synthetic error classes
 (density-style scaling; independent uniform draws). The all-joint
-aggregate is dominated by j3's invariant component, which compresses
-between-condition differences in that column.
+aggregate is dominated by j3's near-constant RMS component, which
+compresses between-condition differences in that column.
