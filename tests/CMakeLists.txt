@@ -162,6 +162,15 @@ add_test(NAME x7_ct_mass_error_cli
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_ct_mass_error_cli PROPERTIES LABELS integration)
 
+# x7_wave --zvs: the commanded reference exports as a playable
+# 9-coordinate sequence over the pty emulator.
+add_test(NAME x7_wave_zvs_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/wave_zvs_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_wave>
+          ${CMAKE_BINARY_DIR}/wave_zvs_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_wave_zvs_smoke PROPERTIES LABELS integration)
+
 # EFL study smoke: one held-out case end-to-end. --case output must
 # declare itself NONCANONICAL — only the complete unfiltered matrix
 # from a clean tree may be promoted to data/efl_study/results.json.
