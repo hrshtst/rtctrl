@@ -17,9 +17,26 @@ for bad in inf -1 1.5 18446744073709551616 ""; do
   fi
 done
 
-# --zvs requires a value.
+# --zvs requires a NON-EMPTY value (empty would silently alias the
+# option-absent state and skip logging without a word).
 if "$BIN" --out "$OUT/bad.csv" --zvs >/dev/null 2>&1; then
   echo "accepted --zvs without a value"
+  exit 1
+fi
+if "$BIN" --out "$OUT/bad.csv" --zvs "" >/dev/null 2>&1; then
+  echo "accepted an empty --zvs value"
+  exit 1
+fi
+
+# --out/--zvs collisions are rejected on NORMALIZED paths: the same
+# file opened twice interleaves CSV rows and zvs frames.
+if "$BIN" --out "$OUT/same.csv" --zvs "$OUT/same.csv" >/dev/null 2>&1; then
+  echo "accepted identical --out and --zvs paths"
+  exit 1
+fi
+if "$BIN" --out "$OUT/same.csv" \
+    --zvs "$OUT/../$(basename "$OUT")/same.csv" >/dev/null 2>&1; then
+  echo "accepted an aliased --out/--zvs path"
   exit 1
 fi
 

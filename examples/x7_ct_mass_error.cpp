@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -91,7 +92,8 @@ int main(int argc, char* argv[]) {
       if (!has_value) return usage();
       out_path = argv[++i];
     } else if (std::strcmp(argv[i], "--zvs") == 0) {
-      if (!has_value) return usage();
+      // An empty value would silently alias the "option absent" state.
+      if (!has_value || argv[i + 1][0] == '\0') return usage();
       zvs_path = argv[++i];
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
@@ -100,6 +102,15 @@ int main(int argc, char* argv[]) {
   }
 
   try {
+    // The two writers must never open the same file: an aliased path
+    // interleaves CSV rows and zvs frames into one corrupt output.
+    if (!zvs_path.empty() &&
+        std::filesystem::weakly_canonical(out_path) ==
+            std::filesystem::weakly_canonical(zvs_path)) {
+      std::fprintf(stderr, "--out and --zvs must name distinct files\n");
+      return 1;
+    }
+
     // The same start/goal postures and gains as the M8 sim acceptance
     // (tracking_sim_test), on a faster round trip (2 s minimum legs vs
     // the test's one-way 3 s minimum — the RMS numbers are therefore
