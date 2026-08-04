@@ -130,7 +130,23 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >   known-failed all-1.0 configuration); `--log` is REQUIRED and
 >   created exclusively — an existing file is refused, never
 >   overwritten — so the unique-filename-per-attempt rule is
->   ENFORCED before bus contact; the marker protocol is unchanged;
+>   ENFORCED before bus contact. **Post-closure timing disposition
+>   (2026-08-04, owner-requested and accepted in review):** the current
+>   acceptance protocol uses the default 10 s marker-anchored window.
+>   Demonstrations may select a non-default 5–50 s window with
+>   `--evaluation-time <seconds>`; those logs self-label
+>   `run_mode: demonstration` and the acceptance validator rejects
+>   them. The outer
+>   deadline must be at least marker deadline (8 s) + evaluation time
+>   + margin (2 s). For example, a 20 s window uses:
+>
+>   ```sh
+>   ./build/apps/x7_float \
+>     --config config/crane_x7_vendor_scale.toml \
+>     --log float_demo.csv --evaluation-time 20 30
+>   ```
+>
+>   The archived M-GC3 evidence used its original 5 s protocol. Keep the
 >   power cutoff within reach. Full record:
 >   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
 > - **`x7_ident` remains PARKED** pending its own disposition: it

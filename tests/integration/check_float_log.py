@@ -22,12 +22,14 @@ instrumented j1 notch-correlation session is VOID on one, because a
 cross-axis gate discontinuity (j3 zeroing ~1 Nm during the archived
 j1 session) is a plausible confounder for the felt notch.
 
-With --vendor (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2): additionally
-requires the vendor-equivalent scales in the header, a released
-transition, marker-anchored termination (last row ~5 s after the
-marker), and tau_applied == scale * tau_request on every applied row —
-the end-to-end proof that the calibration applies exactly once through
-the RealArm command path."""
+With --vendor (GRAVITY_CALIBRATION_PLAN M-GC1/M-GC2), the current
+10-second acceptance protocol is required. With --demo, a non-default
+5..50-second demonstration protocol is required and can never validate
+as acceptance. Both additionally require the vendor-equivalent scales,
+a released transition, marker-anchored termination at the declared
+evaluation_window_s, and tau_applied == scale * tau_request on every
+applied row. The archived five-second acceptance protocol remains valid
+only through --legacy --vendor."""
 import csv
 import hashlib
 import math
@@ -70,12 +72,17 @@ LEGACY_EVIDENCE = {
 
 args = sys.argv[1:]
 vendor = "--vendor" in args
+demo = "--demo" in args
 feel = "--feel" in args
 legacy = "--legacy" in args  # pre-run_mode archived evidence ONLY
 gate_free = "--gate-free" in args  # instrumented j1 sessions: VOID on gates
-path = [a for a in args if not a.startswith("--")][0]
+assert sum((vendor, demo, feel)) <= 1, (
+    "--vendor, --demo and --feel are mutually exclusive")
+assert not (legacy and demo), "--legacy never validates as a demonstration"
+path = next(a for a in args if not a.startswith("--"))
 
-raw = open(path, "rb").read()
+with open(path, "rb") as f:
+    raw = f.read()
 lines = raw.decode().splitlines()
 comments = []
 while lines and lines[0].startswith("#"):
@@ -93,8 +100,10 @@ if mode_lines:
     # classification for any new log (review finding)
     assert not legacy, "--legacy rejected: this log carries run_mode"
     run_mode = mode_lines[0].split(":", 1)[1].strip()
-    # a feel-check log must never pass as acceptance evidence
-    assert run_mode == ("feel-check" if feel else "acceptance"), run_mode
+    # Feel-check and demonstration logs must never pass as acceptance.
+    expected_mode = (
+        "feel-check" if feel else ("demonstration" if demo else "acceptance"))
+    assert run_mode == expected_mode, run_mode
 else:
     # --legacy admits ONLY the pre-run_mode archived evidence
     # (float2/float3, 2026-07-30); new logs always carry the header,
@@ -114,8 +123,29 @@ else:
             "acceptance evidence")
 dur_lines = [c for c in comments if c.startswith("# duration_s:")]
 requested_s = float(dur_lines[0].split(":", 1)[1]) if dur_lines else None
+window_lines = [
+    c for c in comments if c.startswith("# evaluation_window_s:")]
+evaluation_window_s = (
+    float(window_lines[0].split(":", 1)[1]) if window_lines else None)
 if not legacy:
     assert requested_s is not None, "duration_s header missing"
+    if feel:
+        assert evaluation_window_s is None, (
+            "feel-check log must not declare an evaluation window")
+    else:
+        assert evaluation_window_s is not None, (
+            "evaluation_window_s header missing")
+        assert 5.0 <= evaluation_window_s <= 50.0, (
+            f"evaluation window out of range: {evaluation_window_s}")
+        if demo:
+            assert evaluation_window_s != 10.0, (
+                "demonstration log uses the acceptance window")
+        else:
+            assert evaluation_window_s == 10.0, (
+                "acceptance log uses a non-default evaluation window")
+        assert requested_s >= 8.0 + evaluation_window_s + 2.0, (
+            "outer duration does not cover marker deadline + evaluation "
+            "window + margin")
 
 rows = list(csv.DictReader(lines))
 expected_v1 = list(SHARED) + [
@@ -196,14 +226,16 @@ for k, r in enumerate(rows):
 
 assert valid_seen >= len(rows) - STARTUP_ROWS, "too few valid applied rows"
 
-if vendor:
+if vendor or demo:
     for i, s in enumerate(scales):
         assert abs(s - VENDOR_SCALES[i]) < 1e-9, (
             f"scale j{i} = {s}, expected {VENDOR_SCALES[i]}")
     assert t_marker is not None, "no release marker recorded"
     t_end = float(rows[-1]["t"])
-    assert 4.8 <= t_end - t_marker <= 5.3, (
-        f"run did not terminate ~5 s after the marker "
+    expected_window = 5.0 if legacy else evaluation_window_s
+    assert expected_window - 0.2 <= t_end - t_marker \
+        <= expected_window + 0.3, (
+        f"run did not terminate ~{expected_window:g} s after the marker "
         f"(marker {t_marker}, end {t_end})")
     # the calibration applies EXACTLY once: applied torque (reconverted
     # through the nominal constant) equals scale * requested torque.
@@ -242,8 +274,17 @@ else:
     assert legacy or t_marker is None, \
         "unexpected release marker in phase 1"
 
-print("float log ok: %d rows, %d columns, %d applied-valid%s%s" %
-      (len(rows), len(expected), valid_seen,
-       ", %d operator events" % event_rows if v2 else "",
-       ", vendor-scale verified" if vendor
-       else (", feel-check mode" if feel else "")))
+event_summary = f", {event_rows} operator events" if v2 else ""
+mode_summary = (
+    ", vendor-scale verified"
+    if vendor
+    else (
+        ", demonstration verified"
+        if demo
+        else (", feel-check mode" if feel else "")
+    )
+)
+print(
+    f"float log ok: {len(rows)} rows, {len(expected)} columns, "
+    f"{valid_seen} applied-valid{event_summary}{mode_summary}"
+)

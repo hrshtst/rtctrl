@@ -37,24 +37,31 @@
 // the arm; the console acknowledges and the CSV records the
 // `released` column transition — release the arm ON that cue, so the
 // logged marker slightly precedes the physical release. The run ends
-// automatically 5 s after the marker; without a marker within 8 s of
-// the switch the run aborts (the commanded duration is only the outer
-// deadline).
+// automatically after the selected evaluation window (10 s by
+// default); without a marker within 8 s of the switch the run aborts
+// (the commanded duration is only the outer deadline).
 //
 // Usage: x7_float [--config path] [--port dev] [--log out.csv]
-//                 [--feel] [seconds]
+//                 [--evaluation-time seconds] [--feel] [seconds]
 //   --config MUST carry the approved vendor scales in every mode
 //   (config/crane_x7_vendor_scale.toml) — refused before bus contact
 //   otherwise; the repo default config is deliberately NOT accepted.
+//   --evaluation-time sets the normal-mode, marker-anchored evaluation
+//   window (default 10 s, range 5..50 s). The outer duration must cover
+//   the 8 s marker deadline, the selected window, and a 2 s margin.
+//   A non-default window is demonstration-only: its log self-labels
+//   "demonstration" and is never acceptance evidence.
+//   It is rejected with --feel, whose duration already controls the
+//   complete post-marker demonstration session.
 //   --feel: feel-check mode for the M-GC3 back-drive confirmation.
 //   The marker contract is UNCHANGED (press ENTER while supporting
 //   within 8 s or the run aborts), but the session then runs to the
-//   commanded outer deadline instead of ending 5 s after the marker —
-//   room to back-drive each joint carefully. TORQUE REMAINS ENABLED
-//   until that deadline (the release cue says so). Duration is
-//   bounded to 60 s in EVERY mode (acceptance runs self-terminate at
-//   marker + 5 s regardless), and EVERY mode requires the APPROVED
-//   vendor calibration vector (±1e-6) BEFORE bus contact — the
+//   commanded outer deadline instead of ending after the evaluation
+//   window — room to back-drive each joint carefully. TORQUE REMAINS
+//   ENABLED until that deadline (the release cue says so). Duration is
+//   bounded to 60 s in EVERY mode (normal runs self-terminate at the
+//   selected marker-anchored window), and EVERY mode requires the
+//   APPROVED vendor calibration vector (±1e-6) BEFORE bus contact — the
 //   known-failed all-1.0 default, near-1 lookalikes, and
 //   under-supporting low scales are all refused (feel-only
 //   originally; mode-independent since the 2026-07-31 un-parking).
@@ -161,20 +168,18 @@ bool pollReleaseKey() {
 struct ReleaseMarker {
   bool released = false;
   double t_released = 0.0;
-  bool window_complete = false;  // ended 5 s after the marker
+  bool window_complete = false;  // selected window ended after marker
   bool marker_timeout = false;   // no marker within 8 s of the switch
 };
 
-constexpr double kEvaluationWindowS = 5.0;  // after the marker
-constexpr double kMarkerDeadlineS = 8.0;    // after the mode switch
-// Minimum duration: deadline + window + margin. The margin guarantees
-// the outer deadline can NEVER truncate an evaluation window that
-// started at the deadline's edge (review finding: at exactly
-// deadline + window, the runner's outer check could end the run before
-// the observer saw marker + window).
-constexpr double kMinDurationS = 15.0;
+constexpr double kDefaultEvaluationWindowS = 10.0;  // after the marker
+constexpr double kMarkerDeadlineS = 8.0;             // after the mode switch
+constexpr double kDurationMarginS = 2.0;
+constexpr double kMinEvaluationWindowS = 5.0;
+constexpr double kMaxEvaluationWindowS = 50.0;
+constexpr double kMinFeelDurationS = 15.0;
 // GLOBAL upper bound (reviewed): one feel joint per run needs no
-// more, acceptance runs self-terminate at marker + 5 s anyway, an
+// more, normal runs self-terminate at the selected window anyway, an
 // unbounded torqued session with a healthy command stream never trips
 // any watchdog, and a huge duration reaches the runner's
 // floating-to-long cycle conversion (review findings).
@@ -197,9 +202,10 @@ constexpr double kVendorScaleTol = 1e-6;
 struct FloatLogObserver : arm::CycleObserver {
   FloatLogObserver(std::FILE* log, ReleaseMarker* marker,
                    const hw::Config* config, bool feel,
-                   double outer_deadline_s)
+                   double outer_deadline_s, double evaluation_window_s)
       : log_(log), marker_(marker), config_(config), feel_(feel),
-        outer_deadline_s_(outer_deadline_s) {}
+        outer_deadline_s_(outer_deadline_s),
+        evaluation_window_s_(evaluation_window_s) {}
 
   bool observe(double t, const arm::JointState& state,
                const arm::CommandSnapshot& cmds,
@@ -211,9 +217,9 @@ struct FloatLogObserver : arm::CycleObserver {
         marker_->released = true;
         marker_->t_released = t;
         if (feel_) {
-          // The acceptance cue would mislead here: after 5 s NOTHING
-          // ends — an operator expecting a limp arm could be surprised
-          // by a still-torqued one (review finding).
+          // The normal-mode cue would mislead here: after its evaluation
+          // window NOTHING ends — an operator expecting a limp arm could
+          // be surprised by a still-torqued one (review finding).
           std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
                       "FEEL-CHECK continues, TORQUE REMAINS ENABLED "
                       "until the outer deadline (%.0f s); press ENTER "
@@ -221,8 +227,8 @@ struct FloatLogObserver : arm::CycleObserver {
                       t, outer_deadline_s_);
         } else {
           std::printf("RELEASED (t=%.2f s) — release the arm NOW; "
-                      "%.0f s evaluation window started\n",
-                      t, kEvaluationWindowS);
+                      "%.1f s evaluation window started\n",
+                      t, evaluation_window_s_);
         }
       } else {
         // Post-release ENTER = operator event mark
@@ -287,7 +293,7 @@ struct FloatLogObserver : arm::CycleObserver {
     // reachable before the outer deadline.) Feel-check mode keeps the
     // marker deadline but runs to the OUTER deadline after the marker.
     if (!feel_ && marker_->released &&
-        t >= marker_->t_released + kEvaluationWindowS) {
+        t >= marker_->t_released + evaluation_window_s_) {
       marker_->window_complete = true;
       return false;
     }
@@ -303,6 +309,7 @@ struct FloatLogObserver : arm::CycleObserver {
   const hw::Config* config_;  // per-joint model numbers for the counts
   bool feel_;
   double outer_deadline_s_;
+  double evaluation_window_s_;
 };
 
 // fopen only — BEFORE any bus contact, so a bad path fails without
@@ -316,14 +323,21 @@ std::FILE* openFloatLogFile(const std::string& path) {
 }
 
 void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
-                         bool feel, double duration_s) {
-  // The log self-classifies: a feel-check log must never be readable
-  // as acceptance evidence. The requested duration lets the checker
-  // prove a feel session actually reached its deadline (review
-  // finding: without it a truncated session passed validation).
-  std::fprintf(log, "# run_mode: %s\n",
-               feel ? "feel-check" : "acceptance");
+                         bool feel, bool demonstration, double duration_s,
+                         double evaluation_window_s) {
+  // The log self-classifies: feel-check and non-default demonstration
+  // windows must never be readable as acceptance evidence. The requested
+  // duration and evaluation window let the checker prove that the selected
+  // timing contract completed (review finding: without duration provenance
+  // a truncated feel session passed validation).
+  const char* run_mode =
+      feel ? "feel-check" : (demonstration ? "demonstration" : "acceptance");
+  std::fprintf(log, "# run_mode: %s\n", run_mode);
   std::fprintf(log, "# duration_s: %.1f\n", duration_s);
+  if (!feel) {
+    std::fprintf(log, "# evaluation_window_s: %.17g\n",
+                 evaluation_window_s);
+  }
   std::fprintf(log,
                "# events per row: FEEDBACK (feedback_time/feedback_seq, "
                "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
@@ -366,9 +380,12 @@ int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   if (!cli.ok) return 1;
   double duration_s = 30.0;
+  double evaluation_window_s = kDefaultEvaluationWindowS;
   bool duration_given = false;
+  bool evaluation_window_given = false;
   bool feel_mode = false;
   std::string log_path;
+  std::string evaluation_window_token;
   const auto& rest = cli.rest;
   for (std::size_t i = 0; i < rest.size(); ++i) {
     if (std::strcmp(rest[i], "--feel") == 0) {
@@ -384,12 +401,26 @@ int main(int argc, char* argv[]) {
         return 1;
       }
       log_path = rest[++i];
+    } else if (std::strcmp(rest[i], "--evaluation-time") == 0) {
+      if (i + 1 >= rest.size() ||
+          std::strncmp(rest[i + 1], "--", 2) == 0) {
+        std::fprintf(stderr, "--evaluation-time requires a value\n");
+        return 1;
+      }
+      evaluation_window_token = rest[++i];
+      if (!x7::parseStrictDouble(evaluation_window_token.c_str(),
+                                 &evaluation_window_s)) {
+        std::fprintf(stderr, "invalid evaluation time: %s\n", rest[i]);
+        return 1;
+      }
+      evaluation_window_given = true;
     } else if (rest[i][0] == '-' && rest[i][1] == '-') {
       std::fprintf(stderr, "unknown argument: %s\n", rest[i]);
       return 1;
     } else if (duration_given) {
       std::fprintf(stderr, "usage: x7_float [--config path] [--port dev] "
-                           "[--log out.csv] [seconds]\n");
+                           "[--log out.csv] [--evaluation-time seconds] "
+                           "[--feel] [seconds]\n");
       return 1;
     } else if (!x7::parseStrictDouble(rest[i], &duration_s)) {
       std::fprintf(stderr, "invalid duration: %s\n", rest[i]);
@@ -399,22 +430,53 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // The marker-anchored protocol needs room for the 8 s marker
-  // deadline plus the 5 s evaluation window PLUS margin, so the outer
-  // deadline can never truncate a window started at the deadline's
-  // edge (review finding). Rejected BEFORE any bus contact.
-  if (duration_s < kMinDurationS) {
+  if (evaluation_window_s < kMinEvaluationWindowS ||
+      evaluation_window_s > kMaxEvaluationWindowS) {
     std::fprintf(stderr,
-                 "duration %.0f s is shorter than the marker deadline "
-                 "+ evaluation window + margin (%.0f s minimum) — the "
-                 "marker-anchored protocol requires at least that\n",
-                 duration_s, kMinDurationS);
+                 "evaluation time %s s is outside the reviewed "
+                 "[%.0f, %.0f] s range\n",
+                 evaluation_window_token.c_str(), kMinEvaluationWindowS,
+                 kMaxEvaluationWindowS);
+    return 1;
+  }
+  if (feel_mode && evaluation_window_given) {
+    std::fprintf(stderr,
+                 "--evaluation-time is not used with --feel; set the "
+                 "feel session duration instead\n");
+    return 1;
+  }
+  const bool demonstration_mode =
+      !feel_mode && evaluation_window_s != kDefaultEvaluationWindowS;
+
+  // Normal mode needs room for the marker deadline plus the selected
+  // evaluation window and margin. The margin guarantees that the outer
+  // deadline cannot truncate a window whose marker lands at the deadline's
+  // edge. Feel mode runs to its outer deadline and retains its reviewed
+  // 15 s minimum. Rejected BEFORE bus contact.
+  const double min_duration_s =
+      feel_mode ? kMinFeelDurationS
+                : kMarkerDeadlineS + evaluation_window_s +
+                      kDurationMarginS;
+  if (duration_s < min_duration_s) {
+    if (feel_mode) {
+      std::fprintf(stderr,
+                   "duration %.1f s is shorter than the reviewed feel "
+                   "session minimum (%.1f s)\n",
+                   duration_s, min_duration_s);
+    } else {
+      std::fprintf(stderr,
+                   "duration %.1f s is shorter than the marker deadline "
+                   "+ evaluation window + margin (%.1f s minimum) — "
+                   "the marker-anchored protocol requires at least "
+                   "that\n",
+                   duration_s, min_duration_s);
+    }
     return 1;
   }
   if (duration_s > kMaxDurationS) {
     std::fprintf(stderr,
                  "duration %.0f s exceeds the reviewed %.0f s bound — "
-                 "acceptance runs end at marker + 5 s regardless, one "
+                 "normal runs end at the selected evaluation time, one "
                  "feel joint per run needs no more, and a torqued "
                  "session with a healthy command stream never trips a "
                  "watchdog\n",
@@ -482,7 +544,9 @@ int main(int argc, char* argv[]) {
     // current mode below carries the calibrated gravity preload.
     auto session = x7::openSession(cli, /*operating_mode_override=*/3);
     if (log != nullptr) {
-      writeFloatLogHeader(log, session.config, feel_mode, duration_s);
+      writeFloatLogHeader(log, session.config, feel_mode,
+                          demonstration_mode, duration_s,
+                          evaluation_window_s);
     }
     std::printf("command_torque_scale:");
     for (const auto& joint : session.config.joints) {
@@ -581,7 +645,7 @@ int main(int argc, char* argv[]) {
     ReleaseMarker marker;
     ReportingGravityComp controller(chain, map);
     FloatLogObserver observer(log, &marker, &session.config, feel_mode,
-                              duration_s);
+                              duration_s, evaluation_window_s);
     if (feel_mode) {
       std::printf("FEEL-CHECK session (outer deadline %.0f s) — press "
                   "ENTER while still supporting (deadline %.0f s), "
@@ -591,11 +655,12 @@ int main(int argc, char* argv[]) {
                   "as a timestamped EVENT MARK\n",
                   duration_s, kMarkerDeadlineS);
     } else {
-      std::printf("floating (outer deadline %.0f s) — press ENTER "
+      std::printf("floating%s (outer deadline %.0f s) — press ENTER "
                   "while still supporting to mark release (deadline "
                   "%.0f s), then release on the cue; the run ends "
-                  "%.0f s after the marker\n",
-                  duration_s, kMarkerDeadlineS, kEvaluationWindowS);
+                  "%.1f s after the marker\n",
+                  demonstration_mode ? " DEMONSTRATION" : "",
+                  duration_s, kMarkerDeadlineS, evaluation_window_s);
     }
     const bool ran = arm::run(robot, controller, duration_s, &observer);
     const bool clean = shutdown.run();
@@ -631,15 +696,22 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     if (marker.window_complete) {
-      std::printf("evaluation window complete (marker at %.2f s) — "
-                  "done\n", marker.t_released);
+      if (demonstration_mode) {
+        std::printf("demonstration window complete (marker at %.2f s; "
+                    "NOT acceptance evidence) — done\n",
+                    marker.t_released);
+      } else {
+        std::printf("evaluation window complete (marker at %.2f s) — "
+                    "done\n",
+                    marker.t_released);
+      }
       return 0;
     }
     if (marker.released) {
       std::printf("evaluation window INCOMPLETE (marker at %.2f s, "
-                  "run ended before marker + %.0f s) — aborted "
+                  "run ended before marker + %.1f s) — aborted "
                   "attempt\n",
-                  marker.t_released, kEvaluationWindowS);
+                  marker.t_released, evaluation_window_s);
       return 1;
     }
     std::printf("ABORTED\n");

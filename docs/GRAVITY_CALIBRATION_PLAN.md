@@ -727,6 +727,17 @@ parked. The gravity-calibration arc has no remaining findings or
 decisions; the tracking, M7, Doxygen, and telemetry-cleanup items
 remain dormant.
 
+**Post-closure demonstration timing disposition (2026-08-04,
+owner-requested and accepted in review):** the current acceptance
+protocol uses the default 10 s marker-anchored evaluation window.
+`--evaluation-time` may select a non-default 5–50 s window for
+demonstrations only. This distinction is mechanical: those logs carry
+`# run_mode: demonstration`, validate only with the checker's `--demo`
+mode, and are rejected by the `--vendor` acceptance path. The outer
+deadline must cover the 8 s marker deadline, selected window, and 2 s
+margin. This does not reclassify the archived five-second M-GC3
+evidence, whose SHA-bound `--legacy --vendor` path remains unchanged.
+
 ## Non-goals and cautions
 
 - **No damping in the float.** Host-side damping walks into the

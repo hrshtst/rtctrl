@@ -128,13 +128,59 @@ add_test(NAME x7_float_rejects_short_duration COMMAND x7_float 2)
 set_tests_properties(x7_float_rejects_short_duration PROPERTIES
   PASS_REGULAR_EXPRESSION "shorter than the marker deadline"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
-# 13-14 s would fit deadline+window with ZERO margin — the outer
-# deadline could truncate an edge-started window (review finding); the
-# enforced minimum is 15 s.
-add_test(NAME x7_float_rejects_marginless_duration COMMAND x7_float 14)
+# 18-19 s would fit deadline+window with at most one second of margin —
+# the outer deadline could truncate an edge-started window (review
+# finding); the enforced minimum is 20 s.
+add_test(NAME x7_float_rejects_marginless_duration COMMAND x7_float 19)
 set_tests_properties(x7_float_rejects_marginless_duration PROPERTIES
   PASS_REGULAR_EXPRESSION "shorter than the marker deadline"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# Demonstration evaluation timing is strict, bounded, and normal-mode
+# only. Every rejection happens before config loading or bus contact.
+add_test(NAME x7_float_rejects_valueless_evaluation_time
+  COMMAND x7_float --evaluation-time)
+set_tests_properties(x7_float_rejects_valueless_evaluation_time PROPERTIES
+  PASS_REGULAR_EXPRESSION "--evaluation-time requires a value"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_rejects_malformed_evaluation_time
+  COMMAND x7_float --evaluation-time nan)
+set_tests_properties(x7_float_rejects_malformed_evaluation_time PROPERTIES
+  PASS_REGULAR_EXPRESSION "invalid evaluation time"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_rejects_out_of_range_evaluation_time
+  COMMAND x7_float --evaluation-time 51 60)
+set_tests_properties(x7_float_rejects_out_of_range_evaluation_time PROPERTIES
+  PASS_REGULAR_EXPRESSION "outside the reviewed"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_reports_exact_low_evaluation_time
+  COMMAND x7_float --evaluation-time 4.99 20)
+set_tests_properties(x7_float_reports_exact_low_evaluation_time PROPERTIES
+  PASS_REGULAR_EXPRESSION "evaluation time 4.99 s is outside"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_reports_exact_high_evaluation_time
+  COMMAND x7_float --evaluation-time 50.01 60)
+set_tests_properties(x7_float_reports_exact_high_evaluation_time PROPERTIES
+  PASS_REGULAR_EXPRESSION "evaluation time 50.01 s is outside"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_rejects_evaluation_time_with_feel
+  COMMAND x7_float --feel --evaluation-time 10 20)
+set_tests_properties(x7_float_rejects_evaluation_time_with_feel PROPERTIES
+  PASS_REGULAR_EXPRESSION "not used with --feel"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_float_rejects_short_custom_evaluation_deadline
+  COMMAND x7_float --evaluation-time 20 29)
+set_tests_properties(x7_float_rejects_short_custom_evaluation_deadline PROPERTIES
+  PASS_REGULAR_EXPRESSION "30.0 s minimum"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# A valid longer demonstration window clears timing validation and
+# reaches the next pre-bus gate (the required log), without hardware.
+add_test(NAME x7_float_accepts_longer_evaluation_time_contract
+  COMMAND x7_float --config config/crane_x7_vendor_scale.toml
+          --evaluation-time 20 30)
+set_tests_properties(x7_float_accepts_longer_evaluation_time_contract PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log is REQUIRED"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 # A malformed command_torque_scale must reject before any bus contact
 # at the APPLICATION level too (review finding).
 add_test(NAME x7_float_rejects_malformed_scale

@@ -9,8 +9,8 @@
 #     log contract, AND the marker-timeout abort path (exit nonzero
 #     at ~8 s with the void-attempt message — short durations are
 #     rejected outright, so this IS the no-marker behavior);
-#  2. piped release marker at ~1 s: the run must self-terminate 5 s
-#     after the marker, and every applied torque must equal
+#  2. piped release marker: a requested 6 s evaluation must be
+#     recorded and run to completion, and every applied torque must equal
 #     scale * tau_request — the end-to-end proof the calibration is
 #     applied exactly once through the RealArm path.
 # Run from the repo root (models/ and config/ by relative path).
@@ -22,7 +22,7 @@ mkdir -p "$OUT"
 LINK="$OUT/ttyDXL"
 # x7_float creates logs EXCLUSIVELY (never overwrites), so every log
 # from a previous run must be cleared or reruns would be refused.
-rm -f "$LINK" "$OUT/float.csv" "$OUT/float_vendor.csv" \
+rm -f "$LINK" "$OUT/float.csv" "$OUT/float_demo.csv" \
   "$OUT/float_feel.csv" "$OUT/float_feel_bad.csv" \
   "$OUT/float_feel_gated.csv"
 "$EMU" --link "$LINK" &
@@ -39,7 +39,7 @@ done
 # exit nonzero, the void-attempt message, and a valid log up to ~8 s.
 set +e
 PHASE1=$("$FLOAT" --config config/crane_x7_vendor_scale.toml \
-  --port "$LINK" --log "$OUT/float.csv" 15 < /dev/null 2>&1)
+  --port "$LINK" --log "$OUT/float.csv" 20 < /dev/null 2>&1)
 RC=$?
 set -e
 if [ "$RC" -eq 0 ]; then
@@ -55,11 +55,17 @@ python3 "$(dirname "$0")/check_float_log.py" "$OUT/float.csv"
 # clear of the 8 s deadline so parallel-suite load jitter cannot tip
 # it into a timeout) — the late-marker regression: the evaluation
 # window must still complete in full before the outer deadline (the
-# enforced 15 s minimum guarantees the margin; review finding).
+# derived 16 s minimum guarantees the margin; review finding).
 (sleep 6; echo) | "$FLOAT" --config config/crane_x7_vendor_scale.toml \
-  --port "$LINK" --log "$OUT/float_vendor.csv" 15
-python3 "$(dirname "$0")/check_float_log.py" --vendor \
-  "$OUT/float_vendor.csv"
+  --port "$LINK" --log "$OUT/float_demo.csv" \
+  --evaluation-time 6 16
+python3 "$(dirname "$0")/check_float_log.py" --demo \
+  "$OUT/float_demo.csv"
+if python3 "$(dirname "$0")/check_float_log.py" --vendor \
+    "$OUT/float_demo.csv" >/dev/null 2>&1; then
+  echo "demonstration log validated as acceptance evidence"
+  exit 1
+fi
 
 # Phase 3: feel-check mode — marker required as ever, but the session
 # runs to the OUTER deadline; the log must self-mark run_mode:
