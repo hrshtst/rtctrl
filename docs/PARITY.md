@@ -108,7 +108,7 @@ an e-stop and the actuator power cutoff stays within reach.)
 
 | Vendor (`rt_manipulators_cpp::Hardware`) | rtctrl | Proven by |
 |---|---|---|
-| Nothing: the library never arms a watchdog, so the servos complete the last written goal at profile speed and hold it, torque on, indefinitely; host-side, `read_write_thread` loops printing errors — no failure path clears `thread_enable_` | Servo Bus Watchdog halts motion within 100 ms (mid-profile), locks the goal registers, torque stays on — a freeze, not a fall; host-side, five consecutive failed reads escalate: best-effort release, then the port is closed (one-way latch) | `dxl_test` watchdog cases; `hw_test` escalation cases; bring-up checklist step 5 (USB-pull drill, verified on hardware) |
+| Nothing: the library never arms a watchdog, so the servos complete the last written goal at profile speed and hold it, torque on, indefinitely; host-side, `read_write_thread` loops printing errors — no failure path clears `thread_enable_` | Servo Bus Watchdog halts motion within 100 ms (mid-profile), locks the goal registers, torque stays on — a freeze, not a fall. Host-side, two paths by session type: background-thread sessions (`startThread`, i.e. `RealArm`) escalate after five consecutive failed reads — best-effort release, then the escalation hook closes the port; simple foreground apps (`x7_onoff`, the drill's app) abort on the *first* failed read and exit through the session shutdown guard | `dxl_test` watchdog cases; `hw_test` escalation cases (thread path); bring-up checklist step 5 (USB-pull drill = the foreground path, verified on hardware) |
 
 **Actuator power cutoff — servos dead, bus alive:** the physics is
 identical for both libraries — torque vanishes at the hardware level
@@ -117,7 +117,7 @@ after differ:
 
 | Vendor | rtctrl | Proven by |
 |---|---|---|
-| No detection: errors print to `cerr` until the operator kills the process; the session object stays live and willing | Bounded detection (five failed reads → escalation → port closed, `escalated_` latched one-way); the app exits through its shutdown guard | `hw_test` read/write-failure escalation cases; `track9.csv` incident record |
+| No detection: errors print to `cerr` until the operator kills the process; the session object stays live and willing | Bounded detection: the background thread escalates after five failed reads (foreground apps abort on the first) and the shipped session wiring closes the port; the app exits through its shutdown guard | `hw_test` read/write-failure escalation cases; `track9.csv` incident record |
 
 Recovery deserves a fair statement. For the disciplined workflow —
 cut power, kill the host, restart both — the end states are
@@ -131,9 +131,16 @@ moment rebooted servos answer, and a later `torque_on` *without a
 process restart* overwrites the enable-snap with those stale targets
 on the next cycle — a commanded jump to the pre-cut target. Safe by
 convention; the convention erodes under supervisors, retry logic, or
-any long-lived process. rtctrl closes the class by mechanism: an
-escalated session is bus-inert by construction (writers reject, port
-closed, latch is one-way), so the only path back onto the bus is a
-fresh `activate()` that re-verifies the servos and derives its hold
-goal from the arm's *present* posture, never the past. In one line:
-the vendor's recovery safety is procedural, rtctrl's is mechanical.
+any long-lived process. rtctrl closes the class in its shipped
+session wiring: every `x7_*` app's `openSession` installs an
+escalation hook that closes the port, after which nothing — reads
+included — can transmit, and a restart with a fresh `activate()`
+(re-verifying the servos, snapping goals to the arm's *present*
+posture) is the only path back onto the bus. Scope this claim
+precisely: it is a property of the session layer, not the bare
+`CraneX7` class — at the class level the command writers reject while
+`escalated_` is set, but `readAll` remains callable and a deliberate
+`activate()` clears the latch, so a caller that wires no escalation
+hook keeps only the writer lockout. In one line: the vendor's
+recovery safety is procedural, rtctrl's is mechanical in the shipped
+applications.
