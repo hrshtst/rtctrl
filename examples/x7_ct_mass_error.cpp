@@ -104,6 +104,9 @@ int main(int argc, char* argv[]) {
   try {
     // The two writers must never open the same file: an aliased path
     // interleaves CSV rows and zvs frames into one corrupt output.
+    // This NAME check runs before anything is truncated; it cannot see
+    // hard links or dangling symlinks — the identity check below the
+    // CSV open covers those.
     if (!zvs_path.empty() &&
         std::filesystem::weakly_canonical(out_path) ==
             std::filesystem::weakly_canonical(zvs_path)) {
@@ -152,6 +155,19 @@ int main(int argc, char* argv[]) {
       std::perror(out_path.c_str());
       return 1;
     }
+    // Identity check now that the CSV exists: equivalent() compares
+    // the actual files (device+inode), catching hard links — and a
+    // symlink onto the CSV stopped dangling at the fopen above.
+    if (!zvs_path.empty()) {
+      std::error_code ec;
+      if (std::filesystem::exists(zvs_path, ec) &&
+          std::filesystem::equivalent(out_path, zvs_path, ec)) {
+        std::fprintf(stderr, "--out and --zvs must name distinct files\n");
+        std::fclose(out);
+        return 1;
+      }
+      zvs = std::make_unique<model::ZvsWriter>(zvs_path);
+    }
     std::fprintf(out, "t");
     for (int i = 0; i < model::kCanonicalDof; ++i) std::fprintf(out, ",qd%d", i);
     for (int i = 0; i < model::kCanonicalDof; ++i) std::fprintf(out, ",q%d", i);
@@ -159,9 +175,6 @@ int main(int argc, char* argv[]) {
 
     std::unique_ptr<model::ZvsWriter> zvs;
     model::ZVector q9(model::kModelDof);
-    if (!zvs_path.empty()) {
-      zvs = std::make_unique<model::ZvsWriter>(zvs_path);
-    }
 
     model::ZVector q_d(model::kCanonicalDof);
     arm::JointState state;

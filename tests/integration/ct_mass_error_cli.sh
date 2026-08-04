@@ -40,6 +40,21 @@ if "$BIN" --out "$OUT/same.csv" \
   exit 1
 fi
 
+# Name normalization cannot see file IDENTITY: a hard link to the CSV
+# and a symlink that dangles until the CSV is created must both be
+# rejected by the post-open equivalent() check.
+rm -f "$OUT/hl.csv" "$OUT/hl.zvs" "$OUT/dang.csv" "$OUT/dang.zvs"
+touch "$OUT/hl.csv" && ln "$OUT/hl.csv" "$OUT/hl.zvs"
+if "$BIN" --out "$OUT/hl.csv" --zvs "$OUT/hl.zvs" >/dev/null 2>&1; then
+  echo "accepted a hard-linked --out/--zvs pair"
+  exit 1
+fi
+ln -s "$OUT/dang.csv" "$OUT/dang.zvs"  # dangles until the CSV opens
+if "$BIN" --out "$OUT/dang.csv" --zvs "$OUT/dang.zvs" >/dev/null 2>&1; then
+  echo "accepted a dangling-symlink --zvs onto the CSV"
+  exit 1
+fi
+
 # The uint64 maximum is a valid seed; --zvs writes one 9-coordinate
 # frame per control cycle (451 for the fixed round trip).
 "$BIN" --mass-error 0.2 --com-error 0.01 --seed 18446744073709551615 \
