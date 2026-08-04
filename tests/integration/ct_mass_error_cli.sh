@@ -61,6 +61,44 @@ if "$BIN" --out "$OUT/dang.csv" --zvs "$OUT/dang.zvs" >/dev/null 2>&1; then
   exit 1
 fi
 
+# --zvs-ref shares the whole contract: non-empty value, no aliasing
+# with either other output — including a symlink that dangles until
+# the --zvs writer creates its target.
+if "$BIN" --out "$OUT/bad.csv" --zvs-ref >/dev/null 2>&1; then
+  echo "accepted --zvs-ref without a value"
+  exit 1
+fi
+if "$BIN" --out "$OUT/bad.csv" --zvs-ref "" >/dev/null 2>&1; then
+  echo "accepted an empty --zvs-ref value"
+  exit 1
+fi
+if "$BIN" --out "$OUT/a.csv" --zvs "$OUT/m.zvs" --zvs-ref "$OUT/m.zvs" \
+    >/dev/null 2>&1; then
+  echo "accepted identical --zvs and --zvs-ref paths"
+  exit 1
+fi
+rm -f "$OUT/rt.zvs" "$OUT/rd.zvs" "$OUT/a.csv"
+ln -s "$OUT/rt.zvs" "$OUT/rd.zvs"  # dangles until --zvs creates rt.zvs
+if "$BIN" --out "$OUT/a.csv" --zvs "$OUT/rt.zvs" --zvs-ref "$OUT/rd.zvs" \
+    >/dev/null 2>&1; then
+  echo "accepted a dangling-symlink --zvs-ref onto the --zvs target"
+  exit 1
+fi
+
+# Positive: both sequences written, one frame per cycle, and the
+# reference differs from the measured motion.
+"$BIN" --mass-scale 1.3 --out "$OUT/rr.csv" --zvs "$OUT/rr.zvs" \
+  --zvs-ref "$OUT/rr_ref.zvs" > /dev/null
+ref_frames=$(wc -l < "$OUT/rr_ref.zvs")
+if [ "$ref_frames" -ne 451 ]; then
+  echo "expected 451 reference frames, got $ref_frames"
+  exit 1
+fi
+if cmp -s "$OUT/rr.zvs" "$OUT/rr_ref.zvs"; then
+  echo "reference and measured sequences are identical"
+  exit 1
+fi
+
 # The uint64 maximum is a valid seed; --zvs writes one 9-coordinate
 # frame per control cycle (451 for the fixed round trip).
 "$BIN" --mass-error 0.2 --com-error 0.01 --seed 18446744073709551615 \

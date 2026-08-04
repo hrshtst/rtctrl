@@ -10,6 +10,7 @@
 // Usage: x7_ct_mass_error [--mass-scale s] [--mass-error e]
 //                         [--com-error m] [--seed n] [--ki gain]
 //                         [--out file.csv] [--zvs file.zvs]
+//                         [--zvs-ref file.zvs]
 // --mass-scale applies the uniform density-style factor; --mass-error /
 // --com-error add the tutorial-style randomized per-link perturbation
 // (symmetric mass factor, COM offset cube in meters), reproducible for
@@ -18,7 +19,10 @@
 // --zvs additionally logs the MEASURED motion as a 9-coordinate
 // joint-displacement sequence (finger mimic expanded via JointMap) for
 // playback:  rk_anim models/crane_x7/crane_x7.ztk file.zvs
+// --zvs-ref logs the COMMANDED reference the same way — play both in
+// two rk_anim windows for a side-by-side commanded-vs-actual view.
 
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -61,7 +65,7 @@ int usage() {
   std::fprintf(stderr,
                "usage: x7_ct_mass_error [--mass-scale s] [--mass-error e] "
                "[--com-error m] [--seed n] [--ki gain] [--out file.csv] "
-               "[--zvs file.zvs]\n");
+               "[--zvs file.zvs] [--zvs-ref file.zvs]\n");
   return 1;
 }
 
@@ -76,6 +80,7 @@ int main(int argc, char* argv[]) {
   double ki = 0.0;
   std::string out_path = "ct_mass_error.csv";
   std::string zvs_path;
+  std::string zvs_ref_path;
   for (int i = 1; i < argc; ++i) {
     const bool has_value = i + 1 < argc;
     if (std::strcmp(argv[i], "--mass-scale") == 0) {
@@ -95,6 +100,9 @@ int main(int argc, char* argv[]) {
       // An empty value would silently alias the "option absent" state.
       if (!has_value || argv[i + 1][0] == '\0') return usage();
       zvs_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--zvs-ref") == 0) {
+      if (!has_value || argv[i + 1][0] == '\0') return usage();
+      zvs_ref_path = argv[++i];
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return usage();
@@ -102,27 +110,38 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    // The two writers must never open the same file: an aliased path
-    // interleaves CSV rows and zvs frames into one corrupt output.
-    // This NAME check runs before anything is truncated; it cannot see
-    // hard links or dangling symlinks — the identity check below the
-    // CSV open covers those.
-    if (!zvs_path.empty() &&
-        std::filesystem::weakly_canonical(out_path) ==
-            std::filesystem::weakly_canonical(zvs_path)) {
-      std::fprintf(stderr, "--out and --zvs must name distinct files\n");
-      return 1;
-    }
-    // Pre-open IDENTITY check for the both-already-exist case: a hard
-    // link must be rejected BEFORE fopen truncates the shared inode
-    // (the post-open check would fire too late to save the contents).
-    if (!zvs_path.empty()) {
+    // The writers must never open the same file: an aliased pair
+    // interleaves records into one corrupt output. Defense in three
+    // layers per pair (review history): a NAME check before anything
+    // is truncated; an IDENTITY (device+inode) check while both
+    // members pre-exist — a hard link must be rejected BEFORE fopen
+    // truncates the shared inode; and identity re-checks as each file
+    // comes into existence, catching symlinks that dangle until their
+    // target is created.
+    auto same_name = [](const std::string& a, const std::string& b) {
+      return std::filesystem::weakly_canonical(a) ==
+             std::filesystem::weakly_canonical(b);
+    };
+    auto same_file = [](const std::string& a, const std::string& b) {
       std::error_code ec;
-      if (std::filesystem::exists(out_path, ec) &&
-          std::filesystem::exists(zvs_path, ec) &&
-          std::filesystem::equivalent(out_path, zvs_path, ec)) {
-        std::fprintf(stderr, "--out and --zvs must name distinct files\n");
-        return 1;
+      return std::filesystem::exists(a, ec) &&
+             std::filesystem::exists(b, ec) &&
+             std::filesystem::equivalent(a, b, ec);
+    };
+    auto reject_alias = [] {
+      std::fprintf(
+          stderr, "--out, --zvs and --zvs-ref must name distinct files\n");
+      return 1;
+    };
+    const std::array<const std::string*, 3> out_paths = {
+        &out_path, &zvs_path, &zvs_ref_path};
+    for (std::size_t a = 0; a < out_paths.size(); ++a) {
+      for (std::size_t b = a + 1; b < out_paths.size(); ++b) {
+        if (out_paths[a]->empty() || out_paths[b]->empty()) continue;
+        if (same_name(*out_paths[a], *out_paths[b]) ||
+            same_file(*out_paths[a], *out_paths[b])) {
+          return reject_alias();
+        }
       }
     }
 
@@ -163,6 +182,7 @@ int main(int argc, char* argv[]) {
     sim.activate();
 
     std::unique_ptr<model::ZvsWriter> zvs;
+    std::unique_ptr<model::ZvsWriter> zvs_ref;
     model::ZVector q9(model::kModelDof);
 
     std::FILE* out = std::fopen(out_path.c_str(), "w");
@@ -170,18 +190,24 @@ int main(int argc, char* argv[]) {
       std::perror(out_path.c_str());
       return 1;
     }
-    // Identity check now that the CSV exists: equivalent() compares
-    // the actual files (device+inode), catching hard links — and a
-    // symlink onto the CSV stopped dangling at the fopen above.
-    if (!zvs_path.empty()) {
-      std::error_code ec;
-      if (std::filesystem::exists(zvs_path, ec) &&
-          std::filesystem::equivalent(out_path, zvs_path, ec)) {
-        std::fprintf(stderr, "--out and --zvs must name distinct files\n");
+    // Identity re-checks as files come into existence: a symlink onto
+    // the CSV stopped dangling at the fopen above, and one onto the
+    // measured-motion file stops dangling once its writer opens.
+    for (const std::string* p : {&zvs_path, &zvs_ref_path}) {
+      if (!p->empty() && same_file(out_path, *p)) {
         std::fclose(out);
-        return 1;
+        return reject_alias();
       }
+    }
+    if (!zvs_path.empty()) {
       zvs = std::make_unique<model::ZvsWriter>(zvs_path);
+    }
+    if (!zvs_ref_path.empty()) {
+      if (!zvs_path.empty() && same_file(zvs_path, zvs_ref_path)) {
+        std::fclose(out);
+        return reject_alias();
+      }
+      zvs_ref = std::make_unique<model::ZvsWriter>(zvs_ref_path);
     }
     std::fprintf(out, "t");
     for (int i = 0; i < model::kCanonicalDof; ++i) std::fprintf(out, ",qd%d", i);
@@ -219,6 +245,10 @@ int main(int argc, char* argv[]) {
         map.expand(state.q.get(), q9.get());
         zvs->frame(sim.dt(), q9.get());
       }
+      if (zvs_ref) {
+        map.expand(q_d.get(), q9.get());
+        zvs_ref->frame(sim.dt(), q9.get());
+      }
       ++samples;
     }
     std::fclose(out);
@@ -242,6 +272,10 @@ int main(int argc, char* argv[]) {
       std::printf("%d zvs frames -> %s\n  view with:  rk_anim "
                   "models/crane_x7/crane_x7.ztk %s\n",
                   zvs->frames(), zvs_path.c_str(), zvs_path.c_str());
+    }
+    if (zvs_ref) {
+      std::printf("%d reference zvs frames -> %s\n", zvs_ref->frames(),
+                  zvs_ref_path.c_str());
     }
     return 0;
   } catch (const std::exception& e) {
