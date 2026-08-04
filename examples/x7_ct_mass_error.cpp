@@ -150,6 +150,9 @@ int main(int argc, char* argv[]) {
     sim.setMode(arm::ControlMode::Current);
     sim.activate();
 
+    std::unique_ptr<model::ZvsWriter> zvs;
+    model::ZVector q9(model::kModelDof);
+
     std::FILE* out = std::fopen(out_path.c_str(), "w");
     if (out == nullptr) {
       std::perror(out_path.c_str());
@@ -172,9 +175,6 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < model::kCanonicalDof; ++i) std::fprintf(out, ",qd%d", i);
     for (int i = 0; i < model::kCanonicalDof; ++i) std::fprintf(out, ",q%d", i);
     std::fprintf(out, "\n");
-
-    std::unique_ptr<model::ZvsWriter> zvs;
-    model::ZVector q9(model::kModelDof);
 
     model::ZVector q_d(model::kCanonicalDof);
     arm::JointState state;
