@@ -7,6 +7,7 @@ dependencies = [
     "xacro>=1.14",
     "rospkg>=1.5",
     "numpy>=1.26",
+    "matplotlib>=3.8",
 ]
 
 [tool.uv]
