@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -114,6 +115,42 @@ void ChainModel::scaleMassProperties(double factor) {
     rkLink* link = rkChainLink(&chain_, i);
     rkLinkSetMass(link, factor * rkLinkMass(link));
     zMat3DMulDRC(rkLinkInertia(link), factor);
+  }
+}
+
+void ChainModel::perturbMassProperties(double mass_error, double com_error,
+                                       std::uint64_t seed) {
+  if (!std::isfinite(mass_error) || mass_error < 0.0 || mass_error >= 1.0 ||
+      !std::isfinite(com_error) || com_error < 0.0) {
+    throw std::invalid_argument(
+        "ChainModel::perturbMassProperties: require 0 <= mass_error < 1 "
+        "and finite com_error >= 0");
+  }
+  std::mt19937_64 rng(seed);
+  // 53-bit engine output mapped to [0,1) directly:
+  // uniform_real_distribution's sequence is implementation-defined,
+  // which would break cross-platform reproducibility of a seed.
+  auto uniform = [&rng](double lo, double hi) {
+    return lo + (hi - lo) * ((rng() >> 11) * 0x1.0p-53);
+  };
+  for (int i = 0; i < rkChainLinkNum(&chain_); ++i) {
+    rkLink* link = rkChainLink(&chain_, i);
+    if (zIsTiny(rkLinkMass(link))) continue;
+    const double ratio = 1.0 + uniform(-mass_error, mass_error);
+    zVec3D com_diff;
+    zVec3DCreate(&com_diff, uniform(-com_error, com_error),
+                 uniform(-com_error, com_error),
+                 uniform(-com_error, com_error));
+    rkMP mp;
+    rkMPSetMass(&mp, ratio * rkLinkMass(link));
+    zVec3DAdd(rkLinkCOM(link), &com_diff, rkMPCOM(&mp));
+    zMat3D scaled;
+    zMat3DMul(rkLinkInertia(link), ratio, &scaled);
+    // Parallel-axis transfer to the displaced COM (rkMP stores the
+    // tensor about the COM; cf. rkMPShiftInertia).
+    zMat3DCatVec3DDoubleOuterProd(&scaled, -rkMPMass(&mp), &com_diff,
+                                  rkMPInertia(&mp));
+    rkLinkSetMP(link, &mp);
   }
 }
 

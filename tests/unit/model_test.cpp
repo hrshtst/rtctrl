@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <toml++/toml.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -203,4 +204,68 @@ TEST_CASE("mass-property scaling scales gravity torque linearly",
   CHECK_THROWS(scaled.scaleMassProperties(std::nan("")));
   CHECK_THROWS(scaled.scaleMassProperties(
       std::numeric_limits<double>::infinity()));
+}
+
+TEST_CASE("mass-property perturbation is seeded, bounded, and COM-aware",
+          "[model]") {
+  const double pose[kCanonicalDof] = {0.0, 0.4, 0.2, -0.9,
+                                      0.3, -0.5, 0.4, 0.05};
+  ZVecGuard q(kCanonicalDof);
+  for (int i = 0; i < kCanonicalDof; ++i) zVecSetElemNC(q.vec, i, pose[i]);
+  ChainModel truth(kModelPath);
+  JointMap map_truth(truth);
+  ZVecGuard tau_truth(kCanonicalDof);
+  truth.gravityTorque(map_truth, q.vec, tau_truth.vec);
+
+  // Same seed -> bit-identical model; different seed -> different.
+  ChainModel a(kModelPath), b(kModelPath), c(kModelPath);
+  a.perturbMassProperties(0.2, 0.01, 42);
+  b.perturbMassProperties(0.2, 0.01, 42);
+  c.perturbMassProperties(0.2, 0.01, 43);
+  CHECK(a.totalMass() == b.totalMass());
+  CHECK(a.totalMass() != c.totalMass());
+  JointMap map_a(a), map_b(b);
+  ZVecGuard tau_a(kCanonicalDof), tau_b(kCanonicalDof);
+  a.gravityTorque(map_a, q.vec, tau_a.vec);
+  b.gravityTorque(map_b, q.vec, tau_b.vec);
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    CHECK(zVecElemNC(tau_a.vec, i) == zVecElemNC(tau_b.vec, i));
+  }
+
+  // Symmetric per-link error bounds the total mass.
+  CHECK(a.totalMass() > 0.8 * truth.totalMass());
+  CHECK(a.totalMass() < 1.2 * truth.totalMass());
+
+  // Zero-error perturbation is the identity (exercises the
+  // parallel-axis transfer at zero displacement).
+  ChainModel ident(kModelPath);
+  ident.perturbMassProperties(0.0, 0.0, 7);
+  CHECK(ident.totalMass() == Approx(truth.totalMass()).margin(1e-12));
+  JointMap map_ident(ident);
+  ZVecGuard tau_ident(kCanonicalDof);
+  ident.gravityTorque(map_ident, q.vec, tau_ident.vec);
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    CHECK(zVecElemNC(tau_ident.vec, i) ==
+          Approx(zVecElemNC(tau_truth.vec, i)).margin(1e-12));
+  }
+
+  // COM-only error keeps the total mass but reshapes the gravity
+  // field — the error class a bias integrator cannot absorb.
+  ChainModel com_only(kModelPath);
+  com_only.perturbMassProperties(0.0, 0.02, 5);
+  CHECK(com_only.totalMass() == Approx(truth.totalMass()).margin(1e-12));
+  JointMap map_com(com_only);
+  ZVecGuard tau_com(kCanonicalDof);
+  com_only.gravityTorque(map_com, q.vec, tau_com.vec);
+  double max_diff = 0.0;
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    max_diff = std::max(max_diff, std::fabs(zVecElemNC(tau_com.vec, i) -
+                                            zVecElemNC(tau_truth.vec, i)));
+  }
+  CHECK(max_diff > 1e-4);
+
+  CHECK_THROWS(a.perturbMassProperties(1.0, 0.0, 0));
+  CHECK_THROWS(a.perturbMassProperties(-0.1, 0.0, 0));
+  CHECK_THROWS(a.perturbMassProperties(0.0, -0.01, 0));
+  CHECK_THROWS(a.perturbMassProperties(std::nan(""), 0.0, 0));
 }

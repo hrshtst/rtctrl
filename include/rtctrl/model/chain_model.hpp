@@ -2,6 +2,7 @@
 
 #include <roki/rk_chain.h>
 
+#include <cstdint>
 #include <string>
 
 namespace rtctrl::model {
@@ -44,6 +45,21 @@ class ChainModel {
   // scale by exactly factor at any state; COMs and geometry are
   // untouched.
   void scaleMassProperties(double factor);
+
+  // Randomized per-link perturbation (cf. mi-lib-tutorial roki008's
+  // add_mp_error, made symmetric and seeded): every link with
+  // non-negligible mass draws an independent mass factor
+  // 1 + U(-mass_error, +mass_error) — its inertia density-scaled by
+  // the same factor — and a COM offset uniform in the ±com_error cube
+  // [m], with the tensor transferred to the displaced COM by the
+  // parallel-axis term (rkMP stores inertia ABOUT the COM, so a COM
+  // move without the transfer would corrupt it). The draw order is
+  // fixed and the engine output (std::mt19937_64, standard-specified)
+  // maps to doubles without uniform_real_distribution (whose sequence
+  // is implementation-defined), so one seed reproduces bit-identically
+  // everywhere. Requires 0 <= mass_error < 1 and com_error >= 0.
+  void perturbMassProperties(double mass_error, double com_error,
+                             std::uint64_t seed);
 
   // Displacement limits of the 1-DOF joint owned by link i (radians).
   double jointMin(int link_index) const;

@@ -7,7 +7,13 @@
 // --mass-scale, so the feedforward is wrong by construction and the PD
 // (plus optional integrator) must absorb the difference.
 //
-// Usage: x7_ct_mass_error [--mass-scale s] [--ki gain] [--out file.csv]
+// Usage: x7_ct_mass_error [--mass-scale s] [--mass-error e]
+//                         [--com-error m] [--seed n] [--ki gain]
+//                         [--out file.csv]
+// --mass-scale applies the uniform density-style factor; --mass-error /
+// --com-error add the tutorial-style randomized per-link perturbation
+// (symmetric mass factor, COM offset cube in meters), reproducible for
+// a given --seed. Scale applies first; both may combine.
 // CSV columns: t, qd0..qd7, q0..q7 (canonical order, rad).
 
 #include <cmath>
@@ -37,8 +43,8 @@ bool parseDouble(const char* s, double* out) {
 
 int usage() {
   std::fprintf(stderr,
-               "usage: x7_ct_mass_error [--mass-scale s] [--ki gain] "
-               "[--out file.csv]\n");
+               "usage: x7_ct_mass_error [--mass-scale s] [--mass-error e] "
+               "[--com-error m] [--seed n] [--ki gain] [--out file.csv]\n");
   return 1;
 }
 
@@ -47,12 +53,24 @@ int usage() {
 int main(int argc, char* argv[]) {
   constexpr const char* kModelPath = "models/crane_x7/crane_x7.ztk";
   double mass_scale = 1.2;
+  double mass_error = 0.0;
+  double com_error = 0.0;
+  double seed = 1.0;
   double ki = 0.0;
   std::string out_path = "ct_mass_error.csv";
   for (int i = 1; i < argc; ++i) {
     const bool has_value = i + 1 < argc;
     if (std::strcmp(argv[i], "--mass-scale") == 0) {
       if (!has_value || !parseDouble(argv[++i], &mass_scale)) return usage();
+    } else if (std::strcmp(argv[i], "--mass-error") == 0) {
+      if (!has_value || !parseDouble(argv[++i], &mass_error)) return usage();
+    } else if (std::strcmp(argv[i], "--com-error") == 0) {
+      if (!has_value || !parseDouble(argv[++i], &com_error)) return usage();
+    } else if (std::strcmp(argv[i], "--seed") == 0) {
+      if (!has_value || !parseDouble(argv[++i], &seed) || seed < 0.0 ||
+          seed != std::floor(seed)) {
+        return usage();
+      }
     } else if (std::strcmp(argv[i], "--ki") == 0) {
       if (!has_value || !parseDouble(argv[++i], &ki)) return usage();
     } else if (std::strcmp(argv[i], "--out") == 0) {
@@ -84,7 +102,12 @@ int main(int argc, char* argv[]) {
     const double duration = trajectory.duration() + 0.5;
 
     model::ChainModel ctrl_model(kModelPath);
+    const double true_mass = ctrl_model.totalMass();
     ctrl_model.scaleMassProperties(mass_scale);
+    if (mass_error > 0.0 || com_error > 0.0) {
+      ctrl_model.perturbMassProperties(
+          mass_error, com_error, static_cast<std::uint64_t>(seed));
+    }
     model::JointMap map(ctrl_model);
     arm::ComputedTorque controller(ctrl_model, map, trajectory, 20.0, 2.0);
     controller.setPdFilterTau(0.0);
@@ -139,10 +162,11 @@ int main(int argc, char* argv[]) {
     std::fclose(out);
 
     double sum_all = 0.0;
-    std::printf("mass-scale %.2f (controller model %.3f kg, true %.3f kg), "
+    std::printf("mass-scale %.2f, mass-error %.2f, com-error %.3f m, "
+                "seed %.0f (controller model %.3f kg, true %.3f kg), "
                 "ki %.1f, %d cycles -> %s\n",
-                mass_scale, ctrl_model.totalMass(),
-                ctrl_model.totalMass() / mass_scale, ki, samples,
+                mass_scale, mass_error, com_error, seed,
+                ctrl_model.totalMass(), true_mass, ki, samples,
                 out_path.c_str());
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double rms = std::sqrt(sum_sq[i] / samples);
