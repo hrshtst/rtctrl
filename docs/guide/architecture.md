@@ -82,10 +82,10 @@ apps/         dxl_inspect, dxl_emu, x7_onoff/read/set_param/move_simple/float/po
 examples/     make_motion, make_pose (kinematic .zvs), x7_wave (bridge demo)
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed)
 config/       crane_x7.toml (bus, joints, limits, margins), postures/
-tools/        port_model.py, ident_analysis.py (uv), bootstrap_milib.sh, milib_config/
+tools/        port_model.py, ident_analysis.py (uv), bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
 docs/         this documentation
-third_party/  pinned submodules (mi-lib stack, DynamixelSDK, URDF source)
+third_party/  pinned submodules (mi-lib metapackage, DynamixelSDK, URDF source)
 ```
 
 ## Canonical coordinates

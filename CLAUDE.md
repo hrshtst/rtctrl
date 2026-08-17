@@ -7,8 +7,11 @@ rtctrl — C++17 control library for the CRANE-X7 7-DOF arm (mi-lib dynamics, Dy
 ## Build, test, docs
 
 - First build: `git submodule update --init`, then `./tools/bootstrap_milib.sh`
-  (installs the mi-lib stack to `$HOME/usr`; override with `MILIB_PREFIX` /
-  `-DMILIB_PREFIX`), then `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j`.
+  (drives the `third_party/mi-lib` metapackage: clones the member libraries, pins
+  them via its `versions.lock`, installs to the prefix in its `config.local` —
+  seeded to `.local/`; the generated `.envrc` + `direnv allow` provides
+  PATH/LD_LIBRARY_PATH), then
+  `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j`.
 - Tests: `ctest --test-dir build --output-on-failure` (labels `unit` and
   `integration`; integration is headless — pty emulator + roki sim). Tests run
   with the repo root as working directory (they load `models/` and `config/` by

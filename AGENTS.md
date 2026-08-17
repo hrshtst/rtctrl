@@ -17,7 +17,7 @@ indexed by `docs/DATA_ARCHIVE.md`.
 Initialize dependencies and build from the repository root:
 
 ```sh
-git submodule update --init third_party/{zeda,zm,zeo,dzco,roki,roki-fd,liw,DynamixelSDK,crane_x7_description}
+git submodule update --init third_party/{mi-lib,DynamixelSDK,crane_x7_description}
 ./tools/bootstrap_milib.sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j

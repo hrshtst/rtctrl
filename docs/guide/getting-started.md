@@ -21,20 +21,15 @@ hardware.
 
 ```sh
 git clone <repo> rtctrl && cd rtctrl
-git submodule update --init third_party/zeda third_party/zm \
-    third_party/zeo third_party/dzco third_party/roki \
-    third_party/roki-fd third_party/liw third_party/DynamixelSDK \
-    third_party/crane_x7_description
-# (add third_party/zx11 third_party/roki-gl for rk_pen/rk_anim)
+git submodule update --init third_party/mi-lib \
+    third_party/DynamixelSDK third_party/crane_x7_description
 
-# core set only — matches the submodules initialized above (the
-# script's default list includes zx11/roki-gl and exits if their
-# submodules are missing); drop MILIB_LIBS after initializing those
-# two if you want the viewers
-MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" \
-    ./tools/bootstrap_milib.sh      # builds mi-lib into ~/usr
-export PATH="$HOME/usr/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/usr/lib:$LD_LIBRARY_PATH"
+# clones + builds the mi-lib stack into .local/ (first run needs
+# network); headless machines can skip the X11/GL viewers with
+#   MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" ./tools/bootstrap_milib.sh
+./tools/bootstrap_milib.sh
+direnv allow    # loads the generated .envrc (PATH, LD_LIBRARY_PATH);
+                # without direnv, export the two lines the bootstrap prints
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
@@ -42,11 +37,15 @@ ctest --test-dir build -L unit       # fast suite
 ctest --test-dir build               # + wire-level & dynamics-sim tests
 ```
 
-`bootstrap_milib.sh` installs the pinned mi-lib submodules in
-dependency order into `$HOME/usr` (override with `MILIB_PREFIX` /
-first argument; narrow with `MILIB_LIBS="zeda zm ..."`). CMake finds
-them through `cmake/FindMiLib.cmake`, which wraps the `<lib>-config`
-scripts; Catch2 and toml++ are fetched and pinned automatically.
+`bootstrap_milib.sh` drives the `third_party/mi-lib` metapackage:
+member libraries are cloned on the first run and pinned by the
+submodule's `versions.lock`, then built and installed in dependency
+order into the prefix configured in `third_party/mi-lib/config.local`
+(seeded on first run with `<repo>/.local`; override with the first
+argument, narrow with `MILIB_LIBS="zeda zm ..."`). CMake finds the
+libraries through `cmake/FindMiLib.cmake`, which wraps the installed
+`<lib>-config` scripts found on `PATH`; Catch2 and toml++ are fetched
+and pinned automatically.
 
 ## Five-minute tour (no robot)
 

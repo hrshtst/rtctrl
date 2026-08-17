@@ -26,10 +26,8 @@ the CRANE-X7-specific layer joining them.
 ## Quick start
 
 ```sh
-git submodule update --init third_party/zeda third_party/zm \
-    third_party/zeo third_party/dzco third_party/roki \
-    third_party/roki-fd third_party/liw third_party/DynamixelSDK \
-    third_party/crane_x7_description
+git submodule update --init third_party/mi-lib \
+    third_party/DynamixelSDK third_party/crane_x7_description
 ./tools/bootstrap_milib.sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ctest --test-dir build
