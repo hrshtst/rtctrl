@@ -50,6 +50,8 @@ CUSTOM_LIB=""
 CUSTOM_LIB_DEPS=""
 CUSTOM_TEST_CMD=""
 PREFIX="$REPO_ROOT/.local"
+# Freeze target for manual metapackage runs (gitignored here); the
+# authoritative pins are rtctrl's tools/milib_versions.lock.
 VERSIONS_LOCK="versions.local.lock"
 EOF
   echo "wrote $META/config.local"
@@ -66,21 +68,19 @@ export UPSTREAM_LIBS="$LIBS"
 export CUSTOM_LIB="" CUSTOM_LIB_DEPS="" CUSTOM_TEST_CMD=""
 export SKIP_CHECKS=1
 
-# Restore the pinned state: materialize versions.local.lock from
-# rtctrl's tracked lock, filtered to the configured libraries.
-# thaw_versions.sh iterates the lock (so it must not list
-# unconfigured libraries), and a later freeze — e.g. at the end of
-# build_compile_commands.sh — rewrites it from the configured set;
-# the next bootstrap resets it to the pins.
+# Restore the pinned state: thaw from a throwaway copy of rtctrl's
+# tracked lock, filtered to the configured libraries (thaw_versions.sh
+# iterates the lock, so it must not list unconfigured libraries).
 RTCTRL_LOCK="$REPO_ROOT/tools/milib_versions.lock"
-: > "$META/versions.local.lock"
+VERSIONS_LOCK=$(mktemp)
+trap 'rm -f "$VERSIONS_LOCK"' EXIT
 for lib in $LIBS; do
-  grep -- "^$lib " "$RTCTRL_LOCK" >> "$META/versions.local.lock" || {
+  grep -- "^$lib " "$RTCTRL_LOCK" >> "$VERSIONS_LOCK" || {
     echo "error: no entry for '$lib' in $RTCTRL_LOCK" >&2
     exit 1
   }
 done
-export VERSIONS_LOCK="$META/versions.local.lock"
+export VERSIONS_LOCK
 
 # Trailing or leading the submodule's own versions.lock is fine —
 # rtctrl's lock is authoritative — but make it visible.
