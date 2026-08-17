@@ -9,17 +9,10 @@
 #   find_package(MiLib REQUIRED COMPONENTS roki roki-fd dzco liw)
 #   target_link_libraries(tgt PUBLIC MiLib::roki MiLib::roki-fd ...)
 #
-# Cache variables:
-#   MILIB_PREFIX — installation prefix to search first (default: the
-#   MILIB_PREFIX environment variable — e.g. exported by .envrc — else
-#   $ENV{HOME}/usr)
-
-if(DEFINED ENV{MILIB_PREFIX})
-  set(_milib_prefix_default "$ENV{MILIB_PREFIX}")
-else()
-  set(_milib_prefix_default "$ENV{HOME}/usr")
-endif()
-set(MILIB_PREFIX "${_milib_prefix_default}" CACHE PATH "mi-lib installation prefix")
+# Discovery is by PATH alone: the config scripts expand their transitive
+# `-l` output by invoking each other by bare name, so the install
+# prefix's bin/ must be on PATH at configure time regardless (the
+# generated .envrc provides this via direnv; CI sets PATH explicitly).
 
 set(MiLib_FOUND TRUE)
 
@@ -30,8 +23,7 @@ foreach(_milib_component IN LISTS MiLib_FIND_COMPONENTS)
   endif()
 
   find_program(MILIB_${_milib_component}_CONFIG
-    NAMES ${_milib_component}-config
-    HINTS ${MILIB_PREFIX}/bin)
+    NAMES ${_milib_component}-config)
 
   if(NOT MILIB_${_milib_component}_CONFIG)
     set(MiLib_${_milib_component}_FOUND FALSE)
@@ -39,10 +31,11 @@ foreach(_milib_component IN LISTS MiLib_FIND_COMPONENTS)
     if(MiLib_FIND_REQUIRED_${_milib_component} OR MiLib_FIND_REQUIRED)
       message(FATAL_ERROR
         "MiLib component '${_milib_component}' not found: no "
-        "'${_milib_component}-config' in ${MILIB_PREFIX}/bin or on PATH.\n"
+        "'${_milib_component}-config' on PATH.\n"
         "Build and install the mi-lib stack first:\n"
         "  ./tools/bootstrap_milib.sh\n"
-        "or point -DMILIB_PREFIX=<prefix> at an existing installation.")
+        "and put its prefix bin/ on PATH (direnv: `direnv allow` loads "
+        "the generated .envrc).")
     endif()
     continue()
   endif()
