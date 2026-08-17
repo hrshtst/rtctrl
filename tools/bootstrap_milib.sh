@@ -6,7 +6,8 @@
 # to the versions pinned by the tracked tools/milib_versions.lock,
 # then built and installed in dependency order. Re-running is
 # idempotent. To bump mi-lib versions, edit tools/milib_versions.lock
-# (e.g. copy-filter a newer metapackage versions.lock) and re-run —
+# (or check out the desired member versions and run the metapackage's
+# freeze_versions.sh, which writes it via config.local) and re-run —
 # the submodule pin governs the metapackage tooling only.
 #
 # Usage: tools/bootstrap_milib.sh [PREFIX]
@@ -50,9 +51,10 @@ CUSTOM_LIB=""
 CUSTOM_LIB_DEPS=""
 CUSTOM_TEST_CMD=""
 PREFIX="$REPO_ROOT/.local"
-# Freeze target for manual metapackage runs (gitignored here); the
-# authoritative pins are rtctrl's tools/milib_versions.lock.
-VERSIONS_LOCK="versions.local.lock"
+# The single version lock, tracked in rtctrl (relative paths resolve
+# against this repository). freeze writes it — review the diff, and
+# restore with git if a freeze was unintended.
+VERSIONS_LOCK="../../tools/milib_versions.lock"
 EOF
   echo "wrote $META/config.local"
 fi

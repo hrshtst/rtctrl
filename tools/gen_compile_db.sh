@@ -35,11 +35,10 @@ if [ "${1:-}" = "--rebuild-milib" ] || [ ! -f "$MILIB_DB" ]; then
   # freeze --check, .clangd, make clean, bear-wrapped make (reinstalls
   # into the configured prefix), compdb header entries, freeze.
   # SKIP_CHECKS keeps the libraries' test/example targets out of the
-  # capture, matching the bootstrap build; the freeze records into a
-  # throwaway lock — rtctrl's pins live in tools/milib_versions.lock.
-  VERSIONS_LOCK=$(mktemp)
-  trap 'rm -f "$VERSIONS_LOCK"' EXIT
-  export VERSIONS_LOCK
+  # capture, matching the bootstrap build. The final freeze writes the
+  # tracked tools/milib_versions.lock (config.local points there):
+  # byte-identical at the pinned state, a reviewable diff otherwise —
+  # restore with git if the freeze was unintended.
   (cd "$META" && SKIP_CHECKS=1 ./build_compile_commands.sh)
   [ "$(jq length "$MILIB_DB")" -gt 0 ] || {
     echo "error: empty mi-lib compile database" >&2
