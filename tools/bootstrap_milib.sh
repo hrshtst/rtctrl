@@ -3,10 +3,11 @@
 # metapackage: member libraries are cloned by its clone.sh (full
 # clones of the forks selected by the submodule's origin URL — the
 # https URL is load-bearing, and the first run needs network), thawed
-# to the versions pinned by the submodule's tracked versions.lock,
+# to the versions pinned by the tracked tools/milib_versions.lock,
 # then built and installed in dependency order. Re-running is
-# idempotent. To bump mi-lib versions, move the third_party/mi-lib
-# submodule pin and re-run.
+# idempotent. To bump mi-lib versions, edit tools/milib_versions.lock
+# (e.g. copy-filter a newer metapackage versions.lock) and re-run —
+# the submodule pin governs the metapackage tooling only.
 #
 # Usage: tools/bootstrap_milib.sh [PREFIX]
 #   PREFIX      installation prefix; overrides the configured one
@@ -65,20 +66,36 @@ export UPSTREAM_LIBS="$LIBS"
 export CUSTOM_LIB="" CUSTOM_LIB_DEPS="" CUSTOM_TEST_CMD=""
 export SKIP_CHECKS=1
 
-# Restore the pinned state: materialize versions.local.lock from the
-# submodule's tracked versions.lock, filtered to the configured
-# libraries. thaw_versions.sh iterates the lock (so it must not list
+# Restore the pinned state: materialize versions.local.lock from
+# rtctrl's tracked lock, filtered to the configured libraries.
+# thaw_versions.sh iterates the lock (so it must not list
 # unconfigured libraries), and a later freeze — e.g. at the end of
 # build_compile_commands.sh — rewrites it from the configured set;
 # the next bootstrap resets it to the pins.
+RTCTRL_LOCK="$REPO_ROOT/tools/milib_versions.lock"
 : > "$META/versions.local.lock"
 for lib in $LIBS; do
-  grep -- "^$lib " "$META/versions.lock" >> "$META/versions.local.lock" || {
-    echo "error: no versions.lock entry for '$lib' in $META/versions.lock" >&2
+  grep -- "^$lib " "$RTCTRL_LOCK" >> "$META/versions.local.lock" || {
+    echo "error: no entry for '$lib' in $RTCTRL_LOCK" >&2
     exit 1
   }
 done
 export VERSIONS_LOCK="$META/versions.local.lock"
+
+# Trailing or leading the submodule's own versions.lock is fine —
+# rtctrl's lock is authoritative — but make it visible.
+drift=""
+for lib in $LIBS; do
+  theirs=$(grep -- "^$lib " "$META/versions.lock" | cut -d' ' -f2) || theirs=""
+  ours=$(grep -- "^$lib " "$RTCTRL_LOCK" | cut -d' ' -f2)
+  if [ -n "$theirs" ] && [ "$theirs" != "$ours" ]; then
+    drift="$drift $lib"
+  fi
+done
+if [ -n "$drift" ]; then
+  echo "note: pins differ from the submodule's versions.lock for:$drift" \
+    "(tools/milib_versions.lock is authoritative)"
+fi
 
 # The generated <lib>-config tools bake the prefix in; the metapackage
 # refuses to build over another prefix's artifacts until cleaned.

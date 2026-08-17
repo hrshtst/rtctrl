@@ -39,7 +39,8 @@ ctest --test-dir build               # + wire-level & dynamics-sim tests
 
 `bootstrap_milib.sh` drives the `third_party/mi-lib` metapackage:
 member libraries are cloned on the first run and pinned by the
-submodule's `versions.lock`, then built and installed in dependency
+tracked `tools/milib_versions.lock` (the submodule pin governs the
+metapackage tooling only), then built and installed in dependency
 order into the prefix configured in `third_party/mi-lib/config.local`
 (seeded on first run with `<repo>/.local`; override with the first
 argument, narrow with `MILIB_LIBS="zeda zm ..."`). CMake finds the
