@@ -11,11 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # mi-lib member libraries are cloned by the bootstrap (via the
+      # metapackage's clone.sh), not initialized as submodules here.
       - name: Init required submodules
         run: |
           git submodule update --init --depth 1 \
-            third_party/zeda third_party/zm third_party/zeo third_party/dzco \
-            third_party/roki third_party/roki-fd third_party/liw \
+            third_party/mi-lib \
             third_party/DynamixelSDK third_party/crane_x7_description
 
       - name: Install system dependencies
