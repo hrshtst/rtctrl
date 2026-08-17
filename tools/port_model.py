@@ -106,7 +106,12 @@ def driven_joints(urdf_text: str) -> list[dict]:
 
 
 def convert_to_ztk(urdf_text: str) -> str:
-    urdf2ztk = shutil.which("urdf2ztk") or str(Path.home() / "usr/bin/urdf2ztk")
+    urdf2ztk = shutil.which("urdf2ztk")
+    if urdf2ztk is None:
+        sys.exit(
+            "error: urdf2ztk not found on PATH"
+            " (run tools/bootstrap_milib.sh and `direnv allow`)"
+        )
     urdf_file = WORK / "crane_x7.urdf"
     urdf_file.write_text(urdf_text)
     subprocess.run([urdf2ztk, str(urdf_file)], check=True, cwd=WORK)
