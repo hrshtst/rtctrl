@@ -50,6 +50,10 @@ UPSTREAM_LIBS="${MILIB_LIBS:-$FULL_LIBS}"
 CUSTOM_LIB=""
 CUSTOM_LIB_DEPS=""
 CUSTOM_TEST_CMD=""
+# rtctrl links only the plain C libraries (the _cpp variants miscompile
+# the roki-fd/zm ODE path — see src/milib_cpp_compat.cpp): never build
+# the C++ pass.
+CPP_LIBS=""
 PREFIX="$REPO_ROOT/.local"
 # The single version lock, tracked in rtctrl (relative paths resolve
 # against this repository). freeze writes it — review the diff, and
@@ -68,6 +72,7 @@ LIBS=${MILIB_LIBS:-$("$META/load_config.sh" --get UPSTREAM_LIBS)}
 export PREFIX
 export UPSTREAM_LIBS="$LIBS"
 export CUSTOM_LIB="" CUSTOM_LIB_DEPS="" CUSTOM_TEST_CMD=""
+export CPP_LIBS=""
 export SKIP_CHECKS=1
 
 # Restore the pinned state: thaw from a throwaway copy of rtctrl's
@@ -112,23 +117,11 @@ fi
 # Serial on purpose: the upstream sub-makes break the make jobserver.
 make -C "$META"
 
-# Dev convenience: generate the repo-root .envrc (direnv) once, and
-# keep the machine-local hook present (docs/DATA_ARCHIVE.md relies on
-# it; gen_envrc.sh does not emit it yet).
-if [ "${CI:-}" != "true" ]; then
-  if [ ! -e "$REPO_ROOT/.envrc" ]; then
-    ENVRC_DIR="$REPO_ROOT" "$META/gen_envrc.sh" || true
-  fi
-  if [ -f "$REPO_ROOT/.envrc" ] \
-      && ! grep -q "envrc.local" "$REPO_ROOT/.envrc"; then
-    {
-      echo ""
-      echo "# Machine-local additions (never committed; anything private — e.g."
-      echo "# the data-archive location — belongs here, per docs/DATA_ARCHIVE.md)."
-      echo "source_env_if_exists .envrc.local"
-    } >> "$REPO_ROOT/.envrc"
-    echo "note: appended the .envrc.local hook to .envrc; run 'direnv allow' to reload"
-  fi
+# Dev convenience: generate the repo-root .envrc (direnv) once — it
+# puts the prefix on PATH/LD_LIBRARY_PATH and sources the machine-local
+# .envrc.local (docs/DATA_ARCHIVE.md relies on that hook).
+if [ "${CI:-}" != "true" ] && [ ! -e "$REPO_ROOT/.envrc" ]; then
+  ENVRC_DIR="$REPO_ROOT" "$META/gen_envrc.sh" || true
 fi
 
 echo ""
