@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Offline analysis for x7_ident / x7_ident_sim telemetry.
+"""Offline analysis for x7_ident_sim telemetry and the archived
+telemetry of the removed x7_ident hardware app.
 
 Per docs/IDENTIFICATION_PLAN.md: per-dwell dt-weighted least-squares
 demodulation on the regressors [1, t, sin(phi), cos(phi)] over the

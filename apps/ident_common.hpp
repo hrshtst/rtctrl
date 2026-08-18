@@ -1,4 +1,5 @@
-// Shared between x7_ident (hardware) and x7_ident_sim: the stepped-sine
+// The stepped-sine identification core, consumed by x7_ident_sim (and
+// formerly the removed x7_ident hardware app): the stepped-sine
 // identification run — a constant-anchor ComputedTorque with a torque
 // probe superposed on ONE joint, online I/Q demodulation, all-joint
 // safety monitors with the hard/soft fault taxonomy, and the session

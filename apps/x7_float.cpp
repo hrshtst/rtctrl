@@ -21,10 +21,10 @@
 // x7_float session refuses to touch the bus without the APPROVED
 // vendor calibration (config/crane_x7_vendor_scale.toml) and a
 // REQUIRED --log file, created exclusively (an existing file is
-// never overwritten). x7_ident and x7_track remain parked (separate
-// dispositions).
+// never overwritten). x7_track remains parked (separate
+// disposition).
 //
-// Startup (M-GC1, the x7_ident pose-first pattern): the arm activates
+// Startup (M-GC1, the pose-first placement pattern): the arm activates
 // in POSITION mode — servo-held, no free-fall instant — the held
 // posture is read, a start inside the soft-limit margin band is
 // refused, and the scale-calibrated gravity currents are staged

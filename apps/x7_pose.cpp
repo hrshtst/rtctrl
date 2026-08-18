@@ -1,10 +1,9 @@
 // Positioning aid: moves the arm to a canonical posture in POSITION
 // mode so the operator sees the real target on hardware, holds it,
-// then goes limp on request while the operator supports the arm. The
-// PRIMARY campaign flow was `x7_ident --pose-first` (integrated
-// placement, no hands); this app remains for visually confirming a
-// posture and for the manual-fallback handover, where x7_ident's
-// settle and +/-0.02 rad anchor gates still do the verifying.
+// then goes limp on request while the operator supports the arm.
+// Built as the manual-fallback handover for the (since removed)
+// identification campaign; it remains a general positioning aid for
+// visually confirming a posture on hardware.
 //
 // SAFETY: the arm is servo-stiff during the move and DROPS under
 // gravity the moment it goes limp — support the shoulder and elbow
@@ -108,8 +107,7 @@ int main(int argc, char* argv[]) {
         ">>> The arm goes LIMP and drops when you continue. CATCH,\n"
         ">>> don't hold: support from below (forearm/under-elbow)\n"
         ">>> only against the drop — do NOT grip or lift, or the\n"
-        ">>> posture is lost. Have the x7_ident command ready in\n"
-        ">>> another terminal, then press Enter to torque off.\n");
+        ">>> posture is lost. Press Enter to torque off.\n");
     // keep the command stream (and both watchdog layers) alive while
     // waiting — a silent bus would trip the servo Bus Watchdogs
     (void)n;
@@ -125,10 +123,8 @@ int main(int argc, char* argv[]) {
       usleep(kCycleUs);
     }
     const bool clean = shutdown.run();
-    std::printf("%s — the arm is limp. Catch the drop, start x7_ident "
-                "immediately, and RELEASE fully the moment it prints "
-                "its release cue (its gravity hold floats — sustained "
-                "contact re-poses the arm).\n",
+    std::printf("%s — the arm is limp. Catch the drop and lower "
+                "the arm gently to a resting posture.\n",
                 clean ? "torque off" : "torque off INCOMPLETE — check "
                                        "the arm before proceeding");
     return clean ? 0 : 1;

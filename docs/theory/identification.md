@@ -1,9 +1,9 @@
 # Flexible-mode identification
 
 *Implemented in `apps/ident_common.hpp` (probe state machine, online
-demodulation, safety monitors), `apps/x7_ident.cpp` /
-`apps/x7_ident_sim.cpp` (hardware app and simulation twin), and
-`tools/ident_analysis.py` (offline estimation). Design record:
+demodulation, safety monitors), `apps/x7_ident_sim.cpp` (simulation
+twin; the x7_ident hardware app was removed after the campaign
+closed), and `tools/ident_analysis.py` (offline estimation). Design record:
 [identification plan](../IDENTIFICATION_PLAN.md); operator procedure:
 [identification protocol](../IDENTIFICATION_PROTOCOL.md); run order and
 outcomes: [campaign checklist](../IDENTIFICATION_CAMPAIGN.md).

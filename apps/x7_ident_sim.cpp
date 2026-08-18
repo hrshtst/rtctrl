@@ -1,4 +1,5 @@
-// Simulation twin of x7_ident over the TwoMassArm fixture with its
+// Stepped-sine identification in simulation (twin of the removed
+// x7_ident hardware app) over the TwoMassArm fixture with its
 // PLANTED modes (joint 1: 4.5 Hz zeta 0.03; joint 5: 13 Hz zeta 0.05)
 // — the CSV/JSON source for validating tools/ident_analysis.py against
 // known ground truth before any hardware run. Same schedule pipeline,

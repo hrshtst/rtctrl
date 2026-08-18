@@ -1,4 +1,5 @@
-// Position-mode placement shared by x7_pose and x7_ident --pose-first:
+// Position-mode placement used by x7_pose (and formerly the removed
+// x7_ident --pose-first startup):
 // a velocity-limited min-jerk move followed by goal-offset iterations
 // that converge the MEASURED posture (position mode has no integral
 // action — the stock P gain leaves 0.03-0.06 rad of friction sag, which
