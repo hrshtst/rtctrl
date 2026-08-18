@@ -1,6 +1,6 @@
 // Real-mechanism validation of the session-watchdog quiesce path over
 // the UNMODIFIED DynamixelSDK stack and the pty emulator
-// (docs/IDENTIFICATION_PLAN.md verification):
+// (docs/HISTORY.md (identification) verification):
 //  * deterministic SDK/configuration check — a FORCED full grouped-read
 //    timeout (bus made non-responsive) stays under the B_io = 50 ms
 //    budget the T_quiesce arithmetic relies on;

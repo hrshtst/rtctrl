@@ -15,7 +15,7 @@ namespace x7 {
 namespace arm = rtctrl::arm;
 namespace tuning = rtctrl::arm::tuning;
 
-// Latency verification (docs/REMEDIATION_PLAN.md D3 round 9): match
+// Latency verification (docs/HISTORY.md (pass-1 record) D3 round 9): match
 // the snapshot's applied sequence to ITS OWN historical receipt —
 // never the receipt created in this cycle. check() returns false on a
 // violation (a skipped submission, a first application past the

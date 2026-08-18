@@ -148,10 +148,10 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >
 >   The archived M-GC3 evidence used its original 5 s protocol. Keep the
 >   power cutoff within reach. Full record:
->   [GRAVITY_CALIBRATION_PLAN.md](GRAVITY_CALIBRATION_PLAN.md).
+>   [HISTORY.md](HISTORY.md#gravity-compensation-and-torque-constant-calibration).
 > - **`x7_ident` was REMOVED (2026-08-18):** its pass-2
 >   identification campaign closed with a null result (2026-07-28,
->   see [IDENTIFICATION_PLAN.md](IDENTIFICATION_PLAN.md), Closure),
+>   see [HISTORY.md](HISTORY.md#closure-decision-and-precise-scope)),
 >   and the parked hardware app was deleted in the project cleanup.
 >   The sim twin (`x7_ident_sim`), the analysis pipeline
 >   (`tools/ident_analysis.py`), and the null datasets under

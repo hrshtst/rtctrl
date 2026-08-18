@@ -29,7 +29,7 @@ bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
 
 | file | role | sha256 |
 |---|---|---|
-| `pass1.csv` | Pass-1 instrumentation validation at scale 0.5; cited in REMEDIATION_PLAN.md status; P1 anchor source | `a33b8efcde6acd3d7313f5eb190fb84768a8d38d3cd4a53e70ee287ffca0177c` |
+| `pass1.csv` | Pass-1 instrumentation validation at scale 0.5; cited in HISTORY.md (pass-1 evidence); P1 anchor source | `a33b8efcde6acd3d7313f5eb190fb84768a8d38d3cd4a53e70ee287ffca0177c` |
 | `pass1.csv.settle` | Settle-gate log of the pass-1 validation run | `b7caa9b04f251372ec65f1dc210cc986cce9d5ee3cf1d1200144e2b790575df9` |
 
 ## `p1-holds/` — P1 hold diagnostics and qualification (2026-07-27)
@@ -62,7 +62,7 @@ bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
 | `p1_j1_survey.csv` \* | FAILED first production survey (capture timeout, joint-3 winding) - NO probe data, never analyze | `c77e70e9706ec6274fcaa44d6f4feaf4c8433c3afa00a4e47e26641f6fe11cc9` |
 | `p1_j1_survey.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_j1_survey.csv.dwells.json`) | `6c448b7599de088e50cf68e98b17e91844666435b63850970ae4400d3e166c82` |
 | `p1_j1_survey.csv.settle` | Settle log of the failed survey attempt | `e62d806a40f559a817b34fdb18376ab9dbcea53473e9d25242cb818750a043fe` |
-| `p1_j1_survey_r2.csv` \* | The null survey: joint 1 tick-frozen through 13/16 windows; cited in IDENTIFICATION_PLAN.md Closure | `0a905c086ce312f549f2dcaa0a9796eedbc30f2f65969982144eed830dd44a95` |
+| `p1_j1_survey_r2.csv` \* | The null survey: joint 1 tick-frozen through 13/16 windows; cited in HISTORY.md (identification closure) | `0a905c086ce312f549f2dcaa0a9796eedbc30f2f65969982144eed830dd44a95` |
 | `p1_j1_survey_r2.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_j1_survey_r2.csv.dwells.json`) | `60f7d80b447417ee5065dd0c3c1ca14ad3cbc1aff06d78a9bb6d383ee9a6ecd6` |
 | `p1_j1_amp020.csv` \* | Amplitude pilot 0.20 Nm at 4.5 Hz (null); cited in the Closure | `054214d7955e597d2e3b46aecf4c7383a09912c6382dd6f21c13b36a96d1ea78` |
 | `p1_j1_amp020.csv.dwells.json` | sidecar of the above (also tracked at `data/p1_j1_amp020.csv.dwells.json`) | `5bb21d33cdad779b56317c43c3613f5cde62bac259a35ab0ab5c5e6e29104f5b` |
@@ -76,7 +76,7 @@ bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
 ## `incidents-2026-07/` — parked-controller incident telemetry
 
 Evidence of the two incidents that parked the current-mode
-controllers; cited by `docs/GRAVITY_CALIBRATION_PLAN.md`,
+controllers; cited by `docs/HISTORY.md`,
 `docs/HARDWARE_BRINGUP.md`, and the theory chapters. `track9.csv` was
 logged as `track.csv` and renamed at archive time (the bare name
 collides with the M8 entry above; the numbering continues runs 1–8).
@@ -85,12 +85,12 @@ collides with the M8 entry above; the numbering continues runs 1–8).
 |---|---|---|
 | `track9.csv` | 2026-07-28 x7_track scale-0.5 attempt: settle-phase pan anti-damping at 4.33 Hz, manual power cut; the run's (nearly empty) tracking log | `9969dc95a14f70b97a97fa89657623e5bc6ad12678c298259be4c317f311a7ca` |
 | `track9.csv.settle` | settle-phase telemetry of the above: the 4.33 Hz growth 50 → 350 mrad p-p; basis of the settle-incident investigation | `ab599c6dbaf1e3ca5afa74b6bb055e7adae3ddfebf17c96ca6a2c87383a4d641` |
-| `float1.csv` | 2026-07-29 FAILED x7_float test: untouched arm climbed upright (peak ~2.37 rad/s); basis of GRAVITY_CALIBRATION_PLAN.md's M-GC0 addendum | `6e0f72a74adaf5db129053a37ceb1724e60b738181ff1c23b01156012247b6fe` |
+| `float1.csv` | 2026-07-29 FAILED x7_float test: untouched arm climbed upright (peak ~2.37 rad/s); basis of the M-GC0 addendum (HISTORY.md, gravity calibration) | `6e0f72a74adaf5db129053a37ceb1724e60b738181ff1c23b01156012247b6fe` |
 
 ## `gravity-calibration/` — M-GC3 calibrated float tests (2026-07-30)
 
 Evidence of the gravity-calibration remediation's hardware milestone
-(`docs/GRAVITY_CALIBRATION_PLAN.md`, M-GC3): the vendor-scale
+(`docs/HISTORY.md`, M-GC3): the vendor-scale
 configuration, marker-first release, displacement-bounded acceptance.
 
 | file | role | sha256 |

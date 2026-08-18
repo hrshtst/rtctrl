@@ -6,7 +6,7 @@
 namespace rtctrl::hw {
 
 // THE torque->command-current boundary
-// (docs/GRAVITY_CALIBRATION_PLAN.md M-GC1):
+// (docs/HISTORY.md (gravity calibration) M-GC1):
 //
 //   i_cmd = command_torque_scale * tau / kt_nominal
 //

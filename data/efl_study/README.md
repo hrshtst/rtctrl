@@ -2,9 +2,9 @@
 
 `results.json` is the authoritative, machine-readable result table of
 the preregistered offline exact-feedback-linearization study
-([docs/ENVELOPE_STABILITY_PLAN.md](../../docs/ENVELOPE_STABILITY_PLAN.md);
-implementation and frozen constants in
-[docs/EFL_STUDY_IMPLEMENTATION_PLAN.md](../../docs/EFL_STUDY_IMPLEMENTATION_PLAN.md)).
+([docs/HISTORY.md](../../docs/HISTORY.md#efl-offline-study-closed-negative-2026-07-29),
+which also carries the frozen constants; the study-definition name
+embedded inside `results.json` is a historical label).
 It is produced by `build/apps/x7_efl_study` and may be committed here
 ONLY when its own `canonical` field is true, which the runner grants
 only to a complete, unfiltered matrix executed from a worktree that is

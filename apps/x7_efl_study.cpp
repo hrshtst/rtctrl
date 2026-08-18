@@ -1,6 +1,6 @@
 // Offline exact-feedback-linearization study runner — executes the
-// COMPLETE preregistered study of docs/ENVELOPE_STABILITY_PLAN.md with
-// the frozen constants of docs/EFL_STUDY_IMPLEMENTATION_PLAN.md.
+// COMPLETE preregistered study of docs/HISTORY.md (EFL study) with
+// the frozen constants of docs/HISTORY.md (EFL frozen specification).
 // Simulation only: no hardware, no x7_track involvement.
 //
 // Usage: x7_efl_study [--out dir] [--case ID]
@@ -747,7 +747,7 @@ int main(int argc, char* argv[]) {
     j.value(kSchemaVersion);
     j.key("study");
     j.value("offline exact-feedback-linearization study "
-            "(docs/ENVELOPE_STABILITY_PLAN.md)");
+            "(docs/HISTORY.md (EFL study))");
     j.key("invocation");
     {
       std::string inv;

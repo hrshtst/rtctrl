@@ -191,8 +191,8 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
   cannot certify gains against gear elasticity; see the
   [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us)).
 - Line-speed/serial-timing behavior is invisible to pty tests
-  (a lesson learned the hard way — see the implementation plan's
-  hardware findings): budget a hardware check for it.
+  (a lesson learned the hard way — see the hardware findings in
+  [HISTORY.md](../HISTORY.md)): budget a hardware check for it.
 
 ## Conventions
 
@@ -203,5 +203,5 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
   the servo-parameter passthroughs (operating-mode codes and the raw
   profile registers on `CraneX7`), which stay in register units by
   design.
-- New mi-lib quirks belong in the implementation plan's findings and
-  the project memory — several cost hours to discover.
+- New mi-lib quirks belong in the repo guidance (CLAUDE.md gotchas)
+  and the project memory — several cost hours to discover.

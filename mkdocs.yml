@@ -75,18 +75,7 @@ nav:
       - Flexible-mode identification: theory/identification.md
   - Hardware:
       - Bring-up checklist: HARDWARE_BRINGUP.md
-      - Identification protocol: IDENTIFICATION_PROTOCOL.md
-      - Identification campaign checklist: IDENTIFICATION_CAMPAIGN.md
   - Project records:
-      - Original brief: PLAN.md
-      - Implementation plan: IMPLEMENTATION_PLAN.md
-      - Remediation plan: REMEDIATION_PLAN.md
-      - Identification plan: IDENTIFICATION_PLAN.md
-      - Consistency remediation plan: CONSISTENCY_REMEDIATION_PLAN.md
-      - Offline EFL study (definition): ENVELOPE_STABILITY_PLAN.md
-      - EFL study implementation plan: EFL_STUDY_IMPLEMENTATION_PLAN.md
-      - EFL study results: EFL_STUDY_RESULTS.md
-      - CT mass-error study (sim): CT_MASS_ERROR_STUDY.md
-      - Gravity calibration plan: GRAVITY_CALIBRATION_PLAN.md
+      - Project history: HISTORY.md
       - Data archive manifest: DATA_ARCHIVE.md
       - Vendor parity: PARITY.md

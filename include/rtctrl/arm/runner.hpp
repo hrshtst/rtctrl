@@ -32,7 +32,7 @@ class CycleObserver {
                        const CommandReceipt& receipt) = 0;
 };
 
-// Stale-feedback policy (docs/REMEDIATION_PLAN.md D4). At the arm's
+// Stale-feedback policy (docs/HISTORY.md (pass-1 record) D4). At the arm's
 // ~4.5 Hz structural mode a 25 ms gap is ~40 degrees of modal phase —
 // a bounded perturbation — whereas larger gaps followed by a
 // trajectory catch-up could themselves excite the mode; the run aborts

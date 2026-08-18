@@ -3,10 +3,9 @@
 *Implemented in `apps/ident_common.hpp` (probe state machine, online
 demodulation, safety monitors), `apps/x7_ident_sim.cpp` (simulation
 twin; the x7_ident hardware app was removed after the campaign
-closed), and `tools/ident_analysis.py` (offline estimation). Design record:
-[identification plan](../IDENTIFICATION_PLAN.md); operator procedure:
-[identification protocol](../IDENTIFICATION_PROTOCOL.md); run order and
-outcomes: [campaign checklist](../IDENTIFICATION_CAMPAIGN.md).
+closed), and `tools/ident_analysis.py` (offline estimation). Design record,
+operator procedure, and campaign outcomes:
+[HISTORY.md](../HISTORY.md#flexible-mode-identification-closed-null-2026-07-28).
 Prerequisite reading:
 [computed torque](computed-torque.md), whose limitations this page
 starts from. The campaign this theory served was **closed 2026-07-28
@@ -373,6 +372,6 @@ configuration), identification around a *moving* operating point
 (motion linearizes the friction that defeated the stationary probe —
 the modes were originally observed during tracking), or
 dither-assisted excitation — each restarting from external review.
-Full evidence and provenance:
-[identification plan, Closure](../IDENTIFICATION_PLAN.md) and the
+Full evidence and provenance: the
+[closure record](../HISTORY.md#closure-decision-and-precise-scope) and the
 [data archive manifest](../DATA_ARCHIVE.md).

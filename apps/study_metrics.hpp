@@ -1,7 +1,7 @@
 // Pure-logic scoring for the offline EFL study — every number the
 // preregistered decision rule consumes, plus a minimal JSON writer for
 // the machine-readable result table. All constants and formulas are
-// frozen in docs/EFL_STUDY_IMPLEMENTATION_PLAN.md; the unit tests in
+// frozen in docs/HISTORY.md (EFL frozen specification); the unit tests in
 // tests/unit/study_metrics_test.cpp pin them.
 #pragma once
 

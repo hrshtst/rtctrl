@@ -119,5 +119,5 @@ manufacturer data; friction and gear efficiency are not modeled, which
 bounds the fidelity of $\hat\tau$ as an *output-torque* estimate. The
 few-percent static agreement observed on hardware verifies the current
 loop against the same nominal $k_t$ used to command it — not the
-output torque itself (see the M7 notes in the
-[implementation plan](../IMPLEMENTATION_PLAN.md)).
+output torque itself (see the M7 notes and the calibration arc in
+[HISTORY.md](../HISTORY.md#gravity-compensation-and-torque-constant-calibration)).

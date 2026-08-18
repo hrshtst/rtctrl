@@ -3,7 +3,7 @@
 model and compare per-joint current commands against rtctrl's.
 
 Reviewer-directed simulation step for the M-GC3 back-drive exceptions
-(docs/GRAVITY_CALIBRATION_PLAN.md): rtctrl's side of the comparison is
+(docs/HISTORY.md (gravity calibration)): rtctrl's side of the comparison is
 already in the log — tau_request at the measured posture each cycle —
 and is converted to amps here exactly as the command boundary does
 (i = command_torque_scale * tau / kt_nominal, hw::commandCurrentFromTorque).

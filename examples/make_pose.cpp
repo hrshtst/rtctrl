@@ -1,6 +1,6 @@
 // Emits a STATIC posture in both roki viewer formats, e.g. to visually
 // confirm a canonical identification posture before hand-placing the
-// arm (docs/IDENTIFICATION_PROTOCOL.md):
+// arm (docs/HISTORY.md (identification)):
 //   <out>.zvs      — a few 1 s frames;  rk_anim <model.ztk> <out>.zvs
 //   <out>.init.ztk — [roki::chain::init] joint displacements;
 //                    rk_pen -model <model.ztk> -init <out>.init.ztk

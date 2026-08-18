@@ -7,7 +7,7 @@
 // sim first (gravity_sim_test): drift < 0.05 rad over 10 s.
 //
 // UN-PARKED (2026-07-31, owner decision recorded in
-// docs/GRAVITY_CALIBRATION_PLAN.md; parked 2026-07-29 after gravity
+// docs/HISTORY.md (gravity calibration); parked 2026-07-29 after gravity
 // over-compensation drove the untouched arm upright at ~2.37 rad/s):
 // the M-GC3 objective acceptance PASSED on the vendor-scale
 // configuration; the subjective back-drive criterion remains FAILED
@@ -286,7 +286,7 @@ struct FloatLogObserver : arm::CycleObserver {
       }
       std::fprintf(log_, "\n");
     }
-    // Marker-anchored termination (GRAVITY_CALIBRATION_PLAN M-GC1):
+    // Marker-anchored termination (HISTORY.md gravity calibration M-GC1):
     // the full evaluation window is always logged; a run past the
     // marker deadline without a marker is an aborted test. (The
     // enforced minimum duration guarantees these branches are always

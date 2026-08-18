@@ -56,6 +56,7 @@ rtctrl — C++17 control library for the CRANE-X7 7-DOF arm (mi-lib dynamics, Dy
   sidecars are tracked, under `data/`). Never write the archive's location into
   any tracked file.
 - The 0.6 excursion-scale cap in `x7_track` is FINAL (closure 2026-07-28; see
-  `docs/IDENTIFICATION_PLAN.md`, Closure). Do not propose lifting it.
+  `docs/HISTORY.md`, the computed-torque and identification chapters). Do not
+  propose lifting it.
 - Hardware sessions follow `docs/HARDWARE_BRINGUP.md` (power cutoff within
   reach, first motion = wrist only); use a unique `--log` filename per attempt.

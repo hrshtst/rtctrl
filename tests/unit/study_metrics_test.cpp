@@ -1,5 +1,5 @@
 // Pins the frozen scoring formulas of the offline EFL study
-// (docs/EFL_STUDY_IMPLEMENTATION_PLAN.md): the least-squares amplitude
+// (docs/HISTORY.md (EFL frozen specification)): the least-squares amplitude
 // fit, the modal censoring calculus with its comparator ordering, the
 // settling metrics, and the four decision-rule booleans.
 #include <catch2/catch_test_macros.hpp>

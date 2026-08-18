@@ -141,7 +141,7 @@ void Config::validate() const {
                                "' has a negative safety margin");
     }
     // Command-torque calibration interval, preregistered in
-    // docs/GRAVITY_CALIBRATION_PLAN.md M-GC1: attenuation only. The
+    // docs/HISTORY.md (gravity calibration) M-GC1: attenuation only. The
     // rejection happens here — before any bus contact — and is
     // re-checked by the CraneX7 constructor like every other field.
     if (!std::isfinite(joint.command_torque_scale) ||
@@ -151,7 +151,7 @@ void Config::validate() const {
           "Config: joint '" + joint.name +
           "' has command_torque_scale outside [0.5, 1.0] (the "
           "gravity-calibration remediation permits attenuation only; "
-          "see docs/GRAVITY_CALIBRATION_PLAN.md)");
+          "see docs/HISTORY.md (gravity calibration))");
     }
   }
 }

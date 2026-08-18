@@ -142,7 +142,7 @@ int main(int argc, char* argv[]) {
   // identification a compensator design required stopped at its first
   // gate — joint 1 at P1 stiction-locked below one encoder count up
   // to the probe's 0.3 Nm hard cap; other routes untested, closed by
-  // decision (docs/IDENTIFICATION_PLAN.md, Closure). Use position
+  // decision (docs/HISTORY.md (identification), Closure). Use position
   // mode for larger fast motions.
   if (scale > 0.6) {
     std::printf("scale %.2f capped to 0.60 — the final supported "

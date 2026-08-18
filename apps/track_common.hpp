@@ -324,7 +324,7 @@ struct TrackingRun : arm::Controller, arm::CycleObserver {
   LatencyVerifier verifier_;
 };
 
-// CSV with explicit event semantics (docs/REMEDIATION_PLAN.md D8). A
+// CSV with explicit event semantics (docs/HISTORY.md (pass-1 record) D8). A
 // row mixes three events documented in the '#' comment line; all
 // timestamps share the producer's absolute clock.
 inline std::FILE* openCsvLog(const std::string& path) {

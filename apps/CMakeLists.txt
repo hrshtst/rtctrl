@@ -10,7 +10,7 @@ foreach(app x7_onoff x7_read x7_set_param x7_move_simple x7_float x7_track
   target_link_libraries(${app} PRIVATE rtctrl::rtctrl)
 endforeach()
 
-# Offline EFL study runner (docs/ENVELOPE_STABILITY_PLAN.md). The git
+# Offline EFL study runner (docs/HISTORY.md (EFL study)). The git
 # provenance source is regenerated on EVERY build — a configure-time
 # value goes stale after later commits (review finding); the dirty
 # flag counts untracked files.

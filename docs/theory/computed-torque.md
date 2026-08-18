@@ -221,7 +221,8 @@ the supported boundary.
 
 **Pass-1 remediation (instrumentation & hardening).** Following the
 post-completion review, the loop was made observable and its timing
-monitored and bounded — see [REMEDIATION_PLAN.md](../REMEDIATION_PLAN.md):
+monitored and bounded — see the
+[pass-1 record](../HISTORY.md#pass-1-instrumentation-evidence):
 measured-time control with an explicit stale-feedback abort policy,
 feedback and command sequencing with first-vs-latest application
 records and receipt-matched latency verification, one continuous
@@ -232,7 +233,8 @@ pass-2 identification it enabled was executed and closed 2026-07-28
 with a null result at its first gate (joint 1 at P1 stiction-locked
 below the output encoder's resolution under a stationary current
 probe up to its hard cap): **the 0.6 scale cap is the final
-supported boundary** (see IDENTIFICATION_PLAN.md, Closure).
+supported boundary** (see the
+[closure record](../HISTORY.md#closure-decision-and-precise-scope)).
 
 ## Offline exact-feedback-linearization study (2026-07-29)
 
@@ -241,9 +243,8 @@ whether exact feedback linearization — the rigid model evaluated at
 the measured state, feedback in the acceleration domain — offers a
 useful advantage over the shipped practical law. Simulation only: no
 hardware, no `x7_track` changes, the 0.6 cap untouched. Study
-definition: [ENVELOPE_STABILITY_PLAN.md](../ENVELOPE_STABILITY_PLAN.md);
-frozen constants and implementation:
-[EFL_STUDY_IMPLEMENTATION_PLAN.md](../EFL_STUDY_IMPLEMENTATION_PLAN.md);
+definition and frozen constants:
+[HISTORY.md](../HISTORY.md#efl-offline-study-closed-negative-2026-07-29);
 canonical machine-readable table: `data/efl_study/results.json`.
 
 **Verdict: negative — the study stopped at its preregistered gain
@@ -272,7 +273,7 @@ gate.** Findings by fixture family:
   gains and integrator compensate better in this scenario — though
   its inverse-dynamics feedforward omits the same reflected inertia.
   Isolating the cause would need a matched-inertia ablation — see
-  the [results record](../EFL_STUDY_RESULTS.md).
+  the [results record](../HISTORY.md#results-and-interpretation).
 - **Delayed and disturbed cases.** Not evaluable for EFL (no
   surviving gains, per preregistration). The practical baselines are
   recorded for the record: the two-cycle-delay, quantized loop from
@@ -309,8 +310,9 @@ flag, no default change, and no cap change follow from any of this.
   redesign of the D path; the identification was executed and stopped
   at its first gate — joint 1 at P1 is stiction-locked below the
   output encoder's resolution under a stationary current probe up to
-  its hard cap (other routes untested; closed by decision — see
-  IDENTIFICATION_PLAN.md, Closure). The theory, method mathematics,
+  its hard cap (other routes untested; closed by decision — see the
+  [closure record](../HISTORY.md#closure-decision-and-precise-scope)).
+  The theory, method mathematics,
   and quantified results are in
   [flexible-mode identification](identification.md). That regime belongs to
   position-mode tracking (servo-internal kHz loops), keeping current

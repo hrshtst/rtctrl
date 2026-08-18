@@ -1,4 +1,4 @@
-// ComputedTorque hardening regressions (docs/REMEDIATION_PLAN.md D5):
+// ComputedTorque hardening regressions (docs/HISTORY.md (pass-1 record) D5):
 // first-sample initialization, duplicate-timestamp freeze, measured-dt
 // velocity estimation, and direction-aware anti-windup with the
 // committed-state output identity.

@@ -1,6 +1,6 @@
 # Tracked evidence sidecars
 
-Two kinds of evidence live here, with different provenance:
+Three kinds of evidence live here, with different provenance:
 
 - **Hardware evidence sidecars** (`*.dwells.json`, this directory) —
   summaries of raw hardware telemetry whose time series live in the
@@ -11,6 +11,11 @@ Two kinds of evidence live here, with different provenance:
   itself is the authoritative evidence and records the exact commit,
   clean-worktree status, and invocation that produced it (see
   `efl_study/README.md`).
+- **Simulation-study result tables** (`ct_mass_error_study/`) — the
+  CT mass-error study's 166-run result table and provenance metadata
+  (commit, model and binary SHA-256, seeds), produced by
+  `tools/ct_mass_error_study.py` driving `examples/x7_ct_mass_error`;
+  summarized in `docs/HISTORY.md` (CT mass-error study).
 
 The `.dwells.json` files here are the per-run summary sidecars of the
 hardware identification campaign (2026-07-27): the complete controller
@@ -23,8 +28,8 @@ data archive outside this repository; see
 [docs/DATA_ARCHIVE.md](../docs/DATA_ARCHIVE.md) for each file's role
 and SHA-256. These sidecars alone cannot be re-fitted (the analysis
 needs the raw CSVs). They carry the controller, capture, dwell, and
-demodulation values cited by `docs/IDENTIFICATION_PLAN.md`'s Closure
-section and its addenda; raw timing and sample-level claims (apply
+demodulation values cited by `docs/HISTORY.md`'s identification
+closure record; raw timing and sample-level claims (apply
 delays, encoder-count behavior, overrun/I/O counts) require the
 archived CSVs.
 

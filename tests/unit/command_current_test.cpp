@@ -1,5 +1,5 @@
 // The torque->command-current boundary and its calibration scale
-// (docs/GRAVITY_CALIBRATION_PLAN.md M-GC1): the formula, the config
+// (docs/HISTORY.md (gravity calibration) M-GC1): the formula, the config
 // validation interval (rejected before any bus contact), the
 // vendor-equivalent config variant, and preload/write continuity at
 // the amp level through the emulator.

@@ -121,17 +121,20 @@ $i_k = \tau_k / k_{t,k}$, and the servos run in current mode
   it), so it verifies the servo's *current loop* tracking the
   commanded current — not output-shaft torque; friction, gearbox
   efficiency, and any $k_t$ scale error sit outside the comparison.
-  **Status (2026-07-29): `x7_float` is PARKED.** A float session
-  accelerated the untouched arm toward the upright posture (peak
-  ~2.37 rad/s) — the signature of gravity over-compensation, a
-  failure class the agreement print is structurally blind to. The
-  leading explanation is the torque-to-current calibration (the
-  vendor's empirically tuned constants imply rtctrl commands 23–49 %
-  more current per model-torque); remediation, evidence, and the
-  retest protocol live in
-  [GRAVITY_CALIBRATION_PLAN.md](../GRAVITY_CALIBRATION_PLAN.md).
-  Until that plan's hardware milestone passes, the float claims
-  above are scoped to the M7 sessions.
+  **Status: `x7_float` WORKS on hardware (un-parked 2026-07-31).**
+  The 2026-07-29 incident — a float session accelerating the
+  untouched arm toward the upright (peak ~2.37 rad/s), the signature
+  of gravity over-compensation, a failure class the agreement print
+  is structurally blind to — led to the torque-constant calibration
+  arc: the vendor-equivalent scales (hypotheses, not measurements)
+  plus a position-held/preloaded startup passed the objective M-GC3
+  acceptance with wide margins; the subjective back-drive criterion
+  FAILED and the owner explicitly WAIVED it (a risk/quality decision,
+  not a test pass — the characterized j1 notch and j4 tendency
+  remain). Every `x7_float` session therefore refuses the bus without
+  `config/crane_x7_vendor_scale.toml` and a fresh exclusive `--log`.
+  Full arc and decisions:
+  [HISTORY.md](../HISTORY.md#gravity-compensation-and-torque-constant-calibration).
 
 ## Limitations
 

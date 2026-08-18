@@ -5,7 +5,7 @@
 // known ground truth before any hardware run. Same schedule pipeline,
 // no bus/settle/watchdog: the fixture starts at rest and is
 // gravity-free (the anchor feedforward is subtracted per C6b —
-// docs/IDENTIFICATION_PLAN.md).
+// docs/HISTORY.md (identification)).
 //
 // Usage: x7_ident_sim [--joint N] [--freqs 4.1,4.25,...] [--amp cap]
 //                     [--label name] [--log out.csv]

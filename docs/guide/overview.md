@@ -55,21 +55,26 @@ canonical 8-DOF order is fixed project-wide, and `JointMap` owns the
 mappings — including the virtual-work torque reduction for the mimic
 finger (see [dynamics foundations](../theory/dynamics-foundations.md)).
 
-## What exists today
+## What works where
 
-| Area | State |
-|---|---|
-| CRANE-X7 model for mi-lib (`models/crane_x7/crane_x7.ztk`) | generated from the URDF, verified against it numerically and in `rk_pen` |
-| Robust IK (`IkSolver`) | error-damped LM, structured results; converges at reachable singular poses, reports unreachable ones explicitly |
-| Dynamics simulator (`SimArm`) | plain-roki FD with reflected motor inertia; deterministic |
-| Motor comm layer + emulator | the supported XM register subset (what this project uses), indirect-address sync IO, wire-level emulator |
-| Hardware layer (`CraneX7`, `RealArm`) | vendor parity + background RW thread + layered watchdog safety (servo bus watchdog; host deadman on stale commands or frozen feedback), verified on the physical arm |
-| Gravity compensation | proven by gradient tests, sim float, and hardware float |
-| Computed-torque tracking | sim RMS 0.005 rad (3× better than bare PD); hardware-accepted at RMS ≈ 0.02 rad within the reduced-speed envelope — see the [theory notes](../theory/computed-torque.md) for the hardware-hardened law and the scale cap |
+Infrastructure (verified on the physical arm): the URDF-derived
+mi-lib model, robust IK (`IkSolver`), the deterministic `SimArm`
+dynamics simulator with reflected motor inertia, the Dynamixel comm
+layer with its wire-level emulator, and the `CraneX7`/`RealArm`
+hardware layer with layered watchdog safety.
 
-The development history, including every design decision and hardware
-finding, lives in the [implementation plan](../IMPLEMENTATION_PLAN.md);
-the original specification is [PLAN.md](../PLAN.md).
+Control, by evidence tier — the honest ledger of this project:
+
+| Capability | Theory | Simulation | Hardware |
+|---|---|---|---|
+| Gravity compensation (`x7_float`) | [notes](../theory/gravity-compensation.md) | ✓ sim float | **✓ WORKS** — requires `config/crane_x7_vendor_scale.toml` (gate before bus contact) and a fresh `--log`; the failed subjective back-drive criterion was owner-waived ([history](../HISTORY.md#gate-outcomes-and-the-waived-back-drive-criterion)) |
+| Position-mode trajectory tracking (`x7_wave`, `x7_move_simple`, `x7_pose`) | — (servo-internal loops) | ✓ emulator | **✓ WORKS** — the M6 parity milestone and the supported route for large fast motions ([history](../HISTORY.md#position-mode-tracking-on-hardware)) |
+| Computed-torque tracking (`x7_track`, sim twin `x7_track_sim`) | [notes](../theory/computed-torque.md) | ✓ RMS 0.005 rad, 3.1× bare PD | **⚠ CAPPED & PARKED** — accepted at RMS ≈ 0.02 rad only within scale ≤ 0.6 (**cap FINAL**, [history](../HISTORY.md#hardware-campaign-and-the-final-06-scale-cap)); the app is parked behind an unimplemented settle-phase fix ([status](../HARDWARE_BRINGUP.md)) |
+| Exact feedback linearization (`x7_efl_study`) | [notes](../theory/computed-torque.md) | **✗ CLOSED-NEGATIVE** at the preregistered gain gate ([history](../HISTORY.md#results-and-interpretation)) | never operated (offline-only by charter) |
+| Flexible-mode identification (`x7_ident_sim` + `tools/ident_analysis.py`) | [notes](../theory/identification.md) | ✓ method validated (planted modes recovered) | **✗ CLOSED-NULL** — joint 1 at P1 stiction-locked below encoder resolution; hardware app removed 2026-08-18 ([history](../HISTORY.md#closure-decision-and-precise-scope)) |
+
+The consolidated record of every decision and hardware finding is
+[HISTORY.md](../HISTORY.md).
 
 ## Reading order
 
