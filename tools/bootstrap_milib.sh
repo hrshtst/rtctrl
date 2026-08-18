@@ -75,19 +75,13 @@ export CUSTOM_LIB="" CUSTOM_LIB_DEPS="" CUSTOM_TEST_CMD=""
 export CPP_LIBS=""
 export SKIP_CHECKS=1
 
-# Restore the pinned state: thaw from a throwaway copy of rtctrl's
-# tracked lock, filtered to the configured libraries (thaw_versions.sh
-# iterates the lock, so it must not list unconfigured libraries).
+# Restore the pinned state: thaw the configured libraries straight
+# from rtctrl's tracked lock — the metapackage's thaw processes
+# exactly the configured set, ignores extra entries, and errors on a
+# configured library the lock lacks. The export also covers CI, where
+# config.local is skipped.
 RTCTRL_LOCK="$REPO_ROOT/tools/milib_versions.lock"
-VERSIONS_LOCK=$(mktemp)
-trap 'rm -f "$VERSIONS_LOCK"' EXIT
-for lib in $LIBS; do
-  grep -- "^$lib " "$RTCTRL_LOCK" >> "$VERSIONS_LOCK" || {
-    echo "error: no entry for '$lib' in $RTCTRL_LOCK" >&2
-    exit 1
-  }
-done
-export VERSIONS_LOCK
+export VERSIONS_LOCK="$RTCTRL_LOCK"
 
 # Trailing or leading the submodule's own versions.lock is fine —
 # rtctrl's lock is authoritative — but make it visible.
