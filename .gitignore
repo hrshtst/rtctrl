@@ -15,3 +15,13 @@ site/
 /*.csv.*
 /*.zvs
 /dump*.txt
+
+# Locally installed skills are personal tooling, not shared with the
+# team: the payload (.agents/), the .claude/skills symlink, and the
+# install lock all stay out of the shared history. Only the
+# repo-authored skills are whitelisted below.
+.agents/
+/skills-lock.json
+.claude/skills/*
+!.claude/skills/preflight
+!.claude/skills/archive-data
