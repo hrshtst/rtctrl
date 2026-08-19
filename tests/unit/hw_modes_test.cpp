@@ -161,7 +161,7 @@ TEST_CASE("SI profile setters convert, truncate, and clamp like the "
 }
 
 TEST_CASE("current commands gate at position limits", "[hw][modes]") {
-  // The soft-limit gate in current mode — the behavior PARITY.md cites
+  // The soft-limit gate in current mode — the behavior docs/records/parity.md cites
   // for the vendor's software position-limit rule; previously only the
   // velocity-mode gate was pinned (review finding).
   const auto config = configWithMode(0);  // current mode

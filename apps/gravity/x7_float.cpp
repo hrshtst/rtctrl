@@ -286,7 +286,7 @@ struct FloatLogObserver : arm::CycleObserver {
       }
       std::fprintf(log_, "\n");
     }
-    // Marker-anchored termination (HISTORY.md gravity calibration M-GC1):
+    // Marker-anchored termination (docs/records/history.md gravity calibration M-GC1):
     // the full evaluation window is always logged; a run past the
     // marker deadline without a marker is an aborted test. (The
     // enforced minimum duration guarantees these branches are always

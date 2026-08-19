@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end x7_float --log validation over the dxl_emu pty
-# (HISTORY.md gravity calibration M-GC1/M-GC2). Every phase runs the
+# (docs/records/history.md gravity calibration M-GC1/M-GC2). Every phase runs the
 # vendor-scale config: since the 2026-07-31 un-parking decision the
 # app refuses any other calibration in EVERY mode before bus contact
 # (default-scale adoption was declined, so the repo default is the

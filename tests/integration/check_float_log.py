@@ -16,13 +16,13 @@ row itself is rejected), and both raw-count columns consistent with
 their SI torque columns through the nominal torque constant and the
 2.69 mA LSB (half a count plus print-rounding tolerance).
 
-With --gate-free (HISTORY.md gravity calibration, disposition revision
+With --gate-free (docs/records/history.md gravity calibration, disposition revision
 2026-07-31): any gate event on ANY axis fails validation — the next
 instrumented j1 notch-correlation session is VOID on one, because a
 cross-axis gate discontinuity (j3 zeroing ~1 Nm during the archived
 j1 session) is a plausible confounder for the felt notch.
 
-With --vendor (HISTORY.md gravity calibration M-GC1/M-GC2), the current
+With --vendor (docs/records/history.md gravity calibration M-GC1/M-GC2), the current
 10-second acceptance protocol is required. With --demo, a non-default
 5..50-second demonstration protocol is required and can never validate
 as acceptance. Both additionally require the vendor-equivalent scales,
