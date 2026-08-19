@@ -109,8 +109,19 @@ every experimental value there before any hardware session:
 An experimental calibration on the real arm is a deliberate,
 stepwise session — never a copy-paste of an arbitrary value pair:
 
-1. Rehearse the identical invocation on the emulator first; swap
-   `--port` for the hardware device only afterwards.
+1. Rehearse the invocation on the emulator first (the primary
+   example above). Rehearsal validates the CLI, the startup sequence,
+   the bus behavior, and the log contract — **not** the physical
+   effect or safety of a proposed torque constant. The hardware
+   session is then a separate command: the hardware port and a
+   **fresh log filename** (the emulator run already created its log,
+   and the exclusive-log rule refuses reuse):
+
+    ```sh
+    ./build/apps/x7_gravity_demo --port /dev/ttyUSB0 \
+      --experimental-calibration --kt-xm430 2.35 --log demo2_hw.csv 30
+    ```
+
 2. Change **one servo model per session**, starting with a **small
    deviation** from the vendor value. Do not bias one model hotter
    and the other weaker in the same session: under- and
