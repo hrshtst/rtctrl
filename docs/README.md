@@ -21,7 +21,7 @@ wire protocol.
   torque↔current
 - [Gravity compensation](theory/gravity-compensation.md): the floating
   arm: law, stability, verification
-- [Computed-torque control](theory/computed-torque.md) —
+- [Computed-torque control](theory/computed-torque.md):
   inverse-dynamics feedforward tracking: law, error dynamics,
   trajectories, results, and what the hardware taught us
 - [Flexible-mode identification](theory/identification.md): the
