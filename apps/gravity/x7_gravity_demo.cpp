@@ -52,7 +52,7 @@
 #include <utility>
 #include <vector>
 
-#include "gravity_demo_common.hpp"
+#include "gravity/gravity_demo_common.hpp"
 #include "rtctrl/arm/gravity_comp.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/arm/runner.hpp"
@@ -61,7 +61,7 @@
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace arm = rtctrl::arm;
 namespace hw = rtctrl::hw;

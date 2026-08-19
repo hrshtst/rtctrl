@@ -8,7 +8,7 @@
 #include <cmath>
 #include <vector>
 
-#include "study_metrics.hpp"
+#include "study/study_metrics.hpp"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;

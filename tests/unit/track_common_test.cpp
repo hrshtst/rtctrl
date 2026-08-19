@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <functional>
 
-#include "track_common.hpp"
+#include "track/track_common.hpp"
 
 using Catch::Approx;
 namespace arm = rtctrl::arm;

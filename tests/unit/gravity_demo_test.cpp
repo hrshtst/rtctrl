@@ -8,7 +8,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "gravity_demo_common.hpp"
+#include "gravity/gravity_demo_common.hpp"
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/hw/config.hpp"

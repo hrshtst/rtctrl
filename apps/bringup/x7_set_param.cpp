@@ -17,7 +17,7 @@
 #include <cstring>
 
 #include "rtctrl/dxl/control_table.hpp"
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace reg = rtctrl::dxl::reg;
 

@@ -29,9 +29,9 @@
 #include <string>
 #include <vector>
 
-#include "exact_feedback_linearization.hpp"
-#include "ident_common.hpp"  // x7::loadAnchorRef (P1 posture)
-#include "lagged_arm.hpp"
+#include "study/exact_feedback_linearization.hpp"
+#include "ident/ident_common.hpp"  // x7::loadAnchorRef (P1 posture)
+#include "common/lagged_arm.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
@@ -40,8 +40,8 @@
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
-#include "study_metrics.hpp"
-#include "two_mass_arm.hpp"
+#include "study/study_metrics.hpp"
+#include "common/two_mass_arm.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;

@@ -22,7 +22,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
-#include "../apps/x7_common.hpp"
+#include "../apps/common/x7_common.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;

@@ -72,8 +72,8 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
-#include "track_common.hpp"
-#include "x7_common.hpp"
+#include "track/track_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;

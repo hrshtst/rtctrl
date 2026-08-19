@@ -1,13 +1,24 @@
-add_executable(dxl_emu dxl_emu.cpp)
+# Sources are grouped by domain (bus/ bringup/ gravity/ track/ ident/
+# study/, cross-domain headers in common/); binaries stay FLAT at
+# build/apps/ — the bring-up checklist, operator shell history, and
+# archived session notes all invoke ./build/apps/<name>, so no
+# add_subdirectory() here. App-layer includes are subdir-qualified and
+# resolve from this directory as the include root.
+
+add_executable(dxl_emu bus/dxl_emu.cpp)
 target_link_libraries(dxl_emu PRIVATE rtctrl::rtctrl)
 
-add_executable(dxl_inspect dxl_inspect.cpp)
+add_executable(dxl_inspect bus/dxl_inspect.cpp)
 target_link_libraries(dxl_inspect PRIVATE rtctrl::rtctrl)
 
-foreach(app x7_onoff x7_read x7_set_param x7_move_simple x7_float
-        x7_gravity_demo x7_track x7_track_sim x7_ident_sim x7_pose)
-  add_executable(${app} ${app}.cpp)
+foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
+        bringup/x7_move_simple bringup/x7_pose gravity/x7_float
+        gravity/x7_gravity_demo track/x7_track track/x7_track_sim
+        ident/x7_ident_sim)
+  get_filename_component(app ${src} NAME)
+  add_executable(${app} ${src}.cpp)
   target_link_libraries(${app} PRIVATE rtctrl::rtctrl)
+  target_include_directories(${app} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
 # Offline EFL study runner (docs/HISTORY.md (EFL study)). The git
@@ -20,8 +31,9 @@ add_custom_target(efl_git_rev
           -DSRC_DIR=${CMAKE_SOURCE_DIR}
           -P ${CMAKE_SOURCE_DIR}/cmake/GitRev.cmake
   BYPRODUCTS ${EFL_GIT_REV_SRC})
-add_executable(x7_efl_study x7_efl_study.cpp ${EFL_GIT_REV_SRC})
+add_executable(x7_efl_study study/x7_efl_study.cpp ${EFL_GIT_REV_SRC})
 add_dependencies(x7_efl_study efl_git_rev)
 target_compile_definitions(x7_efl_study PRIVATE
   RTCTRL_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 target_link_libraries(x7_efl_study PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_efl_study PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

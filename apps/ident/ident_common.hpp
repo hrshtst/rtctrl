@@ -18,8 +18,8 @@
 #include <string>
 #include <vector>
 
-#include "latency_verifier.hpp"
-#include "quiescence_metric.hpp"
+#include "common/latency_verifier.hpp"
+#include "common/quiescence_metric.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"

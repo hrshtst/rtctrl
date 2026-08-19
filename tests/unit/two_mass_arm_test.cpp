@@ -8,8 +8,8 @@
 #include <cmath>
 #include <vector>
 
-#include "latency_verifier.hpp"
-#include "two_mass_arm.hpp"
+#include "common/latency_verifier.hpp"
+#include "common/two_mass_arm.hpp"
 
 using Catch::Approx;
 namespace arm = rtctrl::arm;

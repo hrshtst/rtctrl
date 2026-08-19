@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace {
 

@@ -12,8 +12,8 @@
 #include <random>
 #include <vector>
 
-#include "ident_common.hpp"
-#include "two_mass_arm.hpp"
+#include "ident/ident_common.hpp"
+#include "common/two_mass_arm.hpp"
 
 using Catch::Approx;
 namespace arm = rtctrl::arm;

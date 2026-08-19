@@ -8,7 +8,7 @@
 #include <cmath>
 #include <vector>
 
-#include "lagged_arm.hpp"
+#include "common/lagged_arm.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;

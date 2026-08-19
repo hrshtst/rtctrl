@@ -9,7 +9,7 @@
 #include <cmath>
 #include <vector>
 
-#include "exact_feedback_linearization.hpp"
+#include "study/exact_feedback_linearization.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"

@@ -17,11 +17,11 @@
 #include <string>
 #include <vector>
 
-#include "ident_common.hpp"
+#include "ident/ident_common.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
-#include "two_mass_arm.hpp"
+#include "common/two_mass_arm.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;

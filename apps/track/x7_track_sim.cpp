@@ -51,8 +51,8 @@
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
-#include "lagged_arm.hpp"
-#include "track_common.hpp"
+#include "common/lagged_arm.hpp"
+#include "track/track_common.hpp"
 
 namespace arm = rtctrl::arm;
 namespace model = rtctrl::model;

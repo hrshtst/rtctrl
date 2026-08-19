@@ -9,7 +9,7 @@
 #include <cstdlib>
 #include <vector>
 
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);

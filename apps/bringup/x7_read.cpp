@@ -11,7 +11,7 @@
 #include <cstdlib>
 #include <vector>
 
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace {
 volatile std::sig_atomic_t g_stop = 0;

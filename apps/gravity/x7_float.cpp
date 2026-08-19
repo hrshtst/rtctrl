@@ -116,7 +116,7 @@
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace arm = rtctrl::arm;
 namespace hw = rtctrl::hw;

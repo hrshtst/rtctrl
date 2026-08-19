@@ -25,11 +25,11 @@
 #include <string>
 #include <vector>
 
-#include "ident_common.hpp"
-#include "pose_common.hpp"
+#include "ident/ident_common.hpp"
+#include "bringup/pose_common.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
-#include "x7_common.hpp"
+#include "common/x7_common.hpp"
 
 namespace model = rtctrl::model;
 
