@@ -234,6 +234,32 @@ add_test(NAME gravity_demo_rejects_malformed_kt
 set_tests_properties(gravity_demo_rejects_malformed_kt PROPERTIES
   PASS_REGULAR_EXPRESSION "invalid torque constant"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+# Reviewer directive (P1): the [0.5, 1.0] config bound is an
+# electrical bound, not a validated float envelope — kt deviating
+# from the approved vendor calibration requires the unmistakable
+# --experimental-calibration opt-in, deviations warn in BOTH
+# directions, and vendor-equal values pass without the flag. All
+# before any bus contact.
+add_test(NAME gravity_demo_rejects_experimental_kt_without_opt_in
+  COMMAND x7_gravity_demo --kt-xm430 2.0)
+set_tests_properties(gravity_demo_rejects_experimental_kt_without_opt_in
+  PROPERTIES PASS_REGULAR_EXPRESSION "--experimental-calibration"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_accepts_vendor_kt_without_opt_in
+  COMMAND x7_gravity_demo --kt-xm430 2.20 --kt-xm540 3.60)
+set_tests_properties(gravity_demo_accepts_vendor_kt_without_opt_in
+  PROPERTIES PASS_REGULAR_EXPRESSION "--log is REQUIRED"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_warns_hot_experimental_kt
+  COMMAND x7_gravity_demo --experimental-calibration --kt-xm430 1.9)
+set_tests_properties(gravity_demo_warns_hot_experimental_kt PROPERTIES
+  PASS_REGULAR_EXPRESSION "HOTTER"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_warns_weak_experimental_kt
+  COMMAND x7_gravity_demo --experimental-calibration --kt-xm540 4.5)
+set_tests_properties(gravity_demo_warns_weak_experimental_kt PROPERTIES
+  PASS_REGULAR_EXPRESSION "WEAKER"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 
 # End-to-end x7_gravity_demo over the pty emulator: startup and log
 # contract with the default (vendor) constants, the custom-kt header

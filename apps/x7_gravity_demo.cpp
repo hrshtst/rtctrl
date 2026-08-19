@@ -13,12 +13,16 @@
 // torque->current boundary (hw::commandCurrentFromTorque; see
 // gravity_demo_common.hpp) and the reviewed config bound [0.5, 1.0]
 // binds unchanged — in kt terms [kt_nominal, 2 x kt_nominal]. The
-// DEFAULTS are the vendor-empirical constants (2.20 / 3.60 Nm/A),
-// i.e. a flagless run reproduces exactly the approved vendor
-// calibration; constants below the vendor values command HOTTER
-// currents than the approved calibration (the 2026-07-29
-// over-compensation incident was excess current) — permitted within
-// the bound, but warned prominently.
+// DEFAULTS are the vendor-empirical constants (2.20 / 3.60 Nm/A):
+// a flagless run reproduces exactly the approved vendor calibration.
+// Any DEVIATING constant additionally requires the unmistakable
+// --experimental-calibration opt-in (reviewer directive: the config
+// bound is an ELECTRICAL bound, not a validated float envelope —
+// scale 1.0 inside it is the known-failed float configuration),
+// warns in BOTH directions — below vendor commands HOTTER currents
+// (the 2026-07-29 over-compensation incident class), above vendor
+// UNDER-supports (the arm sinks) — and the log self-labels the
+// calibration EXPERIMENTAL.
 //
 // SAFETY: current mode on real hardware — keep the power cutoff in
 // reach (docs/HARDWARE_BRINGUP.md). Startup is the pose-first
@@ -33,7 +37,7 @@
 //
 // Usage: x7_gravity_demo [--config path] [--port dev] --log out.csv
 //                        [--kt-xm430 Nm_per_A] [--kt-xm540 Nm_per_A]
-//                        [seconds]
+//                        [--experimental-calibration] [seconds]
 //   seconds: session length, default 20, bounded to (0, 60] (the
 //   reviewed global bound). Press ENTER at any time to end the
 //   session early through the verified shutdown.
@@ -71,6 +75,9 @@ constexpr double kDefaultDurationS = 20.0;
 // huge duration would reach the runner's floating-to-long cycle
 // conversion (review findings there).
 constexpr double kMaxDurationS = 60.0;
+// Approved-vendor equality is judged in the scale domain within
+// x7_float's own gate tolerance.
+constexpr double kVendorScaleTol = 1e-6;
 
 // Nonblocking check for the stop key (ENTER). Only actual bytes
 // count — EOF on a piped stdin must never read as a keypress.
@@ -145,11 +152,15 @@ struct DemoObserver : arm::CycleObserver {
 
 void writeDemoLogHeader(std::FILE* log, const hw::Config& config,
                         const gravity_demo::TorqueConstants& kt,
-                        double duration_s) {
+                        double duration_s, bool experimental) {
   std::fprintf(log, "# app: x7_gravity_demo\n");
   // Self-classification, same contract as x7_float's demonstration
-  // windows: this log must never be readable as acceptance evidence.
+  // windows: this log must never be readable as acceptance evidence,
+  // and an experimental-calibration session must never be readable as
+  // the approved vendor demonstration.
   std::fprintf(log, "# run_mode: demonstration\n");
+  std::fprintf(log, "# calibration: %s\n",
+               experimental ? "EXPERIMENTAL" : "vendor-approved");
   std::fprintf(log, "# duration_s: %.1f\n", duration_s);
   std::fprintf(log, "# kt_nominal_Nm_per_A:");
   for (const auto& joint : config.joints) {
@@ -188,11 +199,14 @@ int main(int argc, char* argv[]) {
   if (!cli.ok) return 1;
   double duration_s = kDefaultDurationS;
   bool duration_given = false;
+  bool experimental_opt_in = false;
   std::string log_path;
   gravity_demo::TorqueConstants kt;
   const auto& rest = cli.rest;
   for (std::size_t i = 0; i < rest.size(); ++i) {
-    if (std::strcmp(rest[i], "--log") == 0) {
+    if (std::strcmp(rest[i], "--experimental-calibration") == 0) {
+      experimental_opt_in = true;
+    } else if (std::strcmp(rest[i], "--log") == 0) {
       // A flag-looking next token is a MISSING value, not a filename
       // (x7_float review finding); ./--name spells a flag-like name.
       if (i + 1 >= rest.size() ||
@@ -223,7 +237,8 @@ int main(int argc, char* argv[]) {
       std::fprintf(stderr,
                    "usage: x7_gravity_demo [--config path] [--port dev] "
                    "--log out.csv [--kt-xm430 Nm_per_A] "
-                   "[--kt-xm540 Nm_per_A] [seconds]\n");
+                   "[--kt-xm540 Nm_per_A] [--experimental-calibration] "
+                   "[seconds]\n");
       return 1;
     } else if (!x7::parseStrictDouble(rest[i], &duration_s)) {
       std::fprintf(stderr, "invalid duration: %s\n", rest[i]);
@@ -244,8 +259,8 @@ int main(int argc, char* argv[]) {
                  duration_s, kMaxDurationS);
     return 1;
   }
-  // kt-denominated refusal BEFORE the config backstop runs, so the
-  // message speaks the operator's units.
+  // kt-denominated refusals BEFORE the config backstop runs, so the
+  // messages speak the operator's units.
   const struct {
     const char* name;
     std::uint16_t model;
@@ -257,7 +272,12 @@ int main(int argc, char* argv[]) {
       {"XM540-W270", rtctrl::dxl::kModelXm540W270, kt.kt_xm540,
        gravity_demo::kVendorKtXm540},
   };
-  for (const auto& check : kt_checks) {
+  // Vendor deviation per model, judged in the scale domain: +1 below
+  // vendor (hotter currents), -1 above vendor (weaker support), 0 the
+  // approved value.
+  int deviation[2] = {0, 0};
+  for (std::size_t c = 0; c < 2; ++c) {
+    const auto& check = kt_checks[c];
     // negated form: NaN must land in the refusal branch
     if (!(check.kt >= gravity_demo::ktMin(check.model) &&
           check.kt <= gravity_demo::ktMax(check.model))) {
@@ -271,14 +291,57 @@ int main(int argc, char* argv[]) {
                    gravity_demo::ktMax(check.model));
       return 1;
     }
-    if (check.kt < check.vendor) {
+    const double scale =
+        rtctrl::dxl::torqueConstant(check.model) / check.kt;
+    const double vendor_scale =
+        rtctrl::dxl::torqueConstant(check.model) / check.vendor;
+    if (scale > vendor_scale + kVendorScaleTol) {
+      deviation[c] = 1;
+    } else if (scale < vendor_scale - kVendorScaleTol) {
+      deviation[c] = -1;
+    }
+  }
+  // Reviewer directive (P1): the config's [0.5, 1.0] scale bound is
+  // an ELECTRICAL bound, not a validated gravity-compensation
+  // envelope — only the vendor calibration is approved for floating
+  // (scale 1.0 inside the bound is the known-failed configuration).
+  // A deviating session must be an unmistakable choice, never a
+  // default or a typo.
+  const bool experimental_kt = deviation[0] != 0 || deviation[1] != 0;
+  if (experimental_kt && !experimental_opt_in) {
+    std::fprintf(stderr,
+                 "non-vendor torque constants require "
+                 "--experimental-calibration: the approved "
+                 "demonstration runs the M-GC3 vendor calibration "
+                 "(kt %.2f / %.2f Nm/A); the config's [0.5, 1.0] "
+                 "scale bound is an electrical bound, not a validated "
+                 "float envelope\n",
+                 gravity_demo::kVendorKtXm430,
+                 gravity_demo::kVendorKtXm540);
+    return 1;
+  }
+  for (std::size_t c = 0; c < 2; ++c) {
+    const auto& check = kt_checks[c];
+    if (deviation[c] > 0) {
       std::printf("WARNING: kt %.3f Nm/A for the %s is below the "
                   "vendor-calibrated %.2f — every torque command runs "
                   "HOTTER than the approved calibration (the 2026-07-29 "
                   "incident class was excess current); keep the power "
                   "cutoff in hand\n",
                   check.kt, check.name, check.vendor);
+    } else if (deviation[c] < 0) {
+      std::printf("WARNING: kt %.3f Nm/A for the %s is above the "
+                  "vendor-calibrated %.2f — every torque command runs "
+                  "WEAKER than the approved calibration: the arm will "
+                  "not fully hold itself and will sink toward gravity; "
+                  "be ready to support it\n",
+                  check.kt, check.name, check.vendor);
     }
+  }
+  if (experimental_kt) {
+    std::printf("EXPERIMENTAL calibration session — NOT the approved "
+                "vendor demonstration; the log self-labels "
+                "accordingly\n");
   }
 
   std::FILE* log = nullptr;
@@ -328,7 +391,8 @@ int main(int argc, char* argv[]) {
                   gravity_demo::ktFor(joint.model_number, kt),
                   joint.command_torque_scale);
     }
-    writeDemoLogHeader(log, session.config, kt, duration_s);
+    writeDemoLogHeader(log, session.config, kt, duration_s,
+                       experimental_kt);
 
     model::ChainModel chain("models/crane_x7/crane_x7.ztk");
     model::JointMap map(chain);

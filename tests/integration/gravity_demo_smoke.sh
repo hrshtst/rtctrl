@@ -36,6 +36,7 @@ import sys
 lines = open(sys.argv[1]).read().splitlines()
 head = [ln for ln in lines if ln.startswith("#")]
 assert any("run_mode: demonstration" in ln for ln in head), head
+assert any("calibration: vendor-approved" in ln for ln in head), head
 scales = next(
     ln for ln in head if "command_torque_scale:" in ln).split(":")[1].split()
 assert scales == ["0.810455", "0.669167"] + ["0.810455"] * 6, scales
@@ -48,13 +49,19 @@ for r in rows[:: max(1, len(rows) // 20)]:
 print(f"default log OK ({len(rows)} rows)")
 EOF
 
-# Phase 2: custom constants land in the header as
-# scale = kt_nominal / kt_effective.
-"$DEMO" --port "$LINK" --kt-xm430 2.0 --kt-xm540 3.0 \
-  --log "$OUT/demo_custom.csv" 2 < /dev/null > /dev/null
+# Phase 2: custom constants need the unmistakable experimental
+# opt-in, land in the header as scale = kt_nominal / kt_effective,
+# and the log self-labels the calibration EXPERIMENTAL.
+PHASE2=$("$DEMO" --port "$LINK" --experimental-calibration \
+  --kt-xm430 2.0 --kt-xm540 3.0 --log "$OUT/demo_custom.csv" 2 \
+  < /dev/null)
+echo "$PHASE2" | grep -q "EXPERIMENTAL calibration session" || {
+  echo "phase 2 missing the experimental banner:"; echo "$PHASE2"; exit 1;
+}
 python3 - "$OUT/demo_custom.csv" <<'EOF'
 import sys
 head = [ln for ln in open(sys.argv[1]) if ln.startswith("#")]
+assert any("calibration: EXPERIMENTAL" in ln for ln in head), head
 scales = next(
     ln for ln in head if "command_torque_scale:" in ln).split(":")[1].split()
 assert scales == ["0.891500", "0.803000"] + ["0.891500"] * 6, scales
