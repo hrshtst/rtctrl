@@ -75,6 +75,7 @@ nav:
       - Flexible-mode identification: theory/identification.md
   - Hardware:
       - Bring-up checklist: HARDWARE_BRINGUP.md
+      - Gravity demo (x7_gravity_demo): GRAVITY_DEMO.md
   - Project records:
       - Project history: HISTORY.md
       - Data archive manifest: DATA_ARCHIVE.md
