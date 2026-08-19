@@ -1,10 +1,19 @@
 # Gravity-compensation demo (`x7_gravity_demo`)
 
 `x7_gravity_demo` floats the arm under pure gravity compensation —
-held against gravity, freely back-drivable by hand — with the
-torque-constant calibration exposed as an explicit, per-model
-parameter. It is the **simplified sibling of `x7_float`** and exists
-for demonstration and calibration exploration only.
+held against gravity and intended to be **gently hand-guidable** —
+with the torque-constant calibration exposed as an explicit,
+per-model parameter. It is the **simplified sibling of `x7_float`**
+and exists for demonstration and calibration exploration only.
+
+> **Known limitations (waived, not fixed).** The float acceptance's
+> subjective back-drive criterion FAILED and was explicitly waived —
+> a risk/quality acceptance, not a test pass. Expect the **j1 notch**
+> when hand-guiding across the low-current transition region
+> q1 ≈ +0.27…+0.53 rad (mechanism not isolated) and a small **j4
+> positive tendency** under hand-guiding (command ≤ 0.055 Nm). Guide
+> the arm gently and do not force through a notch; full record in
+> [HISTORY.md](HISTORY.md#gravity-compensation-and-torque-constant-calibration).
 
 **Demonstration-only status.** Every log this app writes self-labels
 `# run_mode: demonstration` and is **never acceptance evidence**.
@@ -21,6 +30,12 @@ gate) unchanged — see the
   [safety section](HARDWARE_BRINGUP.md#safety-read-first) applies:
   current mode on real hardware, **power cutoff within reach**,
   workspace under the arm clear.
+- This app enters the ordered post-bring-up ladder
+  ([after bring-up](HARDWARE_BRINGUP.md#after-bring-up-m6m8))
+  **after** a clean multi-joint position-mode session
+  (`examples/x7_wave`) and at least one clean `x7_float` run on the
+  approved vendor calibration — it must never be the arm's first
+  current-mode session.
 - Start the arm mid-range: a joint parked inside its soft-limit
   margin band is refused (the current gate would cut gravity support
   in one whole direction there).
@@ -34,11 +49,13 @@ gate) unchanged — see the
 ./build/apps/x7_gravity_demo --log demo1.csv
 ```
 
-A flagless run **is** the approved vendor calibration: the app
-overwrites the loaded config's `command_torque_scale` from its
-built-in defaults (the vendor-empirical constants, 2.20 / 3.60 Nm/A),
-reproducing exactly the scales of
-`config/crane_x7_vendor_scale.toml` — whatever `--config` it loads.
+A run without torque-constant overrides **is** the approved vendor
+calibration: the app overwrites the loaded config's
+`command_torque_scale` from its built-in defaults (the
+vendor-empirical constants, 2.20 / 3.60 Nm/A), reproducing the scales
+of `config/crane_x7_vendor_scale.toml` within the app's 1e-6 gate
+tolerance (the tracked config stores the ratios rounded to six
+decimals) — whatever `--config` it loads.
 
 Startup is the pose-first placement pattern proven by `x7_float`:
 activation holds the arm in position mode (no free-fall instant), the
@@ -57,11 +74,14 @@ output-shaft torque.
 
 ## Experimental calibration policy
 
-Effective torque constants customize per servo model, in Nm/A:
+Effective torque constants customize per servo model, in Nm/A. The
+primary form of the command runs against the **emulator** — rehearse
+every experimental value there before any hardware session:
 
 ```sh
-./build/apps/x7_gravity_demo --experimental-calibration \
-  --kt-xm430 2.35 --kt-xm540 3.40 --log demo2.csv 30
+./build/apps/dxl_emu --link /tmp/ttyDXL &
+./build/apps/x7_gravity_demo --port /tmp/ttyDXL \
+  --experimental-calibration --kt-xm430 2.35 --log demo2.csv 30
 ```
 
 - The constants map onto `command_torque_scale = kt_nominal /
@@ -83,6 +103,23 @@ Effective torque constants customize per servo model, in Nm/A:
 - The log self-labels `# calibration: EXPERIMENTAL` (vendor-equal
   runs label `vendor-approved`), so an experimental session can never
   be read back as the approved demonstration.
+
+### Controlled hardware procedure
+
+An experimental calibration on the real arm is a deliberate,
+stepwise session — never a copy-paste of an arbitrary value pair:
+
+1. Rehearse the identical invocation on the emulator first; swap
+   `--port` for the hardware device only afterwards.
+2. Change **one servo model per session**, starting with a **small
+   deviation** from the vendor value. Do not bias one model hotter
+   and the other weaker in the same session: under- and
+   over-supported joints produce competing motion tendencies.
+3. Support the arm through the mode switch and the first seconds
+   after it, exactly as for a float: with a weaker-than-vendor kt the
+   arm sinks when let go; with a hotter one it can push upward.
+4. Keep the power cutoff in hand for the whole session, and use a
+   fresh `--log` filename per attempt.
 
 ## Logs and archive handling
 
