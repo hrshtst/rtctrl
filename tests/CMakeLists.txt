@@ -182,6 +182,69 @@ set_tests_properties(x7_float_rejects_malformed_scale PROPERTIES
   PASS_REGULAR_EXPRESSION "command_torque_scale"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 
+# x7_gravity_demo (the simplified demonstration app): CLI gates fail
+# fast BEFORE any bus contact — the kt bounds in operator units (the
+# config's [0.5, 1.0] scale bound expressed as effective torque
+# constants), the REQUIRED exclusive log, and the reviewed duration
+# bound shared with x7_float.
+add_test(NAME gravity_demo_rejects_valueless_log
+  COMMAND x7_gravity_demo --log)
+set_tests_properties(gravity_demo_rejects_valueless_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+add_test(NAME gravity_demo_rejects_flag_as_log_value
+  COMMAND x7_gravity_demo --log --bogus)
+set_tests_properties(gravity_demo_rejects_flag_as_log_value PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log requires a value" LABELS unit)
+add_test(NAME gravity_demo_requires_log COMMAND x7_gravity_demo 5)
+set_tests_properties(gravity_demo_requires_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "--log is REQUIRED"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_rejects_existing_log
+  COMMAND x7_gravity_demo --log README.md 5
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(gravity_demo_rejects_existing_log PROPERTIES
+  PASS_REGULAR_EXPRESSION "already exists"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_rejects_long_duration
+  COMMAND x7_gravity_demo 61)
+set_tests_properties(gravity_demo_rejects_long_duration PROPERTIES
+  PASS_REGULAR_EXPRESSION "exceeds the reviewed"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_rejects_nonpositive_duration
+  COMMAND x7_gravity_demo 0)
+set_tests_properties(gravity_demo_rejects_nonpositive_duration PROPERTIES
+  PASS_REGULAR_EXPRESSION "must be positive"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_rejects_kt_below_nominal
+  COMMAND x7_gravity_demo --kt-xm430 1.5)
+set_tests_properties(gravity_demo_rejects_kt_below_nominal PROPERTIES
+  PASS_REGULAR_EXPRESSION "outside"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_rejects_kt_above_bound
+  COMMAND x7_gravity_demo --kt-xm540 8)
+set_tests_properties(gravity_demo_rejects_kt_above_bound PROPERTIES
+  PASS_REGULAR_EXPRESSION "outside"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME gravity_demo_rejects_valueless_kt
+  COMMAND x7_gravity_demo --kt-xm430)
+set_tests_properties(gravity_demo_rejects_valueless_kt PROPERTIES
+  PASS_REGULAR_EXPRESSION "--kt-xm430 requires a value" LABELS unit)
+add_test(NAME gravity_demo_rejects_malformed_kt
+  COMMAND x7_gravity_demo --kt-xm430 nan)
+set_tests_properties(gravity_demo_rejects_malformed_kt PROPERTIES
+  PASS_REGULAR_EXPRESSION "invalid torque constant"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+
+# End-to-end x7_gravity_demo over the pty emulator: startup and log
+# contract with the default (vendor) constants, the custom-kt header
+# derivation, and the ENTER early-stop.
+add_test(NAME gravity_demo_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/gravity_demo_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_gravity_demo>
+          ${CMAKE_BINARY_DIR}/gravity_demo_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(gravity_demo_smoke PROPERTIES LABELS integration)
+
 # End-to-end log validation over the pty emulator: structure, event
 # semantics, and produced rows (check_float_log.py).
 add_test(NAME x7_float_log_smoke
