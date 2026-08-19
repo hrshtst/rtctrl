@@ -25,7 +25,7 @@
 // calibration EXPERIMENTAL.
 //
 // SAFETY: current mode on real hardware — keep the power cutoff in
-// reach (docs/HARDWARE_BRINGUP.md). Startup is the pose-first
+// reach (docs/hardware/bringup.md). Startup is the pose-first
 // placement pattern proven by x7_float: activate in POSITION mode
 // (servo-held, no free-fall instant), refuse a start inside the
 // soft-limit margin band, then switch to current mode in place with
@@ -33,7 +33,7 @@
 // from the first torque-on instant. --log is REQUIRED and created
 // EXCLUSIVELY (unique filename per attempt; raw CSVs stay gitignored
 // at the repo root and belong in the private archive per
-// docs/DATA_ARCHIVE.md).
+// docs/records/data-archive.md).
 //
 // Usage: x7_gravity_demo [--config path] [--port dev] --log out.csv
 //                        [--kt-xm430 Nm_per_A] [--kt-xm540 Nm_per_A]

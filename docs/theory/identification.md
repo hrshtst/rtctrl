@@ -5,7 +5,7 @@ demodulation, safety monitors), `apps/ident/x7_ident_sim.cpp` (simulation
 twin; the x7_ident hardware app was removed after the campaign
 closed), and `tools/ident_analysis.py` (offline estimation). Design record,
 operator procedure, and campaign outcomes:
-[HISTORY.md](../HISTORY.md#flexible-mode-identification-closed-null-2026-07-28).
+[history.md](../records/history.md#flexible-mode-identification-closed-null-2026-07-28).
 Prerequisite reading:
 [computed torque](computed-torque.md), whose limitations this page
 starts from. The campaign this theory served was **closed 2026-07-28
@@ -373,5 +373,5 @@ configuration), identification around a *moving* operating point
 the modes were originally observed during tracking), or
 dither-assisted excitation — each restarting from external review.
 Full evidence and provenance: the
-[closure record](../HISTORY.md#closure-decision-and-precise-scope) and the
-[data archive manifest](../DATA_ARCHIVE.md).
+[closure record](../records/history.md#closure-decision-and-precise-scope) and the
+[data archive manifest](../records/data-archive.md).

@@ -31,17 +31,17 @@ wire protocol.
 
 ## Hardware
 
-- [Bring-up checklist](HARDWARE_BRINGUP.md) — the ordered physical
+- [Bring-up checklist](hardware/bringup.md) — the ordered physical
   procedure, safety rules, watchdog drill, troubleshooting
 
 ## Project records
 
-- [Project history](HISTORY.md) — the consolidated record: milestones,
+- [Project history](records/history.md) — the consolidated record: milestones,
   the gravity-calibration arc and its waiver, the computed-torque
   campaign and the final 0.6 cap, the closed EFL and identification
   trials, and every standing decision with its evidence
-- [Data archive manifest](DATA_ARCHIVE.md) — every archived hardware
+- [Data archive manifest](records/data-archive.md) — every archived hardware
   dataset's role and SHA-256; bare-filename citations resolve here
-- [Vendor parity](PARITY.md) — `rt_manipulators_cpp` capabilities
+- [Vendor parity](records/parity.md) — `rt_manipulators_cpp` capabilities
   mapped to their rtctrl equivalents and proving tests, plus the
   consciously simplified vendor surface

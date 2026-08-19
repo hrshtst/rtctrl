@@ -1,6 +1,6 @@
 ---
 name: archive-data
-description: Archive new hardware telemetry per docs/DATA_ARCHIVE.md — checksum, copy to the operator's private archive, verify, add manifest rows, track the sidecars. Invoke after a hardware session leaves CSVs at the repo root.
+description: Archive new hardware telemetry per docs/records/data-archive.md — checksum, copy to the operator's private archive, verify, add manifest rows, track the sidecars. Invoke after a hardware session leaves CSVs at the repo root.
 disable-model-invocation: true
 ---
 
@@ -17,7 +17,7 @@ review requirement.
    archive (create a new one per campaign as needed); re-checksum the copies
    and verify every hash matches; only then delete the originals from the
    repo root.
-5. Add one row per file to the matching table in `docs/DATA_ARCHIVE.md`:
+5. Add one row per file to the matching table in `docs/records/data-archive.md`:
    filename, role (what the run was; which project record cites it), SHA-256.
    Mark failed runs FAILED with a note that they must never enter analysis.
 6. Copy each run's `.dwells.json` sidecar into `data/` and track it.

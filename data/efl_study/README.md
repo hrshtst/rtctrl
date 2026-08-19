@@ -2,7 +2,7 @@
 
 `results.json` is the authoritative, machine-readable result table of
 the preregistered offline exact-feedback-linearization study
-([docs/HISTORY.md](../../docs/HISTORY.md#efl-offline-study-closed-negative-2026-07-29),
+([docs/records/history.md](../../docs/records/history.md#efl-offline-study-closed-negative-2026-07-29),
 which also carries the frozen constants; the study-definition name
 embedded inside `results.json` is a historical label).
 It is produced by `build/apps/x7_efl_study` and may be committed here
@@ -20,5 +20,5 @@ note).
 
 Per-cycle simulator traces are reproducible scratch output under
 `build/efl_study/` and are deliberately NOT tracked — rerunning the
-same commit regenerates them. `docs/DATA_ARCHIVE.md` remains
+same commit regenerates them. `docs/records/data-archive.md` remains
 hardware-specific and does not list simulation results.

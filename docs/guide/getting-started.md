@@ -15,7 +15,7 @@ hardware.
   (model regeneration).
 - For hardware only: membership in the `dialout` group and the
   latency udev rule — see the
-  [bring-up checklist](../HARDWARE_BRINGUP.md).
+  [bring-up checklist](../hardware/bringup.md).
 
 ## Build
 
@@ -106,7 +106,7 @@ Tests validate it against both the URDF and the canonical joint table.
 
 ## Hardware
 
-Follow the [bring-up checklist](../HARDWARE_BRINGUP.md) **in order**
+Follow the [bring-up checklist](../hardware/bringup.md) **in order**
 the first time — it interleaves the apps above with physical checks
 (and a watchdog drill) and states the safety rules. After bring-up,
 the controller phases are `x7_float` (gravity compensation) and

@@ -74,9 +74,9 @@ nav:
       - Computed torque: theory/computed-torque.md
       - Flexible-mode identification: theory/identification.md
   - Hardware:
-      - Bring-up checklist: HARDWARE_BRINGUP.md
-      - Gravity demo (x7_gravity_demo): GRAVITY_DEMO.md
+      - Bring-up checklist: hardware/bringup.md
+      - Gravity demo (x7_gravity_demo): hardware/gravity-demo.md
   - Project records:
-      - Project history: HISTORY.md
-      - Data archive manifest: DATA_ARCHIVE.md
-      - Vendor parity: PARITY.md
+      - Project history: records/history.md
+      - Data archive manifest: records/data-archive.md
+      - Vendor parity: records/parity.md

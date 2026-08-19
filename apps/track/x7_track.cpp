@@ -12,7 +12,7 @@
 // left the settle phase — the pan anti-damped at 4.33 Hz from a
 // compact resting posture (operator power cut; telemetry archived as
 // track9.csv / track9.csv.settle). The failure precedes the scale
-// argument: NO scale is safe. See docs/HARDWARE_BRINGUP.md.
+// argument: NO scale is safe. See docs/hardware/bringup.md.
 //
 // Stability, learned the hard way (nine 2026-07-21 hardware runs,
 // logged as track*.csv):
@@ -142,7 +142,7 @@ int main(int argc, char* argv[]) {
   // identification a compensator design required stopped at its first
   // gate — joint 1 at P1 stiction-locked below one encoder count up
   // to the probe's 0.3 Nm hard cap; other routes untested, closed by
-  // decision (docs/HISTORY.md (identification), Closure). Use position
+  // decision (docs/records/history.md (identification), Closure). Use position
   // mode for larger fast motions.
   if (scale > 0.6) {
     std::printf("scale %.2f capped to 0.60 — the final supported "

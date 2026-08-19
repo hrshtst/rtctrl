@@ -2,7 +2,7 @@
 #
 # Identical to crane_x7.toml except for the per-joint
 # command_torque_scale: the vendor-derived calibration HYPOTHESES of
-# docs/HISTORY.md (gravity calibration) (full ratios of the nominal
+# docs/records/history.md (gravity calibration) (full ratios of the nominal
 # electrical constants to rt_manipulators' empirically tuned ones):
 #   XM430-W350: 1.783 / 2.20 = 0.810455
 #   XM540-W270: 2.409 / 3.60 = 0.669167

@@ -1,7 +1,7 @@
 // Characterization of the LaggedArm command-pipeline semantics — the
 // extraction-equivalence pin for x7_track_sim's legacy behavior and
 // the preregistered rules of the EFL study
-// (docs/HISTORY.md (EFL frozen specification)).
+// (docs/records/history.md (EFL frozen specification)).
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 

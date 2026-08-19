@@ -2,7 +2,7 @@
 """Offline analysis for x7_ident_sim telemetry and the archived
 telemetry of the removed x7_ident hardware app.
 
-Per docs/HISTORY.md (identification): per-dwell dt-weighted least-squares
+Per docs/records/history.md (identification): per-dwell dt-weighted least-squares
 demodulation on the regressors [1, t, sin(phi), cos(phi)] over the
 MEASURE windows, the direct-ratio FRF (tau_meas primary; the SUBMITTED
 TOTAL commanded torque, delay-corrected, secondary; their ratio = the

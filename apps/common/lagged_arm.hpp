@@ -13,7 +13,7 @@
 //    preregistered rule): the queue begins FULL of `delay_cycles`
 //    zero-current commands, so the command accepted at cycle k is
 //    applied at cycle k + delay_cycles from the first cycle on
-//    (docs/HISTORY.md (EFL frozen specification), preregistered constants).
+//    (docs/records/history.md (EFL frozen specification), preregistered constants).
 #pragma once
 
 #include <cmath>

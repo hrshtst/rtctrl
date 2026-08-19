@@ -2,7 +2,7 @@
 // customization. The operator thinks in effective torque constants
 // [Nm/A]; the library thinks in command_torque_scale at THE one
 // torque->current boundary (hw::commandCurrentFromTorque,
-// docs/HISTORY.md (gravity calibration) M-GC1):
+// docs/records/history.md (gravity calibration) M-GC1):
 //
 //   i_cmd = scale * tau / kt_nominal = tau / kt_effective,
 //   so      scale = kt_nominal / kt_effective.

@@ -13,25 +13,25 @@ and exists for demonstration and calibration exploration only.
 > q1 ≈ +0.27…+0.53 rad (mechanism not isolated) and a small **j4
 > positive tendency** under hand-guiding (command ≤ 0.055 Nm). Guide
 > the arm gently and do not force through a notch; full record in
-> [HISTORY.md](HISTORY.md#gravity-compensation-and-torque-constant-calibration).
+> [history.md](../records/history.md#gravity-compensation-and-torque-constant-calibration).
 
 **Demonstration-only status.** Every log this app writes self-labels
 `# run_mode: demonstration` and is **never acceptance evidence**.
 `x7_float` remains the M-GC3 acceptance instrument, with its own
 protocol (release marker, evaluation windows, the vendor-calibration
 gate) unchanged — see the
-[bring-up checklist](HARDWARE_BRINGUP.md#after-bring-up-m6m8) and the
-[gravity-calibration record](HISTORY.md#gravity-compensation-and-torque-constant-calibration).
+[bring-up checklist](bringup.md#after-bring-up-m6m8) and the
+[gravity-calibration record](../records/history.md#gravity-compensation-and-torque-constant-calibration).
 
 ## Prerequisites
 
 - Bring-up steps 1–6 completed
-  ([checklist](HARDWARE_BRINGUP.md#steps)), and everything in its
-  [safety section](HARDWARE_BRINGUP.md#safety-read-first) applies:
+  ([checklist](bringup.md#steps)), and everything in its
+  [safety section](bringup.md#safety-read-first) applies:
   current mode on real hardware, **power cutoff within reach**,
   workspace under the arm clear.
 - This app enters the ordered post-bring-up ladder
-  ([after bring-up](HARDWARE_BRINGUP.md#after-bring-up-m6m8))
+  ([after bring-up](bringup.md#after-bring-up-m6m8))
   **after** a clean multi-joint position-mode session
   (`examples/x7_wave`) and at least one clean `x7_float` run on the
   approved vendor calibration — it must never be the arm's first
@@ -68,7 +68,7 @@ verified shutdown. Duration defaults to 20 s and is bounded to
 (0, 60] (the reviewed global bound).
 
 Note the agreement caveat from the
-[theory notes](theory/gravity-compensation.md): measured-vs-model
+[theory notes](../theory/gravity-compensation.md): measured-vs-model
 agreement verifies the servo *current loop* tracking the command, not
 output-shaft torque.
 
@@ -144,7 +144,7 @@ stepwise session — never a copy-paste of an arbitrary value pair:
   `clamped`/`gated` flags.
 - Raw hardware CSVs land at the repo root **gitignored** and belong
   in the operator's private archive with a manifest row — see
-  [DATA_ARCHIVE.md](DATA_ARCHIVE.md). They are never committed.
+  [data-archive.md](../records/data-archive.md). They are never committed.
 
 ## Relationship to `x7_float`
 

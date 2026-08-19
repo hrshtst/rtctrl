@@ -93,8 +93,8 @@ offline with `apps/x7_track_sim` first). `x7_track` settles the arm
 before moving, refuses to start from a joint parked at a soft limit,
 and caps its excursion at the verified stability envelope — the
 reasons live in the
-[computed-torque theory notes](theory/computed-torque.md#what-the-hardware-taught-us).
-Feature coverage is mapped in [PARITY.md](PARITY.md).
+[computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us).
+Feature coverage is mapped in [parity.md](../records/parity.md).
 
 > **`x7_track` is PARKED — do NOT run it on hardware. `x7_float`
 > is UN-PARKED (2026-07-31) under the conditions in its bullet
@@ -148,10 +148,10 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >
 >   The archived M-GC3 evidence used its original 5 s protocol. Keep the
 >   power cutoff within reach. Full record:
->   [HISTORY.md](HISTORY.md#gravity-compensation-and-torque-constant-calibration).
+>   [history.md](../records/history.md#gravity-compensation-and-torque-constant-calibration).
 > - **`x7_ident` was REMOVED (2026-08-18):** its pass-2
 >   identification campaign closed with a null result (2026-07-28,
->   see [HISTORY.md](HISTORY.md#closure-decision-and-precise-scope)),
+>   see [history.md](../records/history.md#closure-decision-and-precise-scope)),
 >   and the parked hardware app was deleted in the project cleanup.
 >   The sim twin (`x7_ident_sim`), the analysis pipeline
 >   (`tools/ident_analysis.py`), and the null datasets under
@@ -160,7 +160,7 @@ Feature coverage is mapped in [PARITY.md](PARITY.md).
 >
 > Telemetry of both incidents is ARCHIVED with manifest rows —
 > `track9.csv`/`track9.csv.settle` and `float1.csv`, section
-> `incidents-2026-07/` in [DATA_ARCHIVE.md](DATA_ARCHIVE.md).
+> `incidents-2026-07/` in [data-archive.md](../records/data-archive.md).
 > `x7_wave`, `x7_move_simple`,
 > `x7_pose`, `x7_read`, and `x7_onoff` remain usable (position mode
 > or no torque; none touches the current-command path); the

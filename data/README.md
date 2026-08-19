@@ -15,7 +15,7 @@ Three kinds of evidence live here, with different provenance:
   CT mass-error study's 166-run result table and provenance metadata
   (commit, model and binary SHA-256, seeds), produced by
   `tools/ct_mass_error_study.py` driving `examples/x7_ct_mass_error`;
-  summarized in `docs/HISTORY.md` (CT mass-error study).
+  summarized in `docs/records/history.md` (CT mass-error study).
 
 The `.dwells.json` files here are the per-run summary sidecars of the
 hardware identification campaign (2026-07-27): the complete controller
@@ -25,10 +25,10 @@ text, and diffable, so they are tracked with the code.
 
 The raw CSV time series they summarize live in the operator's private
 data archive outside this repository; see
-[docs/DATA_ARCHIVE.md](../docs/DATA_ARCHIVE.md) for each file's role
+[docs/records/data-archive.md](../docs/records/data-archive.md) for each file's role
 and SHA-256. These sidecars alone cannot be re-fitted (the analysis
 needs the raw CSVs). They carry the controller, capture, dwell, and
-demodulation values cited by `docs/HISTORY.md`'s identification
+demodulation values cited by `docs/records/history.md`'s identification
 closure record; raw timing and sample-level claims (apply
 delays, encoder-count behavior, overrun/I/O counts) require the
 archived CSVs.

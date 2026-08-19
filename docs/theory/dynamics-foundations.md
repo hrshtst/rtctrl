@@ -120,4 +120,4 @@ bounds the fidelity of $\hat\tau$ as an *output-torque* estimate. The
 few-percent static agreement observed on hardware verifies the current
 loop against the same nominal $k_t$ used to command it — not the
 output torque itself (see the M7 notes and the calibration arc in
-[HISTORY.md](../HISTORY.md#gravity-compensation-and-torque-constant-calibration)).
+[history.md](../records/history.md#gravity-compensation-and-torque-constant-calibration)).

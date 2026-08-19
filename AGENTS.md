@@ -10,7 +10,7 @@ settings belong in `models/` and `config/`; documentation is under `docs/`.
 `third_party/` and the top-level legacy/reference projects are external code:
 avoid modifying them unless the change explicitly targets that dependency.
 Tracked experiment summaries live in `data/`; raw telemetry is external and
-indexed by `docs/DATA_ARCHIVE.md`.
+indexed by `docs/records/data-archive.md`.
 
 ## Build, Test, and Development Commands
 

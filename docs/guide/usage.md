@@ -192,7 +192,7 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
   [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us)).
 - Line-speed/serial-timing behavior is invisible to pty tests
   (a lesson learned the hard way — see the hardware findings in
-  [HISTORY.md](../HISTORY.md)): budget a hardware check for it.
+  [history.md](../records/history.md)): budget a hardware check for it.
 
 ## Conventions
 

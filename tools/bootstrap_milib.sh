@@ -113,7 +113,7 @@ make -C "$META"
 
 # Dev convenience: generate the repo-root .envrc (direnv) once — it
 # puts the prefix on PATH/LD_LIBRARY_PATH and sources the machine-local
-# .envrc.local (docs/DATA_ARCHIVE.md relies on that hook).
+# .envrc.local (docs/records/data-archive.md relies on that hook).
 if [ "${CI:-}" != "true" ] && [ ! -e "$REPO_ROOT/.envrc" ]; then
   ENVRC_DIR="$REPO_ROOT" "$META/gen_envrc.sh" || true
 fi

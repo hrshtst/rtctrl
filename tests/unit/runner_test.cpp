@@ -1,5 +1,5 @@
 // The runner's measured-time base and stale-feedback policy
-// (docs/HISTORY.md (pass-1 record) D4), exercised with a scripted mock Arm.
+// (docs/records/history.md (pass-1 record) D4), exercised with a scripted mock Arm.
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 

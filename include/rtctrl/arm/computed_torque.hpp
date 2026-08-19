@@ -165,7 +165,7 @@ class ComputedTorque : public Controller {
     emitOutput(cmd);
   }
 
-  // Per-cycle telemetry (docs/HISTORY.md (pass-1 record) D8): feedforward,
+  // Per-cycle telemetry (docs/records/history.md (pass-1 record) D8): feedforward,
   // filtered PD, committed integral, host velocity estimate, the
   // pre-/post-clamp commands and the controller-side saturation flags
   // (controller clamping would otherwise hide saturation from the

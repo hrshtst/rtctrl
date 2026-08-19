@@ -1,4 +1,4 @@
-// EFL-0 mathematical checks (docs/HISTORY.md (EFL frozen specification)):
+// EFL-0 mathematical checks (docs/records/history.md (EFL frozen specification)):
 // estimator parity against the SHIPPED controller, the zero-error
 // feedforward identity, mass-matrix linearity of the acceleration
 // channel, PRACTICAL-GF replica parity, gravity-free rest behavior,

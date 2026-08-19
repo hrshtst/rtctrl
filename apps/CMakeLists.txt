@@ -21,7 +21,7 @@ foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
   target_include_directories(${app} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
-# Offline EFL study runner (docs/HISTORY.md (EFL study)). The git
+# Offline EFL study runner (docs/records/history.md (EFL study)). The git
 # provenance source is regenerated on EVERY build — a configure-time
 # value goes stale after later commits (review finding); the dirty
 # flag counts untracked files.

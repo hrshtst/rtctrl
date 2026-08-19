@@ -1,5 +1,5 @@
-// Offline EFL study controllers (docs/HISTORY.md (EFL study),
-// docs/HISTORY.md (EFL frozen specification)). Experimental code — consumed
+// Offline EFL study controllers (docs/records/history.md (EFL study),
+// docs/records/history.md (EFL frozen specification)). Experimental code — consumed
 // only by x7_efl_study and its tests, never by the hardware apps.
 //
 //  * HostVelocityEstimator — a standalone duplicate of ComputedTorque's

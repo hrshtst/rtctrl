@@ -11,7 +11,7 @@ definition) and in milestone identifiers such as `M-GC1` or `D4` that
 code comments still cite.
 
 The *current* capability status lives in the
-[guide overview](guide/overview.md#what-works-where); the theory notes
+[guide overview](../guide/overview.md#what-works-where); the theory notes
 carry the interpretive narratives. This file records the past: it is
 append-only in spirit — the decisions below are closed.
 
@@ -156,7 +156,7 @@ the closure of the torque-mode work made it the supported route for
 large fast motions. `examples/x7_wave` (multi-joint synchronized wave
 through `RealArm`, reference anchored to a captured posture) was
 confirmed on the physical arm 2026-07-21 as the M6 vendor-parity
-milestone — the capability mapping lives in [PARITY.md](PARITY.md).
+milestone — the capability mapping lives in [parity.md](parity.md).
 `apps/x7_move_simple` (single-joint velocity-limited min-jerk) and
 `apps/x7_pose` (placement onto a canonical posture with
 measured-posture convergence) complete the position-mode toolset;
@@ -228,8 +228,8 @@ argument (no scale is safe) and no code or configuration change
 preceded it. `x7_track` is **PARKED** until a reviewer-approved
 settle-phase fix lands — none is implemented; the authoritative
 operational status is the registry in
-[HARDWARE_BRINGUP.md](HARDWARE_BRINGUP.md). Incident telemetry:
-`track9.csv`/`track9.csv.settle` ([DATA_ARCHIVE.md](DATA_ARCHIVE.md),
+[bringup.md](../hardware/bringup.md). Incident telemetry:
+`track9.csv`/`track9.csv.settle` ([data-archive.md](data-archive.md),
 `incidents-2026-07/`).
 
 ### Pass-1 instrumentation evidence
@@ -474,7 +474,7 @@ scale > 0.6.
 - The preserved **null-result datasets** (`p1_j1_survey_r2`,
   `p1_j1_amp020/025/030`), which never enter mode fitting — sidecars
   tracked under `data/`, raw CSVs in the private archive
-  ([DATA_ARCHIVE.md](DATA_ARCHIVE.md)).
+  ([data-archive.md](data-archive.md)).
 
 ### Reopening conditions
 
@@ -535,9 +535,9 @@ with/without integrator; 20 seeds per condition):
    ±10 mm ≈ ±20 % mass in median j1 effect.
 4. The shipped integrator improved j1 in 19/20 paired seeds.
 
-![Randomized model error: per-seed RMS by condition](img/ct_mass_error_mc.png)
+![Randomized model error: per-seed RMS by condition](../img/ct_mass_error_mc.png)
 
-![Trajectories under correlated model error](img/ct_mass_error_trajectories.png)
+![Trajectories under correlated model error](../img/ct_mass_error_trajectories.png)
 
 Limitations: the rigid, lag-free simulation excludes precisely the
 mechanisms that parked computed torque on hardware — this study
@@ -576,6 +576,6 @@ document in full.
 
 Historical labels that remain valid greppable citations: milestone
 ids (`M0`–`M8`, `M-GC1`–`M-GC3`, `D1`–`D8`, `EFL-2`, pass 1/2),
-dataset bare filenames (resolved by [DATA_ARCHIVE.md](DATA_ARCHIVE.md)),
+dataset bare filenames (resolved by [data-archive.md](data-archive.md)),
 and retired document names embedded in immutable evidence files under
 `data/`.

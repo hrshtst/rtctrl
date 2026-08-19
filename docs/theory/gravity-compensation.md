@@ -134,7 +134,7 @@ $i_k = \tau_k / k_{t,k}$, and the servos run in current mode
   remain). Every `x7_float` session therefore refuses the bus without
   `config/crane_x7_vendor_scale.toml` and a fresh exclusive `--log`.
   Full arc and decisions:
-  [HISTORY.md](../HISTORY.md#gravity-compensation-and-torque-constant-calibration).
+  [history.md](../records/history.md#gravity-compensation-and-torque-constant-calibration).
 
 ## Limitations
 

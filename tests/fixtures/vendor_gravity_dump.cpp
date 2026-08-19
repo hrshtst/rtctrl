@@ -1,5 +1,5 @@
 // INDEPENDENT vendor-gravity fixture generator
-// (docs/HISTORY.md (gravity calibration) M-GC2). Runs rt_manipulators'
+// (docs/records/history.md (gravity calibration) M-GC2). Runs rt_manipulators'
 // samples03 gravity computation — their link CSV, their recursion,
 // their hand-excluding route, their tuned torque-to-current
 // constants — at seven reference postures (four development, three

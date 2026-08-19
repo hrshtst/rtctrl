@@ -3,7 +3,7 @@
 // identification run — a constant-anchor ComputedTorque with a torque
 // probe superposed on ONE joint, online I/Q demodulation, all-joint
 // safety monitors with the hard/soft fault taxonomy, and the session
-// duration budget (docs/HISTORY.md (identification)).
+// duration budget (docs/records/history.md (identification)).
 #pragma once
 
 #include <algorithm>
@@ -103,7 +103,7 @@ struct DwellSpec {
   int window_mult = 1;  // predicted-SNR gate request (x4), granted at runtime
 };
 
-// Session budget constants (docs/HISTORY.md (identification) deadline ladder).
+// Session budget constants (docs/records/history.md (identification) deadline ladder).
 inline constexpr double kTStopS = 177.5;        // graceful-stop threshold
 inline constexpr double kTQuiesceS = 179.5;     // watchdog expiry
 inline constexpr double kSetupAllowanceS = 15.0;  // pre-activation only
@@ -981,7 +981,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
     return options_.setup_offset_s + t + requested <= options_.t_stop_s;
   }
 
-  // The dwell state machine (documented in docs/HISTORY.md (identification)).
+  // The dwell state machine (documented in docs/records/history.md (identification)).
   void advance(const arm::JointState& state, double t, double dt) {
     const int pj = options_.probe_joint;
     const double q_probe = zVecElemNC(state.q.get(), pj);

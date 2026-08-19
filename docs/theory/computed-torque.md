@@ -215,14 +215,14 @@ filter, ~2-cycle bus pipeline), so inside the supported envelope its
 damping turned into excitation — and no code or configuration change
 preceded the failure. Hardware operation of `x7_track` is suspended
 until a reviewer-approved settle-phase fix lands (see
-[HARDWARE_BRINGUP.md](../HARDWARE_BRINGUP.md)); the parking is an
+[bringup.md](../hardware/bringup.md)); the parking is an
 operational suspension and does not alter the 0.6 cap's status as
 the supported boundary.
 
 **Pass-1 remediation (instrumentation & hardening).** Following the
 post-completion review, the loop was made observable and its timing
 monitored and bounded — see the
-[pass-1 record](../HISTORY.md#pass-1-instrumentation-evidence):
+[pass-1 record](../records/history.md#pass-1-instrumentation-evidence):
 measured-time control with an explicit stale-feedback abort policy,
 feedback and command sequencing with first-vs-latest application
 records and receipt-matched latency verification, one continuous
@@ -234,7 +234,7 @@ with a null result at its first gate (joint 1 at P1 stiction-locked
 below the output encoder's resolution under a stationary current
 probe up to its hard cap): **the 0.6 scale cap is the final
 supported boundary** (see the
-[closure record](../HISTORY.md#closure-decision-and-precise-scope)).
+[closure record](../records/history.md#closure-decision-and-precise-scope)).
 
 ## Offline exact-feedback-linearization study (2026-07-29)
 
@@ -244,7 +244,7 @@ the measured state, feedback in the acceleration domain — offers a
 useful advantage over the shipped practical law. Simulation only: no
 hardware, no `x7_track` changes, the 0.6 cap untouched. Study
 definition and frozen constants:
-[HISTORY.md](../HISTORY.md#efl-offline-study-closed-negative-2026-07-29);
+[history.md](../records/history.md#efl-offline-study-closed-negative-2026-07-29);
 canonical machine-readable table: `data/efl_study/results.json`.
 
 **Verdict: negative — the study stopped at its preregistered gain
@@ -273,7 +273,7 @@ gate.** Findings by fixture family:
   gains and integrator compensate better in this scenario — though
   its inverse-dynamics feedforward omits the same reflected inertia.
   Isolating the cause would need a matched-inertia ablation — see
-  the [results record](../HISTORY.md#results-and-interpretation).
+  the [results record](../records/history.md#results-and-interpretation).
 - **Delayed and disturbed cases.** Not evaluable for EFL (no
   surviving gains, per preregistration). The practical baselines are
   recorded for the record: the two-cycle-delay, quantized loop from
@@ -311,7 +311,7 @@ flag, no default change, and no cap change follow from any of this.
   at its first gate — joint 1 at P1 is stiction-locked below the
   output encoder's resolution under a stationary current probe up to
   its hard cap (other routes untested; closed by decision — see the
-  [closure record](../HISTORY.md#closure-decision-and-precise-scope)).
+  [closure record](../records/history.md#closure-decision-and-precise-scope)).
   The theory, method mathematics,
   and quantified results are in
   [flexible-mode identification](identification.md). That regime belongs to

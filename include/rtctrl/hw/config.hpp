@@ -16,7 +16,7 @@ struct JointConfig {
   double pos_limit_margin = 0.0;    // [rad]
   double current_limit_margin = 0.0;  // [A]
   // Command-side effective-torque calibration
-  // (docs/HISTORY.md (gravity calibration) M-GC1): the torque->current
+  // (docs/records/history.md (gravity calibration) M-GC1): the torque->current
   // boundary emits i = command_torque_scale * tau / kt_nominal, so a
   // scale below 1 attenuates every commanded current. Validated to
   // [0.5, 1.0] — the 2026-07-29 float incident is associated with

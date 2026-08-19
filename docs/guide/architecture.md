@@ -169,7 +169,7 @@ drilled on the physical arm (USB pull → freeze within 100 ms).
 
 `deactivate()` is not an emergency stop. Hardware sessions require an
 independent actuator-power cutoff within reach
-([bring-up checklist](../HARDWARE_BRINGUP.md)).
+([bring-up checklist](../hardware/bringup.md)).
 
 ## Verification tiers
 

@@ -45,5 +45,5 @@ full derivations, the hardware bring-up checklist, and the project
 records.
 
 Hardware sessions: read
-[docs/HARDWARE_BRINGUP.md](docs/HARDWARE_BRINGUP.md) first — and keep
+[docs/hardware/bringup.md](docs/hardware/bringup.md) first — and keep
 the power cutoff within reach.

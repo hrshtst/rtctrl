@@ -52,11 +52,11 @@ rtctrl — C++17 control library for the CRANE-X7 7-DOF arm (mi-lib dynamics, Dy
 
 - Raw hardware telemetry (root-level `*.csv` etc.) is NEVER committed
   (gitignored). It belongs in the operator's private archive per
-  `docs/DATA_ARCHIVE.md` (manifest row with SHA-256; only the `.dwells.json`
+  `docs/records/data-archive.md` (manifest row with SHA-256; only the `.dwells.json`
   sidecars are tracked, under `data/`). Never write the archive's location into
   any tracked file.
 - The 0.6 excursion-scale cap in `x7_track` is FINAL (closure 2026-07-28; see
-  `docs/HISTORY.md`, the computed-torque and identification chapters). Do not
+  `docs/records/history.md`, the computed-torque and identification chapters). Do not
   propose lifting it.
-- Hardware sessions follow `docs/HARDWARE_BRINGUP.md` (power cutoff within
+- Hardware sessions follow `docs/hardware/bringup.md` (power cutoff within
   reach, first motion = wrist only); use a unique `--log` filename per attempt.
