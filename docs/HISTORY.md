@@ -279,7 +279,7 @@ development scenario eliminates that gain pair before the main grid.
 ### Frozen specification
 
 > This subsection is the **live specification** referenced by
-> `apps/x7_efl_study.cpp` and
+> `apps/study/x7_efl_study.cpp` and
 > `tests/unit/{efl_test,study_metrics_test,lagged_arm_test}.cpp`.
 > Do not edit it without re-running the study gate; it is preserved
 > verbatim from the retired implementation plan.
@@ -510,8 +510,8 @@ them, refusing mode fits on data below the observability floor
 
 With the campaign closed, the parked hardware app `x7_ident` and its
 session watchdog were removed on 2026-08-18. The simulation twin
-(`apps/x7_ident_sim.cpp` over the `TwoMassArm` fixture), the dwell
-state machine (`apps/ident_common.hpp`, still pinned by its unit and
+(`apps/ident/x7_ident_sim.cpp` over the `TwoMassArm` fixture), the dwell
+state machine (`apps/ident/ident_common.hpp`, still pinned by its unit and
 sim-integration tests), and the analysis pipeline remain — method
 validation and re-analysis of the archived datasets stay
 reproducible. Reopening restarts from external review regardless.

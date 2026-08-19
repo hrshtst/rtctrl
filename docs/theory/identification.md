@@ -1,7 +1,7 @@
 # Flexible-mode identification
 
-*Implemented in `apps/ident_common.hpp` (probe state machine, online
-demodulation, safety monitors), `apps/x7_ident_sim.cpp` (simulation
+*Implemented in `apps/ident/ident_common.hpp` (probe state machine, online
+demodulation, safety monitors), `apps/ident/x7_ident_sim.cpp` (simulation
 twin; the x7_ident hardware app was removed after the campaign
 closed), and `tools/ident_analysis.py` (offline estimation). Design record,
 operator procedure, and campaign outcomes:
@@ -99,7 +99,7 @@ exactly an isolated SDOF mode), the damped oscillation frequency sits
 slightly below it, $\omega_d \approx \omega_0\sqrt{1-\zeta_{\text{tot}}^2}$. $J_l$ is configuration-dependent (the arm's inertia
 about the joint changes with posture), which is why the mode is
 *posture-dependent* and the campaign planned four postures P1–P4. The
-simulation twin (`apps/two_mass_arm.hpp`) plants exactly this model
+simulation twin (`apps/common/two_mass_arm.hpp`) plants exactly this model
 with a nonzero $b_l$ — the quoted 4.5 Hz, $\zeta = 0.03$ on joint 1
 and 13 Hz, $\zeta = 0.05$ on joint 5 are the coupling-damping
 *targets* that set $C_g$, not exact total modal dampings — and the

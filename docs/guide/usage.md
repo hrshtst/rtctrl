@@ -122,7 +122,7 @@ apps' shared plumbing, not part of the installed library API):
 // Repository-internal: the x7_* apps' shared plumbing lives under
 // apps/, NOT in the installed rtctrl:: API — in-repo programs include
 // it relatively (examples/ does exactly this):
-#include "../apps/x7_common.hpp"
+#include "../apps/common/x7_common.hpp"
 
 auto config = hw::Config::load("config/crane_x7.toml");
 dxl::Port port(config.port, config.baudrate);
@@ -135,7 +135,7 @@ if (!robot.activate()) return 1;  // verifies servos, arms watchdogs, snaps goal
 // Verified shutdown from here on: CraneX7's DESTRUCTOR deliberately
 // does not torque off, so every exit after activation must deactivate
 // and CHECK the result — the x7_* apps share x7::ShutdownGuard
-// (apps/x7_common.hpp), which also silences the bus on an unclean
+// (apps/common/x7_common.hpp), which also silences the bus on an unclean
 // deactivation so the servo watchdogs halt the arm.
 x7::ShutdownGuard shutdown{hardware};
 arm::JointState start;

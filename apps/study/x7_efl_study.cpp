@@ -101,7 +101,7 @@ constexpr double kWin2a = 1.5, kWin2b = 2.5;
 // ------------------------------------------------------------ pieces
 
 // The x7_track excursion and duration rule, mirrored (provenance:
-// apps/x7_track.cpp — tilt/elbow/wrist-pitch excursion, peak accel
+// apps/track/x7_track.cpp — tilt/elbow/wrist-pitch excursion, peak accel
 // held at the half-scale-proven level so T grows with
 // sqrt(amplitude)). The hardware app additionally clamps against the
 // servo soft-limit band, which does not exist offline.
