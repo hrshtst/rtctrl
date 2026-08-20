@@ -23,7 +23,7 @@ chain.fk(q9);                   // forward kinematics
 ```
 
 `ChainModel::chain()` exposes the underlying `rkChain*` for any roki
-API not wrapped yet — the wrappers are conveniences, not a wall.
+API not wrapped yet: the wrappers are conveniences, not a wall.
 Model loading resolves mesh paths relative to the `.ztk` file (the
 mi-lib convention), so it works from any working directory.
 
@@ -46,7 +46,7 @@ if (!result.converged) {
 
 `IkResult` carries position/attitude residuals, the iteration count,
 and joint-limit/finiteness flags. The solver uses roki's
-Levenberg–Marquardt iteration with the error-damped equation solver —
+Levenberg–Marquardt iteration with the error-damped equation solver;
 it converges at reachable singular poses (that robustness is pinned by
 tests).
 
@@ -112,7 +112,7 @@ arm::run(sim, c, /*seconds=*/10.0);   // read → update → write → step
 ```
 
 **On the robot** (identical controller code; this listing is written
-as an in-repo program — the verified-shutdown guard it uses is the
+as an in-repo program: the verified-shutdown guard it uses is the
 apps' shared plumbing, not part of the installed library API):
 
 ```cpp
@@ -146,15 +146,15 @@ const bool clean = shutdown.run();  // deactivate + verify; quiesce on failure
 return ok && clean ? 0 : 1;
 ```
 
-(`examples/x7_wave.cpp` is a complete example using this pattern —
-including the `apps/` header the same relative way — runnable against
+(`examples/x7_wave.cpp` is a complete example using this pattern,
+including the `apps/` header the same relative way, runnable against
 `dxl_emu` or the robot.)
 
 `readState` gives positions, velocities, and torque estimates
 ($\hat\tau = k_t\,i$); `step()` blocks on the background read-write
 cycle and returns `false` after a safety escalation. The shipped
 controllers `arm::GravityComp` and `arm::ComputedTorque` follow
-exactly this pattern — see the
+exactly this pattern; see the
 [theory documents](../theory/gravity-compensation.md) and their
 sources for worked examples.
 
@@ -176,7 +176,7 @@ port.write8(8, dxl::reg::kLed.addr, 1);
 ```
 
 The `dxl_inspect` app is this API as a CLI. In tests, substitute
-`emu::FakePacketIO` for `Port` behind the same `PacketIO` interface —
+`emu::FakePacketIO` for `Port` behind the same `PacketIO` interface,
 or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
 
 ## Testing your additions
@@ -186,7 +186,7 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
   (fast) and, if it exercises new wire behavior, the pty fixture
   (`tests/integration/`).
 - Anything producing motion → acceptance test on `SimArm` first;
-  hardware only after (that ordering is the project's core rule —
+  hardware only after (that ordering is the project's core rule,
   though sim passage is necessary, not sufficient: the rigid-joint sim
   cannot certify gains against gear elasticity; see the
   [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us)).
@@ -199,7 +199,7 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
 - Conventional Commits; a commit is a module plus its tests.
 - Canonical joint order everywhere above the `dxl` layer.
 - SI units (rad, rad/s, Nm, A, V) outside `dxl/conversions.hpp`;
-  raw servo units never leak upward — the deliberate exceptions are
+  raw servo units never leak upward; the deliberate exceptions are
   the servo-parameter passthroughs (operating-mode codes and the raw
   profile registers on `CraneX7`), which stay in register units by
   design.
