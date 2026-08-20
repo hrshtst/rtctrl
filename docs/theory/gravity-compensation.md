@@ -25,7 +25,9 @@ M(q)\,\ddot{q} + C(q,\dot{q})\,\dot{q} = 0 .
 Gravity vanishes from the closed loop: **every** configuration with
 $\dot q = 0$ is an equilibrium. The arm neither falls nor moves on its
 own, yet offers no resistance to external pushes beyond its own
-inertia — it *floats* and is freely back-drivable. This is the
+inertia: in the ideal model it *floats* and is freely back-drivable
+(the hardware reality is bounded by friction and the waived back-drive
+criterion below). This is the
 foundation for hand-guiding, teaching, and as the $g(q)$ term inside
 more advanced torque controllers.
 
@@ -33,7 +35,7 @@ more advanced torque controllers.
 
 The closed loop conserves kinetic energy
 $T = \tfrac12 \dot q^\mathsf{T} M(q) \dot q$ exactly. Differentiating
-$T$ produces two terms — the $\tfrac12\dot q^\mathsf{T}\dot M\dot q$
+$T$ produces two terms. The $\tfrac12\dot q^\mathsf{T}\dot M\dot q$
 term must not be dropped; it is what the skew-symmetry of
 $\dot M - 2C$ cancels against:
 
@@ -50,7 +52,7 @@ $\dot M - 2C$ cancels against:
 which vanishes along the compensated dynamics $\tau = g(q)$.
 
 With any physical dissipation $D\dot q$ (joint friction, motor
-damping — always present on the real robot, and represented by the
+damping; always present on the real robot, and represented by the
 inertia-scaled viscous term in the simulator), $\dot T = -\dot
 q^\mathsf{T} D \dot q \le 0$: motion decays and the arm settles
 wherever it was left. Friction therefore *helps* stability while
@@ -119,18 +121,18 @@ $i_k = \tau_k / k_{t,k}$, and the servos run in current mode
   Read that agreement for what it is: both sides share the same
   nominal $k_t$ (commands divide by it, the estimate multiplies by
   it), so it verifies the servo's *current loop* tracking the
-  commanded current — not output-shaft torque; friction, gearbox
+  commanded current, not output-shaft torque; friction, gearbox
   efficiency, and any $k_t$ scale error sit outside the comparison.
   **Status: `x7_float` WORKS on hardware (un-parked 2026-07-31).**
-  The 2026-07-29 incident — a float session accelerating the
-  untouched arm toward the upright (peak ~2.37 rad/s), the signature
-  of gravity over-compensation, a failure class the agreement print
-  is structurally blind to — led to the torque-constant calibration
-  arc: the vendor-equivalent scales (hypotheses, not measurements)
+  The 2026-07-29 incident, in which a float session accelerated the
+  untouched arm toward the upright (peak ~2.37 rad/s), showed the
+  signature of gravity over-compensation (a failure class the
+  agreement print is structurally blind to) and led to the
+  torque-constant calibration arc: the vendor-equivalent scales (hypotheses, not measurements)
   plus a position-held/preloaded startup passed the objective M-GC3
   acceptance with wide margins; the subjective back-drive criterion
   FAILED and the owner explicitly WAIVED it (a risk/quality decision,
-  not a test pass — the characterized j1 notch and j4 tendency
+  not a test pass; the characterized j1 notch and j4 tendency
   remain). Every `x7_float` session therefore refuses the bus without
   `config/crane_x7_vendor_scale.toml` and a fresh exclusive `--log`.
   Full arc and decisions:
