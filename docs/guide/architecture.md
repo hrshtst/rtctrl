@@ -19,10 +19,10 @@ flowchart TB
     subgraph EMU["emu/ — test double"]
         direction TB
         ME["MotorEmulator"]
-        FAKE["FakePacketIO<br>(in-process)"]
         PTY["PtyBus<br>(wire-level Protocol 2.0)"]
-        ME --- FAKE
+        FAKE["FakePacketIO<br>(in-process)"]
         ME --- PTY
+        ME --- FAKE
     end
 
     MOTORS["CRANE-X7 servos<br>(7× XM430-W350, 1× XM540-W270,<br>USB serial bus)"]
