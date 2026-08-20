@@ -1,6 +1,6 @@
 # Getting started
 
-Everything here works **without a robot** — the last section covers
+Everything here works **without a robot**; the last section covers
 hardware.
 
 ## Prerequisites
@@ -14,7 +14,7 @@ hardware.
 - [`uv`](https://docs.astral.sh/uv/) for the Python tooling
   (model regeneration).
 - For hardware only: membership in the `dialout` group and the
-  latency udev rule — see the
+  latency udev rule; see the
   [bring-up checklist](../hardware/bringup.md).
 
 ## Build
@@ -58,7 +58,7 @@ and pinned automatically.
 ./build/apps/dxl_inspect --port /tmp/ttyDXL dump 8
 ```
 
-Every hardware `x7_*` app accepts the same `--port /tmp/ttyDXL` — the
+Every hardware `x7_*` app accepts the same `--port /tmp/ttyDXL`: the
 entire hardware workflow can be rehearsed offline. (The `*_sim` twins
 run pure simulation and take no bus arguments.)
 
@@ -89,7 +89,7 @@ uv run --project tools tools/port_model.py
 ```
 
 The pipeline expands the xacro standalone, rewrites mesh paths
-(model-relative — the mi-lib viewers chdir into the model's
+(model-relative: the mi-lib viewers chdir into the model's
 directory), converts with roki's `urdf2ztk`, and re-adds what the
 converter drops: per-joint `trq` motors bounded by the URDF effort
 limits and the nominal viscous damping. Velocity/effort limits live in
@@ -99,7 +99,7 @@ test).
 ## Configuration
 
 `config/crane_x7.toml` is the deployment config: serial port and baud
-rate, plus one `[[joint]]` entry per servo in canonical order — bus
+rate, plus one `[[joint]]` entry per servo in canonical order: bus
 id, model, operating mode (raw Dynamixel value: 3 position,
 1 velocity, 0 current), velocity/effort limits and safety margins.
 Tests validate it against both the URDF and the canonical joint table.
@@ -107,9 +107,13 @@ Tests validate it against both the URDF and the canonical joint table.
 ## Hardware
 
 Follow the [bring-up checklist](../hardware/bringup.md) **in order**
-the first time — it interleaves the apps above with physical checks
+the first time: it interleaves the apps above with physical checks
 (and a watchdog drill) and states the safety rules. After bring-up,
-the controller phases are `x7_float` (gravity compensation) and
-`x7_track` (computed-torque tracking); `x7_track_sim` previews the
-identical tracking run offline, including replay of logged hardware
-poses and disturbances.
+the current-mode apps are `x7_float` (gravity compensation, the
+acceptance instrument) and `x7_gravity_demo` (the simplified
+demonstration with customizable torque constants; see its
+[operator page](../hardware/gravity-demo.md)). `x7_track`
+(computed-torque tracking) is **parked**: do not run it on hardware.
+Its sim twin `x7_track_sim` still previews the identical tracking
+run offline, including replay of logged hardware poses and
+disturbances.
