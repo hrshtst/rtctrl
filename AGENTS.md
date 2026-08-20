@@ -36,6 +36,9 @@ Match the existing C++ style: two-space indentation, braces on the same line,
 `kCamelCase` constants. Keep public declarations in `include/` and implementation
 details in `src/`. Prefer short comments that explain safety constraints or
 non-obvious control decisions. Python follows standard Ruff-compatible style.
+Documentation prose avoids em dashes (colon, semicolon, comma, or parentheses
+by clause role); fenced content and the archival pages under `docs/records/`
+are exempt.
 
 ## Testing Guidelines
 

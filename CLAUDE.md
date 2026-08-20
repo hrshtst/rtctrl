@@ -47,6 +47,11 @@ rtctrl — C++17 control library for the CRANE-X7 7-DOF arm (mi-lib dynamics, Dy
 - Controller, protocol, and safety-gate changes go through the owner's external
   reviewer: implement reviewer directives exactly, and never widen tolerances,
   gates, or timeouts as a remedy for a failing check.
+- Docs prose avoids em dashes: use a colon (explanation/consequence), semicolon
+  (independent clauses), comma (light aside), or parentheses (interruptions)
+  by clause role. Exempt: fenced code/mermaid content, the overview evidence
+  table's verdict cells, and everything under `docs/records/` (the archival
+  pages keep their punctuation as originally recorded).
 
 ## Data and hardware
 
