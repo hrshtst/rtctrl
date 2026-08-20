@@ -48,6 +48,49 @@ Hardware sessions: read
 [docs/hardware/bringup.md](docs/hardware/bringup.md) first — and keep
 the power cutoff within reach.
 
+## AI Assistance & Development Workflow
+
+This project is developed with the assistance of an AI coding
+assistant. The AI is also used to generate commit messages and parts
+of the documentation, including the theory notes and the project
+records.
+
+**Workflow:**
+
+1. **Context & Theory (Human):** The maintainer
+   ([@hrshtst](https://github.com/hrshtst)) sets the project
+   constraints in `CLAUDE.md`/`AGENTS.md` and writes the theoretical
+   background implemented as documentation in
+   [docs/theory/](docs/theory/).
+2. **Implementation (AI):** The AI assistant uses these documents and
+   constraints to implement code, tests, and documentation, following
+   the project's testing ladder: pure logic gets unit tests, bus
+   behavior runs against the emulator, and anything producing motion
+   passes simulation acceptance before any hardware run.
+3. **Review & Revision (Human):** The maintainer reviews, tests, and
+   revises the generated code; controller, protocol, and safety-gate
+   changes additionally pass an external review before hardware use.
+   Every hardware session is operated and supervised by the
+   maintainer.
+
+**Responsibility:**
+All responsibilities for the code hosted in this repository lie with
+the maintainer. The AI serves strictly as an implementation
+assistant; final architectural decisions, safety dispositions, and
+code quality are human-led.
+
+**Feedback:**
+If you identify problems, or find code that appears to be unoriginal
+or rights-protected, please notify the maintainer immediately by
+filing an issue.
+
+**Contributor Policy:**
+External contributors are welcome to use AI tools for assistance,
+provided they adhere to the same standard of review and
+responsibility. If you use AI to generate code for a Pull Request,
+please disclose it in the PR description and ensure you have
+thoroughly reviewed and tested the code.
+
 ## Acknowledgments
 
 <img src="docs/img/ipa_logo.png" height="60" alt="IPA Logo"> &nbsp; &nbsp; <img src="docs/img/mitou_target_logo.png" height="60" alt="MITOU Target Logo">
