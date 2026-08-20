@@ -9,8 +9,8 @@ controller code runs in simulation and on the real arm.
 
 ## Design philosophy
 
-**Thin, robot-specific glue.** rtctrl writes as little robotics code
-as possible. The general math (kinematics, Jacobians, inverse
+**Thin, robot-specific glue.** rtctrl contains as little robotics
+code as possible. The general math (kinematics, Jacobians, inverse
 dynamics, forward-dynamics simulation) comes from
 [mi-lib](https://github.com/mi-lib); all servo communication goes
 through [DynamixelSDK](https://github.com/ROBOTIS-GIT/DynamixelSDK).
@@ -96,7 +96,7 @@ The consolidated record of every decision and hardware finding is
 The CRANE-X7 and its official control software,
 [`rt_manipulators_cpp`](https://github.com/rt-net/rt_manipulators_cpp),
 are products of [RT Corporation](https://rt-net.jp/). The official
-software served as the functional reference for this library; the
+software was the functional reference for this library; the
 [parity checklist](../records/parity.md) records how its capabilities
 map to rtctrl equivalents, including the vendor surface rtctrl
 consciously simplifies.
