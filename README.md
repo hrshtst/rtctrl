@@ -47,3 +47,16 @@ records.
 Hardware sessions: read
 [docs/hardware/bringup.md](docs/hardware/bringup.md) first — and keep
 the power cutoff within reach.
+
+## Acknowledgments
+
+<img src="docs/img/ipa_logo.png" height="60" alt="IPA Logo"> &nbsp; &nbsp; <img src="docs/img/mitou_target_logo.png" height="60" alt="MITOU Target Logo">
+
+This project is supported by the
+**[MITOU Target Program](https://www.ipa.go.jp/jinzai/mitou/koubo/programs/target.html)**
+(Reservoir Computing field) of the
+[Innovation Platform Agency, Japan (IPA)](https://www.ipa.go.jp/en/index.html)
+in FY2026. Details of the supported project can be found in the
+official overview for
+[FY2026](https://www.ipa.go.jp/jinzai/mitou/target/2026-reservoir/gaiyou-tg-1.html)
+(Japanese).
