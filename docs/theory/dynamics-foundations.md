@@ -87,7 +87,7 @@ $\delta q_8$ the two descriptions must do equal work,
 ```
 
 so the canonical gripper torque is the **sum** of both finger torques,
-$\tau_{\text{grip}} = \tau_{fA} + \tau_{fB}$ — not finger A's alone.
+$\tau_{\text{grip}} = \tau_{fA} + \tau_{fB}$, not finger A's alone.
 
 In code, `model::JointMap` *is* $E$: `expand()` applies $E$,
 `reduceTorque()` applies $E^\mathsf{T}$ (`joint_map.cpp`), with the
@@ -118,6 +118,6 @@ $\hat\tau = k_t\, i_{\text{measured}}$ from the measured current
 manufacturer data; friction and gear efficiency are not modeled, which
 bounds the fidelity of $\hat\tau$ as an *output-torque* estimate. The
 few-percent static agreement observed on hardware verifies the current
-loop against the same nominal $k_t$ used to command it — not the
+loop against the same nominal $k_t$ used to command it, not the
 output torque itself (see the M7 notes and the calibration arc in
 [history.md](../records/history.md#gravity-compensation-and-torque-constant-calibration)).
