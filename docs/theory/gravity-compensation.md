@@ -79,7 +79,7 @@ the canonical↔model bookkeeping made explicit:
    finger A);
 2. call `rkChainID_G` with **properly sized, member-owned zero
    vectors** for $\dot q_9$ and $\ddot q_9$ (roki dereferences both
-   unconditionally — passing null is a crash, see the mi-lib notes);
+   unconditionally: passing null is a crash, see the mi-lib notes);
 3. reduce the nine generalized torques through the constraint
    transpose, $\tau_8 = E^\mathsf{T}\tau_9$, so the gripper receives
    the sum of both finger torques.
