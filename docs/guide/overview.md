@@ -2,58 +2,61 @@
 
 **rtctrl** is a C++17 control library for the
 [CRANE-X7](https://rt-net.jp/products/crane-x7/), a 7-DOF arm with a
-two-finger gripper built from Dynamixel XM servos. It replaces the
-vendor software with a structured stack offering robust inverse
-kinematics, dynamics-based control (gravity compensation,
-computed-torque tracking), and a simulator bridge, while functionally
-covering the capabilities of the original `rt_manipulators_cpp` for
-whole-arm control (see the [parity checklist](../records/parity.md), including
-its list of consciously simplified vendor surface).
+two-finger gripper built from Dynamixel XM servos. It provides robust
+inverse kinematics, dynamics-based control (gravity compensation and
+computed-torque tracking), and a simulator bridge, so the same
+controller code runs in simulation and on the real arm.
 
 ## Design philosophy
 
-**Thin, robot-specific glue.** All generic robotics computation
-(kinematics, Jacobians, inverse dynamics, forward-dynamics simulation)
-is delegated to [mi-lib](https://github.com/mi-lib) (roki and
-friends); all wire communication to the vendor's DynamixelSDK. rtctrl
-contains only what is specific to the CRANE-X7: its model, its
-coordinate conventions, its safety envelope, and the seams that join
-the pieces.
+**Thin, robot-specific glue.** rtctrl writes as little robotics code
+as possible. The general math (kinematics, Jacobians, inverse
+dynamics, forward-dynamics simulation) comes from
+[mi-lib](https://github.com/mi-lib); all servo communication goes
+through [DynamixelSDK](https://github.com/ROBOTIS-GIT/DynamixelSDK).
+What lives here is only what is specific to the CRANE-X7: its model,
+its coordinate conventions, its safety envelope, and the seams that
+join the pieces.
 
-**Verify in simulation before touching hardware.** The central
-abstraction is the `Arm` bridge: a controller written once against it
-runs unchanged on the roki-dynamics simulator (`SimArm`) and on the
-real robot (`RealArm`). Every dynamics controller in this repository
-passed its acceptance test in simulation before its first hardware
-run. Simulation is necessary, not sufficient: the rigid-joint sim
-cannot certify gains against the real arm's gear elasticity; see
-[what the hardware taught us](../theory/computed-torque.md#what-the-hardware-taught-us).
+**Verify in simulation before touching hardware.** Controllers are
+written once against a single interface, the `Arm` bridge, and run
+unchanged on the physics simulator (`SimArm`) and on the real robot
+(`RealArm`). Every dynamics controller in this repository passed its
+acceptance test in simulation before its first hardware run. A
+simulation pass is necessary, never sufficient: the simulated joints
+are rigid while the real gearboxes flex, so some failures only ever
+appear on the arm (see
+[what the hardware taught us](../theory/computed-torque.md#what-the-hardware-taught-us)).
 
 **Testable without a robot, down to the wire.** A motor emulator
-implements the XM control-table state machine twice over: as an
-in-process fake behind the `PacketIO` seam (fast unit tests) and as a
-pseudo-terminal speaking wire-level Protocol 2.0, so the *unmodified*
-DynamixelSDK, the exact bytes-on-the-wire path, is exercised in CI.
-Every hardware app runs identically against the emulator
-(`--port /tmp/ttyDXL`) and the robot.
+behaves like the arm's servos, in two forms: an in-process fake for
+fast unit tests, and a virtual serial port (a pseudo-terminal
+speaking the servos' real byte protocol) for integration tests. CI
+therefore exercises the same *unmodified* DynamixelSDK code path
+that talks to hardware, and every hardware app can be rehearsed
+risk-free by pointing it at the emulator (`--port /tmp/ttyDXL`).
 
-**Safety is layered and assumes failure.** Torque can only be enabled
-through an activation sequence that verifies servo identity and
-firmware, snaps goals to the present values (no motion is commanded;
-position mode holds the posture, while current-mode activation is
-zero-current: the app must support the arm immediately or stage a
-gravity preload), and arms the servo-side Bus Watchdog. A host-side deadman
-independently watches the *command* stream (because reads alone keep
-the servo watchdog fed) and escalates to full bus silence, which
-provably forces the servos to halt themselves. None of this replaces
-the physical power cutoff, which must stay in reach during hardware
-sessions.
+**Safety is layered and assumes failure.** Torque can only come on
+through an activation sequence: it checks every servo's identity and
+firmware, aligns all goals with the arm's present posture so that
+activation itself never commands motion (position mode then holds
+the pose; current mode starts at zero current, so the app must
+support the arm immediately or stage a gravity preload), and arms a
+watchdog inside each servo that halts it when the bus goes silent.
+Because ordinary reads keep that watchdog fed, the host adds its own
+deadman timer on the command stream: if commands stall, it silences
+the bus completely, which is precisely the condition that forces the
+servo watchdogs to stop the arm. None of this replaces the physical
+power cutoff, which must stay in reach during hardware sessions.
 
-**Explicit coordinates.** Seven arm joints, eight servos, nine model
-joints: the library never lets these dimensions blur. A single
-canonical 8-DOF order is fixed project-wide, and `JointMap` owns the
-mappings, including the virtual-work torque reduction for the mimic
-finger (see [dynamics foundations](../theory/dynamics-foundations.md)).
+**Explicit coordinates.** The same arm counts differently depending
+on where you look: seven arm joints, eight servos (the gripper adds
+one), and nine joints in the dynamics model (the gripper's two
+fingers mirror each other). The library never lets these blur: one
+canonical 8-DOF order is fixed project-wide, and `JointMap` owns
+every mapping between the three, including how the mimic finger's
+torque folds back onto its servo (see
+[dynamics foundations](../theory/dynamics-foundations.md)).
 
 ## What works where
 
@@ -87,3 +90,13 @@ The consolidated record of every decision and hardware finding is
    [gravity compensation](../theory/gravity-compensation.md) ·
    [computed torque](../theory/computed-torque.md).
 5. Hardware: [bring-up checklist](../hardware/bringup.md).
+
+## Acknowledgments
+
+The CRANE-X7 and its official control software,
+[`rt_manipulators_cpp`](https://github.com/rt-net/rt_manipulators_cpp),
+are products of [RT Corporation](https://rt-net.jp/). The official
+software served as the functional reference for this library; the
+[parity checklist](../records/parity.md) records how its capabilities
+map to rtctrl equivalents, including the vendor surface rtctrl
+consciously simplifies.
