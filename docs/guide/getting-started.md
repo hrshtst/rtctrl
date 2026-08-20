@@ -6,13 +6,17 @@ hardware.
 ## Prerequisites
 
 - Linux, GCC with C++17, CMake ≥ 3.16, git.
-- System packages: `build-essential cmake libxml2-dev liblzf-dev`
-  (mi-lib), and for the visualization tools additionally the X11/GL
-  dev set (`freeglut3-dev libglew-dev libglfw3-dev libx11-dev
-  libxext-dev libxpm-dev libxft-dev libpng-dev libjpeg-dev libtiff-dev
-  libwebp-dev`).
+- A headless build and the full test suite need only
+  `build-essential cmake libxml2-dev liblzf-dev` (the exact set CI
+  installs).
+- The mi-lib visualization tools (`rk_pen`, `rk_anim`) need the
+  X11/GL set as well; install everything with the metapackage's own
+  `third_party/mi-lib/install_prereq.sh` (available after the
+  submodule init below; `--check` only reports what is missing).
 - [`uv`](https://docs.astral.sh/uv/) for the Python tooling
   (model regeneration).
+- [`direnv`](https://direnv.net/) is recommended: the bootstrap
+  generates an `.envrc` for the mi-lib prefix.
 - For hardware only: membership in the `dialout` group and the
   latency udev rule; see the
   [bring-up checklist](../hardware/bringup.md).
@@ -109,9 +113,8 @@ Tests validate it against both the URDF and the canonical joint table.
 Follow the [bring-up checklist](../hardware/bringup.md) **in order**
 the first time: it interleaves the apps above with physical checks
 (and a watchdog drill) and states the safety rules. After bring-up,
-the current-mode apps are `x7_float` (gravity compensation, the
-acceptance instrument) and `x7_gravity_demo` (the simplified
-demonstration with customizable torque constants; see its
+`x7_gravity_demo` floats the arm under gravity compensation with
+customizable torque constants (see its
 [operator page](../hardware/gravity-demo.md)). `x7_track`
 (computed-torque tracking) is **parked**: do not run it on hardware.
 Its sim twin `x7_track_sim` still previews the identical tracking
