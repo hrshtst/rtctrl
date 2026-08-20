@@ -38,7 +38,7 @@ flowchart TB
     DXL -.-> PTY
 ```
 
-- **`dxl/` — motor communication.** `PacketIO` is the abstract
+- **`dxl/`: motor communication.** `PacketIO` is the abstract
   transaction seam (ping/read/write/syncRead/syncWrite). `Port`
   implements it over DynamixelSDK; the emulator implements it twice
   for tests. `SyncGroup` programs the servos' indirect-address banks
@@ -46,43 +46,51 @@ flowchart TB
   temperature for the whole group and one sync-write sets the goals.
   `control_table.hpp`/`conversions.hpp` fix the XM register map and
   raw-unit conversions (incl. per-model torque constants).
-- **`model/` — kinematics and dynamics.** RAII wrappers over mi-lib's
+- **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`
   (error-damped LM with structured `IkResult`), trajectories, `.zvs`
   motion logging for `rk_anim`.
-- **`arm/` — the bridge.** `Arm` (activate/deactivate/setMode/
+- **`arm/`: the bridge.** `Arm` (activate/deactivate/setMode/
   readState/writeCommand/step), `Controller` + `run()`, the two
   implementations `SimArm`/`RealArm`, and the shipped controllers
   `GravityComp` and `ComputedTorque`.
-- **`hw/` — the real robot.** `Config` (TOML), `CraneX7` (activation
+- **`hw/`: the real robot.** `Config` (TOML), `CraneX7` (activation
   sequence, mode-checked limited writers, background RW thread,
   deadman), consumed by `RealArm`.
-- **`emu/` — the test double.** One control-table state machine, two
+- **`emu/`: the test double.** One control-table state machine, two
   transports. Everything ships in the single `rtctrl` library for
-  build simplicity, so the emulator is *linked* everywhere — but no
+  build simplicity, so the emulator is *linked* everywhere, but no
   controller or production header ever *includes* it; only tests and
   the standalone `dxl_emu` do.
 
-Include-dependency rule (what may `#include` what — the build is one
+Include-dependency rule (what may `#include` what; the build is one
 library, so this, not linkage, is the real boundary): `dxl` and
 `model` are independent of each other; `hw` depends on `dxl` +
 `model`, plus `arm/types.hpp` for the shared bridge DATA types
-(command records and snapshots — types only, no behavior); `arm`'s
+(command records and snapshots: types only, no behavior); `arm`'s
 bridge types and `SimArm` depend on `model`, and its `RealArm` adapter
 additionally on `hw` (the arm→hw edge exists solely there); `emu`
 depends only on `dxl` types. Controllers depend on `arm` (and `model`
-for dynamics) — never on `dxl`/`hw`/`emu` directly.
+for dynamics), never on `dxl`/`hw`/`emu` directly.
 
 ## Directory map
 
 ```
 include/rtctrl/{dxl,model,arm,hw,emu}/   public headers (src/ mirrors)
-apps/         dxl_inspect, dxl_emu, x7_onoff/read/set_param/move_simple/float/pose/track/track_sim/ident/ident_sim
-examples/     make_motion, make_pose (kinematic .zvs), x7_wave (bridge demo)
+apps/         sources by domain: bus/ (dxl_emu, dxl_inspect),
+              bringup/ (x7_onoff, x7_read, x7_set_param,
+              x7_move_simple, x7_pose), gravity/ (x7_float,
+              x7_gravity_demo), track/ (x7_track, x7_track_sim),
+              ident/ (x7_ident_sim), study/ (x7_efl_study),
+              common/ (shared app headers); binaries land flat in
+              build/apps/
+examples/     make_motion, make_pose (kinematic .zvs), x7_wave
+              (bridge demo), x7_ct_mass_error (offline study)
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed)
 config/       crane_x7.toml (bus, joints, limits, margins), postures/
-tools/        port_model.py, ident_analysis.py (uv), bootstrap_milib.sh
+tools/        port_model.py, ident_analysis.py, replay_compare.py,
+              ct_mass_error_study.py (uv), bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
 docs/         this documentation
 third_party/  pinned submodules (mi-lib metapackage, DynamixelSDK, URDF source)
@@ -106,7 +114,7 @@ One joint order is fixed project-wide (`model::canonicalJoints()`):
 The roki model has a ninth joint (finger B, mimicking A).
 `JointMap` resolves model indices **by link name at load time** and
 provides `expand` ($q_9 = E q_8$), `reduce`, and `reduceTorque`
-($\tau_8 = E^\mathsf{T}\tau_9$) — see
+($\tau_8 = E^\mathsf{T}\tau_9$); see
 [dynamics foundations](../theory/dynamics-foundations.md). Every
 `JointState`/`JointCommand` on the bridge is canonical 8-DOF; only
 `SimArm`/`RealArm` translate at their boundaries.
@@ -141,17 +149,17 @@ read→limit→write cycle.
 Two independent watchdog layers, because each alone has a blind spot:
 
 1. **Servo-side Bus Watchdog** (register 98, armed at activation,
-   firmware ≥ v38 enforced): the servo freezes itself — motion halted,
-   goal writes locked out, **torque stays on** — when no instruction
+   firmware ≥ v38 enforced): the servo freezes itself (motion halted,
+   goal writes locked out, **torque stays on**) when no instruction
    packet arrives in time. Covers host death and cable loss. Blind
    spot: *any* packet feeds it, so a host whose reads continue while
    command writes stall never trips it.
 2. **Host-side deadman**: tracks the time since the last *successful
-   command write* — and, once a controller has submitted targets, the
+   command write* and, once a controller has submitted targets, the
    last fresh *submission* (write success alone is not liveness: the
    background thread's retransmissions succeed even when the controller
    is dead). On staleness it best-effort zeroes/torque-offs and
-   then **silences the bus entirely** (closes the port) — which
+   then **silences the bus entirely** (closes the port), which
    guarantees layer 1 fires even if the safety writes themselves were
    failing. The same escalation fires after a few consecutive *failed
    feedback reads*: frozen feedback would otherwise leave the
