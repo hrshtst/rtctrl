@@ -118,8 +118,22 @@ if [ "${CI:-}" != "true" ] && [ ! -e "$REPO_ROOT/.envrc" ]; then
   ENVRC_DIR="$REPO_ROOT" "$META/gen_envrc.sh" || true
 fi
 
+# .envrc is gitignored and locally generated (just above), so allowing
+# it approves nothing the user has not already chosen to run by
+# invoking this script; without this, the first prompt after a fresh
+# bootstrap prints "direnv: error .envrc is blocked".
+if [ "${CI:-}" != "true" ] && [ -e "$REPO_ROOT/.envrc" ] \
+    && command -v direnv >/dev/null 2>&1; then
+  direnv allow "$REPO_ROOT" || true
+fi
+
 echo ""
 echo "mi-lib installed under $PREFIX"
-echo "Make sure your environment includes ('direnv allow' covers both):"
-echo "  PATH=$PREFIX/bin:\$PATH"
-echo "  LD_LIBRARY_PATH=$PREFIX/lib:\$LD_LIBRARY_PATH"
+if [ -e "$REPO_ROOT/.envrc" ] && command -v direnv >/dev/null 2>&1; then
+  echo ".envrc is generated and allowed: direnv exports PATH and"
+  echo "LD_LIBRARY_PATH for the prefix whenever you enter the repo."
+else
+  echo "Make sure your environment includes:"
+  echo "  PATH=$PREFIX/bin:\$PATH"
+  echo "  LD_LIBRARY_PATH=$PREFIX/lib:\$LD_LIBRARY_PATH"
+fi

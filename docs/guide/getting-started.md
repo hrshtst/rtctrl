@@ -16,7 +16,7 @@ hardware.
 - [`uv`](https://docs.astral.sh/uv/) for the Python tooling
   (model regeneration).
 - [`direnv`](https://direnv.net/) is recommended: the bootstrap
-  generates an `.envrc` for the mi-lib prefix.
+  generates and allows an `.envrc` for the mi-lib prefix.
 - For hardware only: membership in the `dialout` group and the
   latency udev rule; see the
   [bring-up checklist](../hardware/bringup.md).
@@ -32,8 +32,9 @@ git submodule update --init third_party/mi-lib \
 # network); headless machines can skip the X11/GL viewers with
 #   MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" ./tools/bootstrap_milib.sh
 ./tools/bootstrap_milib.sh
-direnv allow    # loads the generated .envrc (PATH, LD_LIBRARY_PATH);
-                # without direnv, export the two lines the bootstrap prints
+# the bootstrap also generates AND allows .envrc when direnv is
+# installed (PATH, LD_LIBRARY_PATH); without direnv, export the two
+# lines it prints
 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
