@@ -29,6 +29,8 @@ append-only in spirit — the decisions below are closed.
 | 07-31 | Owner WAIVES the back-drive criterion; `x7_float` un-parked under enforced conditions; default-scale adoption declined; M-GC3 formally closed by the reviewer |
 | 08-04 | CT mass-error simulation study; `--evaluation-time` demonstration disposition |
 | 08-18 | Project cleanup: records consolidated here; the closed `x7_ident` hardware app removed |
+| 08-19 | `x7_gravity_demo` added (simplified gravity-compensation demonstration with customizable torque constants) and reviewed — the `--experimental-calibration` opt-in gate and the operator page followed; `apps/` sources reorganized into domain subdirectories (binaries stay flat in `build/apps/`) |
+| 08-20 | Docs renamed lowercase and nested by nav section (published URLs changed; no redirects, by owner decision); Apache-2.0 license adopted; MITOU Target Program (IPA, FY2026) acknowledgment added; docs em-dash convention recorded with `docs/records/` exempt |
 
 ## Decision ledger
 
@@ -41,6 +43,7 @@ append-only in spirit — the decisions below are closed.
 | 2026-07-31 | Subjective back-drive criterion WAIVED by the owner (risk/quality decision, not a test pass); `x7_float` un-parked under enforced conditions | **WAIVED** | [Gravity](#gate-outcomes-and-the-waived-back-drive-criterion) |
 | 2026-07-31 | Default-scale adoption DECLINED — calibration stays per-application config | **FINAL** | [Vendor scales](#vendor-scale-hypothesis-and-evidence-honesty) |
 | 2026-08-18 | `x7_ident` hardware app removed (campaign closed; sim twin and analysis retained) | **REMOVED** | [Removed app](#removed-hardware-app-x7_ident) |
+| 2026-08-19 | `x7_gravity_demo` refuses non-vendor torque constants without the explicit `--experimental-calibration` opt-in (review directive: the config's [0.5, 1.0] scale bound is an electrical bound, not a validated float envelope) | **ENFORCED** | [Gravity demo](../hardware/gravity-demo.md#experimental-calibration-policy) |
 
 ## Origin and milestones M0 to M8
 
