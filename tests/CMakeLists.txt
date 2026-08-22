@@ -261,6 +261,38 @@ set_tests_properties(gravity_demo_warns_weak_experimental_kt PROPERTIES
   PASS_REGULAR_EXPRESSION "WEAKER"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 
+# x7_pose TCP targets: the CLI gates fail fast, and the preview path
+# resolves IK and writes the rk_pen init file WITHOUT bus contact
+# (a non-converged solve is a refusal, never a target).
+add_test(NAME x7_pose_rejects_tcp_arity
+  COMMAND x7_pose --tcp 0.2 0 0.3)
+set_tests_properties(x7_pose_rejects_tcp_arity PROPERTIES
+  PASS_REGULAR_EXPRESSION "requires 6 values"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_rejects_both_targets
+  COMMAND x7_pose --posture config/postures/p1.json --tcp 0 0 0.5 0 0 0)
+set_tests_properties(x7_pose_rejects_both_targets PROPERTIES
+  PASS_REGULAR_EXPRESSION "exclusive"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_requires_a_target COMMAND x7_pose)
+set_tests_properties(x7_pose_requires_a_target PROPERTIES
+  PASS_REGULAR_EXPRESSION "a target is required"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_tcp_preview_writes_init
+  COMMAND x7_pose --tcp 0.2 0 0.25 0 0 0
+          --preview ${CMAKE_BINARY_DIR}/tcp_preview
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_pose_tcp_preview_writes_init PROPERTIES
+  PASS_REGULAR_EXPRESSION "rk_pen"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_tcp_preview_refuses_unreachable
+  COMMAND x7_pose --tcp 1.5 0 0.3 0 0 0
+          --preview ${CMAKE_BINARY_DIR}/tcp_unreachable
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_pose_tcp_preview_refuses_unreachable PROPERTIES
+  PASS_REGULAR_EXPRESSION "did not converge"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+
 # End-to-end x7_gravity_demo over the pty emulator: startup and log
 # contract with the default (vendor) constants, the custom-kt header
 # derivation, and the ENTER early-stop.

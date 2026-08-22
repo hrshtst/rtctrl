@@ -110,3 +110,35 @@ TEST_CASE_METHOD(Fixture,
     CHECK(std::isfinite(solution[i]));
   }
 }
+
+TEST_CASE("IK on the TCP link places the fingertip-midpoint frame",
+          "[ik][tcp]") {
+  // The virtual tool-center link is a first-class IK effector: a
+  // world TCP pose given in the forward-aligned convention solves to
+  // a configuration whose FK reproduces it.
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  IkSolver solver(model, map, "crane_x7_tcp_link");
+
+  // level, forward-pointing gripper 0.2 m out and 0.25 m up: the TCP
+  // convention makes this the IDENTITY attitude
+  zVec3D target_pos;
+  zVec3DCreate(&target_pos, 0.2, 0.0, 0.25);
+  zMat3D target_att;
+  zMat3DIdent(&target_att);
+
+  ZVector init(kModelDof), sol(kModelDof);
+  const auto result =
+      solver.solve(target_pos, target_att, init.get(), sol.get());
+  REQUIRE(result.converged);
+
+  model.fk(sol.get());
+  const int tcp = model.linkIndex("crane_x7_tcp_link");
+  REQUIRE(tcp >= 0);
+  CHECK(zVec3DDist(&target_pos, rkChainLinkWldPos(model.chain(), tcp)) <=
+        kPosTol);
+  zVec3D att_err;
+  zMat3DError(&target_att, rkChainLinkWldAtt(model.chain(), tcp),
+              &att_err);
+  CHECK(zVec3DNorm(&att_err) <= kAttTol);
+}
