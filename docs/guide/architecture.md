@@ -119,6 +119,12 @@ provides `expand` ($q_9 = E q_8$), `reduce`, and `reduceTorque`
 `JointState`/`JointCommand` on the bridge is canonical 8-DOF; only
 `SimArm`/`RealArm` translate at their boundaries.
 
+The model also carries one virtual fixed link, `crane_x7_tcp_link`:
+the tool-center frame at the closed-fingertip midpoint, aligned with
+the world axes when the gripper points forward. It adds no degree of
+freedom; it exists as the IK target for world-frame pose commands
+(`x7_pose --tcp`).
+
 ## The bridge contract
 
 ```cpp

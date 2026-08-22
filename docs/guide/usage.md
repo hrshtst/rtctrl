@@ -50,6 +50,23 @@ Levenberg–Marquardt iteration with the error-damped equation solver;
 it converges at reachable singular poses (that robustness is pinned by
 tests).
 
+The effector defaults to the gripper base; pass a link name to target
+another frame. The model ships a virtual **tool-center point**,
+`crane_x7_tcp_link`: a fixed, massless frame at the midpoint of the
+closed fingertips whose axes coincide with the world axes when the
+gripper points forward (+x), so TCP x is the approach direction and
+TCP z is up when the gripper is level. World-frame pose targets then
+read naturally (identity attitude = level, forward-pointing gripper):
+
+```cpp
+model::IkSolver tcp_ik(chain, map, "crane_x7_tcp_link");
+```
+
+On hardware, `x7_pose --tcp X Y Z ROLL PITCH YAW` uses exactly this
+solver (seeded from the measured posture; a non-converged solve is
+refused before any motion), and adding `--preview <basename>` writes
+an `.init.ztk` for `rk_pen` without touching the bus.
+
 ## Trajectories and motion files
 
 ```cpp
