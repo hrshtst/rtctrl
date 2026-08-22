@@ -525,3 +525,31 @@ min: -4.0
 # Hand-tuned overrides appended verbatim to the generated crane_x7.ztk.
 # Reserved for parameters that exist in no upstream source, e.g. joint
 # friction identified on the real robot (M7). Empty (comments only) until then.
+
+# Virtual tool-center-point (TCP) link: an IK/FK reference frame only.
+# No physical joint, no shape, no mass.
+#   parent: crane_x7_gripper_base_link (the link driven by the wrist
+#     rotate joint, canonical #6 / DXL id 8).
+#   origin: midpoint of the closed gripper fingertips. The finger
+#     joints sit at z = 0.024 in the parent frame and both finger
+#     meshes end exactly 0.060 beyond their joint axis
+#     (wide_two_finger_gripper_finger_{a,b}.stl, max mesh y = 0.060),
+#     so z = 0.024 + 0.060 = 0.084; the sub-mm lateral tip-pad
+#     asymmetry is ignored.
+#   attitude: chosen so the TCP axes coincide with the WORLD axes when
+#     the gripper points forward (+x world). The fixed-attitude chain
+#     from world to the parent multiplies out to identity at the zero
+#     (upright) posture, so pitching the approach axis (+z) onto +x
+#     makes the parent attitude Ry(+90 deg); the TCP counters it with
+#     att = Ry(-90 deg). TCP x = approach direction, TCP z = up when
+#     the gripper is level. Pinned by the model unit tests.
+[roki::link]
+name: crane_x7_tcp_link
+jointtype: fixed
+pos: ( 0, 0, 0.084 )
+att: {
+ 0, 0, -1
+ 0, 1, 0
+ 1, 0, 0
+}
+parent: crane_x7_gripper_base_link

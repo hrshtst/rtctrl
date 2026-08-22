@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <set>
+#include <sstream>
+#include <string>
 
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
@@ -268,4 +271,93 @@ TEST_CASE("mass-property perturbation is seeded, bounded, and COM-aware",
   CHECK_THROWS(a.perturbMassProperties(-0.1, 0.0, 0));
   CHECK_THROWS(a.perturbMassProperties(0.0, -0.01, 0));
   CHECK_THROWS(a.perturbMassProperties(std::nan(""), 0.0, 0));
+}
+
+TEST_CASE("the TCP virtual link rides the gripper base rigidly",
+          "[model][tcp]") {
+  ChainModel model(kModelPath);
+  const int tcp = model.linkIndex("crane_x7_tcp_link");
+  const int gb = model.linkIndex("crane_x7_gripper_base_link");
+  REQUIRE(tcp >= 0);
+  REQUIRE(gb >= 0);
+  // the fixed link adds a frame, never a degree of freedom
+  CHECK(model.jointSize() == kModelDof);
+
+  // rigid attachment at an arbitrary posture:
+  //   p_tcp = p_gb + R_gb (0, 0, 0.084),   R_tcp = R_gb Ry(-90 deg)
+  ZVecGuard dis(model.jointSize());
+  const double qs[kModelDof] = {0.3, -0.7, 0.4, -1.1, 0.5,
+                                -0.4, 0.8, 0.2, 0.2};
+  for (int i = 0; i < kModelDof; ++i) zVecSetElemNC(dis.vec, i, qs[i]);
+  model.fk(dis.vec);
+  rkChain* ch = model.chain();
+
+  zVec3D offset, expect_p;
+  zVec3DCreate(&offset, 0.0, 0.0, 0.084);
+  zMulMat3DVec3D(rkChainLinkWldAtt(ch, gb), &offset, &expect_p);
+  zVec3DAddDRC(&expect_p, rkChainLinkWldPos(ch, gb));
+  CHECK(zVec3DDist(&expect_p, rkChainLinkWldPos(ch, tcp)) ==
+        Approx(0.0).margin(1e-9));
+
+  zMat3D ry_m90, expect_r;
+  zMat3DCreate(&ry_m90, 0, 0, -1, 0, 1, 0, 1, 0, 0);
+  zMulMat3DMat3D(rkChainLinkWldAtt(ch, gb), &ry_m90, &expect_r);
+  zVec3D att_err;
+  zMat3DError(&expect_r, rkChainLinkWldAtt(ch, tcp), &att_err);
+  CHECK(zVec3DNorm(&att_err) == Approx(0.0).margin(1e-9));
+}
+
+TEST_CASE("the TCP frame matches the fingertip midpoint and the "
+          "forward-alignment convention",
+          "[model][tcp]") {
+  ChainModel model(kModelPath);
+  const int tcp = model.linkIndex("crane_x7_tcp_link");
+  REQUIRE(tcp >= 0);
+
+  // zero (upright) posture: the gripper-base frame equals the world
+  // frame, so the TCP sits at the fingertip midpoint 0.084 m (finger
+  // joint 0.024 + finger length 0.060) above the gripper base
+  ZVecGuard dis(model.jointSize());
+  model.fk(dis.vec);
+  const zVec3D pos0 = model.linkWorldPos(tcp);
+  CHECK(pos0.c.x == Approx(0.0).margin(1e-9));
+  CHECK(pos0.c.y == Approx(0.0).margin(1e-9));
+  CHECK(pos0.c.z ==
+        Approx(kGripperBaseZeroPoseZ + 0.084).margin(1e-9));
+
+  // gripper pointing forward (+x world, via shoulder tilt): the TCP
+  // axes coincide with the world axes — the convention this link
+  // exists to provide
+  const int tilt =
+      model.jointOffset("crane_x7_upper_arm_fixed_part_link");
+  REQUIRE(tilt >= 0);
+  zVecSetElemNC(dis.vec, tilt, -M_PI_2);
+  model.fk(dis.vec);
+  zMat3D ident;
+  zMat3DIdent(&ident);
+  zVec3D att_err;
+  zMat3DError(&ident, rkChainLinkWldAtt(model.chain(), tcp), &att_err);
+  CHECK(zVec3DNorm(&att_err) == Approx(0.0).margin(1e-9));
+  // and "forward" genuinely means the reach direction, not its mirror
+  const zVec3D pos_fwd = model.linkWorldPos(tcp);
+  CHECK(pos_fwd.c.x > 0.1);
+}
+
+TEST_CASE("the committed ztk ends with the hand-tuned override patch",
+          "[model][tcp]") {
+  // port_model.py appends tools/crane_x7_motor.patch.ztk verbatim; the
+  // TCP link lives in the patch, so an edit to only one of the two
+  // files would silently drift the next regeneration.
+  std::ifstream zf(kModelPath);
+  std::ifstream pf("tools/crane_x7_motor.patch.ztk");
+  REQUIRE(zf.good());
+  REQUIRE(pf.good());
+  std::stringstream zs, ps;
+  zs << zf.rdbuf();
+  ps << pf.rdbuf();
+  const std::string ztk = zs.str();
+  const std::string patch = ps.str();
+  REQUIRE(ztk.size() > patch.size());
+  CHECK(ztk.compare(ztk.size() - patch.size(), patch.size(), patch) ==
+        0);
 }
