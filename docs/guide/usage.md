@@ -81,7 +81,14 @@ traj.sample(t, q, dq, ddq);     // C² quintic; dq/ddq optional
 
 model::ZvsWriter log("motion.zvs");   // one "<dt> <zVec>" line per frame
 log.frame(0.01, q9);                  // view: rk_anim <model.ztk> motion.zvs
+
+chain.writeInitZtk("pose.init.ztk", q9);  // static posture for
+                                          // rk_pen -model <model.ztk> -init pose.init.ztk
 ```
+
+`writeInitZtk` delegates to roki's own `rkChainInitWriteZTK`: the
+`[roki::chain::init]` format stores revolute displacements in degrees,
+so a hand-written radian file loads as a near-zero posture.
 
 ## Writing a controller (the bridge)
 

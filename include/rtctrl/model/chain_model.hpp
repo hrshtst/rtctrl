@@ -69,6 +69,15 @@ class ChainModel {
   void fk(const zVec dis);
   zVec3D linkWorldPos(int link_index) const;
 
+  // rk_pen initial-state file ([roki::chain::init]) for the posture
+  // dis (radians, size jointSize()), written by roki's own
+  // rkChainInitWriteZTK so it matches what rkChainInitReadZTK (rk_pen
+  // -init) parses by construction: on disk a revolute displacement is
+  // in DEGREES, which a hand-rolled radian writer silently gets wrong
+  // (the posture loads as near-zero). Leaves the chain at dis.
+  // Returns false if the file cannot be written.
+  bool writeInitZtk(const std::string& path, const zVec dis);
+
   // Gravity-compensation torques in canonical coordinates: expands q8
   // to the 9 model coordinates (finger_b mimics), evaluates
   // rkChainID_G at zero velocity/acceleration — with properly sized

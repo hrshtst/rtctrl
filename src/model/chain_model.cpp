@@ -184,4 +184,9 @@ zVec3D ChainModel::linkWorldPos(int link_index) const {
   return *rkChainLinkWldPos(&chain_, link_index);
 }
 
+bool ChainModel::writeInitZtk(const std::string& path, const zVec dis) {
+  rkChainFK(&chain_, dis);
+  return rkChainInitWriteZTK(&chain_, path.c_str());
+}
+
 }  // namespace rtctrl::model

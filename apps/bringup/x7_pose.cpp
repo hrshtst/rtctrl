@@ -96,26 +96,20 @@ bool solveTcpTarget(model::ChainModel& chain, const model::JointMap& map,
   return true;
 }
 
-// rk_pen initial-state file for the resolved target (the same format
-// examples/make_pose emits): [roki::chain::init] with one
-// "joint: <link> <dis>" line per revolute joint.
+// rk_pen initial-state file for the resolved target, through the
+// model's writer (roki's own [roki::chain::init] format, which stores
+// revolute displacements in DEGREES; examples/make_pose uses the same
+// path).
 bool writeInitZtk(const std::string& base, model::ChainModel& chain,
                   const model::JointMap& map, const double* q8) {
   const std::string path = base + ".init.ztk";
-  std::FILE* f = std::fopen(path.c_str(), "w");
-  if (f == nullptr) {
-    std::fprintf(stderr, "cannot open %s\n", path.c_str());
+  model::ZVector q8v(model::kCanonicalDof), q9(model::kModelDof);
+  for (int i = 0; i < model::kCanonicalDof; ++i) q8v[i] = q8[i];
+  map.expand(q8v.get(), q9.get());
+  if (!chain.writeInitZtk(path, q9.get())) {
+    std::fprintf(stderr, "cannot write %s\n", path.c_str());
     return false;
   }
-  std::fprintf(f, "[roki::chain::init]\n");
-  for (int i = 0; i < model::kCanonicalDof; ++i) {
-    std::fprintf(f, "joint: %s %.6f\n",
-                 zName(rkChainLink(chain.chain(), map.linkId(i))), q8[i]);
-  }
-  std::fprintf(f, "joint: %s %.6f\n",
-               zName(rkChainLink(chain.chain(), map.linkIdFingerB())),
-               q8[model::kCanonicalDof - 1]);
-  std::fclose(f);
   std::printf("wrote %s\nview: rk_pen -model models/crane_x7/"
               "crane_x7.ztk -init %s\n",
               path.c_str(), path.c_str());

@@ -87,23 +87,14 @@ int main(int argc, char* argv[]) {
     for (int k = 0; k < 5; ++k) writer.frame(1.0, q9.get());
   }
 
-  // rk_pen initial-state file: [roki::chain::init] with one
-  // "joint: <link name> <dis>" line per revolute joint.
+  // rk_pen initial-state file, through roki's own writer: the
+  // [roki::chain::init] format stores revolute displacements in
+  // DEGREES, so a hand-rolled radian file loads as a near-zero pose.
   const std::string init_path = base + ".init.ztk";
-  std::FILE* f = std::fopen(init_path.c_str(), "w");
-  if (!f) {
-    std::fprintf(stderr, "cannot open %s\n", init_path.c_str());
+  if (!chain.writeInitZtk(init_path, q9.get())) {
+    std::fprintf(stderr, "cannot write %s\n", init_path.c_str());
     return 1;
   }
-  std::fprintf(f, "[roki::chain::init]\n");
-  for (int i = 0; i < model::kCanonicalDof; ++i) {
-    std::fprintf(f, "joint: %s %.6f\n",
-                 zName(rkChainLink(chain.chain(), map.linkId(i))), q[i]);
-  }
-  std::fprintf(f, "joint: %s %.6f\n",
-               zName(rkChainLink(chain.chain(), map.linkIdFingerB())),
-               q[model::kCanonicalDof - 1]);
-  std::fclose(f);
 
   std::printf("wrote %s.zvs and %s\n"
               "view: rk_anim models/crane_x7/crane_x7.ztk %s.zvs\n"

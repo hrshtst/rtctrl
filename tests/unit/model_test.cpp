@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <limits>
 #include <set>
@@ -360,4 +361,51 @@ TEST_CASE("the committed ztk ends with the hand-tuned override patch",
   REQUIRE(ztk.size() > patch.size());
   CHECK(ztk.compare(ztk.size() - patch.size(), patch.size(), patch) ==
         0);
+}
+
+TEST_CASE("the rk_pen initial-state file round-trips through roki's reader",
+          "[model][init]") {
+  // rk_pen -init parses joint displacements in DEGREES (roki's
+  // revolute reader applies zDeg2Rad), so the radian file the first
+  // writer emitted loaded as a near-zero posture. The writer is now
+  // roki's own; this pins the round trip through the very reader
+  // rk_pen calls, plus the unit on disk.
+  const char* path = "build/test_pose.init.ztk";
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  const double q8[kCanonicalDof] = {0.3, -0.7, 0.4, -1.1, 0.5, -0.4, 0.8, 0.2};
+  ZVecGuard q8v(kCanonicalDof), q9(kModelDof);
+  for (int i = 0; i < kCanonicalDof; ++i) zVecSetElemNC(q8v.vec, i, q8[i]);
+  map.expand(q8v.vec, q9.vec);
+  REQUIRE(model.writeInitZtk(path, q9.vec));
+
+  std::ifstream in(path);
+  REQUIRE(in.good());
+  std::stringstream ss;
+  ss << in.rdbuf();
+  const std::string text = ss.str();
+  CHECK(text.find("[roki::chain::init]") != std::string::npos);
+  // -0.7 rad on the shoulder tilt is -40.107 degrees on disk
+  CHECK(text.find("joint: crane_x7_upper_arm_fixed_part_link -40.107") !=
+        std::string::npos);
+  CHECK(text.find("joint: crane_x7_upper_arm_fixed_part_link -0.7") ==
+        std::string::npos);
+
+  ChainModel loaded(kModelPath);
+  REQUIRE(rkChainInitReadZTK(loaded.chain(), path) != nullptr);
+  ZVecGuard back(kModelDof);
+  rkChainGetJointDisAll(loaded.chain(), back.vec);
+  for (int i = 0; i < kModelDof; ++i) {
+    CHECK(zVecElemNC(back.vec, i) ==
+          Approx(zVecElemNC(q9.vec, i)).margin(1e-6));
+  }
+  // and the frame rk_pen draws is the one the solve produced
+  const int tcp = model.linkIndex("crane_x7_tcp_link");
+  REQUIRE(tcp >= 0);
+  const zVec3D want = model.linkWorldPos(tcp);
+  const zVec3D got = loaded.linkWorldPos(tcp);
+  CHECK(got.c.x == Approx(want.c.x).margin(1e-6));
+  CHECK(got.c.y == Approx(want.c.y).margin(1e-6));
+  CHECK(got.c.z == Approx(want.c.z).margin(1e-6));
+  std::remove(path);
 }
