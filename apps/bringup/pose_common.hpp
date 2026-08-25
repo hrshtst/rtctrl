@@ -25,7 +25,7 @@ namespace x7 {
 namespace model = rtctrl::model;
 
 struct PoseResult {
-  bool ok = false;          // moved and converged (or hit max iters)
+  bool ok = false;          // moved, converged, and had no write failure
   bool converged = false;   // measured error within tolerance
   double worst_dev = 0.0;   // final measured-vs-target [rad]
   int worst_joint = -1;
@@ -33,6 +33,10 @@ struct PoseResult {
   std::vector<double> measured;   // the FINAL re-read posture
   std::vector<double> hold_goal;  // last commanded goal (for holding)
 };
+
+inline bool placementAccepted(bool converged, int write_failures) {
+  return converged && write_failures == 0;
+}
 
 // Moves the activated position-mode arm to `target8`, then iterates
 // goal offsets (goal = target + accumulated measured error) until the
@@ -145,7 +149,7 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
   }
   res.hold_goal = goal;
   res.write_failures = writes.failures();
-  res.ok = writes.ok();
+  res.ok = placementAccepted(res.converged, res.write_failures);
   return res;
 }
 

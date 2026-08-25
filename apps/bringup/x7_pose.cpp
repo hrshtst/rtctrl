@@ -267,14 +267,16 @@ int main(int argc, char* argv[]) {
                    placed.write_failures);
     }
     if (!placed.ok) {
-      std::fprintf(stderr, "placement failed — deactivating\n");
+      if (!placed.converged && !placed.measured.empty()) {
+        std::fprintf(stderr,
+                     "placement did not converge: joint %d remains %.4f "
+                     "rad from target; deactivating\n",
+                     placed.worst_joint, placed.worst_dev);
+      } else {
+        std::fprintf(stderr, "placement failed — deactivating\n");
+      }
       shutdown.run();
       return 1;
-    }
-    if (!placed.converged) {
-      std::printf("NOTE: joint %d still %.4f rad from target after "
-                  "convergence iterations\n",
-                  placed.worst_joint, placed.worst_dev);
     }
     const int n = static_cast<int>(placed.hold_goal.size());
     constexpr int kCycleUs = 10000;  // 100 Hz

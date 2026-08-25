@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "bringup/pose_common.hpp"
 #include "bringup/set_param_common.hpp"
 #include "bringup/write_monitor.hpp"
 #include "rtctrl/dxl/control_table.hpp"
@@ -106,4 +107,10 @@ TEST_CASE("position write monitor retains transient failures",
   CHECK_FALSE(writes.record(false, "test"));
   CHECK_FALSE(writes.ok());
   CHECK(writes.failures() == 2);
+}
+
+TEST_CASE("pose placement requires measured convergence", "[bringup]") {
+  CHECK(x7::placementAccepted(true, 0));
+  CHECK_FALSE(x7::placementAccepted(false, 0));
+  CHECK_FALSE(x7::placementAccepted(true, 1));
 }
