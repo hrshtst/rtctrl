@@ -293,6 +293,17 @@ set_tests_properties(x7_pose_tcp_preview_refuses_unreachable PROPERTIES
   PASS_REGULAR_EXPRESSION "did not converge"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 
+# Full TCP hardware path against the PTY emulator. Model loading and IK run
+# after activation, so this catches a missing command keepalive: the emulated
+# 100 ms Bus Watchdog would halt the move and make shutdown incomplete.
+add_test(NAME x7_pose_tcp_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/x7_pose_tcp_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_pose>
+          ${CMAKE_BINARY_DIR}/x7_pose_tcp_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_pose_tcp_smoke PROPERTIES
+  LABELS integration TIMEOUT 25)
+
 # End-to-end x7_gravity_demo over the pty emulator: startup and log
 # contract with the default (vendor) constants, the custom-kt header
 # derivation, and the ENTER early-stop.

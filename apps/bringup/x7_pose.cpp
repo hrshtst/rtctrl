@@ -227,9 +227,28 @@ int main(int argc, char* argv[]) {
       for (int i = 0; i < model::kCanonicalDof; ++i) {
         seed[i] = fb[i].position;
       }
+
+      // Model loading plus numerical IK can exceed the servos' 100 ms Bus
+      // Watchdog interval. Keep streaming the measured hold posture while
+      // the CPU-side solve runs; startThread's default position target is
+      // the activation feedback and does not arm submission freshness.
+      if (!arm.startThread()) {
+        std::fprintf(stderr, "TCP solve keepalive failed: %s\n",
+                     arm.lastError().c_str());
+        shutdown.run();
+        return 1;
+      }
       model::ChainModel chain("models/crane_x7/crane_x7.ztk");
       model::JointMap map(chain);
-      if (!solveTcpTarget(chain, map, tcp, seed, posture)) {
+      const bool solved = solveTcpTarget(chain, map, tcp, seed, posture);
+      arm.stopThread();
+      if (arm.escalated()) {
+        std::fprintf(stderr,
+                     "TCP solve keepalive faulted — deactivating\n");
+        shutdown.run();
+        return 1;
+      }
+      if (!solved) {
         std::fprintf(stderr, "TCP target refused — deactivating\n");
         shutdown.run();
         return 1;
