@@ -18,6 +18,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "bringup/write_monitor.hpp"
 
 namespace x7 {
 
@@ -28,6 +29,7 @@ struct PoseResult {
   bool converged = false;   // measured error within tolerance
   double worst_dev = 0.0;   // final measured-vs-target [rad]
   int worst_joint = -1;
+  int write_failures = 0;
   std::vector<double> measured;   // the FINAL re-read posture
   std::vector<double> hold_goal;  // last commanded goal (for holding)
 };
@@ -40,11 +42,16 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
                            const double* target8, double vel, double tol,
                            int max_iters) {
   PoseResult res;
+  PositionWriteMonitor writes;
+  const auto failed = [&] {
+    res.write_failures = writes.failures();
+    return res;
+  };
   constexpr int kCycleUs = 10000;  // 100 Hz
   constexpr double kBuffer = 0.05;  // stay clear of the gate band
 
   std::vector<rtctrl::dxl::Feedback> fb;
-  if (!arm.readAll(fb)) return res;
+  if (!arm.readAll(fb)) return failed();
   const int n = static_cast<int>(fb.size());
   const auto& lo = arm.softLimitLo();
   const auto& hi = arm.softLimitHi();
@@ -66,8 +73,9 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
   for (double t = 0.0; t <= move.duration(); t += 1e-6 * kCycleUs) {
     move.sample(t, q);
     for (int i = 0; i < n; ++i) cmd[i] = q[i];
-    if (!arm.writePositions(cmd) && arm.escalated()) return res;
-    if (!arm.checkDeadman()) return res;
+    writes.record(arm.writePositions(cmd), "placement");
+    if (arm.escalated()) return failed();
+    if (!arm.checkDeadman()) return failed();
     usleep(kCycleUs);
   }
 
@@ -85,11 +93,12 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
   for (int iter = 0; iter <= max_iters; ++iter) {
     // settle the servo loop while keeping the stream alive
     for (int k = 0; k < 30; ++k) {  // 0.3 s
-      if (!arm.writePositions(goal) && arm.escalated()) return res;
-      if (!arm.checkDeadman()) return res;
+      writes.record(arm.writePositions(goal), "placement");
+      if (arm.escalated()) return failed();
+      if (!arm.checkDeadman()) return failed();
       usleep(kCycleUs);
     }
-    if (!arm.readAll(fb)) return res;
+    if (!arm.readAll(fb)) return failed();
     res.worst_dev = 0.0;
     for (int i = 0; i < n; ++i) {
       const double e = target[i] - fb[i].position;
@@ -121,7 +130,7 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
 
   // the FINAL re-read is what the caller may hand to a mode change —
   // "reached" must mean the posture NOW, not an earlier sample
-  if (!arm.readAll(fb)) return res;
+  if (!arm.readAll(fb)) return failed();
   res.measured.resize(n);
   res.worst_dev = 0.0;
   for (int i = 0; i < n; ++i) {
@@ -135,7 +144,8 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
                 i, fb[i].position, target[i], fb[i].position - target[i]);
   }
   res.hold_goal = goal;
-  res.ok = true;
+  res.write_failures = writes.failures();
+  res.ok = writes.ok();
   return res;
 }
 

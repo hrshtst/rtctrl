@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <vector>
 
+#include "bringup/write_monitor.hpp"
 #include "common/x7_common.hpp"
 
 int main(int argc, char* argv[]) {
@@ -40,6 +41,7 @@ int main(int argc, char* argv[]) {
     std::printf("active; holding for %.1f s\n", hold_s);
 
     bool ok = true;
+    x7::PositionWriteMonitor writes;
     std::vector<rtctrl::dxl::Feedback> fb;
     std::vector<double> hold;
     constexpr int kCycleUs = 10000;  // 100 Hz
@@ -52,14 +54,17 @@ int main(int argc, char* argv[]) {
       if (hold.empty()) {
         for (const auto& f : fb) hold.push_back(f.position);
       }
-      arm.writePositions(hold);
+      writes.record(arm.writePositions(hold), "hold");
       if (!arm.checkDeadman()) {
+        writes.reportSummary("hold");
         shutdown.run();
         return 1;
       }
       usleep(kCycleUs);
     }
 
+    writes.reportSummary("hold");
+    ok = ok && writes.ok();
     std::printf("deactivating (arm goes limp gently)...\n");
     const bool clean = shutdown.run();
     if (!clean) {

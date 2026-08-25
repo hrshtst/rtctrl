@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "bringup/set_param_common.hpp"
+#include "bringup/write_monitor.hpp"
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/emu/fake_packet_io.hpp"
 #include "rtctrl/emu/motor_emulator.hpp"
@@ -94,4 +95,15 @@ TEST_CASE("parameter readback verifies every requested register and servo",
   CHECK(std::string(mismatch.name) == "position_p_gain");
   CHECK(mismatch.expected == kPGain + 1);
   CHECK(mismatch.actual == kPGain);
+}
+
+TEST_CASE("position write monitor retains transient failures",
+          "[bringup][safety]") {
+  x7::PositionWriteMonitor writes(nullptr);
+  CHECK(writes.record(true, "test"));
+  CHECK(writes.ok());
+  CHECK_FALSE(writes.record(false, "test"));
+  CHECK_FALSE(writes.record(false, "test"));
+  CHECK_FALSE(writes.ok());
+  CHECK(writes.failures() == 2);
 }

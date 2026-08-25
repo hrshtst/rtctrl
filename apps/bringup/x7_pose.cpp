@@ -46,6 +46,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "bringup/write_monitor.hpp"
 #include "common/x7_common.hpp"
 
 namespace model = rtctrl::model;
@@ -260,6 +261,11 @@ int main(int argc, char* argv[]) {
     // converging placement: goal-offset iterations close the friction
     // sag so "reached" means the MEASURED posture
     const auto placed = x7::movePose(arm, posture, vel, 0.01, 5);
+    if (placed.write_failures > 0) {
+      std::fprintf(stderr,
+                   "placement: %d position command write(s) failed\n",
+                   placed.write_failures);
+    }
     if (!placed.ok) {
       std::fprintf(stderr, "placement failed — deactivating\n");
       shutdown.run();
@@ -282,23 +288,28 @@ int main(int argc, char* argv[]) {
     // keep the command stream (and both watchdog layers) alive while
     // waiting — a silent bus would trip the servo Bus Watchdogs
     (void)n;
+    x7::PositionWriteMonitor hold_writes;
     while (!enterPressed()) {
-      if (!arm.writePositions(placed.hold_goal) && arm.escalated()) {
+      hold_writes.record(arm.writePositions(placed.hold_goal), "hold");
+      if (arm.escalated()) {
+        hold_writes.reportSummary("hold");
         shutdown.run();
         return 1;
       }
       if (!arm.checkDeadman()) {
+        hold_writes.reportSummary("hold");
         shutdown.run();
         return 1;
       }
       usleep(kCycleUs);
     }
+    hold_writes.reportSummary("hold");
     const bool clean = shutdown.run();
     std::printf("%s — the arm is limp. Catch the drop and lower "
                 "the arm gently to a resting posture.\n",
                 clean ? "torque off" : "torque off INCOMPLETE — check "
                                        "the arm before proceeding");
-    return clean ? 0 : 1;
+    return clean && hold_writes.ok() ? 0 : 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;

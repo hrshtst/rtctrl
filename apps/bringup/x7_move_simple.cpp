@@ -16,6 +16,7 @@
 
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "bringup/write_monitor.hpp"
 #include "common/x7_common.hpp"
 
 int main(int argc, char* argv[]) {
@@ -76,11 +77,13 @@ int main(int argc, char* argv[]) {
 
     constexpr int kCycleUs = 10000;  // 100 Hz
     std::vector<double> cmd(n);
+    x7::PositionWriteMonitor writes;
     auto runLeg = [&](const rtctrl::model::MinJerkTrajectory& leg) {
       for (double t = 0.0; t <= leg.duration(); t += 1e-6 * kCycleUs) {
         leg.sample(t, q);
         for (int i = 0; i < n; ++i) cmd[i] = q[i];
-        if (!arm.writePositions(cmd) && arm.escalated()) return false;
+        writes.record(arm.writePositions(cmd), "move");
+        if (arm.escalated()) return false;
         if (!arm.checkDeadman()) return false;
         usleep(kCycleUs);
       }
@@ -89,7 +92,9 @@ int main(int argc, char* argv[]) {
 
     // deactivate FIRST, then report — success text must never print
     // over an unverified shutdown (review finding)
-    const bool ok = runLeg(out) && runLeg(back);
+    const bool legs_ok = runLeg(out) && runLeg(back);
+    writes.reportSummary("move");
+    const bool ok = legs_ok && writes.ok();
     const bool clean = shutdown.run();
     if (!clean) {
       std::printf("SHUTDOWN FAULT (move %s)\n",
