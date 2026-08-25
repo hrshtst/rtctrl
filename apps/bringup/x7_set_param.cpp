@@ -15,26 +15,30 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
-#include "rtctrl/dxl/control_table.hpp"
+#include "rtctrl/dxl/conversions.hpp"
 #include "bringup/set_param_common.hpp"
 #include "common/x7_common.hpp"
 
-namespace reg = rtctrl::dxl::reg;
-
 namespace {
 
-void dumpParams(x7::Session& session) {
+bool dumpParams(x7::Session& session,
+                std::vector<x7::ServoParameters>* values = nullptr) {
+  const auto result = x7::readAllParameters(*session.port, session.config);
+  if (!result.ok) {
+    std::fprintf(stderr, "parameter read failed on id %u (%s)\n",
+                 result.failed_id, result.failed_register);
+    return false;
+  }
   std::printf("%-6s %-8s %-12s %-12s\n", "id", "p_gain", "profile_vel",
               "profile_acc");
-  for (const auto& joint : session.config.joints) {
-    std::uint16_t p = 0;
-    std::uint32_t pv = 0, pa = 0;
-    session.port->read16(joint.id, reg::kPositionPGain.addr, &p);
-    session.port->read32(joint.id, reg::kProfileVelocity.addr, &pv);
-    session.port->read32(joint.id, reg::kProfileAcceleration.addr, &pa);
-    std::printf("%-6u %-8u %-12u %-12u\n", joint.id, p, pv, pa);
+  for (const auto& value : result.values) {
+    std::printf("%-6u %-8u %-12u %-12u\n", value.id, value.p_gain,
+                value.profile_velocity, value.profile_acceleration);
   }
+  if (values != nullptr) *values = result.values;
+  return true;
 }
 
 }  // namespace
@@ -109,8 +113,29 @@ int main(int argc, char* argv[]) {
 
   try {
     auto session = x7::openSession(cli);
-    const bool wants_write = p_gain >= 0 || profile_vel >= 0 ||
-                             profile_acc >= 0 || have_vel_si || have_acc_si;
+    x7::ParameterRequest requested;
+    if (p_gain >= 0) {
+      requested.have_p_gain = true;
+      requested.p_gain = static_cast<std::uint16_t>(p_gain);
+    }
+    if (profile_vel >= 0 || have_vel_si) {
+      requested.have_profile_velocity = true;
+      requested.profile_velocity =
+          profile_vel >= 0
+              ? static_cast<std::uint32_t>(profile_vel)
+              : rtctrl::dxl::profileVelocityFromRadPerSec(profile_vel_si);
+    }
+    if (profile_acc >= 0 || have_acc_si) {
+      requested.have_profile_acceleration = true;
+      requested.profile_acceleration =
+          profile_acc >= 0
+              ? static_cast<std::uint32_t>(profile_acc)
+              : rtctrl::dxl::profileAccelerationFromRadPerSec2(
+                    profile_acc_si);
+    }
+    const bool wants_write = requested.have_p_gain ||
+                             requested.have_profile_velocity ||
+                             requested.have_profile_acceleration;
     if (wants_write) {
       const auto torque =
           x7::checkAllTorqueOff(*session.port, session.config);
@@ -130,44 +155,39 @@ int main(int argc, char* argv[]) {
       }
     }
     std::printf("-- before --\n");
-    dumpParams(session);
+    if (!dumpParams(session)) return 1;
     // every REQUESTED write must succeed — a failed parameter write
     // exiting 0 hid real bus problems (review finding)
-    bool wrote = false;
+    const bool wrote = wants_write;
     bool all_ok = true;
     if (p_gain >= 0) {
-      wrote = true;
       if (!session.arm->writePositionPGain(
               static_cast<std::uint16_t>(p_gain))) {
         std::fprintf(stderr, "--p-gain write FAILED\n");
         all_ok = false;
       }
     }
-    if (profile_vel >= 0) {
-      wrote = true;
+    if (profile_vel >= 0 && all_ok) {
       if (!session.arm->writeProfileVelocity(
               static_cast<std::uint32_t>(profile_vel))) {
         std::fprintf(stderr, "--profile-vel write FAILED\n");
         all_ok = false;
       }
     }
-    if (profile_acc >= 0) {
-      wrote = true;
+    if (profile_acc >= 0 && all_ok) {
       if (!session.arm->writeProfileAcceleration(
               static_cast<std::uint32_t>(profile_acc))) {
         std::fprintf(stderr, "--profile-acc write FAILED\n");
         all_ok = false;
       }
     }
-    if (have_vel_si) {
-      wrote = true;
+    if (have_vel_si && all_ok) {
       if (!session.arm->writeProfileVelocityRadPerSec(profile_vel_si)) {
         std::fprintf(stderr, "--profile-vel-si write FAILED\n");
         all_ok = false;
       }
     }
-    if (have_acc_si) {
-      wrote = true;
+    if (have_acc_si && all_ok) {
       if (!session.arm->writeProfileAccelerationRadPerSec2(
               profile_acc_si)) {
         std::fprintf(stderr, "--profile-acc-si write FAILED\n");
@@ -176,7 +196,20 @@ int main(int argc, char* argv[]) {
     }
     if (wrote) {
       std::printf("-- after --\n");
-      dumpParams(session);
+      std::vector<x7::ServoParameters> after;
+      if (!dumpParams(session, &after)) {
+        all_ok = false;
+      } else {
+        x7::ParameterMismatch mismatch;
+        if (!x7::verifyParameterReadback(after, requested, &mismatch)) {
+          std::fprintf(stderr,
+                       "readback mismatch on id %u (%s): requested %u, "
+                       "got %u\n",
+                       mismatch.id, mismatch.name, mismatch.expected,
+                       mismatch.actual);
+          all_ok = false;
+        }
+      }
     }
     return all_ok ? 0 : 1;
   } catch (const std::exception& e) {

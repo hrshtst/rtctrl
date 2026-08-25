@@ -51,3 +51,47 @@ TEST_CASE("parameter torque check fails closed on a read error",
   CHECK(failed.status == x7::TorqueCheckStatus::kReadFailed);
   CHECK(failed.id == fixture.config.joints.front().id);
 }
+
+TEST_CASE("parameter reads fail closed instead of printing zero values",
+          "[bringup][safety]") {
+  Fixture fixture;
+  fixture.io.setReadFailure(-3001);
+  const auto failed = x7::readAllParameters(fixture.io, fixture.config);
+  CHECK_FALSE(failed.ok);
+  CHECK(failed.failed_id == fixture.config.joints.front().id);
+  CHECK(std::string(failed.failed_register) == "position_p_gain");
+  CHECK(failed.values.empty());
+}
+
+TEST_CASE("parameter readback verifies every requested register and servo",
+          "[bringup]") {
+  Fixture fixture;
+  constexpr std::uint16_t kPGain = 640;
+  constexpr std::uint32_t kProfileVelocity = 120;
+  for (const auto& joint : fixture.config.joints) {
+    REQUIRE(fixture.io.write16(joint.id, reg::kPositionPGain.addr, kPGain)
+                .ok());
+    REQUIRE(fixture.io
+                .write32(joint.id, reg::kProfileVelocity.addr,
+                         kProfileVelocity)
+                .ok());
+  }
+  const auto read = x7::readAllParameters(fixture.io, fixture.config);
+  REQUIRE(read.ok);
+
+  x7::ParameterRequest requested;
+  requested.have_p_gain = true;
+  requested.p_gain = kPGain;
+  requested.have_profile_velocity = true;
+  requested.profile_velocity = kProfileVelocity;
+  CHECK(x7::verifyParameterReadback(read.values, requested, nullptr));
+
+  requested.p_gain = kPGain + 1;
+  x7::ParameterMismatch mismatch;
+  CHECK_FALSE(
+      x7::verifyParameterReadback(read.values, requested, &mismatch));
+  CHECK(mismatch.id == fixture.config.joints.front().id);
+  CHECK(std::string(mismatch.name) == "position_p_gain");
+  CHECK(mismatch.expected == kPGain + 1);
+  CHECK(mismatch.actual == kPGain);
+}
