@@ -16,6 +16,9 @@ Run the steps **in order**; do not skip ahead.
   which forces the servo watchdogs to fire). These protect against
   *communication* loss, not against wrong commands: stay clear of the
   arm's envelope while it is torqued.
+- Every powered bring-up app records position-command write failures.
+  A dropped command is reported and makes the run exit nonzero even if
+  communication recovers before the host deadman expires.
 - First motion is the **wrist (canonical joint 6, DXL id 8)** only,
   small and slow, before any multi-joint motion.
 
@@ -65,7 +68,11 @@ Power on the arm, connect USB, then:
 
 4. **Parameter modification** (torque off):
    `./build/apps/x7_set_param --p-gain 640` then restore `--p-gain 800`.
-   Values must read back as written.
+   Before changing anything, the tool verifies that every servo reports
+   torque off; a failed torque-state read or any enabled servo refuses
+   the entire change. The before/after parameter reads are mandatory,
+   and success requires every requested value to read back exactly on
+   every servo. Stop on any nonzero exit or readback mismatch.
 
 5. **Watchdog drill** (recommended once, before any motion): run
    `./build/apps/x7_onoff 30`, then pull the USB cable mid-hold.
@@ -80,8 +87,13 @@ Power on the arm, connect USB, then:
 
 6. **First motion**, wrist only, small and slow:
    `./build/apps/x7_move_simple 6 0.3`
-   ~0.3 rad out and back at ≤0.5 rad/s. Then, if clean, try another
-   single joint. Multi-joint motion belongs to M6.
+   ~0.3 rad out and back at ≤0.5 rad/s. Near a soft limit, the endpoint
+   is clamped before trajectory generation and a warning reports the
+   adjusted displacement. `complete` means the arm also settled for
+   0.3 s after the return and every measured joint is within 0.05 rad
+   of its starting posture. Treat `ABORTED`, a verification failure, or
+   a nonzero exit as a failed step. Then, if clean, try another single
+   joint. Multi-joint motion belongs to M6.
 
 ## After bring-up (M6–M8)
 

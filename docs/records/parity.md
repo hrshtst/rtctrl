@@ -24,7 +24,7 @@ for post-stabilization deletion, kept for reference per the owner's
 | `set_current(s)` | `writeCurrents` (effort→A and servo CurrentLimit clamp + gating) | `hw_modes_test` |
 | software pos-limit rule for vel/current modes | positional gating in the limited writers; requires previously ACQUIRED feedback (a command with no feedback ever read is rejected; persistent read failures escalate via the bounded-failure deadman policy — there is deliberately no per-command freshness gate) | `hw_modes_test` gating cases (velocity AND current modes) + no-feedback rejections |
 | write 0 vel/current on stop | `stopThread` | `thread_test` zeroing cases (velocity and current; non-vacuous: fresh submissions, no escalation, nonzero goal proven immediately before the stop) |
-| `write_position_pid_gain` / `write_velocity_pi_gain` / SI-unit profile setters | `writePositionPGain` (position P only — see omissions); profiles in BOTH forms: raw register passthroughs and `writeProfileVelocityRadPerSec` / `writeProfileAccelerationRadPerSec2` with the vendor-exact truncation, [1, 32767] clamp, and slowest-not-unlimited zero semantics | `hw_modes_test` SI-profile case; `x7_set_param` on hardware |
+| `write_position_pid_gain` / `write_velocity_pi_gain` / SI-unit profile setters | `writePositionPGain` (position P only — see omissions); profiles in BOTH forms: raw register passthroughs and `writeProfileVelocityRadPerSec` / `writeProfileAccelerationRadPerSec2` with the vendor-exact truncation, [1, 32767] clamp, and slowest-not-unlimited zero semantics. The hardware-facing `x7_set_param` additionally requires every servo to report torque off and verifies exact before/after reads. | `hw_modes_test` SI-profile case; `bringup_test` torque/readback cases; `x7_set_param` on hardware |
 | operating modes 0/1/3 from config (the vendor also supports mode 5 — see omissions) | `operating_mode` per joint in TOML; mode-checked writers | `hw_modes_test` rejections |
 | mock-injected `Communicator` for tests | `dxl::PacketIO` seam + `emu::FakePacketIO` + pty emulator (tests the *unmodified* SDK too) | entire `emu` suite |
 
@@ -42,7 +42,7 @@ for post-stabilization deletion, kept for reference per the owner's
 
 | Vendor sample | rtctrl equivalent |
 |---|---|
-| samples01 onoff / read_position / write_position / thread / read_present_values / write_velocity / write_current | `apps/x7_onoff`, `apps/x7_read`, `apps/x7_move_simple`, thread: `thread_test` + `examples/x7_wave`, velocity/current: `hw_modes_test` + `apps/x7_float`/`apps/x7_track` on hardware |
+| samples01 onoff / read_position / write_position / thread / read_present_values / write_velocity / write_current | `apps/x7_onoff`, `apps/x7_read`, `apps/x7_move_simple` (soft-limit-adjusted endpoint plus measured return gate), thread: `thread_test` + `examples/x7_wave`, velocity/current: `hw_modes_test` + `apps/x7_float`/`apps/x7_track` on hardware |
 | samples02 FK / IK | `examples/make_motion`, `ik_test` |
 | samples03 gravity comp / 3-DOF IK | `apps/x7_float` / not ported (see above) |
 
@@ -108,7 +108,7 @@ an e-stop and the actuator power cutoff stays within reach.)
 
 | Vendor (`rt_manipulators_cpp::Hardware`) | rtctrl | Proven by |
 |---|---|---|
-| Nothing: the library never arms a watchdog, so the servos complete the last written goal at profile speed and hold it, torque on, indefinitely; host-side, `read_write_thread` loops printing errors — no failure path clears `thread_enable_` | Servo Bus Watchdog halts motion within 100 ms (mid-profile), locks the goal registers, torque stays on — a freeze, not a fall. Host-side, two paths by session type: background-thread sessions (`startThread`, i.e. `RealArm`) escalate after five consecutive failed reads — best-effort release, then the escalation hook closes the port; simple foreground apps (`x7_onoff`, the drill's app) abort on the *first* failed read and exit through the session shutdown guard | `dxl_test` watchdog cases; `hw_test` escalation cases (thread path); bring-up checklist step 5 (USB-pull drill = the foreground path, verified on hardware) |
+| Nothing: the library never arms a watchdog, so the servos complete the last written goal at profile speed and hold it, torque on, indefinitely; host-side, `read_write_thread` loops printing errors — no failure path clears `thread_enable_` | Servo Bus Watchdog halts motion within 100 ms (mid-profile), locks the goal registers, torque stays on — a freeze, not a fall. Host-side, two paths by session type: background-thread sessions (`startThread`, i.e. `RealArm`) escalate after five consecutive failed reads — best-effort release, then the escalation hook closes the port; simple foreground apps abort on the first failed read, record every failed command write, and return nonzero after even a transient dropped command. Persistent write failure reaches the host deadman and bus-silence path. | `dxl_test` watchdog cases; `hw_test` escalation cases (thread path); `bringup_test` write monitoring; bring-up checklist step 5 (USB-pull drill = the foreground path, verified on hardware) |
 
 **Actuator power cutoff — servos dead, bus alive:** the physics is
 identical for both libraries — torque vanishes at the hardware level

@@ -1,5 +1,6 @@
 // Bring-up step 4: read or write servo parameters on all configured
-// joints (gains, profiles). Values print before and after.
+// joints (gains, profiles). Mutations require every servo to report
+// torque off; values print before and after, with exact readback checked.
 //
 // Usage: x7_set_param [--config path] [--port dev]
 //                     [--p-gain N] [--profile-vel N] [--profile-acc N]

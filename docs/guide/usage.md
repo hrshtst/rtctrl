@@ -65,7 +65,12 @@ model::IkSolver tcp_ik(chain, map, "crane_x7_tcp_link");
 On hardware, `x7_pose --tcp X Y Z ROLL PITCH YAW` uses exactly this
 solver (seeded from the measured posture; a non-converged solve is
 refused before any motion), and adding `--preview <basename>` writes
-an `.init.ztk` for `rk_pen` without touching the bus.
+an `.init.ztk` for `rk_pen` without touching the bus. For both `--tcp`
+and `--posture`, the subsequent hardware placement must bring every
+measured joint within 0.01 rad of its resolved target. A stalled or
+exhausted placement correction, or any dropped position command,
+deactivates the arm and returns a nonzero exit instead of entering the
+normal hold phase.
 
 ## Trajectories and motion files
 

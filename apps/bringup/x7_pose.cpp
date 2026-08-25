@@ -3,7 +3,9 @@
 // then goes limp on request while the operator supports the arm.
 // Built as the manual-fallback handover for the (since removed)
 // identification campaign; it remains a general positioning aid for
-// visually confirming a posture on hardware.
+// visually confirming a posture on hardware. Hardware success requires
+// the measured placement to converge within 0.01 rad on every joint;
+// otherwise the arm deactivates instead of entering the hold phase.
 //
 // SAFETY: the arm is servo-stiff during the move and DROPS under
 // gravity the moment it goes limp — support the shoulder and elbow

@@ -1,6 +1,7 @@
 // Bring-up steps 3 and 5: activate (torque on, safety armed, no
 // motion), hold for a few seconds with a live command stream, then
-// deactivate gently.
+// deactivate gently. Any failed hold write is reported and makes the
+// run fail even if the command stream subsequently recovers.
 //
 // Usage: x7_onoff [--config path] [--port dev] [hold_seconds]
 

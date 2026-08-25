@@ -1,6 +1,8 @@
 // Bring-up step 6: a small, slow minimum-jerk move of ONE joint and
 // back, with limit clamps and the two-layer watchdog live. Start with
 // the wrist (canonical index 6, DXL id 8) per the bring-up checklist.
+// A soft-limit adjustment is reported; success requires fresh feedback
+// to confirm every joint returned within 0.05 rad of its start.
 //
 // Usage: x7_move_simple [--config path] [--port dev] [joint_index] [delta_rad]
 //   joint_index: canonical 0..7 (default 6 = wrist)

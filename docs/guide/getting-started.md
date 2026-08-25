@@ -75,6 +75,11 @@ run pure simulation and take no bus arguments.)
 ./build/examples/x7_wave --port /tmp/ttyDXL 10
 ```
 
+`x7_move_simple` prints `complete` only after fresh feedback confirms
+that every joint returned within 0.05 rad of its starting posture. If a
+requested endpoint reaches a soft limit, it warns with the adjusted
+displacement; any dropped position command makes the run exit nonzero.
+
 **3. See the model and a simulated motion** (needs roki-gl):
 
 ```sh
