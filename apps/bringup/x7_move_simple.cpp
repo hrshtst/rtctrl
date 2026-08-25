@@ -16,6 +16,7 @@
 
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "bringup/move_simple_common.hpp"
 #include "bringup/write_monitor.hpp"
 #include "common/x7_common.hpp"
 
@@ -63,9 +64,21 @@ int main(int argc, char* argv[]) {
     const int n = static_cast<int>(fb.size());
     const int j = static_cast<int>(joint);
     rtctrl::model::ZVector start(n), target(n), q(n);
-    for (int i = 0; i < n; ++i) start[i] = fb[i].position;
+    std::vector<double> start_values(n);
+    for (int i = 0; i < n; ++i) {
+      start[i] = fb[i].position;
+      start_values[i] = fb[i].position;
+    }
     zVecCopyNC(start.get(), target.get());
-    target[j] += delta;
+    const auto endpoint = x7::clampMoveEndpoint(
+        start[j], delta, arm.softLimitLo()[j], arm.softLimitHi()[j]);
+    target[j] = endpoint.target;
+    if (endpoint.clamped) {
+      std::fprintf(stderr,
+                   "WARNING: joint %d displacement clamped from %+.3f to "
+                   "%+.3f rad (soft limit)\n",
+                   j, delta, endpoint.displacement);
+    }
 
     constexpr double kGentleVel = 0.5;  // rad/s
     const auto out = rtctrl::model::MinJerkTrajectory::withVelocityLimit(
@@ -73,7 +86,7 @@ int main(int argc, char* argv[]) {
     const auto back = rtctrl::model::MinJerkTrajectory::withVelocityLimit(
         target, start, kGentleVel, 1.5);
     std::printf("moving joint %d by %+.2f rad and back (%.1f s each way)\n",
-                j, delta, out.duration());
+                j, endpoint.displacement, out.duration());
 
     constexpr int kCycleUs = 10000;  // 100 Hz
     std::vector<double> cmd(n);
@@ -92,9 +105,41 @@ int main(int argc, char* argv[]) {
 
     // deactivate FIRST, then report — success text must never print
     // over an unverified shutdown (review finding)
-    const bool legs_ok = runLeg(out) && runLeg(back);
+    bool legs_ok = runLeg(out) && runLeg(back);
+    // Let the position loop settle at the start posture while continuing
+    // to feed both watchdog layers, then verify the measured return.
+    for (int k = 0; legs_ok && k < 30; ++k) {  // 0.3 s
+      writes.record(arm.writePositions(start_values), "return hold");
+      if (arm.escalated() || !arm.checkDeadman()) {
+        legs_ok = false;
+        break;
+      }
+      usleep(kCycleUs);
+    }
+    bool returned = false;
+    if (legs_ok) {
+      std::vector<rtctrl::dxl::Feedback> final_fb;
+      if (!arm.readAll(final_fb)) {
+        std::fprintf(stderr, "final posture read failed\n");
+      } else {
+        constexpr double kReturnTolerance = 0.05;  // rad
+        const auto check = x7::checkReturnPosture(
+            final_fb, start_values, kReturnTolerance);
+        if (!check.valid) {
+          std::fprintf(stderr, "final posture has the wrong joint count\n");
+        } else if (!check.within_tolerance) {
+          std::fprintf(stderr,
+                       "return posture verification failed: joint %d is "
+                       "%.4f rad from its start (limit %.4f rad)\n",
+                       check.worst_joint, check.worst_deviation,
+                       kReturnTolerance);
+        } else {
+          returned = true;
+        }
+      }
+    }
     writes.reportSummary("move");
-    const bool ok = legs_ok && writes.ok();
+    const bool ok = legs_ok && writes.ok() && returned;
     const bool clean = shutdown.run();
     if (!clean) {
       std::printf("SHUTDOWN FAULT (move %s)\n",

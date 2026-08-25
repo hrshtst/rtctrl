@@ -1,6 +1,8 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "bringup/pose_common.hpp"
+#include "bringup/move_simple_common.hpp"
 #include "bringup/set_param_common.hpp"
 #include "bringup/write_monitor.hpp"
 #include "rtctrl/dxl/control_table.hpp"
@@ -113,4 +115,37 @@ TEST_CASE("pose placement requires measured convergence", "[bringup]") {
   CHECK(x7::placementAccepted(true, 0));
   CHECK_FALSE(x7::placementAccepted(false, 0));
   CHECK_FALSE(x7::placementAccepted(true, 1));
+}
+
+TEST_CASE("simple move endpoint is clamped before trajectory generation",
+          "[bringup]") {
+  const auto free = x7::clampMoveEndpoint(0.0, 0.3, -1.0, 1.0);
+  CHECK_FALSE(free.clamped);
+  CHECK(free.target == Catch::Approx(0.3));
+  CHECK(free.displacement == Catch::Approx(0.3));
+
+  const auto limited = x7::clampMoveEndpoint(0.9, 0.3, -1.0, 1.0);
+  CHECK(limited.clamped);
+  CHECK(limited.target == Catch::Approx(1.0));
+  CHECK(limited.displacement == Catch::Approx(0.1));
+}
+
+TEST_CASE("simple move verifies measured return posture", "[bringup]") {
+  std::vector<double> start(8, 0.0);
+  std::vector<dxl::Feedback> feedback(8);
+  feedback[6].position = 0.049;
+  auto check = x7::checkReturnPosture(feedback, start, 0.05);
+  CHECK(check.valid);
+  CHECK(check.within_tolerance);
+  CHECK(check.worst_joint == 6);
+
+  feedback[3].position = -0.051;
+  check = x7::checkReturnPosture(feedback, start, 0.05);
+  CHECK(check.valid);
+  CHECK_FALSE(check.within_tolerance);
+  CHECK(check.worst_joint == 3);
+  CHECK(check.worst_deviation == Catch::Approx(0.051));
+
+  feedback.pop_back();
+  CHECK_FALSE(x7::checkReturnPosture(feedback, start, 0.05).valid);
 }
