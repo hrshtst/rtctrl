@@ -134,7 +134,7 @@ class Arm {
   bool activate();              // torque on, safety armed; holds in
                                 // position mode, zero-current in
                                 // current mode unless preloaded
-  bool deactivate();            // gentle release — NOT an e-stop
+  bool deactivate();            // verified torque-off, NOT an e-stop
   bool setMode(ControlMode);    // Position=3 / Velocity=1 / Current=0
   bool readState(JointState&);  // q, dq, tau (est.), t
   bool writeCommand(const JointCommand&);

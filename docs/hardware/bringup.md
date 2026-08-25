@@ -62,8 +62,9 @@ Power on the arm, connect USB, then:
 
 3. **ON/OFF** (first torque: hands clear, power switch in reach):
    `./build/apps/x7_onoff 3`
-   Expect: **zero motion** on activation, a gentle sag on deactivation
-   (limp gains before torque-off). If anything jumps: cut power and
+   Expect: **zero motion** on activation, then an immediate sag or drop
+   on deactivation (direct torque-off; gains are not changed). Support
+   the arm from below before release. If anything jumps: cut power and
    stop here.
 
 4. **Parameter modification** (torque off):

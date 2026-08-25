@@ -42,7 +42,6 @@ class CraneX7 {
     double bus_watchdog_timeout_s = 0.1;    // reg 98, rounded to 20 ms units
     double host_command_timeout_s = 0.25;   // deadman bound on command writes
     std::uint16_t active_p_gain = 800;      // position P while active
-    std::uint16_t limp_p_gain = 5;          // position P while going limp
     double control_cycle_s = 0.01;          // background thread period
     // Consecutive failed cycle reads before escalation. A controller
     // fed frozen feedback keeps commanding torques into a state it can
@@ -87,8 +86,8 @@ class CraneX7 {
   // arm).
   bool activate();
 
-  // Going limp gently: limp gains, zero goal currents, torque off,
-  // watchdogs disarmed. Best-effort — continues through failures.
+  // Direct release: zero goal currents, torque off, watchdogs disarmed.
+  // Best-effort: continues through failures without changing gains.
   bool deactivate();
 
   bool activated() const { return activated_; }

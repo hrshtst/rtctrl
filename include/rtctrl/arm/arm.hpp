@@ -20,7 +20,7 @@ class Arm {
   // unsupported and can fall under gravity until the controller's
   // first command, unless a preload was staged (see
   // CraneX7::setActivationCurrentPreload). On real hardware this also
-  // arms safety (soft gains, servo Bus Watchdog).
+  // arms safety (active gains, servo Bus Watchdog).
   virtual bool activate() = 0;
   // Zero commands, torque off. NOT an emergency stop.
   virtual bool deactivate() = 0;

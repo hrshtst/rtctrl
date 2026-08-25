@@ -14,7 +14,7 @@ for post-stabilization deletion, kept for reference per the owner's
 |---|---|---|
 | `connect/disconnect` | `dxl::Port` ctor / `close()` | pty tests; hardware bring-up |
 | `load_config_file` (YAML) | `hw::Config::load` (TOML) | `hw_test` config case |
-| `torque_on/off(group)` | `CraneX7::activate/deactivate` (adds fw check, watchdog arming, goal snap, soft gains) | `hw_test` activation cases; hardware checklist step 3 |
+| `torque_on/off(group)` | `CraneX7::activate/deactivate` (adds fw check, watchdog arming, goal snap, active P-gain setup, and verified shutdown without mutating gains) | `hw_test` activation cases; hardware checklist step 3 |
 | `sync_read(group)` | `SyncGroup::readAll` (one FastSync-style indirect read: pos/vel/current/voltage/temp) | `dxl_test`, pty tests |
 | `sync_write(group)` | `SyncGroup::writeGoal*` | `dxl_test`, pty tests |
 | `start_thread/stop_thread` | `CraneX7::startThread/stopThread` (+ cycle stats, deadman integration, zero-on-stop) | `thread_test` |

@@ -1,6 +1,6 @@
 // Bring-up steps 3 and 5: activate (torque on, safety armed, no
 // motion), hold for a few seconds with a live command stream, then
-// deactivate gently. Any failed hold write is reported and makes the
+// disable torque. Any failed hold write is reported and makes the
 // run fail even if the command stream subsequently recovers.
 //
 // Usage: x7_onoff [--config path] [--port dev] [hold_seconds]
@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
 
     writes.reportSummary("hold");
     ok = ok && writes.ok();
-    std::printf("deactivating (arm goes limp gently)...\n");
+    std::printf("deactivating (torque off; arm goes limp)...\n");
     const bool clean = shutdown.run();
     if (!clean) {
       std::printf("SHUTDOWN FAULT (hold %s)\n", ok ? "done" : "ABORTED");

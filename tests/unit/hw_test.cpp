@@ -84,7 +84,26 @@ TEST_CASE("activation sequence arms safety and causes no motion", "[hw]") {
     auto* motor = bus.find(joint.id);
     CHECK(motor->peek(reg::kTorqueEnable) == 0);
     CHECK(motor->peek(reg::kBusWatchdog) == 0);
-    CHECK(motor->peek(reg::kPositionPGain) == 5);  // limp
+    // Deactivation must not leave a surprising parameter mutation.
+    CHECK(motor->peek(reg::kPositionPGain) == 800);
+  }
+}
+
+TEST_CASE("deactivation preserves the configured position P gain",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.active_p_gain = 640;
+  hw::CraneX7 arm(io, config, options);
+
+  REQUIRE(arm.activate());
+  REQUIRE(arm.deactivate());
+  for (const auto& joint : config.joints) {
+    auto* motor = bus.find(joint.id);
+    CHECK(motor->peek(reg::kTorqueEnable) == 0);
+    CHECK(motor->peek(reg::kPositionPGain) == 640);
   }
 }
 

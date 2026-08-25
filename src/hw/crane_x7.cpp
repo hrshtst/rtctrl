@@ -228,12 +228,11 @@ bool CraneX7::deactivate() {
   preload_amps_.clear();
   // Once quiesced, the deadline watchdog has silenced the bus so the
   // servo Bus Watchdog can stop the servos — ANY further instruction
-  // packet here (including these limp/torque-off writes) would feed
+  // packet here (including these stop/torque-off writes) would feed
   // that watchdog and defeat the stop. The flag is re-checked between
   // transactions so a quiesce landing mid-sequence suppresses the
   // remainder; the quiesced cleanup only marks the session inactive.
   bool ok = true;
-  if (!quiesced_.load()) ok &= writePositionPGain(options_.limp_p_gain);
   // zero goal currents (relevant in current mode; harmless otherwise)
   std::vector<bool> zeroed(config_.joints.size(), false);
   for (std::size_t i = 0; i < config_.joints.size(); ++i) {
