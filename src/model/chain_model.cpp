@@ -178,14 +178,21 @@ double ChainModel::jointMax(int link_index) const {
   return value;
 }
 
-void ChainModel::fk(const zVec dis) { rkChainFK(&chain_, dis); }
+void ChainModel::fk(const zVec dis) {
+  // rkChainFK() also runs loop-closure IK whenever the chain owns IK state,
+  // mutating `dis` despite its const-qualified API type. This wrapper's
+  // contract is forward kinematics at exactly the supplied posture.
+  rkChainSetJointDisAll(&chain_, dis);
+  rkChainUpdateFK(&chain_);
+}
 
 zVec3D ChainModel::linkWorldPos(int link_index) const {
   return *rkChainLinkWldPos(&chain_, link_index);
 }
 
 bool ChainModel::writeInitZtk(const std::string& path, const zVec dis) {
-  rkChainFK(&chain_, dis);
+  rkChainSetJointDisAll(&chain_, dis);
+  rkChainUpdateFK(&chain_);
   return rkChainInitWriteZTK(&chain_, path.c_str());
 }
 

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 
 #include <cmath>
 
@@ -13,6 +14,7 @@ using rtctrl::model::JointMap;
 using rtctrl::model::kCanonicalDof;
 using rtctrl::model::kModelDof;
 using rtctrl::model::ZVector;
+using Catch::Approx;
 
 namespace {
 
@@ -141,4 +143,53 @@ TEST_CASE("IK on the TCP link places the fingertip-midpoint frame",
   zMat3DError(&target_att, rkChainLinkWldAtt(model.chain(), tcp),
               &att_err);
   CHECK(zVec3DNorm(&att_err) <= kAttTol);
+}
+
+TEST_CASE("IK preserves and honors a measured initial guess", "[ik][tcp]") {
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  IkSolver solver(model, map, "crane_x7_tcp_link");
+
+  zVec3D target_pos;
+  zVec3DCreate(&target_pos, 0.2, 0.0, 0.25);
+  zMat3D target_att;
+  zMat3DIdent(&target_att);
+
+  const auto solveFrom = [&](const double (&seed)[kCanonicalDof]) {
+    ZVector q8(kCanonicalDof), init(kModelDof), original(kModelDof);
+    ZVector solution(kModelDof);
+    for (int i = 0; i < kCanonicalDof; ++i) q8[i] = seed[i];
+    map.expand(q8.get(), init.get());
+    zVecCopyNC(init.get(), original.get());
+
+    const auto result =
+        solver.solve(target_pos, target_att, init.get(), solution.get());
+
+    REQUIRE(result.converged);
+    CHECK(result.pos_residual <= kPosTol);
+    CHECK(result.att_residual <= kAttTol);
+    for (int i = 0; i < kModelDof; ++i) {
+      CHECK(init[i] == Approx(original[i]).margin(1e-12));
+    }
+  };
+
+  SECTION("near-zero measured posture") {
+    // Hardware cannot command model joint 3 exactly to its 0.001-degree
+    // upper limit because movePose keeps a 0.05-rad safety buffer.
+    const double seed[kCanonicalDof] = {
+        -0.0015, 0.0015, 0.0015, -0.0552,
+         0.0015, -0.0031, -0.0015, 0.0015,
+    };
+    solveFrom(seed);
+  }
+
+  SECTION("P1 measured posture") {
+    // This seed exposed the hidden pre-solve IK exactly: the old wrapper
+    // returned residuals 0.11485066 m / 0.21693499 rad at iteration 0.
+    const double seed[kCanonicalDof] = {
+        -0.357, -0.831, 2.126, -1.572,
+        -2.456, -0.106, 0.563, -0.014,
+    };
+    solveFrom(seed);
+  }
 }

@@ -64,7 +64,13 @@ IkResult IkSolver::solve(const zVec3D& target_pos, const zMat3D& target_att,
   requireSize(q_out, size, "q_out");
 
   rkChain* chain = model_.chain();
-  rkChainFK(chain, q_init);
+  // rkChainFK() is not pure FK once IK state is registered: it invokes
+  // rkChainIK() for loop closure and writes the result back through its
+  // displacement argument. Install the initial guess explicitly so the
+  // still-unbound constraint cells cannot corrupt it before the requested
+  // references are set.
+  rkChainSetJointDisAll(chain, q_init);
+  rkChainUpdateFK(chain);
   rkChainBindIK(chain);
 
   zVec3D ref_pos = target_pos;
@@ -72,13 +78,15 @@ IkResult IkSolver::solve(const zVec3D& target_pos, const zMat3D& target_att,
   rkIKCellSetRefVec(pos_cell_, &ref_pos);
   rkIKCellSetRefAtt(att_cell_, &ref_att);
 
-  zVecCopyNC(q_init, q_out);
   IkResult result;
+  // rkChainIK() seeds from the chain's current joint state and copies that
+  // state into q_out before iterating; q_out is an output, not the seed.
   result.iterations = rkChainIK(chain, q_out, zTOL, max_iter);
 
-  // rkChainIK leaves the chain at the solution posture; refresh anyway so
-  // the residuals are guaranteed to describe q_out.
-  rkChainFK(chain, q_out);
+  // Refresh without rkChainFK(), which would run a second, uncounted IK
+  // solve now that the chain owns IK state.
+  rkChainSetJointDisAll(chain, q_out);
+  rkChainUpdateFK(chain);
 
   result.finite = true;
   for (int i = 0; i < size; ++i) {

@@ -204,7 +204,10 @@ void SimArm::substep() {
   // Same equation rkChainFD solves, built manually so the reflected
   // motor inertia can be added to the diagonal.
   rkChain* chain = model_.chain();
-  rkChainFK(chain, q9_.get());
+  // Keep this a pure state commit even if a diagnostic registered IK state
+  // through the public chain() hook: rkChainFK() would silently solve IK.
+  rkChainSetJointDisAll(chain, q9_.get());
+  rkChainUpdateFK(chain);
   rkChainSetJointVelAll(chain, v9_.get());
   rkChainInertiaMatBiasVecG(chain, mass_mat_, rhs9_.get(), RK_GRAVITY6D);
   for (int i = 0; i < kModelDof; ++i) {
