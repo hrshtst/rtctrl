@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "rtctrl/dxl/control_table.hpp"
+#include "bringup/set_param_common.hpp"
 #include "common/x7_common.hpp"
 
 namespace reg = rtctrl::dxl::reg;
@@ -108,6 +109,26 @@ int main(int argc, char* argv[]) {
 
   try {
     auto session = x7::openSession(cli);
+    const bool wants_write = p_gain >= 0 || profile_vel >= 0 ||
+                             profile_acc >= 0 || have_vel_si || have_acc_si;
+    if (wants_write) {
+      const auto torque =
+          x7::checkAllTorqueOff(*session.port, session.config);
+      if (torque.status == x7::TorqueCheckStatus::kReadFailed) {
+        std::fprintf(stderr,
+                     "refusing parameter changes: cannot verify torque "
+                     "state on id %u\n",
+                     torque.id);
+        return 1;
+      }
+      if (torque.status == x7::TorqueCheckStatus::kEnabled) {
+        std::fprintf(stderr,
+                     "refusing parameter changes: torque is enabled on "
+                     "id %u\n",
+                     torque.id);
+        return 1;
+      }
+    }
     std::printf("-- before --\n");
     dumpParams(session);
     // every REQUESTED write must succeed — a failed parameter write
