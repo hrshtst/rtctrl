@@ -1,4 +1,4 @@
-// Bring-up step 3: read or write servo parameters on all configured
+// Bring-up step 4: read or write servo parameters on all configured
 // joints (gains, profiles). Values print before and after.
 //
 // Usage: x7_set_param [--config path] [--port dev]

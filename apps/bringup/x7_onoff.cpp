@@ -1,5 +1,6 @@
-// Bring-up step 1: activate (torque on, safety armed, no motion), hold
-// for a few seconds with a live command stream, then deactivate gently.
+// Bring-up steps 3 and 5: activate (torque on, safety armed, no
+// motion), hold for a few seconds with a live command stream, then
+// deactivate gently.
 //
 // Usage: x7_onoff [--config path] [--port dev] [hold_seconds]
 

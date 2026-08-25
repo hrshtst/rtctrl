@@ -1,4 +1,4 @@
-// Bring-up step 4: a small, slow minimum-jerk move of ONE joint and
+// Bring-up step 6: a small, slow minimum-jerk move of ONE joint and
 // back, with limit clamps and the two-layer watchdog live. Start with
 // the wrist (canonical index 6, DXL id 8) per the bring-up checklist.
 //
