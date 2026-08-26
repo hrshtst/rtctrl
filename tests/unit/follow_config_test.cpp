@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstdio>
 #include <fstream>
 
 #include "follow/follow_config.hpp"
+#include "follow/follow_hardware.hpp"
 
 namespace follow = x7::follow;
 namespace arm = rtctrl::arm;
@@ -88,4 +90,43 @@ TEST_CASE("follow CLI requires explicit config and separates frontends",
   CHECK(cli.motion_path == std::filesystem::path("out.zvs"));
   CHECK_THROWS(follow::parseCli(5, argv, false));
   CHECK_THROWS(follow::parseCli(1, argv, true));
+}
+
+TEST_CASE("hardware follow timing and mode derive from one control contract",
+          "[follow][hardware]") {
+  follow::Config config;
+  config.control_rate_hz = 200.0;
+  config.mode = arm::ControlMode::Velocity;
+  auto hardware = rtctrl::hw::Config::load("config/crane_x7.toml");
+  follow::selectHardwareMode(&hardware, config.mode,
+                             std::string("/dev/follow-test"));
+  const auto options = follow::hardwareOptions(config, std::nullopt);
+  CHECK(hardware.port == "/dev/follow-test");
+  for (const auto& joint : hardware.joints) {
+    CHECK(joint.operating_mode == 1);
+  }
+  CHECK(options.control_cycle_s == 0.005);
+  CHECK(options.controller_deadline_s == 0.005);
+  CHECK(options.controller_write_margin_s == 0.001);
+}
+
+TEST_CASE("hardware follow refuses a parameter dump that owns mode",
+          "[follow][hardware][parameters]") {
+  auto hardware = rtctrl::hw::Config::load("config/crane_x7.toml");
+  rtctrl::apps::dxl_parameters::ParameterDump dump;
+  rtctrl::apps::dxl_parameters::MotorRecord motor;
+  motor.id = hardware.joints.front().id;
+  motor.model_number = hardware.joints.front().model_number;
+  const auto* operating_mode =
+      rtctrl::apps::dxl_parameters::findParameter("operating_mode");
+  REQUIRE(operating_mode != nullptr);
+  motor.parameters.push_back({operating_mode, 3});
+  dump.motors.push_back(motor);
+  CHECK_THROWS_WITH(follow::validateMotorParameters(dump, hardware),
+                    Catch::Matchers::ContainsSubstring("must omit"));
+
+  dump.motors.front().parameters.clear();
+  dump.motors.front().id = 42;
+  CHECK_THROWS_WITH(follow::validateMotorParameters(dump, hardware),
+                    Catch::Matchers::ContainsSubstring("unconfigured"));
 }

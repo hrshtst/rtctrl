@@ -411,6 +411,12 @@ class FollowRun {
                                 ? config_.finalization.operator_timeout_s
                                 : config_.finalization.wait_time_s;
     const long cycles = static_cast<long>(std::ceil(deadline / robot_.dt()));
+    if (interactive) {
+      std::fprintf(stderr,
+                   "tracking complete: support the arm from below, then "
+                   "press Enter to disable torque (timeout %.1f s)\n",
+                   deadline);
+    }
     for (long i = 0; i < cycles; ++i) {
       if (interactive && enter_pressed_ && enter_pressed_()) return true;
       if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q, &zero)) {

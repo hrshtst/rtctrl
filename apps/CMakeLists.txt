@@ -32,6 +32,10 @@ add_executable(x7_follow_sim follow/x7_follow_sim.cpp)
 target_link_libraries(x7_follow_sim PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_follow_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(x7_follow follow/x7_follow.cpp)
+target_link_libraries(x7_follow PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_follow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
         bringup/x7_move_simple bringup/x7_pose gravity/x7_float
         gravity/x7_gravity_demo track/x7_track track/x7_track_sim
