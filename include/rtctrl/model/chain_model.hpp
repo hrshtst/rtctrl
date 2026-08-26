@@ -67,6 +67,8 @@ class ChainModel {
 
   // Forward kinematics at joint vector dis (size jointSize()).
   void fk(const zVec dis);
+  // Copies the model's currently loaded joint displacement state.
+  void jointDisplacement(zVec dis) const;
   zVec3D linkWorldPos(int link_index) const;
 
   // rk_pen initial-state file ([roki::chain::init]) for the posture

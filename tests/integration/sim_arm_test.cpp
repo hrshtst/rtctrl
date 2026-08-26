@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -111,6 +112,18 @@ TEST_CASE("simulation is deterministic across identical runs", "[sim]") {
     CHECK(a.q[i] == b.q[i]);  // bitwise identical
     CHECK(a.dq[i] == b.dq[i]);
   }
+}
+
+TEST_CASE("simulation advances the exact nonintegral control period",
+          "[sim][timing]") {
+  auto opt = baseOptions();
+  opt.control_dt = 1.0 / 60.0;
+  opt.sim_dt = 0.001;
+  SimArm arm(opt);
+  REQUIRE(arm.step());
+  CHECK(arm.time() == Catch::Approx(opt.control_dt).margin(1e-14));
+  REQUIRE(arm.step());
+  CHECK(arm.time() == Catch::Approx(2.0 * opt.control_dt).margin(1e-14));
 }
 
 TEST_CASE("current-based position simulation enforces its effort ceiling",

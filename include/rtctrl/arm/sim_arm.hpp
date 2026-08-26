@@ -90,7 +90,7 @@ class SimArm : public Arm {
 
  private:
   void computeTorques();
-  void substep();
+  void substep(double dt);
 
   Options options_;
   model::ChainModel model_;

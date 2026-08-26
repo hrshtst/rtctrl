@@ -97,6 +97,14 @@ int ChainModel::jointOffset(const std::string& link_name) const {
   return rkChainFindLinkJointIDOffset(&chain_, link_name.c_str());
 }
 
+void ChainModel::jointDisplacement(zVec dis) const {
+  if (dis == nullptr || zVecSizeNC(dis) != jointSize()) {
+    throw std::invalid_argument(
+        "ChainModel::jointDisplacement: vector size mismatch");
+  }
+  rkChainGetJointDisAll(&chain_, dis);
+}
+
 double ChainModel::totalMass() const {
   double mass = 0.0;
   for (int i = 0; i < rkChainLinkNum(&chain_); ++i) {

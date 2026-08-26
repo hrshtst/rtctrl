@@ -224,7 +224,7 @@ void SimArm::computeTorques() {
   }
 }
 
-void SimArm::substep() {
+void SimArm::substep(double dt) {
   computeTorques();
 
   // Forward dynamics: (M + diag(J_reflected)) qdd = tau - bias.
@@ -247,7 +247,6 @@ void SimArm::substep() {
   }
 
   // Semi-implicit Euler with inelastic joint stops.
-  const double dt = options_.sim_dt;
   for (int i = 0; i < kModelDof; ++i) {
     v9_[i] += acc9_[i] * dt;
     q9_[i] += v9_[i] * dt;
@@ -263,13 +262,19 @@ void SimArm::substep() {
 }
 
 bool SimArm::step() {
-  const int substeps = std::max(
-      1, static_cast<int>(std::lround(options_.control_dt / options_.sim_dt)));
-  for (int s = 0; s < substeps; ++s) {
-    substep();
+  if (!std::isfinite(options_.control_dt) || options_.control_dt <= 0.0 ||
+      !std::isfinite(options_.sim_dt) || options_.sim_dt <= 0.0) {
+    return false;
+  }
+  double remaining = options_.control_dt;
+  while (remaining > 0.0) {
+    const double dt = std::min(options_.sim_dt, remaining);
+    substep(dt);
     for (int i = 0; i < kModelDof; ++i) {
       if (!std::isfinite(q9_[i]) || !std::isfinite(v9_[i])) return false;
     }
+    remaining -= dt;
+    if (remaining < 1e-15 * options_.control_dt) remaining = 0.0;
   }
   if (log_ != nullptr) {
     log_->frame(options_.control_dt, q9_.get());
