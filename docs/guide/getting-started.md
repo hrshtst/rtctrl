@@ -92,7 +92,16 @@ displacement; any dropped position command makes the run exit nonzero.
 rk_pen models/crane_x7/crane_x7.ztk            # pose editor
 ./build/examples/make_motion motion.zvs        # kinematic min-jerk sweep
 rk_anim models/crane_x7/crane_x7.ztk motion.zvs
+
+# Cartesian TCP line with continuation-seeded IK at every sample
+./build/apps/x7_plan_ptp --config config/ptp_example.toml
+rk_anim models/crane_x7/crane_x7.ztk ptp.zvs
 ```
+
+`x7_plan_ptp` is offline and never opens the motor bus. Its TOML file
+specifies the start and end TCP poses, timing constraints, profile, and
+IK policy. See [Cartesian PTP planning](usage.md#cartesian-ptp-planning)
+for the full contract.
 
 ## Regenerating the model
 

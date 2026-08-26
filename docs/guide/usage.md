@@ -95,6 +95,117 @@ chain.writeInitZtk("pose.init.ztk", q9);  // static posture for
 `[roki::chain::init]` format stores revolute displacements in degrees,
 so a hand-written radian file loads as a near-zero posture.
 
+### Cartesian PTP planning
+
+`x7_plan_ptp` plans a straight world-frame TCP translation with a
+shortest-path spherical attitude interpolation. It solves IK at every
+sample and writes the model's nine joint coordinates to a `.zvs` file.
+The app is entirely offline and never opens the hardware bus.
+
+Start with the checked-in configuration:
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_example.toml
+rk_anim models/crane_x7/crane_x7.ztk ptp.zvs
+```
+
+The configuration schema is:
+
+```toml
+model = "../models/crane_x7/crane_x7.ztk"
+output = "ptp.zvs"
+end_effector = "crane_x7_tcp_link"
+
+[trajectory]
+profile = "minimum-jerk" # linear, trapezoidal, or minimum-jerk
+sample_rate = 100.0
+motion_time = 2.0
+max_linear_velocity = 0.05
+max_angular_velocity = 0.5
+trapezoid_acceleration_fraction = 0.2
+
+[start]
+position = [0.20, 0.0, 0.25] # m, world frame
+rpy = [0.0, 0.0, 0.0]       # roll, pitch, yaw in radians
+
+[end]
+position = [0.22, 0.0, 0.25]
+rpy = [0.0, 0.0, 0.0]
+
+[ik]
+strict = true
+position_tolerance = 1.0e-4
+attitude_tolerance = 1.0e-3
+max_iterations = 200
+initial_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+```
+
+The attitude convention is
+$R=R_z(\mathit{yaw})R_y(\mathit{pitch})R_x(\mathit{roll})$, matching
+`x7_pose --tcp`. The model path is relative to the TOML file. The
+output path is relative to the directory where the app is invoked;
+`.zvs` is appended when it is absent. Unknown keys and malformed
+values are errors, which prevents misspelled options from silently
+using defaults.
+
+`model`, `[start]`, and `[end]` are required. Optional defaults are
+`ptp.zvs`, `crane_x7_tcp_link`, minimum jerk, 100 Hz, strict IK,
+position tolerance $10^{-4}$ m, attitude tolerance $10^{-3}$ rad,
+200 IK iterations, and an all-zero canonical initial joint seed.
+
+The three profiles apply to one scalar path-progress variable. The
+geometric translation remains a line and attitude remains SLERP for
+all profiles:
+
+- `linear` has constant path speed and an instantaneous velocity
+  change at each endpoint.
+- `trapezoidal` has symmetric acceleration and deceleration ramps.
+  Each ramp occupies 20 percent of the motion by default.
+- `minimum-jerk` uses the quintic
+  $10u^3-15u^4+6u^5$ and is the default.
+
+Motion time and Cartesian velocity limits are compatible constraints,
+not mutually exclusive choices. The selected duration is
+
+```math
+T=\max\left(T_{requested},\;c\frac{\lVert\Delta p\rVert}{v_{max}},\;
+ c\frac{\theta}{\omega_{max}}\right),
+```
+
+where $\theta$ is the shortest attitude change and $c$ is the
+profile's peak progress speed: 1 for linear, $1/(1-a)$ for a
+trapezoid with ramp fraction $a$, and $15/8$ for minimum jerk. Linear
+and angular velocity limits must be specified together. If no timing
+constraint is present, the duration defaults to 5 seconds.
+
+The planner creates enough equal intervals to meet or exceed the
+requested sample rate, adjusts the interval so the endpoint occurs at
+the exact duration, and includes both endpoints. The first IK solve
+uses `initial_joints` in canonical order; each later solve uses the
+previous solution. The gripper stays at its initial value, and finger
+B is emitted as the mimic of finger A.
+
+Strict IK is the default. A non-converged sample aborts planning before
+the output file is opened. With `strict = false`, a finite, in-limit
+best result is written with a warning containing its time and
+residuals; a non-finite or limit-violating result remains fatal. The
+app also reports the worst IK residuals and peak sampled joint speed.
+
+Common settings can be overridden without editing the TOML file:
+
+```sh
+./build/apps/x7_plan_ptp --config plan.toml \
+  --output trial.zvs --motion-time 4 \
+  --max-linear-velocity 0.04 --max-angular-velocity 0.4 \
+  --sample-rate 200 --profile trapezoidal --no-strict-ik
+```
+
+The planner checks kinematics and model joint limits, but it does not
+perform collision checking or certify a trajectory for hardware. A
+hardware tracking app must independently validate the file, starting
+posture, joint rates, operating modes, and collision constraints
+before enabling torque.
+
 ## Writing a controller (the bridge)
 
 A controller is one function, written once, run anywhere:

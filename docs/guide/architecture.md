@@ -11,7 +11,7 @@ flowchart TB
         REAL["RealArm"]
     end
 
-    MODEL["model/ — L2<br>roki wrappers: ChainModel, JointMap,<br>IkSolver, trajectories"]
+    MODEL["model/ — L2<br>roki wrappers: ChainModel, JointMap,<br>IkSolver, Cartesian PTP, trajectories"]
     HW["hw/ — L4<br>CraneX7, safety, Config"]
     MILIB["mi-lib<br>(roki, zm, …)"]
     DXL["dxl/ — L1<br>PacketIO seam, Port(SDK), SyncGroup,<br>control table, conversions"]
@@ -49,8 +49,9 @@ flowchart TB
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`
-  (error-damped LM with structured `IkResult`), trajectories, `.zvs`
-  motion logging for `rk_anim`.
+  (error-damped LM with structured `IkResult`), continuation-seeded
+  Cartesian PTP planning, trajectories, and `.zvs` motion logging for
+  `rk_anim`.
 - **`arm/`: the bridge.** `Arm` (activate/deactivate/setMode/
   readState/writeCommand/step), `Controller` + `run()`, the two
   implementations `SimArm`/`RealArm`, and the shipped controllers
@@ -83,13 +84,15 @@ apps/         sources by domain: bus/ (dxl_emu, dxl_inspect,
               bringup/ (x7_onoff, x7_read, x7_set_param,
               x7_move_simple, x7_pose), gravity/ (x7_float,
               x7_gravity_demo), track/ (x7_track, x7_track_sim),
-              ident/ (x7_ident_sim), study/ (x7_efl_study),
+              plan/ (x7_plan_ptp), ident/ (x7_ident_sim),
+              study/ (x7_efl_study),
               common/ (shared app headers); binaries land flat in
               build/apps/
 examples/     make_motion, make_pose (kinematic .zvs), x7_wave
               (bridge demo), x7_ct_mass_error (offline study)
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed)
-config/       crane_x7.toml (bus, joints, limits, margins), postures/
+config/       crane_x7.toml (bus, joints, limits, margins),
+              ptp_example.toml, postures/
 tools/        port_model.py, ident_analysis.py, replay_compare.py,
               ct_mass_error_study.py (uv), bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
