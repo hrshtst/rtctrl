@@ -25,6 +25,7 @@ add_library(rtctrl
   src/milib_cpp_compat.cpp
   src/model/chain_model.cpp
   src/model/joint_map.cpp
+  src/model/ptp_planner.cpp
   src/model/trajectory.cpp
   src/model/zvs_writer.cpp
   src/model/ik_solver.cpp

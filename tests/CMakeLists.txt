@@ -4,6 +4,7 @@ add_executable(unit_tests
   unit/smoke_test.cpp
   unit/model_test.cpp
   unit/trajectory_test.cpp
+  unit/ptp_planner_test.cpp
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/hw_test.cpp
