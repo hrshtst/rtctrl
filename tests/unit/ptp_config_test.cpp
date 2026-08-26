@@ -1,0 +1,130 @@
+#include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+#include "plan/ptp_config.hpp"
+
+using Catch::Approx;
+
+namespace {
+
+namespace fs = std::filesystem;
+
+const char* kMinimalConfig = R"(
+model = "../../models/crane_x7/crane_x7.ztk"
+
+[start]
+position = [0.2, 0.0, 0.25]
+rpy = [0.0, 0.0, 0.0]
+
+[end]
+position = [0.21, 0.0, 0.25]
+rpy = [0.0, 0.0, 0.0]
+)";
+
+class ConfigFile {
+ public:
+  explicit ConfigFile(const std::string& content) {
+    fs::create_directories("build/ptp_config_test");
+    path_ = "build/ptp_config_test/plan.toml";
+    std::ofstream output(path_);
+    output << content;
+  }
+  ~ConfigFile() { std::remove(path_.c_str()); }
+  const std::string& path() const { return path_; }
+
+ private:
+  std::string path_;
+};
+
+}  // namespace
+
+TEST_CASE("PTP config applies defaults and resolves its model path",
+          "[ptp][config]") {
+  ConfigFile file(kMinimalConfig);
+  const auto config = x7::ptp::loadConfig(file.path());
+  CHECK(config.model_path ==
+        fs::absolute("models/crane_x7/crane_x7.ztk").lexically_normal());
+  CHECK(config.output_path == fs::path("ptp.zvs"));
+  CHECK(config.end_effector == "crane_x7_tcp_link");
+  CHECK(config.options.sample_rate == Approx(100.0));
+  CHECK(config.options.profile == rtctrl::model::PtpProfile::MinimumJerk);
+  CHECK(config.options.strict_ik);
+  CHECK_FALSE(config.options.timing.motion_time);
+  CHECK(config.start.position.c.x == Approx(0.2));
+}
+
+TEST_CASE("PTP CLI overrides common config values", "[ptp][config]") {
+  ConfigFile file(kMinimalConfig);
+  auto config = x7::ptp::loadConfig(file.path());
+  const char* raw[] = {"x7_plan_ptp",
+                       "--config",
+                       "plan.toml",
+                       "--output",
+                       "motion",
+                       "--motion-time",
+                       "2.5",
+                       "--max-linear-velocity",
+                       "0.1",
+                       "--max-angular-velocity",
+                       "0.4",
+                       "--sample-rate",
+                       "250",
+                       "--profile",
+                       "trapezoidal",
+                       "--no-strict-ik"};
+  auto argv = const_cast<char**>(raw);
+  const auto cli = x7::ptp::parseCli(
+      static_cast<int>(sizeof(raw) / sizeof(raw[0])), argv);
+  REQUIRE(cli.ok);
+  x7::ptp::applyOverrides(cli, &config);
+  CHECK(config.output_path == fs::path("motion.zvs"));
+  CHECK(config.options.timing.motion_time == Approx(2.5));
+  CHECK(config.options.timing.max_linear_velocity == Approx(0.1));
+  CHECK(config.options.timing.max_angular_velocity == Approx(0.4));
+  CHECK(config.options.sample_rate == Approx(250.0));
+  CHECK(config.options.profile == rtctrl::model::PtpProfile::Trapezoidal);
+  CHECK_FALSE(config.options.strict_ik);
+}
+
+TEST_CASE("PTP config rejects typos and incomplete speed limits",
+          "[ptp][config]") {
+  SECTION("unknown key") {
+    ConfigFile file(std::string(kMinimalConfig) + "\nmotion_tim = 2.0\n");
+    CHECK_THROWS_WITH(x7::ptp::loadConfig(file.path()),
+                      Catch::Matchers::ContainsSubstring("unknown key"));
+  }
+  SECTION("unpaired velocity") {
+    ConfigFile file(std::string(kMinimalConfig) +
+                    "\n[trajectory]\nmax_linear_velocity = 0.1\n");
+    CHECK_THROWS_WITH(
+        x7::ptp::loadConfig(file.path()),
+        Catch::Matchers::ContainsSubstring("must be specified together"));
+  }
+  SECTION("bad pose length") {
+    std::string text(kMinimalConfig);
+    const auto offset = text.find("position = [0.21, 0.0, 0.25]");
+    REQUIRE(offset != std::string::npos);
+    text.replace(offset, std::string("position = [0.21, 0.0, 0.25]").size(),
+                 "position = [0.21, 0.0]");
+    ConfigFile file(text);
+    CHECK_THROWS_WITH(x7::ptp::loadConfig(file.path()),
+                      Catch::Matchers::ContainsSubstring("exactly 3"));
+  }
+}
+
+TEST_CASE("PTP CLI rejects missing values before config loading",
+          "[ptp][config]") {
+  char app[] = "x7_plan_ptp";
+  char option[] = "--output";
+  char flag[] = "--strict-ik";
+  char* argv[] = {app, option, flag};
+  const auto cli = x7::ptp::parseCli(3, argv);
+  CHECK_FALSE(cli.ok);
+  CHECK(cli.error.find("requires a value") != std::string::npos);
+}

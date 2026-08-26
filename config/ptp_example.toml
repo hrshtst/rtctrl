@@ -1,0 +1,28 @@
+# Offline Cartesian PTP preview. Paths under `model` are relative to this file;
+# the output path is relative to the directory where x7_plan_ptp is invoked.
+model = "../models/crane_x7/crane_x7.ztk"
+output = "ptp.zvs"
+end_effector = "crane_x7_tcp_link"
+
+[trajectory]
+profile = "minimum-jerk"
+sample_rate = 100.0
+motion_time = 2.0
+max_linear_velocity = 0.05
+max_angular_velocity = 0.5
+trapezoid_acceleration_fraction = 0.2
+
+[start]
+position = [0.20, 0.0, 0.25]
+rpy = [0.0, 0.0, 0.0]
+
+[end]
+position = [0.22, 0.0, 0.25]
+rpy = [0.0, 0.0, 0.0]
+
+[ik]
+strict = true
+position_tolerance = 1.0e-4
+attitude_tolerance = 1.0e-3
+max_iterations = 200
+initial_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

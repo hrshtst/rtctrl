@@ -1,5 +1,5 @@
-# Sources are grouped by domain (bus/ bringup/ gravity/ track/ ident/
-# study/, cross-domain headers in common/); binaries stay FLAT at
+# Sources are grouped by domain (bus/ bringup/ gravity/ track/ plan/
+# ident/ study/, cross-domain headers in common/); binaries stay FLAT at
 # build/apps/ — the bring-up checklist, operator shell history, and
 # archived session notes all invoke ./build/apps/<name>, so no
 # add_subdirectory() here. App-layer includes are subdir-qualified and
@@ -15,6 +15,10 @@ target_include_directories(dxl_inspect PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(dxl_load_params bus/dxl_load_params.cpp)
 target_link_libraries(dxl_load_params PRIVATE rtctrl::rtctrl)
 target_include_directories(dxl_load_params PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(x7_plan_ptp plan/x7_plan_ptp.cpp)
+target_link_libraries(x7_plan_ptp PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_plan_ptp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
         bringup/x7_move_simple bringup/x7_pose gravity/x7_float

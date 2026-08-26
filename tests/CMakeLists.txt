@@ -5,6 +5,7 @@ add_executable(unit_tests
   unit/model_test.cpp
   unit/trajectory_test.cpp
   unit/ptp_planner_test.cpp
+  unit/ptp_config_test.cpp
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/hw_test.cpp
@@ -32,6 +33,14 @@ target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 catch_discover_tests(unit_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
+
+add_test(NAME x7_plan_ptp_generates_example
+  COMMAND x7_plan_ptp --config config/ptp_example.toml
+          --output build/test_ptp_example.zvs --motion-time 0.2)
+set_tests_properties(x7_plan_ptp_generates_example PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "wrote .* frames"
+  LABELS unit)
 
 add_executable(integration_tests
   integration/sim_arm_test.cpp
