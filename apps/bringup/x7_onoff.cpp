@@ -5,13 +5,12 @@
 //
 // Usage: x7_onoff [--config path] [--port dev] [hold_seconds]
 
-#include <unistd.h>
-
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
 #include "bringup/write_monitor.hpp"
+#include "common/periodic_loop.hpp"
 #include "common/x7_common.hpp"
 
 int main(int argc, char* argv[]) {
@@ -45,8 +44,9 @@ int main(int argc, char* argv[]) {
     x7::PositionWriteMonitor writes;
     std::vector<rtctrl::dxl::Feedback> fb;
     std::vector<double> hold;
-    constexpr int kCycleUs = 10000;  // 100 Hz
-    for (double t = 0.0; t < hold_s; t += 1e-6 * kCycleUs) {
+    constexpr double kCycleS = 0.01;  // 100 Hz
+    x7::PeriodicLoop hold_loop(kCycleS);
+    while (hold_loop.elapsed() < hold_s) {
       if (!arm.readAll(fb)) {
         std::fprintf(stderr, "read failed\n");
         ok = false;
@@ -61,10 +61,19 @@ int main(int argc, char* argv[]) {
         shutdown.run();
         return 1;
       }
-      usleep(kCycleUs);
+      hold_loop.waitNext();
     }
 
     writes.reportSummary("hold");
+    if (hold_loop.skippedPeriods() > 0) {
+      std::fprintf(stderr,
+                   "hold timing missed %llu period(s), max lateness %.3f "
+                   "ms\n",
+                   static_cast<unsigned long long>(
+                       hold_loop.skippedPeriods()),
+                   1e3 * hold_loop.maxLateness());
+      ok = false;
+    }
     ok = ok && writes.ok();
     std::printf("deactivating (torque off; arm goes limp)...\n");
     const bool clean = shutdown.run();

@@ -7,8 +7,6 @@
 // re-read immediately before the caller acts on the result.
 #pragma once
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +17,7 @@
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "bringup/write_monitor.hpp"
+#include "common/periodic_loop.hpp"
 
 namespace x7 {
 
@@ -51,7 +50,7 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
     res.write_failures = writes.failures();
     return res;
   };
-  constexpr int kCycleUs = 10000;  // 100 Hz
+  constexpr double kCycleS = 0.01;  // 100 Hz
   constexpr double kBuffer = 0.05;  // stay clear of the gate band
 
   std::vector<rtctrl::dxl::Feedback> fb;
@@ -74,13 +73,24 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
   std::printf("moving to the posture in %.1f s (vel limit %.2f rad/s)\n",
               move.duration(), vel);
   std::vector<double> cmd(n);
-  for (double t = 0.0; t <= move.duration(); t += 1e-6 * kCycleUs) {
+  PeriodicLoop move_loop(kCycleS);
+  while (true) {
+    const double t = std::min(move_loop.elapsed(), move.duration());
     move.sample(t, q);
     for (int i = 0; i < n; ++i) cmd[i] = q[i];
     writes.record(arm.writePositions(cmd), "placement");
     if (arm.escalated()) return failed();
     if (!arm.checkDeadman()) return failed();
-    usleep(kCycleUs);
+    if (t >= move.duration()) break;
+    move_loop.waitNext();
+  }
+  if (move_loop.skippedPeriods() > 0) {
+    std::fprintf(stderr,
+                 "placement timing missed %llu period(s), max lateness "
+                 "%.3f ms\n",
+                 static_cast<unsigned long long>(move_loop.skippedPeriods()),
+                 1e3 * move_loop.maxLateness());
+    return failed();
   }
 
   // Goal-offset convergence: command target + accumulated measured
@@ -96,11 +106,21 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
   double prev_worst = 1e9;
   for (int iter = 0; iter <= max_iters; ++iter) {
     // settle the servo loop while keeping the stream alive
-    for (int k = 0; k < 30; ++k) {  // 0.3 s
+    PeriodicLoop settle_loop(kCycleS);
+    while (settle_loop.elapsed() < 0.3) {
       writes.record(arm.writePositions(goal), "placement");
       if (arm.escalated()) return failed();
       if (!arm.checkDeadman()) return failed();
-      usleep(kCycleUs);
+      settle_loop.waitNext();
+    }
+    if (settle_loop.skippedPeriods() > 0) {
+      std::fprintf(stderr,
+                   "placement settle timing missed %llu period(s), max "
+                   "lateness %.3f ms\n",
+                   static_cast<unsigned long long>(
+                       settle_loop.skippedPeriods()),
+                   1e3 * settle_loop.maxLateness());
+      return failed();
     }
     if (!arm.readAll(fb)) return failed();
     res.worst_dev = 0.0;

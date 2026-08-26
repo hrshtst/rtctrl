@@ -8,8 +8,6 @@
 //   joint_index: canonical 0..7 (default 6 = wrist)
 //   delta_rad:   move amplitude (default 0.3, clamped to 0.6)
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +18,7 @@
 #include "rtctrl/model/zvector.hpp"
 #include "bringup/move_simple_common.hpp"
 #include "bringup/write_monitor.hpp"
+#include "common/periodic_loop.hpp"
 #include "common/x7_common.hpp"
 
 int main(int argc, char* argv[]) {
@@ -90,17 +89,28 @@ int main(int argc, char* argv[]) {
     std::printf("moving joint %d by %+.2f rad and back (%.1f s each way)\n",
                 j, endpoint.displacement, out.duration());
 
-    constexpr int kCycleUs = 10000;  // 100 Hz
+    constexpr double kCycleS = 0.01;  // 100 Hz
     std::vector<double> cmd(n);
     x7::PositionWriteMonitor writes;
     auto runLeg = [&](const rtctrl::model::MinJerkTrajectory& leg) {
-      for (double t = 0.0; t <= leg.duration(); t += 1e-6 * kCycleUs) {
+      x7::PeriodicLoop loop(kCycleS);
+      while (true) {
+        const double t = std::min(loop.elapsed(), leg.duration());
         leg.sample(t, q);
         for (int i = 0; i < n; ++i) cmd[i] = q[i];
         writes.record(arm.writePositions(cmd), "move");
         if (arm.escalated()) return false;
         if (!arm.checkDeadman()) return false;
-        usleep(kCycleUs);
+        if (t >= leg.duration()) break;
+        loop.waitNext();
+      }
+      if (loop.skippedPeriods() > 0) {
+        std::fprintf(stderr,
+                     "move timing missed %llu period(s), max lateness "
+                     "%.3f ms\n",
+                     static_cast<unsigned long long>(loop.skippedPeriods()),
+                     1e3 * loop.maxLateness());
+        return false;
       }
       return true;
     };
@@ -110,13 +120,23 @@ int main(int argc, char* argv[]) {
     bool legs_ok = runLeg(out) && runLeg(back);
     // Let the position loop settle at the start posture while continuing
     // to feed both watchdog layers, then verify the measured return.
-    for (int k = 0; legs_ok && k < 30; ++k) {  // 0.3 s
+    x7::PeriodicLoop settle_loop(kCycleS);
+    while (legs_ok && settle_loop.elapsed() < 0.3) {
       writes.record(arm.writePositions(start_values), "return hold");
       if (arm.escalated() || !arm.checkDeadman()) {
         legs_ok = false;
         break;
       }
-      usleep(kCycleUs);
+      settle_loop.waitNext();
+    }
+    if (settle_loop.skippedPeriods() > 0) {
+      std::fprintf(stderr,
+                   "return hold timing missed %llu period(s), max lateness "
+                   "%.3f ms\n",
+                   static_cast<unsigned long long>(
+                       settle_loop.skippedPeriods()),
+                   1e3 * settle_loop.maxLateness());
+      legs_ok = false;
     }
     bool returned = false;
     if (legs_ok) {

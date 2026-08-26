@@ -28,4 +28,31 @@ inline DeadlineAdvance advanceCycleDeadline(
   return result;
 }
 
+// Pure absolute-period schedule. Call closeIteration() after each iteration,
+// sleep until its returned wake_time, then begin the next iteration. Passing
+// time points in makes drift/overrun behavior deterministic in unit tests.
+class PeriodicSchedule {
+ public:
+  PeriodicSchedule(std::chrono::steady_clock::time_point start,
+                   std::chrono::steady_clock::duration period)
+      : start_(start), boundary_(start), period_(period) {}
+
+  double elapsed(std::chrono::steady_clock::time_point now) const {
+    return std::chrono::duration<double>(now - start_).count();
+  }
+
+  DeadlineAdvance closeIteration(
+      std::chrono::steady_clock::time_point finished) {
+    boundary_ += period_;
+    auto result = advanceCycleDeadline(boundary_, finished, period_);
+    boundary_ = result.wake_time;
+    return result;
+  }
+
+ private:
+  std::chrono::steady_clock::time_point start_;
+  std::chrono::steady_clock::time_point boundary_;
+  std::chrono::steady_clock::duration period_;
+};
+
 }  // namespace rtctrl::hw

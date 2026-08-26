@@ -308,7 +308,7 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     const int n = static_cast<int>(placed.hold_goal.size());
-    constexpr int kCycleUs = 10000;  // 100 Hz
+    constexpr double kCycleS = 0.01;  // 100 Hz
 
     std::printf(
         "\nHOLDING the posture in position mode.\n"
@@ -320,6 +320,7 @@ int main(int argc, char* argv[]) {
     // waiting — a silent bus would trip the servo Bus Watchdogs
     (void)n;
     x7::PositionWriteMonitor hold_writes;
+    x7::PeriodicLoop hold_loop(kCycleS);
     while (!enterPressed()) {
       hold_writes.record(arm.writePositions(placed.hold_goal), "hold");
       if (arm.escalated()) {
@@ -332,15 +333,24 @@ int main(int argc, char* argv[]) {
         shutdown.run();
         return 1;
       }
-      usleep(kCycleUs);
+      hold_loop.waitNext();
     }
     hold_writes.reportSummary("hold");
+    if (hold_loop.skippedPeriods() > 0) {
+      std::fprintf(stderr,
+                   "hold timing missed %llu period(s), max lateness %.3f "
+                   "ms\n",
+                   static_cast<unsigned long long>(
+                       hold_loop.skippedPeriods()),
+                   1e3 * hold_loop.maxLateness());
+    }
     const bool clean = shutdown.run();
     std::printf("%s — the arm is limp. Catch the drop and lower "
                 "the arm gently to a resting posture.\n",
                 clean ? "torque off" : "torque off INCOMPLETE — check "
                                        "the arm before proceeding");
-    return clean && hold_writes.ok() ? 0 : 1;
+    return clean && hold_writes.ok() && hold_loop.skippedPeriods() == 0 ? 0
+                                                                       : 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;
