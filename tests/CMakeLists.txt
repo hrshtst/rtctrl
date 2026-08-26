@@ -6,6 +6,7 @@ add_executable(unit_tests
   unit/model_test.cpp
   unit/posture_test.cpp
   unit/trajectory_test.cpp
+  unit/zvs_trajectory_test.cpp
   unit/ptp_planner_test.cpp
   unit/ptp_config_test.cpp
   unit/ik_test.cpp

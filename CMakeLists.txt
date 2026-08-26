@@ -30,6 +30,7 @@ add_library(rtctrl
   src/model/ptp_csv.cpp
   src/model/ptp_planner.cpp
   src/model/trajectory.cpp
+  src/model/zvs_trajectory.cpp
   src/model/zvs_writer.cpp
   src/model/ik_solver.cpp
   src/arm/sim_arm.cpp
