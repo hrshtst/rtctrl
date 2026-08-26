@@ -57,8 +57,13 @@ class CraneX7 {
   struct CycleStats {
     std::uint64_t cycles = 0;
     std::uint64_t overruns = 0;  // cycles that finished past their deadline
+    // Period boundaries deliberately skipped after an overrun. The loop
+    // advances to the next future boundary instead of issuing catch-up IO.
+    std::uint64_t skipped_periods = 0;
     std::uint64_t read_failures = 0;   // cycles whose feedback read failed
     std::uint64_t write_failures = 0;  // cycles whose target write failed
+    double max_cycle_time_s = 0.0;     // read through write/check completion
+    double max_lateness_s = 0.0;       // finish time past scheduled deadline
   };
 
   CraneX7(dxl::PacketIO& io, Config config);

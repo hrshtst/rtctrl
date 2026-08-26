@@ -5,6 +5,7 @@
 
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
+#include "rtctrl/hw/cycle_timing.hpp"
 
 namespace rtctrl::hw {
 
@@ -441,6 +442,11 @@ bool CraneX7::startThread() {
     last_error_ = "startThread: activate first";
     return false;
   }
+  if (!std::isfinite(options_.control_cycle_s) ||
+      options_.control_cycle_s <= 0.0) {
+    last_error_ = "startThread: control cycle must be finite and positive";
+    return false;
+  }
   const auto mode = config_.joints.front().operating_mode;
   for (const auto& joint : config_.joints) {
     if (joint.operating_mode != mode) {
@@ -516,16 +522,28 @@ void CraneX7::threadLoop() {
   int failed_reads_row = 0;
   int failed_writes_row = 0;
   std::uint64_t cycle_number = 0;
+  auto cycle_started = std::chrono::steady_clock::now();
   const auto end_cycle = [&] {
+    const auto finished = std::chrono::steady_clock::now();
+    const auto advance = advanceCycleDeadline(next, finished, cycle);
+    const double cycle_time_s =
+        std::chrono::duration<double>(finished - cycle_started).count();
+    const double lateness_s =
+        std::chrono::duration<double>(advance.lateness).count();
     {
       std::lock_guard<std::mutex> lock(cycle_mutex_);
       ++cycle_seq_;
       ++stats_.cycles;
-      if (std::chrono::steady_clock::now() > next) ++stats_.overruns;
+      if (advance.skipped_periods > 0) ++stats_.overruns;
+      stats_.skipped_periods += advance.skipped_periods;
+      stats_.max_cycle_time_s =
+          std::max(stats_.max_cycle_time_s, cycle_time_s);
+      stats_.max_lateness_s = std::max(stats_.max_lateness_s, lateness_s);
     }
     cycle_cv_.notify_all();
-    std::this_thread::sleep_until(next);
-    next += cycle;
+    std::this_thread::sleep_until(advance.wake_time);
+    next = advance.wake_time + cycle;
+    cycle_started = std::chrono::steady_clock::now();
   };
   while (thread_run_.load()) {
     ++cycle_number;
