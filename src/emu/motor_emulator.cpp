@@ -24,8 +24,17 @@ MotorEmulator::MotorEmulator(const Config& config) : config_(config) {
   poke(reg::kModelNumber, config_.model_number);
   poke(reg::kFirmwareVersion, config_.firmware_version);
   poke(reg::kId, config_.id);
+  poke(reg::kBaudRate, 5);  // 3 Mbps
+  poke(reg::kReturnDelayTime, 250);
+  poke(reg::kSecondaryId, 255);
+  poke(reg::kProtocolType, 2);
   poke(reg::kOperatingMode,
        static_cast<std::uint8_t>(dxl::OperatingMode::kPosition));
+  poke(reg::kMovingThreshold, 10);
+  poke(reg::kTemperatureLimit, 80);
+  poke(reg::kMaxVoltageLimit, 160);
+  poke(reg::kMinVoltageLimit, 95);
+  poke(reg::kPwmLimit, 885);
   poke(reg::kCurrentLimit, 1193);          // XM430-W350 default
   poke(reg::kVelocityLimit, 210);          // ~5.03 rad/s
   poke(reg::kMaxPositionLimit, 4095);
@@ -33,6 +42,10 @@ MotorEmulator::MotorEmulator(const Config& config) : config_(config) {
   poke(reg::kPositionPGain, 800);
   poke(reg::kPositionIGain, 0);
   poke(reg::kPositionDGain, 0);
+  poke(reg::kVelocityIGain, 1920);
+  poke(reg::kVelocityPGain, 100);
+  poke(reg::kShutdown, 52);
+  poke(reg::kStatusReturnLevel, 2);
   poke(reg::kGoalPosition, dxl::kHomePulse);
   poke(reg::kPresentPosition, dxl::kHomePulse);
   poke(reg::kPresentInputVoltage, 120);    // 12.0 V
@@ -137,6 +150,18 @@ void MotorEmulator::resetGoals() {
 
 void MotorEmulator::onWrite(std::uint16_t addr) {
   if (addr == reg::kOperatingMode.addr) {
+    // XM-series firmware resets controller gains and profiles when the
+    // operating mode changes. Model this side effect so configuration-loader
+    // tests cannot accidentally hide unrelated tuning loss.
+    poke(reg::kVelocityIGain, 1920);
+    poke(reg::kVelocityPGain, 100);
+    poke(reg::kPositionDGain, 0);
+    poke(reg::kPositionIGain, 0);
+    poke(reg::kPositionPGain, 800);
+    poke(reg::kFeedforward2ndGain, 0);
+    poke(reg::kFeedforward1stGain, 0);
+    poke(reg::kProfileAcceleration, 0);
+    poke(reg::kProfileVelocity, 0);
     resetGoals();
   } else if (addr == reg::kTorqueEnable.addr) {
     if (table_[reg::kTorqueEnable.addr] != 0) {

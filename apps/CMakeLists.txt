@@ -10,6 +10,11 @@ target_link_libraries(dxl_emu PRIVATE rtctrl::rtctrl)
 
 add_executable(dxl_inspect bus/dxl_inspect.cpp)
 target_link_libraries(dxl_inspect PRIVATE rtctrl::rtctrl)
+target_include_directories(dxl_inspect PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(dxl_load_params bus/dxl_load_params.cpp)
+target_link_libraries(dxl_load_params PRIVATE rtctrl::rtctrl)
+target_include_directories(dxl_load_params PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
         bringup/x7_move_simple bringup/x7_pose gravity/x7_float
