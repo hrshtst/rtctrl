@@ -42,6 +42,61 @@ void validatePose(const CartesianPose& pose, const char* name) {
   }
 }
 
+bool nearNormalizedTime(double first, double second) {
+  return std::fabs(first - second) <=
+         16.0 * std::numeric_limits<double>::epsilon();
+}
+
+template <std::size_t Size>
+void differentiateSamples(std::vector<PtpSample>* samples, double interval,
+                          std::array<double, Size> PtpSample::*position,
+                          std::array<double, Size> PtpSample::*velocity,
+                          std::array<double, Size> PtpSample::*acceleration) {
+  const std::size_t count = samples->size();
+  if (count <= 1 || interval <= 0.0) return;
+  const double inverse_interval = 1.0 / interval;
+  const double inverse_interval_squared = inverse_interval * inverse_interval;
+  for (std::size_t joint = 0; joint < Size; ++joint) {
+    auto value = [&](std::size_t sample) {
+      return ((*samples)[sample].*position)[joint];
+    };
+    if (count == 2) {
+      const double slope = (value(1) - value(0)) * inverse_interval;
+      ((*samples)[0].*velocity)[joint] = slope;
+      ((*samples)[1].*velocity)[joint] = slope;
+      continue;
+    }
+    ((*samples)[0].*velocity)[joint] =
+        (-3.0 * value(0) + 4.0 * value(1) - value(2)) *
+        0.5 * inverse_interval;
+    ((*samples)[count - 1].*velocity)[joint] =
+        (3.0 * value(count - 1) - 4.0 * value(count - 2) +
+         value(count - 3)) *
+        0.5 * inverse_interval;
+    for (std::size_t i = 1; i + 1 < count; ++i) {
+      ((*samples)[i].*velocity)[joint] =
+          (value(i + 1) - value(i - 1)) * 0.5 * inverse_interval;
+      ((*samples)[i].*acceleration)[joint] =
+          (value(i + 1) - 2.0 * value(i) + value(i - 1)) *
+          inverse_interval_squared;
+    }
+    if (count == 3) {
+      ((*samples)[0].*acceleration)[joint] =
+          ((*samples)[1].*acceleration)[joint];
+      ((*samples)[2].*acceleration)[joint] =
+          ((*samples)[1].*acceleration)[joint];
+    } else {
+      ((*samples)[0].*acceleration)[joint] =
+          (2.0 * value(0) - 5.0 * value(1) + 4.0 * value(2) - value(3)) *
+          inverse_interval_squared;
+      ((*samples)[count - 1].*acceleration)[joint] =
+          (2.0 * value(count - 1) - 5.0 * value(count - 2) +
+           4.0 * value(count - 3) - value(count - 4)) *
+          inverse_interval_squared;
+    }
+  }
+}
+
 }  // namespace
 
 PtpProgress ptpProgress(PtpProfile profile, double u,
@@ -52,28 +107,34 @@ PtpProgress ptpProgress(PtpProfile profile, double u,
   u = std::clamp(u, 0.0, 1.0);
   switch (profile) {
     case PtpProfile::Linear:
-      return {u, 1.0};
+      return {u, 1.0, 0.0,
+              nearNormalizedTime(u, 0.0) || nearNormalizedTime(u, 1.0)};
     case PtpProfile::MinimumJerk: {
       const double position =
           u * u * u * (10.0 + u * (-15.0 + 6.0 * u));
       const double velocity = 30.0 * u * u * (1.0 - u) * (1.0 - u);
-      return {position, velocity};
+      const double acceleration = 60.0 * u * (1.0 - u) * (1.0 - 2.0 * u);
+      return {position, velocity, acceleration, false};
     }
     case PtpProfile::Trapezoidal: {
       validateAccelerationFraction(acceleration_fraction);
       const double denominator = acceleration_fraction *
                                  (1.0 - acceleration_fraction);
       if (u < acceleration_fraction) {
-        return {0.5 * u * u / denominator, u / denominator};
+        return {0.5 * u * u / denominator, u / denominator,
+                1.0 / denominator, nearNormalizedTime(u, 0.0)};
       }
       if (u <= 1.0 - acceleration_fraction) {
         return {(u - 0.5 * acceleration_fraction) /
                     (1.0 - acceleration_fraction),
-                1.0 / (1.0 - acceleration_fraction)};
+                1.0 / (1.0 - acceleration_fraction), 0.0,
+                nearNormalizedTime(u, acceleration_fraction) ||
+                    nearNormalizedTime(u, 1.0 - acceleration_fraction)};
       }
       const double remaining = 1.0 - u;
       return {1.0 - 0.5 * remaining * remaining / denominator,
-              remaining / denominator};
+              remaining / denominator, -1.0 / denominator,
+              nearNormalizedTime(u, 1.0)};
     }
   }
   throw std::invalid_argument("unknown PTP profile");
@@ -164,7 +225,10 @@ PtpPlanningError::PtpPlanningError(const std::string& message,
 CartesianPtpPlanner::CartesianPtpPlanner(ChainModel& model,
                                          const JointMap& map,
                                          const std::string& effector_link)
-    : model_(model), map_(map), solver_(model, map, effector_link) {}
+    : model_(model),
+      map_(map),
+      effector_index_(model.linkIndex(effector_link)),
+      solver_(model, map, effector_link) {}
 
 PtpPlan CartesianPtpPlanner::plan(const CartesianPose& start,
                                   const CartesianPose& end,
@@ -213,6 +277,11 @@ PtpPlan CartesianPtpPlanner::plan(const CartesianPose& start,
   }
   plan.samples.reserve(intervals + 1);
 
+  zVec3D translation;
+  zVec3DSub(&end.position, &start.position, &translation);
+  zVec3D rotation;
+  zMat3DError(&end.attitude, &start.attitude, &rotation);
+
   ZVector seed(model_.jointSize());
   ZVector solution(model_.jointSize());
   zVecCopyNC(initial_displacement, seed.get());
@@ -245,21 +314,100 @@ PtpPlan CartesianPtpPlanner::plan(const CartesianPose& start,
 
     PtpSample sample;
     sample.time = time;
+    sample.progress = progress;
+    sample.target = target;
+    sample.ik = result;
+    if (plan.duration > 0.0) {
+      const double progress_rate = progress.velocity / plan.duration;
+      const double progress_acceleration =
+          progress.acceleration / (plan.duration * plan.duration);
+      zVec3DMul(&translation, progress_rate,
+                &sample.target_linear_velocity);
+      zVec3DMul(&translation, progress_acceleration,
+                &sample.target_linear_acceleration);
+      zVec3DMul(&rotation, progress_rate,
+                &sample.target_angular_velocity);
+      zVec3DMul(&rotation, progress_acceleration,
+                &sample.target_angular_acceleration);
+    }
     sample.displacement.resize(model_.jointSize());
     for (int joint = 0; joint < model_.jointSize(); ++joint) {
       sample.displacement[joint] = solution[joint];
     }
-    if (!plan.samples.empty() && plan.interval > 0.0) {
-      const auto& previous = plan.samples.back().displacement;
-      for (int joint = 0; joint < model_.jointSize(); ++joint) {
-        plan.peak_joint_velocity = std::max(
-            plan.peak_joint_velocity,
-            std::fabs(sample.displacement[joint] - previous[joint]) /
-                plan.interval);
-      }
+    for (int joint = 0; joint < kCanonicalDof; ++joint) {
+      sample.joint_position[joint] = solution[map_.rokiOffset(joint)];
     }
     plan.samples.push_back(std::move(sample));
     zVecCopyNC(solution.get(), seed.get());
+  }
+
+  differentiateSamples(&plan.samples, plan.interval,
+                       &PtpSample::joint_position,
+                       &PtpSample::joint_velocity,
+                       &PtpSample::joint_acceleration);
+
+  plan.minimum_joint_limit_margin = std::numeric_limits<double>::infinity();
+  ZVector posture(model_.jointSize());
+  ZVector velocity(kCanonicalDof);
+  ZVector acceleration(kCanonicalDof);
+  ZVector model_velocity(model_.jointSize());
+  ZVector model_acceleration(model_.jointSize());
+  zVec6D zero_gravity;
+  zVec6DZero(&zero_gravity);
+  for (auto& sample : plan.samples) {
+    for (int i = 0; i < model_.jointSize(); ++i) {
+      posture[i] = sample.displacement[i];
+    }
+    for (int i = 0; i < kCanonicalDof; ++i) {
+      velocity[i] = sample.joint_velocity[i];
+      acceleration[i] = sample.joint_acceleration[i];
+      const double lower = model_.jointMin(map_.linkId(i));
+      const double upper = model_.jointMax(map_.linkId(i));
+      sample.joint_limit_margin[i] =
+          std::min(sample.joint_position[i] - lower,
+                   upper - sample.joint_position[i]);
+      plan.minimum_joint_limit_margin =
+          std::min(plan.minimum_joint_limit_margin,
+                   sample.joint_limit_margin[i]);
+      plan.peak_joint_velocity =
+          std::max(plan.peak_joint_velocity,
+                   std::fabs(sample.joint_velocity[i]));
+      plan.peak_joint_acceleration =
+          std::max(plan.peak_joint_acceleration,
+                   std::fabs(sample.joint_acceleration[i]));
+    }
+    map_.expand(velocity.get(), model_velocity.get());
+    map_.expand(acceleration.get(), model_acceleration.get());
+    model_.fk(posture.get());
+    rkChainSetJointRateAll(model_.chain(), model_velocity.get(),
+                           model_acceleration.get());
+    // Evaluate pure kinematics: zero parent velocity and acceleration, with
+    // no gravitational acceleration folded into the reported TCP state.
+    rkLinkUpdateRate(rkChainRoot(model_.chain()), &zero_gravity,
+                     &zero_gravity);
+
+    sample.achieved.position =
+        *rkChainLinkWldPos(model_.chain(), effector_index_);
+    sample.achieved.attitude =
+        *rkChainLinkWldAtt(model_.chain(), effector_index_);
+    const zMat3D* world_attitude =
+        rkChainLinkWldAtt(model_.chain(), effector_index_);
+    zMulMat3DVec3D(world_attitude,
+                   rkChainLinkLinVel(model_.chain(), effector_index_),
+                   &sample.achieved_linear_velocity);
+    zMulMat3DVec3D(world_attitude,
+                   rkChainLinkLinAcc(model_.chain(), effector_index_),
+                   &sample.achieved_linear_acceleration);
+    zMulMat3DVec3D(world_attitude,
+                   rkChainLinkAngVel(model_.chain(), effector_index_),
+                   &sample.achieved_angular_velocity);
+    zMulMat3DVec3D(world_attitude,
+                   rkChainLinkAngAcc(model_.chain(), effector_index_),
+                   &sample.achieved_angular_acceleration);
+    zVec3DSub(&sample.target.position, &sample.achieved.position,
+              &sample.position_error);
+    zMat3DError(&sample.target.attitude, &sample.achieved.attitude,
+                &sample.attitude_error);
   }
   return plan;
 }

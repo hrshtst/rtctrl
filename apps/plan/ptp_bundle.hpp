@@ -10,6 +10,7 @@ namespace x7::ptp {
 struct PreparedBundle {
   std::filesystem::path config_path;
   std::filesystem::path output_path;
+  std::filesystem::path diagnostics_path;
 };
 
 // Owns a sibling staging directory and publishes it without replacing an

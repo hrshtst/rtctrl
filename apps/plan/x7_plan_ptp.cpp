@@ -4,6 +4,7 @@
 //
 // Usage: x7_plan_ptp --config PLAN.toml [overrides]
 //   --output FILE
+//   --diagnostics FILE | --no-diagnostics
 //   --bundle NEW_DIRECTORY
 //   --motion-time SEC
 //   --max-linear-velocity M/S --max-angular-velocity RAD/S
@@ -19,6 +20,7 @@
 #include "plan/ptp_config.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/ptp_csv.hpp"
 #include "rtctrl/model/ptp_planner.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
@@ -37,6 +39,7 @@ void usage() {
   std::printf(
       "usage: x7_plan_ptp --config PLAN.toml [options]\n"
       "  --output FILE\n"
+      "  --diagnostics FILE | --no-diagnostics\n"
       "  --bundle NEW_DIRECTORY  create a portable, immutable archive\n"
       "  --motion-time SEC\n"
       "  --max-linear-velocity M/S --max-angular-velocity RAD/S\n"
@@ -89,6 +92,8 @@ int main(int argc, char* argv[]) {
       // output remains invocation-relative for ordinary configs. Bundle
       // creation owns its destination explicitly inside the staging tree.
       config.output_path = prepared.output_path;
+      config.diagnostics_path = prepared.diagnostics_path;
+      config.diagnostics_enabled = true;
     }
 
     model::ChainModel chain(config.model_path.string());
@@ -121,9 +126,13 @@ int main(int argc, char* argv[]) {
       }
       written_frames = writer.frames();
     }
+    if (config.diagnostics_enabled) {
+      model::writePtpCsv(config.diagnostics_path.string(), plan);
+    }
 
     std::string display_model = config.model_path.string();
     std::string display_output = config.output_path.string();
+    std::string display_diagnostics = config.diagnostics_path.string();
     if (bundle) {
       x7::ptp::writeBundleManifest(
           bundle->staging(), rtctrl::version(), x7::gitrev::kBuildSha,
@@ -132,6 +141,8 @@ int main(int argc, char* argv[]) {
       display_model =
           (bundle->target() / "model" / config.model_path.filename()).string();
       display_output = (bundle->target() / "trajectory.zvs").string();
+      display_diagnostics =
+          (bundle->target() / "trajectory.csv").string();
       std::printf("created bundle %s\n", bundle->target().string().c_str());
     }
 
@@ -152,16 +163,22 @@ int main(int argc, char* argv[]) {
             : 0.0;
     std::printf("wrote %d frames to %s\n", written_frames,
                 display_output.c_str());
+    if (config.diagnostics_enabled) {
+      std::printf("wrote trajectory diagnostics to %s\n",
+                  display_diagnostics.c_str());
+    }
     std::printf(
         "profile: %s, duration: %.6g s, interval: %.6g s\n"
         "peak Cartesian speed: %.6g m/s, %.6g rad/s\n"
         "IK warnings: %zu, worst residuals: %.6g m / %.6g rad\n"
-        "peak sampled joint speed: %.6g rad/s\n"
+        "peak sampled joint speed/acceleration: %.6g rad/s / %.6g rad/s^2\n"
+        "minimum joint-limit margin: %.6g rad\n"
         "view: rk_anim %s %s\n",
         x7::ptp::profileName(config.options.profile), plan.duration,
         plan.interval, linear_speed, angular_speed, plan.ik_warnings.size(),
         plan.worst_position_residual, plan.worst_attitude_residual,
-        plan.peak_joint_velocity, display_model.c_str(),
+        plan.peak_joint_velocity, plan.peak_joint_acceleration,
+        plan.minimum_joint_limit_margin, display_model.c_str(),
         display_output.c_str());
     return 0;
   } catch (const model::PtpPlanningError& error) {

@@ -28,6 +28,9 @@ namespace model = rtctrl::model;
 struct Config {
   fs::path model_path;
   fs::path output_path = "ptp.zvs";
+  fs::path diagnostics_path = "ptp.csv";
+  bool diagnostics_enabled = true;
+  bool diagnostics_path_explicit = false;
   std::string end_effector = "crane_x7_tcp_link";
   model::CartesianPose start;
   model::CartesianPose end;
@@ -43,6 +46,7 @@ struct Cli {
   std::string error;
   fs::path config_path;
   std::optional<fs::path> output_path;
+  std::optional<fs::path> diagnostics_path;
   std::optional<fs::path> bundle_path;
   std::optional<double> motion_time;
   std::optional<double> max_linear_velocity;
@@ -50,6 +54,7 @@ struct Cli {
   std::optional<double> sample_rate;
   std::optional<model::PtpProfile> profile;
   std::optional<bool> strict_ik;
+  std::optional<bool> diagnostics_enabled;
 };
 
 inline void rejectUnknown(const toml::table& table,
@@ -138,6 +143,16 @@ inline fs::path withZvsExtension(fs::path path) {
   return path;
 }
 
+inline fs::path withCsvExtension(fs::path path) {
+  if (path.extension() != ".csv") path += ".csv";
+  return path;
+}
+
+inline fs::path defaultDiagnosticsPath(fs::path output_path) {
+  output_path.replace_extension(".csv");
+  return output_path;
+}
+
 inline Config loadConfig(const fs::path& config_path) {
   toml::table root;
   try {
@@ -149,7 +164,7 @@ inline Config loadConfig(const fs::path& config_path) {
   }
   rejectUnknown(root,
                 {"model", "output", "end_effector", "trajectory", "start",
-                 "end", "ik"},
+                 "end", "ik", "diagnostics"},
                 "root");
 
   Config config;
@@ -172,6 +187,30 @@ inline Config loadConfig(const fs::path& config_path) {
     throw std::runtime_error("PTP config: output must be a path string");
   }
   config.output_path = withZvsExtension(config.output_path);
+  config.diagnostics_path = defaultDiagnosticsPath(config.output_path);
+
+  if (const auto* diagnostics = root["diagnostics"].as_table()) {
+    rejectUnknown(*diagnostics, {"enabled", "output"}, "diagnostics");
+    if (const auto enabled = (*diagnostics)["enabled"].value<bool>()) {
+      config.diagnostics_enabled = *enabled;
+    } else if ((*diagnostics)["enabled"]) {
+      throw std::runtime_error(
+          "PTP config: diagnostics.enabled must be a boolean");
+    }
+    if (const auto output = (*diagnostics)["output"].value<std::string>()) {
+      if (output->empty()) {
+        throw std::runtime_error(
+            "PTP config: diagnostics.output must not be empty");
+      }
+      config.diagnostics_path = withCsvExtension(*output);
+      config.diagnostics_path_explicit = true;
+    } else if ((*diagnostics)["output"]) {
+      throw std::runtime_error(
+          "PTP config: diagnostics.output must be a path string");
+    }
+  } else if (root["diagnostics"]) {
+    throw std::runtime_error("PTP config: diagnostics must be a table");
+  }
 
   if (const auto effector = root["end_effector"].value<std::string>()) {
     if (effector->empty()) {
@@ -315,6 +354,14 @@ inline Cli parseCli(int argc, char* argv[]) {
     } else if (arg == "--output") {
       const char* value = requireValue("--output");
       if (value) cli.output_path = fs::path(value);
+    } else if (arg == "--diagnostics") {
+      const char* value = requireValue("--diagnostics");
+      if (value) {
+        cli.diagnostics_path = fs::path(value);
+        cli.diagnostics_enabled = true;
+      }
+    } else if (arg == "--no-diagnostics") {
+      cli.diagnostics_enabled = false;
     } else if (arg == "--bundle") {
       const char* value = requireValue("--bundle");
       if (value) cli.bundle_path = fs::path(value);
@@ -348,14 +395,29 @@ inline Cli parseCli(int argc, char* argv[]) {
   if (!cli.help && cli.config_path.empty()) {
     return cliError("--config PLAN.toml is required");
   }
-  if (cli.bundle_path && cli.output_path) {
-    return cliError("--bundle and --output are exclusive");
+  if (cli.bundle_path && (cli.output_path || cli.diagnostics_path)) {
+    return cliError("--bundle owns --output and --diagnostics");
+  }
+  if (cli.bundle_path && cli.diagnostics_enabled == false) {
+    return cliError("--bundle always includes diagnostics");
   }
   return cli;
 }
 
 inline void applyOverrides(const Cli& cli, Config* config) {
-  if (cli.output_path) config->output_path = withZvsExtension(*cli.output_path);
+  if (cli.output_path) {
+    config->output_path = withZvsExtension(*cli.output_path);
+    if (!config->diagnostics_path_explicit && !cli.diagnostics_path) {
+      config->diagnostics_path = defaultDiagnosticsPath(config->output_path);
+    }
+  }
+  if (cli.diagnostics_path) {
+    config->diagnostics_path = withCsvExtension(*cli.diagnostics_path);
+    config->diagnostics_path_explicit = true;
+  }
+  if (cli.diagnostics_enabled) {
+    config->diagnostics_enabled = *cli.diagnostics_enabled;
+  }
   if (cli.motion_time) config->options.timing.motion_time = cli.motion_time;
   if (cli.max_linear_velocity) {
     config->options.timing.max_linear_velocity = cli.max_linear_velocity;
@@ -420,11 +482,15 @@ void writeTomlArray(std::ostream& output,
 
 inline std::string serializeEffectiveConfig(
     const Config& config, const fs::path& model_path,
-    const fs::path& output_path) {
+    const fs::path& output_path, const fs::path& diagnostics_path) {
   std::ostringstream output;
   output << "model = " << quoteTomlString(model_path.generic_string())
          << "\noutput = " << quoteTomlString(output_path.generic_string())
          << "\nend_effector = " << quoteTomlString(config.end_effector)
+         << "\n\n[diagnostics]\nenabled = "
+         << (config.diagnostics_enabled ? "true" : "false")
+         << "\noutput = "
+         << quoteTomlString(diagnostics_path.generic_string())
          << "\n\n[trajectory]\nprofile = "
          << quoteTomlString(profileName(config.options.profile))
          << "\nsample_rate = "

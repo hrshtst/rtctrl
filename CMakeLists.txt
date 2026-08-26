@@ -27,6 +27,7 @@ add_library(rtctrl
   src/model/chain_model.cpp
   src/model/joint_map.cpp
   src/model/posture.cpp
+  src/model/ptp_csv.cpp
   src/model/ptp_planner.cpp
   src/model/trajectory.cpp
   src/model/zvs_writer.cpp

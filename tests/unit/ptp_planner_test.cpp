@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <string>
 
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/ptp_csv.hpp"
 #include "rtctrl/model/ptp_planner.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
@@ -49,6 +52,13 @@ TEST_CASE("PTP progress laws have the requested boundary behavior",
   CHECK(ptpProgress(PtpProfile::Trapezoidal, 1.0).velocity == Approx(0.0));
   CHECK(ptpProgress(PtpProfile::MinimumJerk, 0.0).velocity == Approx(0.0));
   CHECK(ptpProgress(PtpProfile::MinimumJerk, 1.0).velocity == Approx(0.0));
+  CHECK(ptpProgress(PtpProfile::MinimumJerk, 0.25).acceleration ==
+        Approx(5.625));
+  CHECK_FALSE(
+      ptpProgress(PtpProfile::MinimumJerk, 0.0).derivative_discontinuity);
+  CHECK(ptpProgress(PtpProfile::Linear, 0.0).derivative_discontinuity);
+  CHECK(ptpProgress(PtpProfile::Trapezoidal, 0.2)
+            .derivative_discontinuity);
 }
 
 TEST_CASE("PTP timing uses the longest requested constraint",
@@ -109,6 +119,15 @@ TEST_CASE("Cartesian PTP planner solves every sample by continuation",
   CHECK(plan_result.duration == Approx(0.2));
   CHECK(plan_result.interval == Approx(0.05));
   CHECK(plan_result.ik_warnings.empty());
+  CHECK(plan_result.samples.front().target_linear_velocity.c.x ==
+        Approx(0.0));
+  CHECK(plan_result.samples[2].target_linear_velocity.c.x ==
+        Approx(0.09375));
+  CHECK(plan_result.samples[2].target_linear_acceleration.c.x ==
+        Approx(0.0).margin(1e-12));
+  CHECK(plan_result.peak_joint_velocity > 0.0);
+  CHECK(plan_result.peak_joint_acceleration > 0.0);
+  CHECK(plan_result.minimum_joint_limit_margin > 0.0);
 
   const int tcp = model.linkIndex("crane_x7_tcp_link");
   for (std::size_t i = 0; i < plan_result.samples.size(); ++i) {
@@ -124,6 +143,13 @@ TEST_CASE("Cartesian PTP planner solves every sample by continuation",
           Approx(expected_x).margin(1e-4));
     CHECK(plan_result.samples[i].displacement[map.rokiOffsetFingerB()] ==
           Approx(plan_result.samples[i].displacement[map.rokiOffset(7)]));
+    CHECK(zVec3DNorm(&plan_result.samples[i].position_error) < 1e-4);
+    CHECK(zVec3DNorm(&plan_result.samples[i].attitude_error) < 1e-3);
+    for (int joint = 0; joint < kCanonicalDof; ++joint) {
+      CHECK(std::isfinite(plan_result.samples[i].joint_velocity[joint]));
+      CHECK(std::isfinite(plan_result.samples[i].joint_acceleration[joint]));
+      CHECK(plan_result.samples[i].joint_limit_margin[joint] > 0.0);
+    }
   }
 }
 
@@ -204,4 +230,19 @@ TEST_CASE("Cartesian PTP output is a parseable 9-DOF zvs sequence",
   CHECK(frames == static_cast<int>(plan.samples.size()));
   zSeqFree(&sequence);
   std::remove(path);
+
+  const char* csv_path = "build/test_ptp_plan.csv";
+  writePtpCsv(csv_path, plan);
+  std::ifstream csv(csv_path);
+  std::string header;
+  REQUIRE(std::getline(csv, header));
+  CHECK(header.find("target_quat_w") != std::string::npos);
+  CHECK(header.find("fk_omega_x_rad_s") != std::string::npos);
+  CHECK(header.find("ddq7_rad_s2") != std::string::npos);
+  std::size_t rows = 0;
+  std::string row;
+  while (std::getline(csv, row)) ++rows;
+  CHECK(rows == plan.samples.size());
+  csv.close();
+  std::remove(csv_path);
 }

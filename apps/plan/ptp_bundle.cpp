@@ -327,13 +327,16 @@ PreparedBundle prepareBundle(const fs::path& staging,
   if (!output) {
     throw std::runtime_error("cannot write " + bundled_config.string());
   }
-  output << serializeEffectiveConfig(effective_config, bundled_model,
-                                     "trajectory.zvs");
+  Config bundled_effective = effective_config;
+  bundled_effective.diagnostics_enabled = true;
+  output << serializeEffectiveConfig(bundled_effective, bundled_model,
+                                     "trajectory.zvs", "trajectory.csv");
   output.close();
   if (!output) {
     throw std::runtime_error("cannot finish " + bundled_config.string());
   }
-  return {bundled_config, staging / "trajectory.zvs"};
+  return {bundled_config, staging / "trajectory.zvs",
+          staging / "trajectory.csv"};
 }
 
 void writeBundleManifest(const fs::path& root,

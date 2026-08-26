@@ -2,6 +2,7 @@
 
 #include <zeo/zeo_ep.h>
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
@@ -18,6 +19,10 @@ enum class PtpProfile { Linear, Trapezoidal, MinimumJerk };
 struct PtpProgress {
   double position = 0.0;
   double velocity = 0.0;  // derivative with respect to normalized time
+  double acceleration = 0.0;  // second derivative wrt normalized time
+  // True where the ideal profile has no unique two-sided derivative. The
+  // reported velocity/acceleration is the profile's in-motion convention.
+  bool derivative_discontinuity = false;
 };
 
 // Scalar path progress on normalized time u. Values outside [0, 1] clamp to
@@ -68,7 +73,26 @@ struct PtpPlanOptions {
 
 struct PtpSample {
   double time = 0.0;
+  PtpProgress progress;
   std::vector<double> displacement;  // model coordinates
+  CartesianPose target;
+  CartesianPose achieved;
+  zVec3D target_linear_velocity{};      // world frame [m/s]
+  zVec3D target_linear_acceleration{};  // world frame [m/s^2]
+  zVec3D target_angular_velocity{};     // world frame [rad/s]
+  zVec3D target_angular_acceleration{};  // world frame [rad/s^2]
+  zVec3D achieved_linear_velocity{};      // world frame [m/s]
+  zVec3D achieved_linear_acceleration{};  // world frame [m/s^2]
+  zVec3D achieved_angular_velocity{};     // world frame [rad/s]
+  zVec3D achieved_angular_acceleration{};  // world frame [rad/s^2]
+  zVec3D position_error{};  // target - achieved, world frame [m]
+  zVec3D attitude_error{};  // achieved-to-target rotation, world frame [rad]
+  std::array<double, kCanonicalDof> joint_position{};
+  // Second-order finite-difference estimates of the sampled joint path.
+  std::array<double, kCanonicalDof> joint_velocity{};
+  std::array<double, kCanonicalDof> joint_acceleration{};
+  std::array<double, kCanonicalDof> joint_limit_margin{};
+  IkResult ik;
 };
 
 struct PtpIkWarning {
@@ -85,6 +109,8 @@ struct PtpPlan {
   double worst_position_residual = 0.0;
   double worst_attitude_residual = 0.0;
   double peak_joint_velocity = 0.0;
+  double peak_joint_acceleration = 0.0;
+  double minimum_joint_limit_margin = 0.0;
 };
 
 class PtpPlanningError : public std::runtime_error {
@@ -117,6 +143,7 @@ class CartesianPtpPlanner {
  private:
   ChainModel& model_;
   const JointMap& map_;
+  int effector_index_;
   IkSolver solver_;
 };
 

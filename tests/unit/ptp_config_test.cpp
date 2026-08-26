@@ -51,6 +51,8 @@ TEST_CASE("PTP config applies defaults and resolves its model path",
   CHECK(config.model_path ==
         fs::absolute("models/crane_x7/crane_x7.ztk").lexically_normal());
   CHECK(config.output_path == fs::path("ptp.zvs"));
+  CHECK(config.diagnostics_path == fs::path("ptp.csv"));
+  CHECK(config.diagnostics_enabled);
   CHECK(config.end_effector == "crane_x7_tcp_link");
   CHECK(config.options.sample_rate == Approx(100.0));
   CHECK(config.options.profile == rtctrl::model::PtpProfile::MinimumJerk);
@@ -175,8 +177,33 @@ TEST_CASE("PTP bundle CLI owns its output location", "[ptp][config][bundle]") {
     const auto cli = x7::ptp::parseCli(
         static_cast<int>(sizeof(raw) / sizeof(raw[0])), argv);
     CHECK_FALSE(cli.ok);
-    CHECK(cli.error.find("exclusive") != std::string::npos);
+    CHECK(cli.error.find("owns") != std::string::npos);
   }
+
+  SECTION("bundle diagnostics cannot be disabled") {
+    const char* raw[] = {"x7_plan_ptp", "--config", "plan.toml", "--bundle",
+                         "archive/run-1", "--no-diagnostics"};
+    auto argv = const_cast<char**>(raw);
+    const auto cli = x7::ptp::parseCli(
+        static_cast<int>(sizeof(raw) / sizeof(raw[0])), argv);
+    CHECK_FALSE(cli.ok);
+    CHECK(cli.error.find("always includes") != std::string::npos);
+  }
+}
+
+TEST_CASE("PTP diagnostics follow output unless explicitly configured",
+          "[ptp][config][diagnostics]") {
+  ConfigFile source(kMinimalConfig);
+  auto config = x7::ptp::loadConfig(source.path());
+  const char* raw[] = {"x7_plan_ptp", "--config", "plan.toml", "--output",
+                       "motion"};
+  auto argv = const_cast<char**>(raw);
+  const auto cli = x7::ptp::parseCli(
+      static_cast<int>(sizeof(raw) / sizeof(raw[0])), argv);
+  REQUIRE(cli.ok);
+  x7::ptp::applyOverrides(cli, &config);
+  CHECK(config.output_path == fs::path("motion.zvs"));
+  CHECK(config.diagnostics_path == fs::path("motion.csv"));
 }
 
 TEST_CASE("effective PTP config serializes overrides and portable paths",
@@ -189,10 +216,13 @@ TEST_CASE("effective PTP config serializes overrides and portable paths",
   config.options.strict_ik = false;
 
   const auto serialized = x7::ptp::serializeEffectiveConfig(
-      config, "model/copied.ztk", "trajectory.zvs");
+      config, "model/copied.ztk", "trajectory.zvs", "trajectory.csv");
   const auto table = toml::parse(serialized);
   CHECK(table["model"].value_or(std::string()) == "model/copied.ztk");
   CHECK(table["output"].value_or(std::string()) == "trajectory.zvs");
+  CHECK(table["diagnostics"]["enabled"].value_or(false));
+  CHECK(table["diagnostics"]["output"].value_or(std::string()) ==
+        "trajectory.csv");
   CHECK(table["trajectory"]["profile"].value_or(std::string()) == "linear");
   CHECK(table["trajectory"]["sample_rate"].value_or(0.0) == Approx(250.0));
   CHECK(table["trajectory"]["motion_time"].value_or(0.0) == Approx(1.25));
