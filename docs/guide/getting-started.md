@@ -61,11 +61,17 @@ and pinned automatically.
 ./build/apps/dxl_emu --link /tmp/ttyDXL &     # wire-level emulator
 ./build/apps/dxl_inspect --port /tmp/ttyDXL scan
 ./build/apps/dxl_inspect --port /tmp/ttyDXL dump 8
+./build/apps/dxl_inspect --port /tmp/ttyDXL \
+  dump-params /tmp/x7-params.toml 2 3
+./build/apps/dxl_load_params --port /tmp/ttyDXL /tmp/x7-params.toml 2
 ```
 
 Every hardware `x7_*` app accepts the same `--port /tmp/ttyDXL`: the
 entire hardware workflow can be rehearsed offline. (The `*_sim` twins
 run pure simulation and take no bus arguments.)
+The parameter loader skips unchanged values, so loading an unedited dump is a
+readback-verified no-op. See [usage](usage.md#backing-up-and-restoring-motor-parameters)
+for selective edits and the safety contract.
 
 **2. Torque cycle and a first motion against the emulator:**
 

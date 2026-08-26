@@ -53,6 +53,10 @@ Power on the arm, connect USB, then:
    (id 2 = shoulder pan … id 8 = wrist rotate, id 9 = gripper), and
    check `firmware_version >= 38` on every one (Bus Watchdog support:
    activation refuses older firmware).
+   Record a machine-readable baseline before changing parameters:
+   `./build/apps/dxl_inspect --port /dev/ttyUSB0 dump-params x7-baseline.toml`.
+   The output contains raw servo units and should be kept with the hardware
+   service record, not committed as a universal robot configuration.
 
 2. **Read streaming** (no torque, safe):
    `./build/apps/x7_read 20`
@@ -74,6 +78,12 @@ Power on the arm, connect USB, then:
    the entire change. The before/after parameter reads are mandatory,
    and success requires every requested value to read back exactly on
    every servo. Stop on any nonzero exit or readback mismatch.
+   For a reviewed multi-parameter change, edit a copy of the baseline so that
+   each `[motor.parameters]` table contains only the intended keys, then use
+   `./build/apps/dxl_load_params --port /dev/ttyUSB0 <file>`. The batch loader
+   applies the same torque-off and exact-readback gates across all selected
+   motors before writing anything. Communication and startup-configuration
+   fields are audit-only and cannot be changed by this loader.
 
 5. **Watchdog drill** (recommended once, before any motion): run
    `./build/apps/x7_onoff 30`, then pull the USB cable mid-hold.

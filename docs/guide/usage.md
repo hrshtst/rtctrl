@@ -208,6 +208,55 @@ The `dxl_inspect` app is this API as a CLI. In tests, substitute
 `emu::FakePacketIO` for `Port` behind the same `PacketIO` interface,
 or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
 
+### Backing up and restoring motor parameters
+
+`dxl_inspect dump-params` captures the configuration and tuning
+XM430-W350/XM540-W270 registers in a versioned TOML document. With no ids it
+scans the complete Protocol 2.0 id range; trailing ids select only those
+motors. Use `-` instead of a filename for machine-readable standard output.
+
+```sh
+# All motors found on the bus
+./build/apps/dxl_inspect --port /dev/ttyUSB0 dump-params x7-params.toml
+
+# Only ids 2, 3, and 8
+./build/apps/dxl_inspect --port /dev/ttyUSB0 \
+  dump-params selected-params.toml 2 3 8
+```
+
+Each `[[motor]]` records its id, model number, firmware version, and a
+`[motor.parameters]` table. Values are raw control-table integers. The dump
+includes communication settings for audit completeness, but the loader treats
+`baud_rate`, `secondary_id`, `protocol_type`, `status_return_level`, and
+`startup_configuration` as dump-only. The communication fields can remove the
+response path needed to verify and roll back the transaction. Startup
+configuration can enable torque automatically after power-on, which is outside
+this loader's torque-off contract.
+
+To apply a file, leave only the parameter keys that should be enforced, edit
+their values, and run:
+
+```sh
+# Apply entries for every motor in the file
+./build/apps/dxl_load_params --port /dev/ttyUSB0 x7-params.toml
+
+# Apply only the id 2 entry
+./build/apps/dxl_load_params --port /dev/ttyUSB0 x7-params.toml 2
+```
+
+The loader parses and validates the whole file before opening the bus. It then
+requires every selected motor to match the recorded model and report torque
+off, and completes all preflight reads before its first write. Unchanged values
+are skipped to avoid EEPROM wear. Changed values are read back exactly. A
+failure triggers best-effort rollback and reports whether rollback was fully
+verified. Operating-mode changes reset gains and profiles in XM firmware, so
+the loader snapshots and restores any such fields omitted from the file.
+
+The document is intentionally strict: unknown keys, duplicate ids, invalid
+register widths, and unsupported operating-mode values are errors. Runtime
+state such as torque enable, Bus Watchdog, goals, telemetry, LEDs, and indirect
+address mappings is not part of a parameter dump.
+
 ## Testing your additions
 
 - Pure logic → Catch2 unit test (`tests/unit/`), label `unit`.

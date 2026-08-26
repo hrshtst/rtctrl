@@ -78,7 +78,8 @@ for dynamics), never on `dxl`/`hw`/`emu` directly.
 
 ```
 include/rtctrl/{dxl,model,arm,hw,emu}/   public headers (src/ mirrors)
-apps/         sources by domain: bus/ (dxl_emu, dxl_inspect),
+apps/         sources by domain: bus/ (dxl_emu, dxl_inspect,
+              dxl_load_params),
               bringup/ (x7_onoff, x7_read, x7_set_param,
               x7_move_simple, x7_pose), gravity/ (x7_float,
               x7_gravity_demo), track/ (x7_track, x7_track_sim),
