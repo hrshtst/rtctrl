@@ -63,6 +63,8 @@ class EnterReader {
     if (enabled_) ::fcntl(STDIN_FILENO, F_SETFL, original_flags_);
   }
 
+  bool ready() const { return enabled_; }
+
   bool pressed() {
     if (!enabled_) return false;
     char bytes[64];
@@ -131,6 +133,11 @@ int main(int argc, char* argv[]) {
     hw::CraneX7::CycleStats stats;
     bool released = false;
     {
+      EnterReader enter;
+      if (config.finalization.wait_time_s == 0.0 && !enter.ready()) {
+        throw std::runtime_error(
+            "cannot make stdin nonblocking for the final Enter hold");
+      }
       follow::FollowCsvLog log(config.output.hardware_log.string());
       std::printf("bus: %s @ %d baud, %zu joints\n", hardware.port.c_str(),
                   hardware.baudrate, hardware.joints.size());
@@ -158,7 +165,6 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("activation failed: " + crane.lastError());
       }
       x7::ShutdownGuard shutdown(crane);
-      EnterReader enter;
       follow::FollowRun run(robot, reference, config, false, &log,
                             [&enter] { return enter.pressed(); });
       result = run.run();

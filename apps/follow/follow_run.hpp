@@ -415,8 +415,10 @@ class FollowRun {
     const long cycles = static_cast<long>(std::ceil(deadline / robot_.dt()));
     if (interactive) {
       std::fprintf(stderr,
-                   "tracking complete: support the arm from below, then "
+                   "%s: support the arm from below, then "
                    "press Enter to disable torque (timeout %.1f s)\n",
+                   phase == Phase::Finalizing ? "tracking complete"
+                                              : "run aborted",
                    deadline);
     }
     for (long i = 0; i < cycles; ++i) {
