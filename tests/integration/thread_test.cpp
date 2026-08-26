@@ -112,6 +112,35 @@ TEST_CASE("RealArm drives the bridge through the wire protocol",
   REQUIRE(arm.deactivate());
 }
 
+TEST_CASE("RealArm rejects a command computed across feedback deadlines",
+          "[thread][timing][safety]") {
+  auto config = hw::Config::load("config/crane_x7.toml");
+  BusFixture fixture(config);
+  config.port = fixture.path();
+  dxl::Port port(config.port, config.baudrate);
+  hw::CraneX7 hw_arm(port, config);
+  rtctrl::arm::RealArm arm(hw_arm);
+
+  REQUIRE(arm.setMode(rtctrl::arm::ControlMode::Position));
+  REQUIRE(arm.activate());
+  const auto goal_before = fixture.bus().find(2)->peek(reg::kGoalPosition);
+
+  struct SlowController : rtctrl::arm::Controller {
+    void update(const rtctrl::arm::JointState& state,
+                rtctrl::arm::JointCommand& cmd, double) override {
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      cmd.mode = rtctrl::arm::ControlMode::Position;
+      zVecCopyNC(state.q.get(), cmd.q.get());
+      zVecElemNC(cmd.q.get(), 0) = 1.0;
+    }
+  } controller;
+
+  CHECK_FALSE(rtctrl::arm::run(arm, controller, 0.2));
+  CHECK(hw_arm.cycleStats().stale_submissions == 1);
+  CHECK(fixture.bus().find(2)->peek(reg::kGoalPosition) == goal_before);
+  REQUIRE(arm.deactivate());
+}
+
 TEST_CASE("stopThread zeroes current goals", "[thread]") {
   // The current-mode twin of the velocity case below — the zeroing
   // exists for both modes but only velocity was pinned (review

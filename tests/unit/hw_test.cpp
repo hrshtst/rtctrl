@@ -145,6 +145,65 @@ TEST_CASE("position commands clamp to servo limits minus margin", "[hw]") {
   CHECK(goal_rad == Approx(servo_hi - 0.1).margin(2e-3));
 }
 
+TEST_CASE("tagged targets reject stale feedback without replacing the goal",
+          "[hw][timing][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  double now = 10.0;
+  arm.setTimeSource([&now] { return now; });
+  REQUIRE(arm.activate());
+
+  const auto source = arm.lastFeedbackStamped();
+  std::vector<double> accepted(8, 0.2);
+  REQUIRE(arm.setTargetPositionsFromFeedback(accepted, source.seq,
+                                             source.time));
+
+  // A newer acquisition makes the original source sequence stale.
+  std::vector<dxl::Feedback> fb;
+  now += 0.005;
+  REQUIRE(arm.readAll(fb));
+  std::vector<double> rejected(8, 0.8);
+  CHECK_FALSE(arm.setTargetPositionsFromFeedback(rejected, source.seq,
+                                                 source.time));
+  CHECK(arm.lastError().find("stale") != std::string::npos);
+  CHECK(arm.cycleStats().stale_submissions == 1);
+
+  // Starting the producer after the rejection writes the last ACCEPTED
+  // target, proving the rejected value never replaced it.
+  REQUIRE(arm.startThread());
+  REQUIRE(arm.waitCycle(0) > 0);
+  rtctrl::arm::CommandSnapshot snapshot;
+  arm.lastFeedbackStamped(&snapshot);
+  REQUIRE(snapshot.applied.valid);
+  CHECK(snapshot.applied.source_feedback_seq == source.seq);
+  CHECK(snapshot.applied.source_feedback_time == Approx(source.time));
+  const auto expected = bus.find(2)->peek(reg::kGoalPosition);
+  CHECK(expected == static_cast<std::uint32_t>(dxl::radToPulse(0.2)));
+  REQUIRE(arm.deactivate());
+}
+
+TEST_CASE("tagged target rejects an over-age unchanged feedback sample",
+          "[hw][timing][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  double now = 20.0;
+  arm.setTimeSource([&now] { return now; });
+  REQUIRE(arm.activate());
+  const auto source = arm.lastFeedbackStamped();
+
+  now += 0.011;
+  CHECK_FALSE(arm.setTargetPositionsFromFeedback(
+      std::vector<double>(8, 0.1), source.seq, source.time));
+  const auto stats = arm.cycleStats();
+  CHECK(stats.stale_submissions == 1);
+  CHECK(stats.max_feedback_age_at_submission_s == Approx(0.011));
+  REQUIRE(arm.deactivate());
+}
+
 TEST_CASE(
     "deadman escalation: stalled writes with healthy reads end with the "
     "motors actually stopped",

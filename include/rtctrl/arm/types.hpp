@@ -45,6 +45,10 @@ inline constexpr std::uint8_t kCmdGated = 2;    // position-limit gated
 struct AppliedTargetRecord {
   bool valid = false;  // false at startup — no target applied yet
   std::uint64_t target_seq = 0;
+  // Feedback sample from which the controller produced this target.
+  // Zero denotes an untagged low-level target (bring-up/monitor use).
+  std::uint64_t source_feedback_seq = 0;
+  double source_feedback_time = 0.0;
   std::uint64_t first_cycle = 0;
   double first_time = 0.0;
   std::uint64_t latest_cycle = 0;

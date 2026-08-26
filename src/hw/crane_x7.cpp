@@ -407,21 +407,61 @@ bool CraneX7::writeCurrents(const std::vector<double>& amps,
 
 bool CraneX7::setTargetPositions(const std::vector<double>& rad,
                                  std::uint64_t* seq, double* time) {
-  if (!requireSize(rad.size(), "target submission")) return false;
+  return setTargets(rad, 0, 0.0, false, seq, time);
+}
+
+bool CraneX7::setTargets(const std::vector<double>& values,
+                         std::uint64_t source_feedback_seq,
+                         double source_feedback_time, bool tagged,
+                         std::uint64_t* seq, double* time) {
+  if (!requireSize(values.size(), "target submission")) return false;
+  const double submit_time = now_();
   std::lock_guard<std::mutex> lock(state_mutex_);
-  targets_ = rad;
+  if (tagged) {
+    const double age = submit_time - source_feedback_time;
+    const double deadline = options_.controller_deadline_s > 0.0
+                                ? options_.controller_deadline_s
+                                : options_.control_cycle_s;
+    {
+      std::lock_guard<std::mutex> cycle_lock(cycle_mutex_);
+      if (std::isfinite(age) && age >= 0.0) {
+        stats_.max_feedback_age_at_submission_s =
+            std::max(stats_.max_feedback_age_at_submission_s, age);
+      }
+    }
+    if (source_feedback_seq == 0 ||
+        source_feedback_seq != feedback_seq_ || !std::isfinite(age) ||
+        age < 0.0 || age > deadline) {
+      // Arm the submission deadman even for the first rejected attempt:
+      // a caller that ignores false cannot leave the default target flowing
+      // indefinitely while being exempt as a monitor-only session.
+      submission_armed_ = true;
+      last_submission_ = submit_time;
+      {
+        std::lock_guard<std::mutex> cycle_lock(cycle_mutex_);
+        ++stats_.stale_submissions;
+      }
+      last_error_ = "target submission rejected: source feedback is stale";
+      if (seq != nullptr) *seq = 0;
+      if (time != nullptr) *time = submit_time;
+      return false;
+    }
+  }
+  targets_ = values;
   have_targets_ = true;
   // Submission freshness feeds the deadman: the background thread's own
   // retransmissions refresh last_command_, so without this a frozen
   // CONTROLLER would leave the last command active forever while both
   // watchdog layers stay fed.
-  last_submission_ = now_();
+  last_submission_ = submit_time;
   submission_armed_ = true;
   // Sequence + timestamp stored atomically with the targets: the
   // thread's write attempts carry this sequence, so requested-to-
   // applied causality stays unambiguous.
   ++target_seq_;
   target_submit_time_ = last_submission_;
+  target_source_feedback_seq_ = tagged ? source_feedback_seq : 0;
+  target_source_feedback_time_ = tagged ? source_feedback_time : 0.0;
   if (seq != nullptr) *seq = target_seq_;
   if (time != nullptr) *time = target_submit_time_;
   return true;
@@ -436,6 +476,27 @@ bool CraneX7::setTargetCurrents(const std::vector<double>& amps,
   return setTargetPositions(amps, seq, time);
 }
 
+bool CraneX7::setTargetPositionsFromFeedback(
+    const std::vector<double>& rad, std::uint64_t source_feedback_seq,
+    double source_feedback_time, std::uint64_t* seq, double* time) {
+  return setTargets(rad, source_feedback_seq, source_feedback_time, true, seq,
+                    time);
+}
+
+bool CraneX7::setTargetVelocitiesFromFeedback(
+    const std::vector<double>& rad_s, std::uint64_t source_feedback_seq,
+    double source_feedback_time, std::uint64_t* seq, double* time) {
+  return setTargets(rad_s, source_feedback_seq, source_feedback_time, true, seq,
+                    time);
+}
+
+bool CraneX7::setTargetCurrentsFromFeedback(
+    const std::vector<double>& amps, std::uint64_t source_feedback_seq,
+    double source_feedback_time, std::uint64_t* seq, double* time) {
+  return setTargets(amps, source_feedback_seq, source_feedback_time, true, seq,
+                    time);
+}
+
 bool CraneX7::startThread() {
   if (thread_.joinable()) return true;
   if (!activated_) {
@@ -445,6 +506,12 @@ bool CraneX7::startThread() {
   if (!std::isfinite(options_.control_cycle_s) ||
       options_.control_cycle_s <= 0.0) {
     last_error_ = "startThread: control cycle must be finite and positive";
+    return false;
+  }
+  if (!std::isfinite(options_.controller_deadline_s) ||
+      options_.controller_deadline_s < 0.0) {
+    last_error_ =
+        "startThread: controller deadline must be finite and nonnegative";
     return false;
   }
   const auto mode = config_.joints.front().operating_mode;
@@ -567,10 +634,14 @@ void CraneX7::threadLoop() {
       continue;
     }
     std::uint64_t tseq = 0;
+    std::uint64_t source_feedback_seq = 0;
+    double source_feedback_time = 0.0;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       targets = targets_;
       tseq = target_seq_;
+      source_feedback_seq = target_source_feedback_seq_;
+      source_feedback_time = target_source_feedback_time_;
     }
     WriteOutcome outcome;
     bool wrote_ok = false;
@@ -593,6 +664,8 @@ void CraneX7::threadLoop() {
         auto& rec = applied_rec_;
         if (!rec.valid || rec.target_seq != tseq) {
           rec.target_seq = tseq;
+          rec.source_feedback_seq = source_feedback_seq;
+          rec.source_feedback_time = source_feedback_time;
           rec.first_cycle = cycle_number;
           rec.first_time = write_time;
           rec.valid = true;

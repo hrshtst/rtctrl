@@ -17,12 +17,27 @@ bool RealArm::activate() {
   // on an unclean (or throwing) deactivation request quiescence so
   // the armed servo Bus Watchdogs halt the arm (review finding).
   try {
+    have_feedback_ = false;
+    cycle_seen_ = 0;
     if (!hw_.activate()) return false;
     if (!hw_.startThread()) {
       // never leave a torqued arm behind a failure — and VERIFY: an
       // unclean (or throwing) deactivation must quiesce the bus so
       // the armed servo watchdogs halt the arm (review finding; this
       // path is reachable with mixed operating modes)
+      try {
+        if (!hw_.deactivate()) hw_.requestQuiesce();
+      } catch (...) {
+        hw_.requestQuiesce();
+      }
+      return false;
+    }
+    // Do not expose activation-era feedback to the first controller update.
+    // Its acquisition may precede model construction and other startup work,
+    // so a correctly tagged first command would immediately be stale. Wait for
+    // one completed producer cycle and make it the step() baseline.
+    cycle_seen_ = hw_.waitCycle(0);
+    if (cycle_seen_ == 0) {
       try {
         if (!hw_.deactivate()) hw_.requestQuiesce();
       } catch (...) {
@@ -72,11 +87,18 @@ bool RealArm::readState(JointState& state, CommandSnapshot* cmds) {
   // runner owns the time origin (types.hpp).
   state.t = stamped.time;
   state.seq = stamped.seq;
+  last_feedback_time_ = state.t;
+  last_feedback_seq_ = state.seq;
+  have_feedback_ = true;
   return true;
 }
 
 bool RealArm::writeCommand(const JointCommand& cmd,
                            CommandReceipt* receipt) {
+  if (!have_feedback_) {
+    if (receipt != nullptr) *receipt = {};
+    return false;
+  }
   std::vector<double> values(kCanonicalDof);
   std::uint64_t seq = 0;
   double time = 0.0;
@@ -86,13 +108,15 @@ bool RealArm::writeCommand(const JointCommand& cmd,
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.q.get(), i);
       }
-      ok = hw_.setTargetPositions(values, &seq, &time);
+      ok = hw_.setTargetPositionsFromFeedback(
+          values, last_feedback_seq_, last_feedback_time_, &seq, &time);
       break;
     case ControlMode::Velocity:
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.dq.get(), i);
       }
-      ok = hw_.setTargetVelocities(values, &seq, &time);
+      ok = hw_.setTargetVelocitiesFromFeedback(
+          values, last_feedback_seq_, last_feedback_time_, &seq, &time);
       break;
     case ControlMode::Current:
       for (int i = 0; i < kCanonicalDof; ++i) {
@@ -102,7 +126,8 @@ bool RealArm::writeCommand(const JointCommand& cmd,
         values[i] = hw::commandCurrentFromTorque(hw_.config().joints[i],
                                                  zVecElemNC(cmd.tau.get(), i));
       }
-      ok = hw_.setTargetCurrents(values, &seq, &time);
+      ok = hw_.setTargetCurrentsFromFeedback(
+          values, last_feedback_seq_, last_feedback_time_, &seq, &time);
       break;
   }
   if (receipt != nullptr) *receipt = {ok, seq, time};

@@ -30,6 +30,9 @@ class RealArm : public Arm {
  private:
   hw::CraneX7& hw_;
   std::uint64_t cycle_seen_ = 0;
+  std::uint64_t last_feedback_seq_ = 0;
+  double last_feedback_time_ = 0.0;
+  bool have_feedback_ = false;
 };
 
 }  // namespace rtctrl::arm

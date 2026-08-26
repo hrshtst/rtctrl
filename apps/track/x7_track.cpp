@@ -303,12 +303,15 @@ int main(int argc, char* argv[]) {
     tracking.report();
     if (log) std::fclose(log);
     std::printf("cycles %llu, overruns %llu, skipped periods %llu, "
-                "max cycle %.3f ms, max lateness %.3f ms, read failures "
-                "%llu, write failures %llu\n",
+                "max cycle %.3f ms, max lateness %.3f ms, stale submissions "
+                "%llu, max feedback age %.3f ms, read failures %llu, write "
+                "failures %llu\n",
                 static_cast<unsigned long long>(stats.cycles),
                 static_cast<unsigned long long>(stats.overruns),
                 static_cast<unsigned long long>(stats.skipped_periods),
                 1e3 * stats.max_cycle_time_s, 1e3 * stats.max_lateness_s,
+                static_cast<unsigned long long>(stats.stale_submissions),
+                1e3 * stats.max_feedback_age_at_submission_s,
                 static_cast<unsigned long long>(stats.read_failures),
                 static_cast<unsigned long long>(stats.write_failures));
     if (!clean) {

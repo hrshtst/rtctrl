@@ -43,6 +43,10 @@ class CraneX7 {
     double host_command_timeout_s = 0.25;   // deadman bound on command writes
     std::uint16_t active_p_gain = 800;      // position P while active
     double control_cycle_s = 0.01;          // background thread period
+    // Maximum feedback age at a controller target submission. Zero uses
+    // control_cycle_s. Tagged submissions are also rejected if any newer
+    // feedback arrived while the controller was computing.
+    double controller_deadline_s = 0.0;
     // Consecutive failed cycle reads before escalation. A controller
     // fed frozen feedback keeps commanding torques into a state it can
     // no longer see — as dangerous as a stalled command stream.
@@ -62,8 +66,10 @@ class CraneX7 {
     std::uint64_t skipped_periods = 0;
     std::uint64_t read_failures = 0;   // cycles whose feedback read failed
     std::uint64_t write_failures = 0;  // cycles whose target write failed
+    std::uint64_t stale_submissions = 0;
     double max_cycle_time_s = 0.0;     // read through write/check completion
     double max_lateness_s = 0.0;       // finish time past scheduled deadline
+    double max_feedback_age_at_submission_s = 0.0;
   };
 
   CraneX7(dxl::PacketIO& io, Config config);
@@ -189,6 +195,21 @@ class CraneX7 {
   bool setTargetCurrents(const std::vector<double>& amps,
                          std::uint64_t* seq = nullptr,
                          double* time = nullptr);
+  // Controller-facing tagged variants. The target is accepted only when
+  // source_feedback_seq is still the latest feedback and its age is within
+  // controller_deadline_s. On rejection the last valid target remains active.
+  bool setTargetPositionsFromFeedback(
+      const std::vector<double>& rad, std::uint64_t source_feedback_seq,
+      double source_feedback_time, std::uint64_t* seq = nullptr,
+      double* time = nullptr);
+  bool setTargetVelocitiesFromFeedback(
+      const std::vector<double>& rad_s, std::uint64_t source_feedback_seq,
+      double source_feedback_time, std::uint64_t* seq = nullptr,
+      double* time = nullptr);
+  bool setTargetCurrentsFromFeedback(
+      const std::vector<double>& amps, std::uint64_t source_feedback_seq,
+      double source_feedback_time, std::uint64_t* seq = nullptr,
+      double* time = nullptr);
 
   // Deadman: escalates if the last successful command write — or, once
   // a controller has submitted targets, the last fresh submission — is
@@ -272,6 +293,10 @@ class CraneX7 {
   bool requireMode(std::uint8_t mode, const char* what);
   bool requireSize(std::size_t n, const char* what);
   bool requireActive(const char* what);
+  bool setTargets(const std::vector<double>& values,
+                  std::uint64_t source_feedback_seq,
+                  double source_feedback_time, bool tagged,
+                  std::uint64_t* seq, double* time);
   // The one current limiter (URDF effort + servo current limit -
   // margin, plus the soft position gates) shared by writeCurrents and
   // the activation preload.
@@ -308,6 +333,8 @@ class CraneX7 {
   bool submission_armed_ = false;  // a controller has submitted targets
   std::uint64_t target_seq_ = 0;        // bumps per setTarget* call
   double target_submit_time_ = 0.0;     // now_() at that call
+  std::uint64_t target_source_feedback_seq_ = 0;
+  double target_source_feedback_time_ = 0.0;
   arm::AppliedTargetRecord applied_rec_;   // first/latest application
   arm::WriteAttemptRecord attempt_rec_;    // every transmission attempt
 
