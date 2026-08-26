@@ -109,6 +109,36 @@ TEST_CASE("current commands clamp to the effort limit minus margin",
   CHECK(dxl::currentToAmps(raw1) == Approx(expect1).epsilon(0.01));
 }
 
+TEST_CASE("current-based position stages and streams paired goals",
+          "[hw][modes]") {
+  const auto config = configWithMode(5);
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+
+  CHECK_FALSE(arm.activate());
+  CHECK(arm.lastError().find("requires one finite positive") !=
+        std::string::npos);
+  arm.setActivationCurrentBasedPositionLimits(std::vector<double>(8, 0.5));
+  REQUIRE(arm.activate());
+  CHECK(bus.find(2)->peek(reg::kGoalPosition) ==
+        bus.find(2)->peek(reg::kPresentPosition));
+  CHECK(static_cast<std::int16_t>(bus.find(2)->peek(reg::kGoalCurrent)) > 0);
+
+  hw::CraneX7::WriteOutcome outcome;
+  std::vector<double> position(8, 0.2);
+  std::vector<double> ceiling(8, 0.4);
+  REQUIRE(arm.writeCurrentBasedPositions(position, ceiling, &outcome));
+  CHECK(dxl::pulseToRad(static_cast<std::int32_t>(
+            bus.find(2)->peek(reg::kGoalPosition))) ==
+        Approx(0.2).margin(2e-3));
+  CHECK(dxl::currentToAmps(static_cast<std::int16_t>(
+            bus.find(2)->peek(reg::kGoalCurrent))) ==
+        Approx(0.4).margin(2e-3));
+  REQUIRE(outcome.auxiliary.size() == 8);
+  CHECK(outcome.auxiliary[0] == Approx(0.4));
+}
+
 TEST_CASE("SI profile setters convert, truncate, and clamp like the "
           "vendor API",
           "[hw][modes]") {

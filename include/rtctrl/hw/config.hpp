@@ -10,7 +10,9 @@ struct JointConfig {
   std::string name;                 // URDF joint name (canonical identity)
   std::uint8_t id = 0;              // DXL bus id
   std::uint16_t model_number = 0;   // resolved from the config's model string
-  std::uint8_t operating_mode = 3;  // raw DXL value: 3=pos, 1=vel, 0=current
+  // Raw DXL value: 3=position, 1=velocity, 0=current,
+  // 5=current-based position.
+  std::uint8_t operating_mode = 3;
   double velocity_limit = 0.0;      // [rad/s]
   double effort_limit = 0.0;        // [Nm]
   double pos_limit_margin = 0.0;    // [rad]

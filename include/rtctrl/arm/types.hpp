@@ -8,7 +8,12 @@
 namespace rtctrl::arm {
 
 // Raw Dynamixel operating-mode values.
-enum class ControlMode : int { Current = 0, Velocity = 1, Position = 3 };
+enum class ControlMode : int {
+  Current = 0,
+  Velocity = 1,
+  Position = 3,
+  CurrentBasedPosition = 5
+};
 
 // All vectors are in the canonical 8-DOF order (arm joints 1..7, then
 // the gripper) — see rtctrl::model::canonicalJoints().
@@ -29,6 +34,8 @@ struct JointCommand {
   model::ZVector q{model::kCanonicalDof};    // Position mode
   model::ZVector dq{model::kCanonicalDof};   // Velocity mode
   model::ZVector tau{model::kCanonicalDof};  // Current (torque) mode
+  // Positive joint-side effort ceiling [Nm] in current-based position mode.
+  model::ZVector effort_limit{model::kCanonicalDof};
 };
 
 // Per-joint flags on an applied command.
@@ -57,6 +64,8 @@ struct AppliedTargetRecord {
   // Mode-native units: rad (position), rad/s (velocity), Nm (current
   // mode, converted through the per-model torque constant).
   double applied[model::kCanonicalDof] = {};
+  // Current-based position only: applied positive effort ceiling [Nm].
+  double effort_limit[model::kCanonicalDof] = {};
   std::uint8_t flags[model::kCanonicalDof] = {};  // kCmdClamped|kCmdGated
 };
 

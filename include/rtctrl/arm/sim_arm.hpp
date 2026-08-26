@@ -107,6 +107,7 @@ class SimArm : public Arm {
   model::ZVector q9_{model::kModelDof};    // committed joint positions
   model::ZVector v9_{model::kModelDof};    // committed joint velocities
   model::ZVector tau9_{model::kModelDof};  // torques applied this substep
+  model::ZVector applied_tau8_{model::kCanonicalDof};
   model::ZVector acc9_{model::kModelDof};
   model::ZVector rhs9_{model::kModelDof};
   zMat mass_mat_ = nullptr;  // owned; freed in the destructor

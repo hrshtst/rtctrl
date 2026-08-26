@@ -216,7 +216,8 @@ void MotorEmulator::tick(double dt) {
   double velocity_pulses = 0.0;  // signed pulses/s this tick
   if (!halted) {
     switch (mode) {
-      case dxl::OperatingMode::kPosition: {
+      case dxl::OperatingMode::kPosition:
+      case dxl::OperatingMode::kCurrentBasedPosition: {
         const auto goal = static_cast<std::int32_t>(peek(reg::kGoalPosition));
         auto profile = static_cast<std::int32_t>(peek(reg::kProfileVelocity));
         if (profile == 0) profile = peek(reg::kVelocityLimit);
@@ -227,6 +228,16 @@ void MotorEmulator::tick(double dt) {
                                                 max_step);
         present += static_cast<std::int32_t>(std::lround(delta));
         velocity_pulses = delta / dt;
+        if (mode == dxl::OperatingMode::kCurrentBasedPosition) {
+          const auto current_limit = static_cast<std::int16_t>(
+              peek(reg::kGoalCurrent) & 0xFFFF);
+          const std::int16_t current =
+              goal == present
+                  ? 0
+                  : static_cast<std::int16_t>(
+                        std::copysign(std::abs(current_limit), goal - present));
+          poke(reg::kPresentCurrent, static_cast<std::uint16_t>(current));
+        }
         break;
       }
       case dxl::OperatingMode::kVelocity: {

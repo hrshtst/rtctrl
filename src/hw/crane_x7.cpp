@@ -71,6 +71,20 @@ bool CraneX7::verifyServos() {
 
 bool CraneX7::activate() {
   if (activated_) return true;
+  const bool current_based_position = std::all_of(
+      config_.joints.begin(), config_.joints.end(),
+      [](const auto& joint) { return joint.operating_mode == 5; });
+  if (current_based_position) {
+    if (cbp_activation_limits_amps_.size() != config_.joints.size() ||
+        std::any_of(cbp_activation_limits_amps_.begin(),
+                    cbp_activation_limits_amps_.end(), [](double value) {
+                      return !std::isfinite(value) || value <= 0.0;
+                    })) {
+      last_error_ = "current-based position activation requires one finite "
+                    "positive current ceiling per joint";
+      return false;
+    }
+  }
   escalated_ = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -163,7 +177,21 @@ bool CraneX7::activateSteps() {
   for (std::size_t i = 0; i < present.size(); ++i) {
     positions[i] = present[i].position;
   }
-  if (!group_.writeGoals(zeros, zeros, positions).ok()) {
+  std::vector<double> activation_currents = zeros;
+  if (config_.joints.front().operating_mode == 5) {
+    std::vector<std::uint8_t> flags;
+    limitCurrentMagnitudes(cbp_activation_limits_amps_,
+                           &activation_currents, &flags);
+    for (std::size_t i = 0; i < flags.size(); ++i) {
+      if (flags[i] != 0) {
+        last_error_ = "current-based position activation ceiling clipped "
+                      "on joint " +
+                      std::to_string(i) + " — refusing";
+        return false;
+      }
+    }
+  }
+  if (!group_.writeGoals(activation_currents, zeros, positions).ok()) {
     last_error_ = "goal snap failed";
     return false;
   }
@@ -227,6 +255,7 @@ bool CraneX7::activateSteps() {
 bool CraneX7::deactivate() {
   stopThread();
   preload_amps_.clear();
+  cbp_activation_limits_amps_.clear();
   // Once quiesced, the deadline watchdog has silenced the bus so the
   // servo Bus Watchdog can stop the servos — ANY further instruction
   // packet here (including these stop/torque-off writes) would feed
@@ -436,16 +465,62 @@ bool CraneX7::writeCurrentsWithFeedback(
   return true;
 }
 
+bool CraneX7::writeCurrentBasedPositions(
+    const std::vector<double>& rad,
+    const std::vector<double>& current_limit_amps, WriteOutcome* out) {
+  return writeCurrentBasedPositionsWithFeedback(
+      rad, current_limit_amps, lastFeedback(), out);
+}
+
+bool CraneX7::writeCurrentBasedPositionsWithFeedback(
+    const std::vector<double>& rad,
+    const std::vector<double>& current_limit_amps,
+    const std::vector<dxl::Feedback>& feedback, WriteOutcome* out) {
+  (void)feedback;
+  if (escalated_) return false;
+  if (!requireActive("current-based position command")) return false;
+  if (!requireMode(5, "current-based position command")) return false;
+  if (!requireSize(rad.size(), "current-based position command") ||
+      !requireSize(current_limit_amps.size(),
+                   "current-based position effort ceiling")) {
+    return false;
+  }
+  std::vector<double> local_positions;
+  std::vector<double> local_currents;
+  std::vector<std::uint8_t> local_flags;
+  auto& positions = out != nullptr ? out->values : local_positions;
+  auto& currents = out != nullptr ? out->auxiliary : local_currents;
+  auto& flags = out != nullptr ? out->flags : local_flags;
+  positions.resize(rad.size());
+  flags.assign(rad.size(), 0);
+  for (std::size_t i = 0; i < rad.size(); ++i) {
+    positions[i] = std::clamp(rad[i], limit_lo_[i], limit_hi_[i]);
+    if (positions[i] != rad[i]) flags[i] |= arm::kCmdClamped;
+  }
+  std::vector<std::uint8_t> current_flags;
+  limitCurrentMagnitudes(current_limit_amps, &currents, &current_flags);
+  for (std::size_t i = 0; i < flags.size(); ++i) flags[i] |= current_flags[i];
+  const std::vector<double> zeros(rad.size(), 0.0);
+  if (!group_.writeGoals(currents, zeros, positions).ok()) return false;
+  last_command_ = now_();
+  return true;
+}
+
 bool CraneX7::setTargetPositions(const std::vector<double>& rad,
                                  std::uint64_t* seq, double* time) {
-  return setTargets(rad, 0, 0.0, false, seq, time);
+  return setTargets(rad, nullptr, 0, 0.0, false, seq, time);
 }
 
 bool CraneX7::setTargets(const std::vector<double>& values,
+                         const std::vector<double>* auxiliary,
                          std::uint64_t source_feedback_seq,
                          double source_feedback_time, bool tagged,
                          std::uint64_t* seq, double* time) {
   if (!requireSize(values.size(), "target submission")) return false;
+  if (auxiliary != nullptr &&
+      !requireSize(auxiliary->size(), "auxiliary target submission")) {
+    return false;
+  }
   const double submit_time = now_();
   std::unique_lock<std::mutex> lock(state_mutex_);
   if (tagged) {
@@ -482,6 +557,8 @@ bool CraneX7::setTargets(const std::vector<double>& values,
     }
   }
   targets_ = values;
+  auxiliary_targets_ = auxiliary != nullptr ? *auxiliary
+                                             : std::vector<double>{};
   have_targets_ = true;
   // Submission freshness feeds the deadman: the background thread's own
   // retransmissions refresh last_command_, so without this a frozen
@@ -512,25 +589,41 @@ bool CraneX7::setTargetCurrents(const std::vector<double>& amps,
   return setTargetPositions(amps, seq, time);
 }
 
+bool CraneX7::setTargetCurrentBasedPositions(
+    const std::vector<double>& rad,
+    const std::vector<double>& current_limit_amps, std::uint64_t* seq,
+    double* time) {
+  return setTargets(rad, &current_limit_amps, 0, 0.0, false, seq, time);
+}
+
 bool CraneX7::setTargetPositionsFromFeedback(
     const std::vector<double>& rad, std::uint64_t source_feedback_seq,
     double source_feedback_time, std::uint64_t* seq, double* time) {
-  return setTargets(rad, source_feedback_seq, source_feedback_time, true, seq,
-                    time);
+  return setTargets(rad, nullptr, source_feedback_seq, source_feedback_time,
+                    true, seq, time);
 }
 
 bool CraneX7::setTargetVelocitiesFromFeedback(
     const std::vector<double>& rad_s, std::uint64_t source_feedback_seq,
     double source_feedback_time, std::uint64_t* seq, double* time) {
-  return setTargets(rad_s, source_feedback_seq, source_feedback_time, true, seq,
-                    time);
+  return setTargets(rad_s, nullptr, source_feedback_seq, source_feedback_time,
+                    true, seq, time);
 }
 
 bool CraneX7::setTargetCurrentsFromFeedback(
     const std::vector<double>& amps, std::uint64_t source_feedback_seq,
     double source_feedback_time, std::uint64_t* seq, double* time) {
-  return setTargets(amps, source_feedback_seq, source_feedback_time, true, seq,
-                    time);
+  return setTargets(amps, nullptr, source_feedback_seq, source_feedback_time,
+                    true, seq, time);
+}
+
+bool CraneX7::setTargetCurrentBasedPositionsFromFeedback(
+    const std::vector<double>& rad,
+    const std::vector<double>& current_limit_amps,
+    std::uint64_t source_feedback_seq, double source_feedback_time,
+    std::uint64_t* seq, double* time) {
+  return setTargets(rad, &current_limit_amps, source_feedback_seq,
+                    source_feedback_time, true, seq, time);
 }
 
 bool CraneX7::startThread(bool synchronize_commands) {
@@ -581,6 +674,11 @@ bool CraneX7::startThread(bool synchronize_commands) {
         // keep the activation preload flowing (the writer re-clamps
         // every cycle) until the first controller submission
         targets_ = preload_amps_;
+      } else if (mode == 5) {
+        for (std::size_t i = 0; i < feedback_.size(); ++i) {
+          targets_[i] = feedback_[i].position;
+        }
+        auxiliary_targets_ = cbp_activation_limits_amps_;
       }
       have_targets_ = true;
     }
@@ -658,8 +756,10 @@ void CraneX7::threadLoop() {
 
   std::vector<dxl::Feedback> fb;
   std::vector<double> targets;
+  std::vector<double> auxiliary_targets;
   fb.reserve(config_.joints.size());
   targets.reserve(config_.joints.size());
+  auxiliary_targets.reserve(config_.joints.size());
   WriteOutcome outcome;
   outcome.values.reserve(config_.joints.size());
   outcome.flags.reserve(config_.joints.size());
@@ -735,6 +835,7 @@ void CraneX7::threadLoop() {
             !quiesced_.load();
       }
       targets = targets_;
+      auxiliary_targets = auxiliary_targets_;
       tseq = target_seq_;
       source_feedback_seq = target_source_feedback_seq_;
       source_feedback_time = target_source_feedback_time_;
@@ -762,6 +863,10 @@ void CraneX7::threadLoop() {
         break;
       case 0:
         wrote_ok = writeCurrentsWithFeedback(targets, fb, &outcome);
+        break;
+      case 5:
+        wrote_ok = writeCurrentBasedPositionsWithFeedback(
+            targets, auxiliary_targets, fb, &outcome);
         break;
       default: break;
     }
@@ -797,6 +902,12 @@ void CraneX7::threadLoop() {
                                                   config_.joints[i]
                                                       .model_number)
                         : outcome.values[i];
+          rec.effort_limit[i] =
+              mode == 5 && i < outcome.auxiliary.size()
+                  ? outcome.auxiliary[i] *
+                        dxl::torqueConstant(config_.joints[i].model_number) /
+                        config_.joints[i].command_torque_scale
+                  : 0.0;
           rec.flags[i] = outcome.flags[i];
         }
       }
@@ -955,6 +1066,27 @@ void CraneX7::limitCurrents(const std::vector<double>& amps,
       (*flags)[i] |= arm::kCmdGated;
     }
     (*limited)[i] = a;
+  }
+}
+
+void CraneX7::limitCurrentMagnitudes(
+    const std::vector<double>& amps, std::vector<double>* limited,
+    std::vector<std::uint8_t>* flags) const {
+  limited->resize(amps.size());
+  flags->assign(amps.size(), 0);
+  for (std::size_t i = 0; i < amps.size(); ++i) {
+    const auto& joint = config_.joints[i];
+    const double imax = std::max(
+        0.0, std::min(joint.effort_limit /
+                          dxl::torqueConstant(joint.model_number),
+                      servo_current_limit_amps_[i]) -
+                 joint.current_limit_margin);
+    const double requested =
+        std::isfinite(amps[i]) ? std::fabs(amps[i]) : 0.0;
+    (*limited)[i] = std::clamp(requested, 0.0, imax);
+    if (!std::isfinite(amps[i]) || (*limited)[i] != requested) {
+      (*flags)[i] |= arm::kCmdClamped;
+    }
   }
 }
 

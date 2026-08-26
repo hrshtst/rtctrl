@@ -27,7 +27,8 @@ namespace rtctrl::emu {
 //   register reads 0xFF, motion stops, and goal writes are rejected
 //   until 0 is written. Arming requires firmware >= 38.
 // - tick(dt) advances the motion simulation: Position mode moves
-//   first-order toward the goal bounded by ProfileVelocity; Velocity
+//   first-order toward the goal bounded by ProfileVelocity; current-based
+//   position does the same while capping PresentCurrent at GoalCurrent; Velocity
 //   mode integrates GoalVelocity; Current mode mirrors GoalCurrent into
 //   PresentCurrent.
 class MotorEmulator {

@@ -98,6 +98,23 @@ TEST_CASE("position mode moves toward the goal, bounded by the profile",
   CHECK_FALSE(motor->moving());
 }
 
+TEST_CASE("current-based position mode moves with a current ceiling",
+          "[emu][modes]") {
+  emu::MotorBus bus = craneBus();
+  emu::MotorEmulator* motor = bus.find(2);
+  emu::FakePacketIO io(bus);
+
+  REQUIRE(io.write8(2, reg::kOperatingMode.addr, 5).ok());
+  REQUIRE(io.write16(2, reg::kGoalCurrent.addr, 100).ok());
+  REQUIRE(io.write8(2, reg::kTorqueEnable.addr, 1).ok());
+  REQUIRE(io.write16(2, reg::kGoalCurrent.addr, 100).ok());
+  REQUIRE(io.write32(2, reg::kGoalPosition.addr, 2600).ok());
+  bus.tick(0.05);
+  CHECK(motor->peek(reg::kPresentPosition) > dxl::kHomePulse);
+  CHECK(std::abs(static_cast<std::int16_t>(
+            motor->peek(reg::kPresentCurrent))) <= 100);
+}
+
 TEST_CASE("goal writes clamp against limits", "[emu]") {
   emu::MotorBus bus = craneBus();
   emu::MotorEmulator* motor = bus.find(2);

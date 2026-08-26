@@ -1,5 +1,7 @@
 #include "rtctrl/arm/real_arm.hpp"
 
+#include <cmath>
+
 #include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/hw/command_current.hpp"
 
@@ -114,6 +116,19 @@ bool RealArm::writeCommand(const JointCommand& cmd,
       ok = hw_.setTargetPositionsFromFeedback(
           values, last_feedback_seq_, last_feedback_time_, &seq, &time);
       break;
+    case ControlMode::CurrentBasedPosition: {
+      std::vector<double> limits(kCanonicalDof);
+      for (int i = 0; i < kCanonicalDof; ++i) {
+        values[i] = zVecElemNC(cmd.q.get(), i);
+        limits[i] = std::fabs(hw::commandCurrentFromTorque(
+            hw_.config().joints[i],
+            zVecElemNC(cmd.effort_limit.get(), i)));
+      }
+      ok = hw_.setTargetCurrentBasedPositionsFromFeedback(
+          values, limits, last_feedback_seq_, last_feedback_time_, &seq,
+          &time);
+      break;
+    }
     case ControlMode::Velocity:
       for (int i = 0; i < kCanonicalDof; ++i) {
         values[i] = zVecElemNC(cmd.dq.get(), i);

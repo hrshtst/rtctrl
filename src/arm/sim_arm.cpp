@@ -74,6 +74,7 @@ bool SimArm::activate() {
     zVecElemNC(cmd_.q.get(), i) = q9_[map_.rokiOffset(i)];
     zVecElemNC(cmd_.dq.get(), i) = 0.0;
     zVecElemNC(cmd_.tau.get(), i) = 0.0;
+    zVecElemNC(cmd_.effort_limit.get(), i) = options_.effort_limit8[i];
   }
   cmd_.mode = mode_;
   active_ = true;
@@ -84,6 +85,7 @@ bool SimArm::deactivate() {
   zVecZero(cmd_.q.get());
   zVecZero(cmd_.dq.get());
   zVecZero(cmd_.tau.get());
+  zVecZero(cmd_.effort_limit.get());
   active_ = false;
   return true;
 }
@@ -99,7 +101,7 @@ bool SimArm::readState(JointState& state, CommandSnapshot* cmds) {
     const int offset = map_.rokiOffset(i);
     zVecElemNC(state.q.get(), i) = q9_[offset];
     zVecElemNC(state.dq.get(), i) = v9_[offset];
-    zVecElemNC(state.tau.get(), i) = zVecElemNC(cmd_.tau.get(), i);
+    zVecElemNC(state.tau.get(), i) = applied_tau8_[i];
   }
   state.t = time_;
   state.seq = seq_;
@@ -118,6 +120,7 @@ bool SimArm::writeCommand(const JointCommand& cmd, CommandReceipt* receipt) {
   zVecCopyNC(cmd.q.get(), cmd_.q.get());
   zVecCopyNC(cmd.dq.get(), cmd_.dq.get());
   zVecCopyNC(cmd.tau.get(), cmd_.tau.get());
+  zVecCopyNC(cmd.effort_limit.get(), cmd_.effort_limit.get());
   cmd_.mode = cmd.mode;
   // Synchronous application: the accepted command IS the actuator goal
   // from the next step, so submit/attempt/apply coincide.
@@ -132,8 +135,19 @@ bool SimArm::writeCommand(const JointCommand& cmd, CommandReceipt* receipt) {
   for (int i = 0; i < kCanonicalDof; ++i) {
     double v = 0.0;
     std::uint8_t flag = 0;
+    rec.effort_limit[i] = 0.0;
     switch (cmd.mode) {
       case ControlMode::Position: v = zVecElemNC(cmd.q.get(), i); break;
+      case ControlMode::CurrentBasedPosition:
+        v = zVecElemNC(cmd.q.get(), i);
+        rec.effort_limit[i] = std::clamp(
+            std::fabs(zVecElemNC(cmd.effort_limit.get(), i)), 0.0,
+            options_.effort_limit8[i]);
+        if (rec.effort_limit[i] !=
+            std::fabs(zVecElemNC(cmd.effort_limit.get(), i))) {
+          flag |= kCmdClamped;
+        }
+        break;
       case ControlMode::Velocity: v = zVecElemNC(cmd.dq.get(), i); break;
       case ControlMode::Current: {
         const double lim = options_.effort_limit8[i];
@@ -163,6 +177,16 @@ void SimArm::computeTorques() {
           tau8[i] = options_.kp * (zVecElemNC(cmd_.q.get(), i) - q) -
                     options_.kd * dq;
           break;
+        case ControlMode::CurrentBasedPosition: {
+          const double limit = std::clamp(
+              std::fabs(zVecElemNC(cmd_.effort_limit.get(), i)), 0.0,
+              options_.effort_limit8[i]);
+          tau8[i] = std::clamp(
+              options_.kp * (zVecElemNC(cmd_.q.get(), i) - q) -
+                  options_.kd * dq,
+              -limit, limit);
+          break;
+        }
         case ControlMode::Velocity:
           tau8[i] = options_.kv * (zVecElemNC(cmd_.dq.get(), i) - dq);
           break;
@@ -170,7 +194,10 @@ void SimArm::computeTorques() {
           tau8[i] = zVecElemNC(cmd_.tau.get(), i);
           break;
       }
+      applied_tau8_[i] = tau8[i];
     }
+  } else {
+    zVecZero(applied_tau8_.get());
   }
 
   // Fingers: split the commanded gripper effort evenly, then enforce the

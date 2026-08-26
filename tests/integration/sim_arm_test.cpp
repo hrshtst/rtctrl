@@ -36,6 +36,18 @@ struct HoldController : Controller {
   rtctrl::model::ZVector q_target{kCanonicalDof};
 };
 
+struct CurrentBasedHoldController : Controller {
+  explicit CurrentBasedHoldController(const JointState& target) {
+    zVecCopyNC(target.q.get(), q_target.get());
+  }
+  void update(const JointState&, JointCommand& cmd, double) override {
+    cmd.mode = ControlMode::CurrentBasedPosition;
+    zVecCopyNC(q_target.get(), cmd.q.get());
+    for (int i = 0; i < kCanonicalDof; ++i) cmd.effort_limit[i] = 2.0;
+  }
+  rtctrl::model::ZVector q_target{kCanonicalDof};
+};
+
 }  // namespace
 
 TEST_CASE("deactivated arm falls under gravity without blowing up",
@@ -98,6 +110,24 @@ TEST_CASE("simulation is deterministic across identical runs", "[sim]") {
   for (int i = 0; i < kCanonicalDof; ++i) {
     CHECK(a.q[i] == b.q[i]);  // bitwise identical
     CHECK(a.dq[i] == b.dq[i]);
+  }
+}
+
+TEST_CASE("current-based position simulation enforces its effort ceiling",
+          "[sim][modes]") {
+  auto opt = baseOptions();
+  opt.initial_q8 = {0.0, 0.4, 0.0, -0.8, 0.0, -0.3, 0.0, 0.1};
+  SimArm arm(opt);
+  REQUIRE(arm.setMode(ControlMode::CurrentBasedPosition));
+  REQUIRE(arm.activate());
+  JointState target;
+  REQUIRE(arm.readState(target));
+  CurrentBasedHoldController hold(target);
+  REQUIRE(rtctrl::arm::run(arm, hold, 0.2));
+  JointState state;
+  REQUIRE(arm.readState(state));
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    CHECK(std::fabs(state.tau[i]) <= 2.0 + 1e-12);
   }
 }
 

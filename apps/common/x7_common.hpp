@@ -127,7 +127,7 @@ struct Session {
   std::unique_ptr<rtctrl::hw::CraneX7> arm;
 };
 
-// operating_mode_override: -1 keeps the config's modes; 0/1/3 forces
+// operating_mode_override: -1 keeps the config's modes; 0/1/3/5 forces
 // that mode on every joint (e.g. x7_float forces current mode).
 // customize (optional) mutates the loaded config BEFORE the port
 // opens (e.g. x7_gravity_demo writes its kt-derived command scales);

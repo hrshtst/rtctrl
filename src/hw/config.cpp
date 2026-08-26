@@ -47,10 +47,10 @@ Config Config::load(const std::string& toml_path) {
     }
     joint.id = static_cast<std::uint8_t>(*id);
     const int mode = (*t)["operating_mode"].value_or(3);
-    if (mode != 0 && mode != 1 && mode != 3) {
+    if (mode != 0 && mode != 1 && mode != 3 && mode != 5) {
       throw std::runtime_error(
           "Config: joint '" + joint.name + "' has invalid operating_mode " +
-          std::to_string(mode) + " (expected 0, 1 or 3)");
+          std::to_string(mode) + " (expected 0, 1, 3 or 5)");
     }
     joint.operating_mode = static_cast<std::uint8_t>(mode);
     const auto model = (*t)["model"].value_or(std::string{"XM430-W350"});
@@ -125,10 +125,11 @@ void Config::validate() const {
           std::to_string(joint.model_number));
     }
     if (joint.operating_mode != 0 && joint.operating_mode != 1 &&
-        joint.operating_mode != 3) {
+        joint.operating_mode != 3 && joint.operating_mode != 5) {
       throw std::runtime_error(
           "Config: joint '" + joint.name + "' has invalid operating_mode " +
-          std::to_string(joint.operating_mode) + " (expected 0, 1 or 3)");
+          std::to_string(joint.operating_mode) +
+          " (expected 0, 1, 3 or 5)");
     }
     if (joint.velocity_limit <= 0.0 || joint.effort_limit <= 0.0) {
       throw std::runtime_error(

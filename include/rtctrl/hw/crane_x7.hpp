@@ -124,6 +124,9 @@ class CraneX7 {
   // applied-target record.
   struct WriteOutcome {
     std::vector<double> values;
+    // Optional second mode-native value. Current-based position writes use
+    // this for the applied positive current ceiling [A].
+    std::vector<double> auxiliary;
     std::vector<std::uint8_t> flags;
   };
 
@@ -140,6 +143,11 @@ class CraneX7 {
   // effort_limit/torque_constant minus current_limit_margin.
   bool writeCurrents(const std::vector<double>& amps,
                      WriteOutcome* out = nullptr);
+  // Current-based position: position [rad] plus a positive Goal Current
+  // ceiling [A]. Position and current are sent in one grouped transaction.
+  bool writeCurrentBasedPositions(const std::vector<double>& rad,
+                                  const std::vector<double>& current_limit_amps,
+                                  WriteOutcome* out = nullptr);
 
   // Feedback with its acquisition stamp: `time` is the injectable
   // now_() clock at the successful read, `seq` bumps once per
@@ -212,6 +220,10 @@ class CraneX7 {
   bool setTargetCurrents(const std::vector<double>& amps,
                          std::uint64_t* seq = nullptr,
                          double* time = nullptr);
+  bool setTargetCurrentBasedPositions(
+      const std::vector<double>& rad,
+      const std::vector<double>& current_limit_amps,
+      std::uint64_t* seq = nullptr, double* time = nullptr);
   // Controller-facing tagged variants. The target is accepted only when
   // source_feedback_seq is still the latest feedback and its age is within
   // controller_deadline_s. On rejection the last valid target remains active.
@@ -227,6 +239,11 @@ class CraneX7 {
       const std::vector<double>& amps, std::uint64_t source_feedback_seq,
       double source_feedback_time, std::uint64_t* seq = nullptr,
       double* time = nullptr);
+  bool setTargetCurrentBasedPositionsFromFeedback(
+      const std::vector<double>& rad,
+      const std::vector<double>& current_limit_amps,
+      std::uint64_t source_feedback_seq, double source_feedback_time,
+      std::uint64_t* seq = nullptr, double* time = nullptr);
 
   // Deadman: escalates if the last successful command write — or, once
   // a controller has submitted targets, the last fresh submission — is
@@ -266,6 +283,12 @@ class CraneX7 {
   // a preload in any other operating mode fails activation.
   void setActivationCurrentPreload(const std::vector<double>& amps) {
     preload_amps_ = amps;
+  }
+  // Required before activating in current-based position mode. The positive
+  // ceilings are staged with the measured-position goal before torque-on.
+  void setActivationCurrentBasedPositionLimits(
+      const std::vector<double>& amps) {
+    cbp_activation_limits_amps_ = amps;
   }
 
   // Minimal in-place position->current transition for the integrated
@@ -316,7 +339,12 @@ class CraneX7 {
   bool writeCurrentsWithFeedback(
       const std::vector<double>& amps,
       const std::vector<dxl::Feedback>& feedback, WriteOutcome* out);
+  bool writeCurrentBasedPositionsWithFeedback(
+      const std::vector<double>& rad,
+      const std::vector<double>& current_limit_amps,
+      const std::vector<dxl::Feedback>& feedback, WriteOutcome* out);
   bool setTargets(const std::vector<double>& values,
+                  const std::vector<double>* auxiliary,
                   std::uint64_t source_feedback_seq,
                   double source_feedback_time, bool tagged,
                   std::uint64_t* seq, double* time);
@@ -327,6 +355,9 @@ class CraneX7 {
                      const std::vector<dxl::Feedback>& fb,
                      std::vector<double>* limited,
                      std::vector<std::uint8_t>* flags) const;
+  void limitCurrentMagnitudes(const std::vector<double>& amps,
+                              std::vector<double>* limited,
+                              std::vector<std::uint8_t>* flags) const;
   std::vector<std::uint8_t> ids() const;
   void threadLoop();
 
@@ -345,12 +376,14 @@ class CraneX7 {
   std::vector<double> limit_lo_, limit_hi_;          // [rad], margin applied
   std::vector<double> servo_current_limit_amps_;     // [A]
   std::vector<double> preload_amps_;  // activation preload [A]; may be empty
+  std::vector<double> cbp_activation_limits_amps_;
 
   mutable std::mutex state_mutex_;
   std::vector<dxl::Feedback> feedback_;     // last successful readAll
   double feedback_time_ = 0.0;              // now_() at acquisition
   std::uint64_t feedback_seq_ = 0;          // bumps per successful read
   std::vector<double> targets_;             // canonical, unit per mode
+  std::vector<double> auxiliary_targets_;   // mode-specific paired values
   bool have_targets_ = false;
   double last_submission_ = 0.0;   // last setTarget* call (deadman)
   bool submission_armed_ = false;  // a controller has submitted targets
