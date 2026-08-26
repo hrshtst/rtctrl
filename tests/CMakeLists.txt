@@ -44,6 +44,16 @@ set_tests_properties(x7_plan_ptp_generates_example PROPERTIES
   PASS_REGULAR_EXPRESSION "wrote .* frames"
   LABELS unit)
 
+add_test(NAME x7_plan_ptp_bundle_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/ptp_bundle_smoke.sh
+          $<TARGET_FILE:x7_plan_ptp>
+          ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+          ${CMAKE_BINARY_DIR}/ptp_bundle_smoke)
+set_tests_properties(x7_plan_ptp_bundle_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "PTP bundle creation and replay OK"
+  LABELS integration)
+
 add_executable(integration_tests
   integration/sim_arm_test.cpp
   integration/pty_test.cpp

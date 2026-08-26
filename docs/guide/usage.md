@@ -231,6 +231,63 @@ Common settings can be overridden without editing the TOML file:
   --sample-rate 200 --profile trapezoidal --no-strict-ik
 ```
 
+#### Portable planning bundles
+
+Create an immutable, self-contained archive by giving a directory that
+does not yet exist:
+
+```sh
+./build/apps/x7_plan_ptp --config plan.toml \
+  --bundle backups/pick-20260826 --motion-time 4
+```
+
+`--bundle` owns the trajectory location and is therefore exclusive with
+`--output`. The target is checked before the source configuration is
+loaded. An existing directory, regular file, or symbolic link is refused
+without inspection or modification, even if the source configuration is
+missing or malformed. Failed creation removes its private staging
+directory and does not publish a partial bundle.
+
+A successful bundle contains:
+
+```text
+pick-20260826/
+  source.toml
+  plan.toml
+  trajectory.zvs
+  manifest.toml
+  model/
+    crane_x7.ztk
+    meshes/visual/...
+```
+
+`source.toml` is a byte-for-byte copy of the input. `plan.toml` records
+the effective configuration after CLI overrides, with portable paths
+`model/crane_x7.ztk` and `trajectory.zvs`. The planner reloads this copied
+configuration and generates the initial trajectory from the copied model.
+Every relative `import:` used by the model is copied with its directory
+layout; absolute imports and imports that escape the model directory are
+refused.
+
+`manifest.toml` records the bundle format version, rtctrl version, build
+Git commit and dirty state, and the size and SHA-256 of every archived
+file. The bundle is staged beside its destination and published with a
+no-replace rename only after planning and hashing succeed.
+
+Reproduce into a new output file without modifying the archive:
+
+```sh
+./build/apps/x7_plan_ptp \
+  --config backups/pick-20260826/plan.toml \
+  --output /tmp/pick-reproduced.zvs
+cmp backups/pick-20260826/trajectory.zvs /tmp/pick-reproduced.zvs
+```
+
+For strict reproduction, build the Git commit named in `manifest.toml`.
+Loading `plan.toml` resolves the model relative to the archive, so the
+repository's current model is not used. `--bundle` is creation-only and
+is not used for replay.
+
 The planner checks kinematics and model joint limits, but it does not
 perform collision checking or certify a trajectory for hardware. A
 hardware tracking app must independently validate the file, starting

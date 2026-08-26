@@ -155,3 +155,49 @@ TEST_CASE("PTP CLI rejects missing values before config loading",
   CHECK_FALSE(cli.ok);
   CHECK(cli.error.find("requires a value") != std::string::npos);
 }
+
+TEST_CASE("PTP bundle CLI owns its output location", "[ptp][config][bundle]") {
+  SECTION("bundle path is accepted") {
+    const char* raw[] = {"x7_plan_ptp", "--config", "plan.toml", "--bundle",
+                         "archive/run-1"};
+    auto argv = const_cast<char**>(raw);
+    const auto cli = x7::ptp::parseCli(
+        static_cast<int>(sizeof(raw) / sizeof(raw[0])), argv);
+    REQUIRE(cli.ok);
+    REQUIRE(cli.bundle_path);
+    CHECK(*cli.bundle_path == fs::path("archive/run-1"));
+  }
+
+  SECTION("external output is incompatible") {
+    const char* raw[] = {"x7_plan_ptp", "--config", "plan.toml", "--bundle",
+                         "archive/run-1", "--output", "elsewhere.zvs"};
+    auto argv = const_cast<char**>(raw);
+    const auto cli = x7::ptp::parseCli(
+        static_cast<int>(sizeof(raw) / sizeof(raw[0])), argv);
+    CHECK_FALSE(cli.ok);
+    CHECK(cli.error.find("exclusive") != std::string::npos);
+  }
+}
+
+TEST_CASE("effective PTP config serializes overrides and portable paths",
+          "[ptp][config][bundle]") {
+  ConfigFile source(kMinimalConfig);
+  auto config = x7::ptp::loadConfig(source.path());
+  config.options.profile = rtctrl::model::PtpProfile::Linear;
+  config.options.sample_rate = 250.0;
+  config.options.timing.motion_time = 1.25;
+  config.options.strict_ik = false;
+
+  const auto serialized = x7::ptp::serializeEffectiveConfig(
+      config, "model/copied.ztk", "trajectory.zvs");
+  const auto table = toml::parse(serialized);
+  CHECK(table["model"].value_or(std::string()) == "model/copied.ztk");
+  CHECK(table["output"].value_or(std::string()) == "trajectory.zvs");
+  CHECK(table["trajectory"]["profile"].value_or(std::string()) == "linear");
+  CHECK(table["trajectory"]["sample_rate"].value_or(0.0) == Approx(250.0));
+  CHECK(table["trajectory"]["motion_time"].value_or(0.0) == Approx(1.25));
+  CHECK_FALSE(table["ik"]["strict"].value_or(true));
+  CHECK(table["start"]["rpy_rad"].as_array()->size() == 3);
+  CHECK(table["ik"]["initial_joints"].as_array()->size() ==
+        rtctrl::model::kCanonicalDof);
+}

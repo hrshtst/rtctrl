@@ -7,7 +7,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
+#include <limits>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -28,6 +31,8 @@ struct Config {
   std::string end_effector = "crane_x7_tcp_link";
   model::CartesianPose start;
   model::CartesianPose end;
+  std::array<double, 3> start_rpy_rad{};
+  std::array<double, 3> end_rpy_rad{};
   model::PtpPlanOptions options;
   std::array<double, model::kCanonicalDof> initial_joints{};
 };
@@ -38,6 +43,7 @@ struct Cli {
   std::string error;
   fs::path config_path;
   std::optional<fs::path> output_path;
+  std::optional<fs::path> bundle_path;
   std::optional<double> motion_time;
   std::optional<double> max_linear_velocity;
   std::optional<double> max_angular_velocity;
@@ -114,10 +120,12 @@ inline const char* profileName(model::PtpProfile profile) {
 }
 
 inline model::CartesianPose parsePose(const toml::table& table,
-                                      const std::string& name) {
+                                      const std::string& name,
+                                      std::array<double, 3>* rpy_out) {
   rejectUnknown(table, {"position", "rpy_rad"}, name);
   const auto position = numberArray<3>(table, "position", name);
   const auto rpy_rad = numberArray<3>(table, "rpy_rad", name);
+  *rpy_out = rpy_rad;
   model::CartesianPose pose;
   zVec3DCreate(&pose.position, position[0], position[1], position[2]);
   pose.attitude = model::worldAttitudeFromRpyRad(
@@ -179,8 +187,8 @@ inline Config loadConfig(const fs::path& config_path) {
   if (start == nullptr || end == nullptr) {
     throw std::runtime_error("PTP config: [start] and [end] are required");
   }
-  config.start = parsePose(*start, "start");
-  config.end = parsePose(*end, "end");
+  config.start = parsePose(*start, "start", &config.start_rpy_rad);
+  config.end = parsePose(*end, "end", &config.end_rpy_rad);
 
   if (const auto* trajectory = root["trajectory"].as_table()) {
     rejectUnknown(*trajectory,
@@ -307,6 +315,9 @@ inline Cli parseCli(int argc, char* argv[]) {
     } else if (arg == "--output") {
       const char* value = requireValue("--output");
       if (value) cli.output_path = fs::path(value);
+    } else if (arg == "--bundle") {
+      const char* value = requireValue("--bundle");
+      if (value) cli.bundle_path = fs::path(value);
     } else if (arg == "--motion-time") {
       parseNumber("--motion-time", &cli.motion_time);
     } else if (arg == "--max-linear-velocity") {
@@ -337,6 +348,9 @@ inline Cli parseCli(int argc, char* argv[]) {
   if (!cli.help && cli.config_path.empty()) {
     return cliError("--config PLAN.toml is required");
   }
+  if (cli.bundle_path && cli.output_path) {
+    return cliError("--bundle and --output are exclusive");
+  }
   return cli;
 }
 
@@ -357,6 +371,93 @@ inline void applyOverrides(const Cli& cli, Config* config) {
     throw std::runtime_error(
         "maximum linear and angular velocities must be specified together");
   }
+}
+
+inline std::string quoteTomlString(std::string_view value) {
+  std::ostringstream output;
+  output << '"';
+  for (const unsigned char character : value) {
+    switch (character) {
+      case '\\':
+        output << "\\\\";
+        break;
+      case '"':
+        output << "\\\"";
+        break;
+      case '\n':
+        output << "\\n";
+        break;
+      case '\r':
+        output << "\\r";
+        break;
+      case '\t':
+        output << "\\t";
+        break;
+      default:
+        if (character < 0x20) {
+          output << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                 << static_cast<int>(character) << std::dec;
+        } else {
+          output << character;
+        }
+    }
+  }
+  output << '"';
+  return output.str();
+}
+
+template <std::size_t Size>
+void writeTomlArray(std::ostream& output,
+                    const std::array<double, Size>& values) {
+  output << '[';
+  for (std::size_t i = 0; i < Size; ++i) {
+    if (i != 0) output << ", ";
+    output << std::setprecision(std::numeric_limits<double>::max_digits10)
+           << values[i];
+  }
+  output << ']';
+}
+
+inline std::string serializeEffectiveConfig(
+    const Config& config, const fs::path& model_path,
+    const fs::path& output_path) {
+  std::ostringstream output;
+  output << "model = " << quoteTomlString(model_path.generic_string())
+         << "\noutput = " << quoteTomlString(output_path.generic_string())
+         << "\nend_effector = " << quoteTomlString(config.end_effector)
+         << "\n\n[trajectory]\nprofile = "
+         << quoteTomlString(profileName(config.options.profile))
+         << "\nsample_rate = "
+         << std::setprecision(std::numeric_limits<double>::max_digits10)
+         << config.options.sample_rate;
+  if (config.options.timing.motion_time) {
+    output << "\nmotion_time = " << *config.options.timing.motion_time;
+  }
+  if (config.options.timing.max_linear_velocity) {
+    output << "\nmax_linear_velocity = "
+           << *config.options.timing.max_linear_velocity
+           << "\nmax_angular_velocity = "
+           << *config.options.timing.max_angular_velocity;
+  }
+  output << "\ntrapezoid_acceleration_fraction = "
+         << config.options.trapezoid_acceleration_fraction
+         << "\n\n[start]\nposition = [" << config.start.position.c.x << ", "
+         << config.start.position.c.y << ", " << config.start.position.c.z
+         << "]\nrpy_rad = ";
+  writeTomlArray(output, config.start_rpy_rad);
+  output << "\n\n[end]\nposition = [" << config.end.position.c.x << ", "
+         << config.end.position.c.y << ", " << config.end.position.c.z
+         << "]\nrpy_rad = ";
+  writeTomlArray(output, config.end_rpy_rad);
+  output << "\n\n[ik]\nstrict = "
+         << (config.options.strict_ik ? "true" : "false")
+         << "\nposition_tolerance = " << config.options.position_tolerance
+         << "\nattitude_tolerance = " << config.options.attitude_tolerance
+         << "\nmax_iterations = " << config.options.max_iterations
+         << "\ninitial_joints = ";
+  writeTomlArray(output, config.initial_joints);
+  output << '\n';
+  return output.str();
 }
 
 }  // namespace x7::ptp

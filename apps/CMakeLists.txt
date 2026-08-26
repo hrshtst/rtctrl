@@ -16,7 +16,15 @@ add_executable(dxl_load_params bus/dxl_load_params.cpp)
 target_link_libraries(dxl_load_params PRIVATE rtctrl::rtctrl)
 target_include_directories(dxl_load_params PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable(x7_plan_ptp plan/x7_plan_ptp.cpp)
+set(PTP_GIT_REV_SRC ${CMAKE_BINARY_DIR}/generated/ptp_git_rev.cpp)
+add_custom_target(ptp_git_rev
+  COMMAND ${CMAKE_COMMAND} -DOUT=${PTP_GIT_REV_SRC}
+          -DSRC_DIR=${CMAKE_SOURCE_DIR}
+          -P ${CMAKE_SOURCE_DIR}/cmake/GitRev.cmake
+  BYPRODUCTS ${PTP_GIT_REV_SRC})
+add_executable(x7_plan_ptp plan/x7_plan_ptp.cpp plan/ptp_bundle.cpp
+  ${PTP_GIT_REV_SRC})
+add_dependencies(x7_plan_ptp ptp_git_rev)
 target_link_libraries(x7_plan_ptp PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_plan_ptp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
