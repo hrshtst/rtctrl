@@ -9,6 +9,8 @@ add_executable(unit_tests
   unit/zvs_trajectory_test.cpp
   unit/ptp_planner_test.cpp
   unit/ptp_config_test.cpp
+  unit/follow_config_test.cpp
+  unit/follow_run_test.cpp
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/cycle_timing_test.cpp
