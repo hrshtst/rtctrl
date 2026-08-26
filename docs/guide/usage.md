@@ -126,8 +126,9 @@ so a hand-written radian file loads as a near-zero posture.
 
 `x7_plan_ptp` plans a straight world-frame TCP translation with a
 shortest-path spherical attitude interpolation. It solves IK at every
-sample and writes the model's nine joint coordinates to a `.zvs` file.
-The app is entirely offline and never opens the hardware bus.
+sample, writes the model's nine joint coordinates to a `.zvs` file, and
+writes an analysis-ready trajectory diagnostics CSV. The app is entirely
+offline and never opens the hardware bus.
 
 Start with the checked-in configuration:
 
@@ -142,6 +143,10 @@ The configuration schema is:
 model = "../models/crane_x7/crane_x7.ztk"
 output = "ptp.zvs"
 end_effector = "crane_x7_tcp_link"
+
+[diagnostics]
+enabled = true
+output = "ptp.csv"
 
 [trajectory]
 profile = "minimum-jerk" # linear, trapezoidal, or minimum-jerk
@@ -173,16 +178,17 @@ $R=R_z(\mathit{yaw})R_y(\mathit{pitch})R_x(\mathit{roll})$, matching
 attitude matrix before calling `IkSolver`; the solver receives the
 matrix, not an angle-axis vector. RoKi's degree-valued angle-axis syntax
 applies to textual ZTK input and is not the runtime IK reference
-convention. The model path is relative to the TOML file. The output path
-is relative to the directory where the app is invoked;
-`.zvs` is appended when it is absent. Unknown keys and malformed
-values are errors, which prevents misspelled options from silently
-using defaults.
+convention. The model path is relative to the TOML file. Trajectory and
+diagnostics output paths are relative to the directory where the app is
+invoked; `.zvs` and `.csv` are appended when absent. Unknown keys and
+malformed values are errors, which prevents misspelled options from
+silently using defaults.
 
 `model`, `[start]`, and `[end]` are required. Optional defaults are
-`ptp.zvs`, `crane_x7_tcp_link`, minimum jerk, 100 Hz, strict IK,
-position tolerance $10^{-4}$ m, attitude tolerance $10^{-3}$ rad,
-200 IK iterations, and an all-zero canonical initial joint seed.
+`ptp.zvs`, a same-basename `ptp.csv` diagnostics file,
+`crane_x7_tcp_link`, minimum jerk, 100 Hz, strict IK, position tolerance
+$10^{-4}$ m, attitude tolerance $10^{-3}$ rad, 200 IK iterations, and
+an all-zero canonical initial joint seed.
 
 The three profiles apply to one scalar path-progress variable. The
 geometric translation remains a line and attitude remains SLERP for
@@ -220,13 +226,53 @@ Strict IK is the default. A non-converged sample aborts planning before
 the output file is opened. With `strict = false`, a finite, in-limit
 best result is written with a warning containing its time and
 residuals; a non-finite or limit-violating result remains fatal. The
-app also reports the worst IK residuals and peak sampled joint speed.
+app also reports the worst IK residuals, peak sampled joint speed and
+acceleration, and minimum joint-limit margin.
+
+#### Trajectory diagnostics and plots
+
+The diagnostics CSV has one schema-versioned row per `.zvs` sample. It
+records:
+
+- analytic target TCP position, quaternion attitude, world-frame linear
+  and angular velocity, and acceleration;
+- FK position, quaternion attitude, velocity, and acceleration evaluated
+  from the IK joint solution;
+- world-frame position and rotation-vector errors plus the complete IK
+  result;
+- canonical eight-joint position, sampled velocity and acceleration, and
+  joint-limit margin.
+
+Target Cartesian derivatives come directly from the selected scalar
+profile. Joint velocity and acceleration are second-order finite-difference
+estimates of the sampled IK path; the FK rates use those estimates. They do
+not yet define a continuous joint interpolant for a hardware tracker.
+`profile_derivative_discontinuity` marks samples where an ideal linear or
+trapezoidal profile has no unique two-sided derivative.
+
+Quaternion attitude is authoritative. Angular velocity and acceleration
+are world-frame vectors, not derivatives of RPY angles. The plotter derives
+and unwraps RPY only for display:
+
+```sh
+uv run --project tools tools/plot/ptp_trajectory.py ptp.csv \
+  --output /tmp/ptp-review.png
+```
+
+The plot covers target versus FK TCP position and attitude, Cartesian
+speed and acceleration, joint position, joint velocity and acceleration,
+IK/FK errors, and minimum joint-limit margin. Use `--show` for an
+interactive window. Without `--show`, `--output` is required so plotting a
+completed bundle cannot modify it accidentally.
+
+Use `--diagnostics FILE` to select another CSV path or `--no-diagnostics`
+for ordinary non-bundle planning. A bundle always contains diagnostics.
 
 Common settings can be overridden without editing the TOML file:
 
 ```sh
 ./build/apps/x7_plan_ptp --config plan.toml \
-  --output trial.zvs --motion-time 4 \
+  --output trial.zvs --diagnostics trial.csv --motion-time 4 \
   --max-linear-velocity 0.04 --max-angular-velocity 0.4 \
   --sample-rate 200 --profile trapezoidal --no-strict-ik
 ```
@@ -241,12 +287,13 @@ does not yet exist:
   --bundle backups/pick-20260826 --motion-time 4
 ```
 
-`--bundle` owns the trajectory location and is therefore exclusive with
-`--output`. The target is checked before the source configuration is
-loaded. An existing directory, regular file, or symbolic link is refused
-without inspection or modification, even if the source configuration is
-missing or malformed. Failed creation removes its private staging
-directory and does not publish a partial bundle.
+`--bundle` owns the trajectory and diagnostics locations and is therefore
+exclusive with `--output`, `--diagnostics`, and `--no-diagnostics`. The
+target is checked before the source configuration is loaded. An existing
+directory, regular file, or symbolic link is refused without inspection
+or modification, even if the source configuration is missing or malformed.
+Failed creation removes its private staging directory and does not publish
+a partial bundle.
 
 A successful bundle contains:
 
@@ -255,6 +302,7 @@ pick-20260826/
   source.toml
   plan.toml
   trajectory.zvs
+  trajectory.csv
   manifest.toml
   model/
     crane_x7.ztk
@@ -263,11 +311,11 @@ pick-20260826/
 
 `source.toml` is a byte-for-byte copy of the input. `plan.toml` records
 the effective configuration after CLI overrides, with portable paths
-`model/crane_x7.ztk` and `trajectory.zvs`. The planner reloads this copied
-configuration and generates the initial trajectory from the copied model.
-Every relative `import:` used by the model is copied with its directory
-layout; absolute imports and imports that escape the model directory are
-refused.
+`model/crane_x7.ztk`, `trajectory.zvs`, and `trajectory.csv`. The planner
+reloads this copied configuration and generates the initial trajectory and
+diagnostics from the copied model. Every relative `import:` used by the
+model is copied with its directory layout; absolute imports and imports
+that escape the model directory are refused.
 
 `manifest.toml` records the bundle format version, rtctrl version, build
 Git commit and dirty state, and the size and SHA-256 of every archived
@@ -279,8 +327,10 @@ Reproduce into a new output file without modifying the archive:
 ```sh
 ./build/apps/x7_plan_ptp \
   --config backups/pick-20260826/plan.toml \
-  --output /tmp/pick-reproduced.zvs
+  --output /tmp/pick-reproduced.zvs \
+  --diagnostics /tmp/pick-reproduced.csv
 cmp backups/pick-20260826/trajectory.zvs /tmp/pick-reproduced.zvs
+cmp backups/pick-20260826/trajectory.csv /tmp/pick-reproduced.csv
 ```
 
 For strict reproduction, build the Git commit named in `manifest.toml`.

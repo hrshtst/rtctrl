@@ -38,7 +38,8 @@ catch_discover_tests(unit_tests
 
 add_test(NAME x7_plan_ptp_generates_example
   COMMAND x7_plan_ptp --config config/ptp_example.toml
-          --output build/test_ptp_example.zvs --motion-time 0.2)
+          --output build/test_ptp_example.zvs
+          --diagnostics build/test_ptp_example.csv --motion-time 0.2)
 set_tests_properties(x7_plan_ptp_generates_example PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "wrote .* frames"
@@ -52,6 +53,21 @@ add_test(NAME x7_plan_ptp_bundle_smoke
 set_tests_properties(x7_plan_ptp_bundle_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "PTP bundle creation and replay OK"
+  LABELS integration)
+
+add_test(NAME x7_plan_ptp_plot_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    MPLCONFIGDIR=${CMAKE_BINARY_DIR}/mpl-cache
+    uv run --project tools
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/ptp_plot_smoke.sh
+      $<TARGET_FILE:x7_plan_ptp>
+      ${CMAKE_SOURCE_DIR}/tools/plot/ptp_trajectory.py
+      ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+      ${CMAKE_BINARY_DIR}/ptp_plot_smoke)
+set_tests_properties(x7_plan_ptp_plot_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "PTP diagnostics plotting OK"
   LABELS integration)
 
 add_executable(integration_tests

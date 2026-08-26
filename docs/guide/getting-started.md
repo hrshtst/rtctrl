@@ -96,6 +96,8 @@ rk_anim models/crane_x7/crane_x7.ztk motion.zvs
 # Cartesian TCP line with continuation-seeded IK at every sample
 ./build/apps/x7_plan_ptp --config config/ptp_example.toml
 rk_anim models/crane_x7/crane_x7.ztk ptp.zvs
+uv run --project tools tools/plot/ptp_trajectory.py ptp.csv \
+  --output /tmp/ptp-review.png
 
 # Or create a portable archive containing config, model, meshes, and output
 ./build/apps/x7_plan_ptp --config config/ptp_example.toml \

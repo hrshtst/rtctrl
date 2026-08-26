@@ -94,7 +94,8 @@ models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committe
 config/       crane_x7.toml (bus, joints, limits, margins),
               ptp_example.toml, versioned postures/*.toml
 tools/        port_model.py, ident_analysis.py, replay_compare.py,
-              ct_mass_error_study.py (uv), bootstrap_milib.sh
+              ct_mass_error_study.py, plot/ptp_trajectory.py (uv),
+              bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
 docs/         this documentation
 third_party/  pinned submodules (mi-lib metapackage, DynamixelSDK, URDF source)

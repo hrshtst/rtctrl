@@ -4,6 +4,10 @@ model = "../models/crane_x7/crane_x7.ztk"
 output = "ptp.zvs"
 end_effector = "crane_x7_tcp_link"
 
+[diagnostics]
+enabled = true
+output = "ptp.csv"
+
 [trajectory]
 profile = "minimum-jerk"
 sample_rate = 100.0
