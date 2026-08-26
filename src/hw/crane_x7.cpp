@@ -142,6 +142,30 @@ bool CraneX7::activateSteps() {
                     std::to_string(joint.id);
       return false;
     }
+  }
+
+  // Preserve the established default, then let an explicitly loaded motor
+  // parameter set override it while torque is still disabled. Operating Mode
+  // must precede both because the servo resets gains and profiles on a mode
+  // write.
+  if (!writePositionPGain(options_.active_p_gain)) return false;
+  if (options_.activation_configurator) {
+    std::string error;
+    if (!options_.activation_configurator(io_, &error)) {
+      last_error_ = error.empty() ? "activation parameter setup failed"
+                                  : error;
+      return false;
+    }
+  }
+
+  for (const auto& joint : config_.joints) {
+    std::uint8_t torque = 1;
+    if (!io_.read8(joint.id, reg::kTorqueEnable.addr, &torque).ok() ||
+        torque != 0) {
+      last_error_ = "activation configurator left torque enabled on id " +
+                    std::to_string(joint.id);
+      return false;
+    }
     std::uint32_t lo = 0, hi = 0;
     if (!io_.read32(joint.id, reg::kMinPositionLimit.addr, &lo).ok() ||
         !io_.read32(joint.id, reg::kMaxPositionLimit.addr, &hi).ok()) {
@@ -195,8 +219,6 @@ bool CraneX7::activateSteps() {
     last_error_ = "goal snap failed";
     return false;
   }
-
-  if (!writePositionPGain(options_.active_p_gain)) return false;
 
   const auto watchdog_units = static_cast<std::uint8_t>(std::clamp(
       std::lround(options_.bus_watchdog_timeout_s /

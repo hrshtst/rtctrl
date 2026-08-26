@@ -59,6 +59,12 @@ class CraneX7 {
     // actuator goal active. The 250 ms deadman would catch it late;
     // this catches it in ~max_write_failures cycles.
     int max_write_failures = 5;
+    // Optional torque-off customization after Operating Mode and the default
+    // active P gain are written, but before effective limits are read and
+    // torque is enabled. Intended for the transactional parameter loader.
+    // The callback must leave torque disabled on every servo.
+    std::function<bool(dxl::PacketIO&, std::string*)>
+        activation_configurator;
   };
 
   struct CycleStats {

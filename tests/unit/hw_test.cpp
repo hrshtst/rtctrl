@@ -107,6 +107,51 @@ TEST_CASE("deactivation preserves the configured position P gain",
   }
 }
 
+TEST_CASE("activation configurator runs after mode setup with torque off",
+          "[hw][parameters]") {
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 1;
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.activation_configurator = [](dxl::PacketIO& packet,
+                                       std::string* error) {
+    for (std::uint8_t id = 2; id <= 9; ++id) {
+      std::uint8_t torque = 1;
+      std::uint8_t mode = 0;
+      if (!packet.read8(id, reg::kTorqueEnable.addr, &torque).ok() ||
+          !packet.read8(id, reg::kOperatingMode.addr, &mode).ok() ||
+          torque != 0 || mode != 1 ||
+          !packet.write16(id, reg::kPositionPGain.addr, 640).ok()) {
+        *error = "test activation customization failed";
+        return false;
+      }
+    }
+    return true;
+  };
+  hw::CraneX7 arm(io, config, options);
+  REQUIRE(arm.activate());
+  CHECK(bus.find(2)->peek(reg::kPositionPGain) == 640);
+}
+
+TEST_CASE("activation configurator failure releases every servo",
+          "[hw][parameters][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.activation_configurator = [](dxl::PacketIO&, std::string* error) {
+    *error = "parameter readback failed";
+    return false;
+  };
+  hw::CraneX7 arm(io, config, options);
+  CHECK_FALSE(arm.activate());
+  CHECK(arm.lastError() == "parameter readback failed");
+  for (const auto& joint : config.joints) {
+    CHECK(bus.find(joint.id)->peek(reg::kTorqueEnable) == 0);
+  }
+}
+
 TEST_CASE("activation fails on firmware without Bus Watchdog", "[hw]") {
   const auto config = craneConfig();
   auto bus = busFor(config, /*firmware=*/37);
