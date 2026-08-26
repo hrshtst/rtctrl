@@ -263,6 +263,16 @@ std::string sha256File(const fs::path& path) {
 
 }  // namespace
 
+void copyBundleRegularFile(const fs::path& source,
+                           const fs::path& destination) {
+  copyRegularFile(source, destination);
+}
+
+void copyBundleModelDependencies(const fs::path& source_model,
+                                 const fs::path& destination_root) {
+  copyModelDependencies(source_model, destination_root);
+}
+
 BundleWorkspace::BundleWorkspace(const fs::path& target)
     : target_(fs::absolute(target).lexically_normal()) {
   if (target.empty() || target_.filename().empty()) {
@@ -342,6 +352,14 @@ PreparedBundle prepareBundle(const fs::path& staging,
 void writeBundleManifest(const fs::path& root,
                          const std::string& rtctrl_version,
                          const std::string& git_commit, bool git_dirty) {
+  writeBundleManifestFor(root, kBundleFormat, kBundleFormatVersion,
+                         rtctrl_version, git_commit, git_dirty);
+}
+
+void writeBundleManifestFor(const fs::path& root, const std::string& format,
+                            int format_version,
+                            const std::string& rtctrl_version,
+                            const std::string& git_commit, bool git_dirty) {
   std::vector<fs::path> files;
   for (const auto& entry : fs::recursive_directory_iterator(root)) {
     if (entry.is_regular_file() && entry.path().filename() != "manifest.toml") {
@@ -355,8 +373,8 @@ void writeBundleManifest(const fs::path& root,
   if (!output) {
     throw std::runtime_error("cannot write " + manifest_path.string());
   }
-  output << "format = " << quoteTomlString(kBundleFormat)
-         << "\nformat_version = " << kBundleFormatVersion
+  output << "format = " << quoteTomlString(format)
+         << "\nformat_version = " << format_version
          << "\nrtctrl_version = " << quoteTomlString(rtctrl_version)
          << "\ngit_commit = " << quoteTomlString(git_commit)
          << "\ngit_dirty = " << (git_dirty ? "true" : "false") << '\n';

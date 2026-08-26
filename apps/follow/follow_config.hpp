@@ -473,6 +473,9 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
   if (!simulation && cli.motion_path) {
     throw std::runtime_error("--motion is simulation-only");
   }
+  if (cli.check && cli.bundle_path) {
+    throw std::runtime_error("--check and --bundle cannot be used together");
+  }
   return cli;
 }
 

@@ -90,6 +90,12 @@ TEST_CASE("follow CLI requires explicit config and separates frontends",
   CHECK(cli.motion_path == std::filesystem::path("out.zvs"));
   CHECK_THROWS(follow::parseCli(5, argv, false));
   CHECK_THROWS(follow::parseCli(1, argv, true));
+
+  char bundle[] = "--bundle";
+  char archive[] = "archive";
+  char check[] = "--check";
+  char* incompatible[] = {app, config, path, bundle, archive, check};
+  CHECK_THROWS(follow::parseCli(6, incompatible, true));
 }
 
 TEST_CASE("hardware follow timing and mode derive from one control contract",

@@ -33,6 +33,18 @@ class BundleWorkspace {
   bool published_ = false;
 };
 
+// Shared archive primitives used by other offline/online reproducibility
+// bundles. Destinations must be inside a caller-owned staging directory.
+void copyBundleRegularFile(const std::filesystem::path& source,
+                           const std::filesystem::path& destination);
+void copyBundleModelDependencies(
+    const std::filesystem::path& source_model,
+    const std::filesystem::path& destination_root);
+void writeBundleManifestFor(const std::filesystem::path& root,
+                            const std::string& format, int format_version,
+                            const std::string& rtctrl_version,
+                            const std::string& git_commit, bool git_dirty);
+
 PreparedBundle prepareBundle(const std::filesystem::path& staging,
                              const std::filesystem::path& source_config,
                              const Config& effective_config);

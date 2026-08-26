@@ -7,12 +7,14 @@
 
 #include <cstdio>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 
 #include "bus/dxl_parameters.hpp"
 #include "common/x7_common.hpp"
 #include "follow/follow_config.hpp"
+#include "follow/follow_bundle.hpp"
 #include "follow/follow_hardware.hpp"
 #include "follow/follow_preflight.hpp"
 #include "follow/follow_run.hpp"
@@ -23,6 +25,12 @@
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvs_trajectory.hpp"
+#include "rtctrl/version.hpp"
+
+namespace x7::gitrev {
+extern const char* const kBuildSha;
+extern const bool kBuildDirty;
+}  // namespace x7::gitrev
 
 namespace arm = rtctrl::arm;
 namespace follow = x7::follow;
@@ -82,11 +90,17 @@ int main(int argc, char* argv[]) {
       usage();
       return 0;
     }
+    std::unique_ptr<x7::ptp::BundleWorkspace> bundle;
     if (cli.bundle_path) {
-      throw std::runtime_error("--bundle support is not available yet");
+      bundle = std::make_unique<x7::ptp::BundleWorkspace>(*cli.bundle_path);
     }
     auto config = follow::loadConfig(cli.config_path);
     if (cli.log_path) config.output.hardware_log = *cli.log_path;
+    if (bundle) {
+      const auto prepared = follow::prepareBundle(bundle->staging(), config);
+      config = follow::loadConfig(prepared.config_path);
+      config.output.hardware_log = prepared.hardware_log;
+    }
 
     model::ChainModel chain(config.model_path.string());
     model::JointMap map(chain);
@@ -113,39 +127,57 @@ int main(int argc, char* argv[]) {
       return 0;
     }
     follow::requireNewOutput(config.output.hardware_log, "hardware log");
-    follow::FollowCsvLog log(config.output.hardware_log.string());
+    follow::RunResult result;
+    hw::CraneX7::CycleStats stats;
+    bool released = false;
+    {
+      follow::FollowCsvLog log(config.output.hardware_log.string());
+      std::printf("bus: %s @ %d baud, %zu joints\n", hardware.port.c_str(),
+                  hardware.baudrate, hardware.joints.size());
+      rtctrl::dxl::Port port(hardware.port, hardware.baudrate);
+      auto options = follow::hardwareOptions(config, parameter_dump);
+      hw::CraneX7 crane(port, hardware, options);
+      crane.onEscalate([&port] {
+        std::fprintf(
+            stderr,
+            "DEADMAN: command stream stale; closing the bus so servo "
+            "watchdogs halt the arm\n");
+        port.close();
+      });
+      const auto cbp_limits =
+          follow::currentBasedPositionLimits(config, hardware);
+      if (!cbp_limits.empty()) {
+        crane.setActivationCurrentBasedPositionLimits(cbp_limits);
+      }
 
-    std::printf("bus: %s @ %d baud, %zu joints\n", hardware.port.c_str(),
-                hardware.baudrate, hardware.joints.size());
-    rtctrl::dxl::Port port(hardware.port, hardware.baudrate);
-    auto options = follow::hardwareOptions(config, parameter_dump);
-    hw::CraneX7 crane(port, hardware, options);
-    crane.onEscalate([&port] {
-      std::fprintf(stderr,
-                   "DEADMAN: command stream stale; closing the bus so servo "
-                   "watchdogs halt the arm\n");
-      port.close();
-    });
-    const auto cbp_limits =
-        follow::currentBasedPositionLimits(config, hardware);
-    if (!cbp_limits.empty()) {
-      crane.setActivationCurrentBasedPositionLimits(cbp_limits);
+      arm::RealArm robot(crane);
+      if (!robot.setMode(config.mode)) {
+        throw std::runtime_error("hardware operating-mode setup mismatch");
+      }
+      if (!robot.activate()) {
+        throw std::runtime_error("activation failed: " + crane.lastError());
+      }
+      x7::ShutdownGuard shutdown(crane);
+      EnterReader enter;
+      follow::FollowRun run(robot, reference, config, false, &log,
+                            [&enter] { return enter.pressed(); });
+      result = run.run();
+      stats = crane.cycleStats();
+      released = shutdown.run();
     }
-
-    arm::RealArm robot(crane);
-    if (!robot.setMode(config.mode)) {
-      throw std::runtime_error("hardware operating-mode setup mismatch");
+    std::string display_log = config.output.hardware_log.string();
+    if (bundle) {
+      follow::writeBundleResult(
+          bundle->staging(), "hardware", follow::statusName(result.status),
+          result.cycles, result.worst_home_error_rad,
+          result.worst_tracking_error_rad);
+      x7::ptp::writeBundleManifestFor(
+          bundle->staging(), "rtctrl-x7-follow-bundle", 1,
+          rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);
+      bundle->publish();
+      display_log = (bundle->target() / "hardware.csv").string();
+      std::printf("created bundle %s\n", bundle->target().string().c_str());
     }
-    if (!robot.activate()) {
-      throw std::runtime_error("activation failed: " + crane.lastError());
-    }
-    x7::ShutdownGuard shutdown(crane);
-    EnterReader enter;
-    follow::FollowRun run(robot, reference, config, false, &log,
-                          [&enter] { return enter.pressed(); });
-    const auto result = run.run();
-    const auto stats = crane.cycleStats();
-    const bool released = shutdown.run();
     std::printf("follow hardware: %s, %llu controller cycles, home %.4f rad, "
                 "tracking %.4f rad\n",
                 follow::statusName(result.status),
@@ -161,6 +193,7 @@ int main(int argc, char* argv[]) {
                 static_cast<unsigned long long>(
                     stats.controller_deadline_misses),
                 1000.0 * stats.max_cycle_time_s);
+    std::printf("log: %s\n", display_log.c_str());
     return result.status == follow::RunStatus::Success && released ? 0 : 1;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "x7_follow: %s\n", error.what());

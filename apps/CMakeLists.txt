@@ -28,11 +28,23 @@ add_dependencies(x7_plan_ptp ptp_git_rev)
 target_link_libraries(x7_plan_ptp PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_plan_ptp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable(x7_follow_sim follow/x7_follow_sim.cpp)
+set(FOLLOW_GIT_REV_SRC ${CMAKE_BINARY_DIR}/generated/follow_git_rev.cpp)
+add_custom_target(follow_git_rev
+  COMMAND ${CMAKE_COMMAND} -DOUT=${FOLLOW_GIT_REV_SRC}
+          -DSRC_DIR=${CMAKE_SOURCE_DIR}
+          -P ${CMAKE_SOURCE_DIR}/cmake/GitRev.cmake
+  BYPRODUCTS ${FOLLOW_GIT_REV_SRC})
+
+set(FOLLOW_BUNDLE_SOURCES follow/follow_bundle.cpp plan/ptp_bundle.cpp)
+add_executable(x7_follow_sim follow/x7_follow_sim.cpp
+  ${FOLLOW_BUNDLE_SOURCES} ${FOLLOW_GIT_REV_SRC})
+add_dependencies(x7_follow_sim follow_git_rev)
 target_link_libraries(x7_follow_sim PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_follow_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable(x7_follow follow/x7_follow.cpp)
+add_executable(x7_follow follow/x7_follow.cpp
+  ${FOLLOW_BUNDLE_SOURCES} ${FOLLOW_GIT_REV_SRC})
+add_dependencies(x7_follow follow_git_rev)
 target_link_libraries(x7_follow PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_follow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

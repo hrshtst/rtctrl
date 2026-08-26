@@ -4,8 +4,10 @@
 
 #include <cstdio>
 #include <exception>
+#include <memory>
 #include <stdexcept>
 
+#include "follow/follow_bundle.hpp"
 #include "follow/follow_config.hpp"
 #include "follow/follow_preflight.hpp"
 #include "follow/follow_run.hpp"
@@ -15,6 +17,12 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvs_trajectory.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
+#include "rtctrl/version.hpp"
+
+namespace x7::gitrev {
+extern const char* const kBuildSha;
+extern const bool kBuildDirty;
+}  // namespace x7::gitrev
 
 namespace arm = rtctrl::arm;
 namespace follow = x7::follow;
@@ -38,12 +46,19 @@ int main(int argc, char* argv[]) {
       usage();
       return 0;
     }
+    std::unique_ptr<x7::ptp::BundleWorkspace> bundle;
     if (cli.bundle_path) {
-      throw std::runtime_error("--bundle support is not available yet");
+      bundle = std::make_unique<x7::ptp::BundleWorkspace>(*cli.bundle_path);
     }
     auto config = follow::loadConfig(cli.config_path);
     if (cli.log_path) config.output.simulation_log = *cli.log_path;
     if (cli.motion_path) config.output.simulation_motion = *cli.motion_path;
+    if (bundle) {
+      const auto prepared = follow::prepareBundle(bundle->staging(), config);
+      config = follow::loadConfig(prepared.config_path);
+      config.output.simulation_motion = prepared.simulation_motion;
+      config.output.simulation_log = prepared.simulation_log;
+    }
     model::ChainModel chain(config.model_path.string());
     model::JointMap map(chain);
     model::ZvsTrajectory reference(config.reference_path.string(), map,
@@ -89,22 +104,43 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    model::ZvsWriter motion(config.output.simulation_motion.string());
-    follow::FollowCsvLog log(config.output.simulation_log.string());
-    arm::SimArm robot(options);
-    robot.logTo(&motion);
-    if (!robot.setMode(config.mode) || !robot.activate()) {
-      throw std::runtime_error("simulation arm activation failed");
+    follow::RunResult result;
+    bool released = false;
+    {
+      model::ZvsWriter motion(config.output.simulation_motion.string());
+      follow::FollowCsvLog log(config.output.simulation_log.string());
+      arm::SimArm robot(options);
+      robot.logTo(&motion);
+      if (!robot.setMode(config.mode) || !robot.activate()) {
+        throw std::runtime_error("simulation arm activation failed");
+      }
+      follow::FollowRun run(robot, reference, config, true, &log);
+      result = run.run();
+      released = robot.deactivate();
     }
-    follow::FollowRun run(robot, reference, config, true, &log);
-    const auto result = run.run();
-    const bool released = robot.deactivate();
+    std::string display_motion = config.output.simulation_motion.string();
+    std::string display_log = config.output.simulation_log.string();
+    if (bundle) {
+      follow::writeBundleResult(
+          bundle->staging(), "simulation", follow::statusName(result.status),
+          result.cycles, result.worst_home_error_rad,
+          result.worst_tracking_error_rad);
+      x7::ptp::writeBundleManifestFor(
+          bundle->staging(), "rtctrl-x7-follow-bundle", 1,
+          rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);
+      bundle->publish();
+      display_motion = (bundle->target() / "simulation.zvs").string();
+      display_log = (bundle->target() / "simulation.csv").string();
+      std::printf("created bundle %s\n", bundle->target().string().c_str());
+    }
     std::printf("follow simulation: %s, %llu cycles, home %.4f rad, "
                 "tracking %.4f rad\n",
                 follow::statusName(result.status),
                 static_cast<unsigned long long>(result.cycles),
                 result.worst_home_error_rad,
                 result.worst_tracking_error_rad);
+    std::printf("motion: %s\nlog: %s\n", display_motion.c_str(),
+                display_log.c_str());
     return result.status == follow::RunStatus::Success && released ? 0 : 1;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "x7_follow_sim: %s\n", error.what());
