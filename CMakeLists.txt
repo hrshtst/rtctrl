@@ -23,6 +23,7 @@ FetchContent_MakeAvailable(tomlplusplus)
 add_library(rtctrl
   src/version.cpp
   src/milib_cpp_compat.cpp
+  src/model/attitude.cpp
   src/model/chain_model.cpp
   src/model/joint_map.cpp
   src/model/posture.cpp

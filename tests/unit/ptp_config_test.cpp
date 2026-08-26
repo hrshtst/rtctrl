@@ -20,11 +20,11 @@ model = "../../models/crane_x7/crane_x7.ztk"
 
 [start]
 position = [0.2, 0.0, 0.25]
-rpy = [0.0, 0.0, 0.0]
+rpy_rad = [0.0, 0.0, 0.0]
 
 [end]
 position = [0.21, 0.0, 0.25]
-rpy = [0.0, 0.0, 0.0]
+rpy_rad = [0.0, 0.0, 0.0]
 )";
 
 class ConfigFile {
@@ -116,6 +116,33 @@ TEST_CASE("PTP config rejects typos and incomplete speed limits",
     CHECK_THROWS_WITH(x7::ptp::loadConfig(file.path()),
                       Catch::Matchers::ContainsSubstring("exactly 3"));
   }
+  SECTION("ambiguous legacy RPY key") {
+    std::string text(kMinimalConfig);
+    const auto offset = text.find("rpy_rad");
+    REQUIRE(offset != std::string::npos);
+    text.replace(offset, std::string("rpy_rad").size(), "rpy");
+    ConfigFile file(text);
+    CHECK_THROWS_WITH(
+        x7::ptp::loadConfig(file.path()),
+        Catch::Matchers::ContainsSubstring("unknown key 'rpy'"));
+  }
+}
+
+TEST_CASE("PTP config interprets nonzero world RPY as radians",
+          "[ptp][config][attitude]") {
+  std::string text(kMinimalConfig);
+  const auto offset = text.find("rpy_rad = [0.0, 0.0, 0.0]");
+  REQUIRE(offset != std::string::npos);
+  text.replace(offset, std::string("rpy_rad = [0.0, 0.0, 0.0]").size(),
+               "rpy_rad = [0.31, -0.27, 0.42]");
+  ConfigFile file(text);
+
+  const auto config = x7::ptp::loadConfig(file.path());
+  const auto expected =
+      rtctrl::model::worldAttitudeFromRpyRad(0.31, -0.27, 0.42);
+  zVec3D error;
+  zMat3DError(&expected, &config.start.attitude, &error);
+  CHECK(zVec3DNorm(&error) == Approx(0.0).margin(1e-12));
 }
 
 TEST_CASE("PTP CLI rejects missing values before config loading",

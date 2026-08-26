@@ -13,6 +13,7 @@
 #include <string_view>
 #include <unordered_set>
 
+#include "rtctrl/model/attitude.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/ptp_planner.hpp"
 
@@ -114,12 +115,13 @@ inline const char* profileName(model::PtpProfile profile) {
 
 inline model::CartesianPose parsePose(const toml::table& table,
                                       const std::string& name) {
-  rejectUnknown(table, {"position", "rpy"}, name);
+  rejectUnknown(table, {"position", "rpy_rad"}, name);
   const auto position = numberArray<3>(table, "position", name);
-  const auto rpy = numberArray<3>(table, "rpy", name);
+  const auto rpy_rad = numberArray<3>(table, "rpy_rad", name);
   model::CartesianPose pose;
   zVec3DCreate(&pose.position, position[0], position[1], position[2]);
-  zMat3DFromZYX(&pose.attitude, rpy[2], rpy[1], rpy[0]);
+  pose.attitude = model::worldAttitudeFromRpyRad(
+      rpy_rad[0], rpy_rad[1], rpy_rad[2]);
   return pose;
 }
 

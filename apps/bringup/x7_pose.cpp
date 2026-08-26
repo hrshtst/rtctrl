@@ -14,7 +14,7 @@
 // Usage: x7_pose [--config path] [--port dev]
 //                (--posture <file.toml> |
 //                 --legacy-anchor-sidecar <file.dwells.json> |
-//                 --tcp X Y Z ROLL PITCH YAW)
+//                 --tcp X Y Z ROLL_RAD PITCH_RAD YAW_RAD)
 //                [--vel v] [--preview <basename>]
 //   --posture  strict, versioned TOML target from config/postures/
 //   --legacy-anchor-sidecar
@@ -47,6 +47,7 @@
 
 #include "bringup/pose_common.hpp"
 #include "common/legacy_anchor.hpp"
+#include "rtctrl/model/attitude.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/ik_solver.hpp"
 #include "rtctrl/model/joint_map.hpp"
@@ -85,8 +86,8 @@ bool solveTcpTarget(model::ChainModel& chain, const model::JointMap& map,
 
   zVec3D pos;
   zVec3DCreate(&pos, tcp[0], tcp[1], tcp[2]);
-  zMat3D att;
-  zMat3DFromZYX(&att, tcp[5], tcp[4], tcp[3]);  // yaw, pitch, roll
+  const zMat3D att =
+      model::worldAttitudeFromRpyRad(tcp[3], tcp[4], tcp[5]);
   const auto result = ik.solve(pos, att, q9.get(), sol.get());
   if (!result.converged) {
     std::fprintf(stderr,
@@ -147,7 +148,8 @@ int main(int argc, char* argv[]) {
       // flag-lookalike guard — strict parsing rejects a flag anyway
       if (i + 6 >= rest.size()) {
         std::fprintf(stderr,
-                     "--tcp requires 6 values: X Y Z ROLL PITCH YAW\n");
+                     "--tcp requires 6 values: X Y Z ROLL_RAD PITCH_RAD "
+                     "YAW_RAD\n");
         return 1;
       }
       for (int k = 0; k < 6; ++k) {
@@ -188,7 +190,7 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr,
                  "a target is required: --posture <file.toml> or "
                  "--legacy-anchor-sidecar <file.dwells.json> or "
-                 "--tcp X Y Z ROLL PITCH YAW\n");
+                 "--tcp X Y Z ROLL_RAD PITCH_RAD YAW_RAD\n");
     return 1;
   }
   vel = std::clamp(vel, 0.05, 0.5);

@@ -62,7 +62,8 @@ read naturally (identity attitude = level, forward-pointing gripper):
 model::IkSolver tcp_ik(chain, map, "crane_x7_tcp_link");
 ```
 
-On hardware, `x7_pose --tcp X Y Z ROLL PITCH YAW` uses exactly this
+On hardware,
+`x7_pose --tcp X Y Z ROLL_RAD PITCH_RAD YAW_RAD` uses exactly this
 solver (seeded from the measured posture; a non-converged solve is
 refused before any motion), and adding `--preview <basename>` writes
 an `.init.ztk` for `rk_pen` without touching the bus. For both `--tcp`
@@ -152,11 +153,11 @@ trapezoid_acceleration_fraction = 0.2
 
 [start]
 position = [0.20, 0.0, 0.25] # m, world frame
-rpy = [0.0, 0.0, 0.0]       # roll, pitch, yaw in radians
+rpy_rad = [0.0, 0.0, 0.0]   # roll, pitch, yaw in radians
 
 [end]
 position = [0.22, 0.0, 0.25]
-rpy = [0.0, 0.0, 0.0]
+rpy_rad = [0.0, 0.0, 0.0]
 
 [ik]
 strict = true
@@ -168,8 +169,12 @@ initial_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 The attitude convention is
 $R=R_z(\mathit{yaw})R_y(\mathit{pitch})R_x(\mathit{roll})$, matching
-`x7_pose --tcp`. The model path is relative to the TOML file. The
-output path is relative to the directory where the app is invoked;
+`x7_pose --tcp`. Both apps convert these world-frame RPY radians to an
+attitude matrix before calling `IkSolver`; the solver receives the
+matrix, not an angle-axis vector. RoKi's degree-valued angle-axis syntax
+applies to textual ZTK input and is not the runtime IK reference
+convention. The model path is relative to the TOML file. The output path
+is relative to the directory where the app is invoked;
 `.zvs` is appended when it is absent. Unknown keys and malformed
 values are errors, which prevents misspelled options from silently
 using defaults.

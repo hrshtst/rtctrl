@@ -3,6 +3,7 @@
 
 #include <cmath>
 
+#include "rtctrl/model/attitude.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/ik_solver.hpp"
 #include "rtctrl/model/joint_map.hpp"
@@ -143,6 +144,49 @@ TEST_CASE("IK on the TCP link places the fingertip-midpoint frame",
   zMat3DError(&target_att, rkChainLinkWldAtt(model.chain(), tcp),
               &att_err);
   CHECK(zVec3DNorm(&att_err) <= kAttTol);
+}
+
+TEST_CASE("IK accepts a nonzero world RPY-radian TCP target",
+          "[ik][tcp][attitude]") {
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  IkSolver solver(model, map, "crane_x7_tcp_link");
+
+  ZVector target_q8(kCanonicalDof), target_q9(kModelDof);
+  target_q8[0] = 0.30;
+  target_q8[1] = 0.50;
+  target_q8[2] = -0.20;
+  target_q8[3] = -1.20;
+  target_q8[4] = 0.40;
+  target_q8[5] = -0.60;
+  target_q8[6] = 0.80;
+  map.expand(target_q8.get(), target_q9.get());
+  model.fk(target_q9.get());
+
+  const int tcp = model.linkIndex("crane_x7_tcp_link");
+  REQUIRE(tcp >= 0);
+  const zVec3D target_pos = *rkChainLinkWldPos(model.chain(), tcp);
+  const zMat3D fk_attitude = *rkChainLinkWldAtt(model.chain(), tcp);
+  zVec3D zyx_rad;
+  zMat3DToZYX(&fk_attitude, &zyx_rad);
+  REQUIRE(std::fabs(zyx_rad.c.x) > 0.1);
+  REQUIRE(std::fabs(zyx_rad.c.y) > 0.1);
+  REQUIRE(std::fabs(zyx_rad.c.z) > 0.1);
+  const auto target_att = rtctrl::model::worldAttitudeFromRpyRad(
+      zyx_rad.c.z, zyx_rad.c.y, zyx_rad.c.x);
+
+  ZVector initial_q8(kCanonicalDof), initial_q9(kModelDof);
+  ZVector solution(kModelDof);
+  for (int i = 0; i < kCanonicalDof; ++i) initial_q8[i] = target_q8[i];
+  initial_q8[0] += 0.03;
+  initial_q8[2] -= 0.02;
+  map.expand(initial_q8.get(), initial_q9.get());
+
+  const auto result = solver.solve(target_pos, target_att, initial_q9.get(),
+                                   solution.get(), kPosTol, kAttTol);
+  CHECK(result.converged);
+  CHECK(result.pos_residual <= kPosTol);
+  CHECK(result.att_residual <= kAttTol);
 }
 
 TEST_CASE("IK preserves and honors a measured initial guess", "[ik][tcp]") {
