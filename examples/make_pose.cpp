@@ -5,62 +5,42 @@
 //   <out>.init.ztk — [roki::chain::init] joint displacements;
 //                    rk_pen -model <model.ztk> -init <out>.init.ztk
 //
-// Usage: make_pose <out-basename> --posture <file>   (e.g. the
-//            checked-in config/postures/p1.json or a .dwells.json
-//            sidecar — the 8 numbers after the "anchor" key)
+// Usage: make_pose <out-basename> --posture <file.toml>
+//        make_pose <out-basename> --legacy-anchor-sidecar <file.dwells.json>
 //        make_pose <out-basename> q0 q1 q2 q3 q4 q5 q6 q7   [rad]
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <string>
 
+#include "common/legacy_anchor.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/posture.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
 
 namespace model = rtctrl::model;
 
-namespace {
-
-// Reads the 8 numbers after an "anchor" key (JSON posture/sidecar
-// files), or the first 8 numbers of a plain text file.
-bool loadPosture(const char* path, double* out) {
-  std::FILE* f = std::fopen(path, "r");
-  if (!f) return false;
-  std::string text;
-  char buf[4096];
-  std::size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
-  std::fclose(f);
-  std::size_t pos = 0;
-  const auto key = text.find("\"anchor\"");
-  if (key != std::string::npos) pos = key + 8;
-  int found = 0;
-  while (pos < text.size() && found < model::kCanonicalDof) {
-    const char c = text[pos];
-    if ((c >= '0' && c <= '9') ||
-        ((c == '-' || c == '+') && pos + 1 < text.size() &&
-         text[pos + 1] >= '0' && text[pos + 1] <= '9')) {
-      char* end = nullptr;
-      out[found++] = std::strtod(text.c_str() + pos, &end);
-      pos = end - text.c_str();
-    } else {
-      ++pos;
-    }
-  }
-  return found == model::kCanonicalDof;
-}
-
-}  // namespace
-
 int main(int argc, char* argv[]) {
   double q[model::kCanonicalDof] = {};
   if (argc == 4 && std::strcmp(argv[2], "--posture") == 0) {
-    if (!loadPosture(argv[3], q)) {
-      std::fprintf(stderr, "cannot read %d joint values from %s\n",
-                   model::kCanonicalDof, argv[3]);
+    try {
+      const auto posture = model::loadPostureToml(argv[3]);
+      std::copy(posture.joint_positions.begin(),
+                posture.joint_positions.end(), q);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "cannot load posture %s: %s\n", argv[3],
+                   error.what());
+      return 1;
+    }
+  } else if (argc == 4 &&
+             std::strcmp(argv[2], "--legacy-anchor-sidecar") == 0) {
+    if (!x7::loadLegacyAnchorSidecar(argv[3], q)) {
+      std::fprintf(stderr, "cannot read legacy anchor from %s\n", argv[3]);
       return 1;
     }
   } else if (argc == 2 + model::kCanonicalDof) {
@@ -69,7 +49,9 @@ int main(int argc, char* argv[]) {
     }
   } else {
     std::fprintf(stderr,
-                 "usage: make_pose <out-basename> --posture <file>\n"
+                 "usage: make_pose <out-basename> --posture <file.toml>\n"
+                 "       make_pose <out-basename> "
+                 "--legacy-anchor-sidecar <file.dwells.json>\n"
                  "       make_pose <out-basename> q0 .. q%d  [rad]\n",
                  model::kCanonicalDof - 1);
     return 1;

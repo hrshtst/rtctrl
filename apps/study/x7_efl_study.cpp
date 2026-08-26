@@ -30,13 +30,13 @@
 #include <vector>
 
 #include "study/exact_feedback_linearization.hpp"
-#include "ident/ident_common.hpp"  // x7::loadAnchorRef (P1 posture)
 #include "common/lagged_arm.hpp"
 #include "rtctrl/arm/computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/posture.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
@@ -61,7 +61,7 @@ namespace {
 
 constexpr const char* kSchemaVersion = "2";
 constexpr const char* kModelPath = "models/crane_x7/crane_x7.ztk";
-constexpr const char* kP1Path = "config/postures/p1.json";
+constexpr const char* kP1Path = "config/postures/p1.toml";
 
 // Torque limits [Nm]: max(0, min(effort, kt*I_servo) - margin*kt) with
 // the frozen ASSUMED servo current limits below (joint 0 is
@@ -449,8 +449,12 @@ int main(int argc, char* argv[]) {
     model::JointMap map(chain);
 
     double p1[kCanonicalDof];
-    if (!x7::loadAnchorRef(kP1Path, p1)) {
-      std::fprintf(stderr, "cannot load %s\n", kP1Path);
+    try {
+      const auto posture = model::loadPostureToml(kP1Path);
+      std::copy(posture.joint_positions.begin(),
+                posture.joint_positions.end(), p1);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "cannot load %s: %s\n", kP1Path, error.what());
       return 1;
     }
 

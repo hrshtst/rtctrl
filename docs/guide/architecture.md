@@ -92,7 +92,7 @@ examples/     make_motion, make_pose (kinematic .zvs), x7_wave
               (bridge demo), x7_ct_mass_error (offline study)
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed)
 config/       crane_x7.toml (bus, joints, limits, margins),
-              ptp_example.toml, postures/
+              ptp_example.toml, versioned postures/*.toml
 tools/        port_model.py, ident_analysis.py, replay_compare.py,
               ct_mass_error_study.py (uv), bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim

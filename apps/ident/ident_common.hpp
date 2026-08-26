@@ -273,36 +273,6 @@ inline std::vector<DwellSpec> buildScheduleFromSpecs(
   return dwells;
 }
 
-// Anchor reference loader: accepts the per-dwell JSON sidecar (takes
-// the 8 numbers after the "anchor" key) or any plain text holding 8
-// numbers. Returns false unless exactly kCanonicalDof values found.
-inline bool loadAnchorRef(const std::string& path, double* out) {
-  std::FILE* f = std::fopen(path.c_str(), "r");
-  if (!f) return false;
-  std::string text;
-  char buf[4096];
-  std::size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
-  std::fclose(f);
-  std::size_t pos = 0;
-  const auto key = text.find("\"anchor\"");
-  if (key != std::string::npos) pos = key + 8;
-  int found = 0;
-  while (pos < text.size() && found < model::kCanonicalDof) {
-    const char c = text[pos];
-    if ((c >= '0' && c <= '9') ||
-        ((c == '-' || c == '+') && pos + 1 < text.size() &&
-         text[pos + 1] >= '0' && text[pos + 1] <= '9')) {
-      char* end = nullptr;
-      out[found++] = std::strtod(text.c_str() + pos, &end);
-      pos = end - text.c_str();
-    } else {
-      ++pos;
-    }
-  }
-  return found == model::kCanonicalDof;
-}
-
 // Lead-in sized to guarantee >= 4 non-overlapping 1-period noise-floor
 // calibration blocks at the LOWEST scheduled frequency.
 inline double leadInSeconds(const std::vector<DwellSpec>& dwells) {

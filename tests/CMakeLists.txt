@@ -3,6 +3,7 @@ include(Catch)
 add_executable(unit_tests
   unit/smoke_test.cpp
   unit/model_test.cpp
+  unit/posture_test.cpp
   unit/trajectory_test.cpp
   unit/ptp_planner_test.cpp
   unit/ptp_config_test.cpp
@@ -282,7 +283,7 @@ set_tests_properties(x7_pose_rejects_tcp_arity PROPERTIES
   PASS_REGULAR_EXPRESSION "requires 6 values"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 add_test(NAME x7_pose_rejects_both_targets
-  COMMAND x7_pose --posture config/postures/p1.json --tcp 0 0 0.5 0 0 0)
+  COMMAND x7_pose --posture config/postures/p1.toml --tcp 0 0 0.5 0 0 0)
 set_tests_properties(x7_pose_rejects_both_targets PROPERTIES
   PASS_REGULAR_EXPRESSION "exclusive"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
@@ -295,6 +296,13 @@ add_test(NAME x7_pose_tcp_preview_writes_init
           --preview ${CMAKE_BINARY_DIR}/tcp_preview
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_pose_tcp_preview_writes_init PROPERTIES
+  PASS_REGULAR_EXPRESSION "rk_pen"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_posture_preview_writes_init
+  COMMAND x7_pose --posture config/postures/p1.toml
+          --preview ${CMAKE_BINARY_DIR}/posture_preview
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_pose_posture_preview_writes_init PROPERTIES
   PASS_REGULAR_EXPRESSION "rk_pen"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 add_test(NAME x7_pose_tcp_preview_refuses_unreachable

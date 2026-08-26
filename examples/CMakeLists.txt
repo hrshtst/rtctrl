@@ -3,6 +3,7 @@ target_link_libraries(make_motion PRIVATE rtctrl::rtctrl)
 
 add_executable(make_pose make_pose.cpp)
 target_link_libraries(make_pose PRIVATE rtctrl::rtctrl)
+target_include_directories(make_pose PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 
 add_executable(x7_wave x7_wave.cpp)
 target_link_libraries(x7_wave PRIVATE rtctrl::rtctrl)

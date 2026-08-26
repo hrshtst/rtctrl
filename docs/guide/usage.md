@@ -72,6 +72,32 @@ exhausted placement correction, or any dropped position command,
 deactivates the arm and returns a nonzero exit instead of entering the
 normal hold phase.
 
+### Authored postures
+
+Authored joint postures use strict, versioned TOML files under
+`config/postures/`:
+
+```toml
+format_version = 1
+name = "Zeros posture"
+joint_positions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+```
+
+`joint_positions` contains the eight canonical joint displacements in
+radians. Unknown keys, incompatible versions, non-finite values, and a
+joint count other than eight are errors. Use a posture without hardware
+by adding `--preview`:
+
+```sh
+./build/apps/x7_pose --posture config/postures/zeros.toml \
+  --preview /tmp/zeros
+```
+
+Identification `.dwells.json` files are generated experiment sidecars,
+not authored posture files. Archived sidecars remain usable through the
+explicit `--legacy-anchor-sidecar <file.dwells.json>` compatibility
+option. Arbitrary text or JSON is not accepted by `--posture`.
+
 ## Trajectories and motion files
 
 ```cpp

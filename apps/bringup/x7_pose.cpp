@@ -12,10 +12,14 @@
 // BEFORE pressing Enter. Power cutoff within reach.
 //
 // Usage: x7_pose [--config path] [--port dev]
-//                (--posture <file> | --tcp X Y Z ROLL PITCH YAW)
+//                (--posture <file.toml> |
+//                 --legacy-anchor-sidecar <file.dwells.json> |
+//                 --tcp X Y Z ROLL PITCH YAW)
 //                [--vel v] [--preview <basename>]
-//   --posture  target vector: a checked-in config/postures/*.json, a
-//              .dwells.json sidecar, or any file with 8 numbers
+//   --posture  strict, versioned TOML target from config/postures/
+//   --legacy-anchor-sidecar
+//              compatibility input for an archived identification
+//              .dwells.json file; not for authored postures
 //   --tcp      world-frame tool-center pose: position [m] and
 //              roll/pitch/yaw [rad] (R = Rz(yaw) Ry(pitch) Rx(roll))
 //              of crane_x7_tcp_link, the fingertip-midpoint frame
@@ -41,11 +45,12 @@
 #include <string>
 #include <vector>
 
-#include "ident/ident_common.hpp"
 #include "bringup/pose_common.hpp"
+#include "common/legacy_anchor.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/ik_solver.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/posture.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "bringup/write_monitor.hpp"
@@ -125,6 +130,7 @@ int main(int argc, char* argv[]) {
   const auto cli = x7::parseCli(argc, argv);
   if (!cli.ok) return 1;
   std::string posture_path;
+  std::string legacy_anchor_path;
   std::string preview_base;
   double tcp[6] = {};
   bool have_tcp = false;
@@ -133,6 +139,9 @@ int main(int argc, char* argv[]) {
   for (std::size_t i = 0; i < rest.size(); ++i) {
     if (std::strcmp(rest[i], "--posture") == 0 && i + 1 < rest.size()) {
       posture_path = rest[++i];
+    } else if (std::strcmp(rest[i], "--legacy-anchor-sidecar") == 0 &&
+               i + 1 < rest.size()) {
+      legacy_anchor_path = rest[++i];
     } else if (std::strcmp(rest[i], "--tcp") == 0) {
       // six world-frame values; negatives are legitimate, so no
       // flag-lookalike guard — strict parsing rejects a flag anyway
@@ -166,23 +175,39 @@ int main(int argc, char* argv[]) {
       return 1;
     }
   }
-  if (have_tcp && !posture_path.empty()) {
+  const int target_count = static_cast<int>(have_tcp) +
+                           static_cast<int>(!posture_path.empty()) +
+                           static_cast<int>(!legacy_anchor_path.empty());
+  if (target_count > 1) {
     std::fprintf(stderr,
-                 "--posture and --tcp are exclusive; give one target, "
-                 "not both\n");
+                 "--posture, --legacy-anchor-sidecar, and --tcp are "
+                 "exclusive; give one target\n");
     return 1;
   }
-  if (!have_tcp && posture_path.empty()) {
+  if (target_count == 0) {
     std::fprintf(stderr,
-                 "a target is required: --posture <file> or "
+                 "a target is required: --posture <file.toml> or "
+                 "--legacy-anchor-sidecar <file.dwells.json> or "
                  "--tcp X Y Z ROLL PITCH YAW\n");
     return 1;
   }
   vel = std::clamp(vel, 0.05, 0.5);
   double posture[model::kCanonicalDof];
-  if (!posture_path.empty() && !x7::loadAnchorRef(posture_path, posture)) {
-    std::fprintf(stderr, "cannot read %d joint values from %s\n",
-                 model::kCanonicalDof, posture_path.c_str());
+  if (!posture_path.empty()) {
+    try {
+      const auto loaded = model::loadPostureToml(posture_path);
+      std::copy(loaded.joint_positions.begin(), loaded.joint_positions.end(),
+                posture);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "cannot load posture %s: %s\n",
+                   posture_path.c_str(), error.what());
+      return 1;
+    }
+  }
+  if (!legacy_anchor_path.empty() &&
+      !x7::loadLegacyAnchorSidecar(legacy_anchor_path, posture)) {
+    std::fprintf(stderr, "cannot read legacy anchor from %s\n",
+                 legacy_anchor_path.c_str());
     return 1;
   }
 
