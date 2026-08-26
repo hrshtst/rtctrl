@@ -344,6 +344,140 @@ hardware tracking app must independently validate the file, starting
 posture, joint rates, operating modes, and collision constraints
 before enabling torque.
 
+### Servo-side trajectory following
+
+`x7_follow_sim` and `x7_follow` run the same phase controller against the
+dynamics simulator and the real arm. They delegate the feedback loop to each
+Dynamixel servo. The host sends position, velocity, or current-based-position
+commands without a host-side tracking correction during the reference phase.
+This is separate from the parked computed-torque `x7_track` app.
+
+Generate the example reference, validate the follow configuration, and run the
+simulation first:
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_example.toml
+./build/apps/x7_follow_sim --config config/follow_example.toml --check
+./build/apps/x7_follow_sim --config config/follow_example.toml \
+  --motion /tmp/follow-sim.zvs --log /tmp/follow-sim.csv
+rk_anim models/crane_x7/crane_x7.ztk /tmp/follow-sim.zvs
+uv run --project tools tools/plot/follow_tracking.py /tmp/follow-sim.csv \
+  --output /tmp/follow-review.png
+```
+
+Both output files cover the complete session: home positioning, home
+correction and settling, reference tracking, and the final hold. The CSV also
+records the reference and measured joint states, mode-native command,
+submission receipt, applied target sequence, effort ceiling, and clamp/gate
+flags. The plotter validates this schema and places its legends above the
+traces so they do not obscure the data.
+
+The checked-in `config/follow_example.toml` documents every option. Input paths
+are relative to that TOML file. Output
+paths are invocation-relative and are created exclusively; an existing file
+is refused. The main processing controls are:
+
+- `control.rate_hz`: one 20 to 200 Hz cycle rate for every phase. Hardware
+  timing has been validated at 100 Hz; other rates print an experimental-use
+  warning.
+- `control.mode`: `position`, `velocity`, or `current-based-position`.
+  Current-based position requires one or eight positive
+  `current_based_position.effort_limit_nm` values, each no greater than the
+  deployment limit.
+- `home`: linear, trapezoidal, or minimum-jerk PTP motion to the first
+  reference frame. Duration is the greater of `motion_time`, when present,
+  and the duration required by `velocity_limit`. Strict mode refuses tracking
+  if the measured home error remains above `tolerance_rad` after bounded
+  correction retries. Non-strict mode records and warns about that error.
+- `reference_processing`: no filter, first-order low-pass, moving average, or
+  Savitzky-Golay filtering, followed by linear or shape-preserving cubic
+  interpolation at the control-cycle times. Filtering preserves the authored
+  first and final frames. The interpolator provides joint position, velocity,
+  and acceleration at arbitrary times even when the `.zvs` and control rates
+  differ.
+- `safety`: a one-time tracking warning, a sustained-error abort threshold and
+  duration, and a larger immediate-error abort threshold. There is no strict
+  endpoint convergence gate during tracking. These thresholds detect gross
+  disagreement without turning ordinary servo following error into a phase
+  transition.
+- `finalization`: a positive `wait_time_s` holds for that duration. Zero keeps
+  the final posture commanded until the operator supports the arm from below
+  and presses Enter, bounded by `operator_timeout_s`. The nonblocking Enter
+  check cannot starve the hardware command cycle.
+
+This first version deliberately uses one homogeneous motor mode for home,
+tracking, and finalization. Changing a Dynamixel operating mode requires
+torque to be disabled. A mode change at the home-to-tracking boundary would
+therefore introduce an unsupported gravity-drop interval. Supporting different
+phase modes requires a separately reviewed in-place transition protocol.
+
+The simulation converts position commands to bounded PD torque and velocity
+commands to bounded velocity-error torque, then integrates the robot dynamics.
+Current-based position uses the same position adapter with the requested
+effort ceiling. These adapters verify phase logic, interpolation, safety gates,
+and command saturation. They are not a high-fidelity model of the Dynamixel
+firmware, current loop, friction, backlash, or gear compliance.
+
+#### Motor parameters and hardware run
+
+An optional `motor_parameters` input accepts the versioned TOML produced by
+`dxl_inspect dump-params`. Keep only the parameters reviewed for this run and
+remove `operating_mode`: `control.mode` owns that register. Unknown motor IDs
+are refused before bus contact. During activation the batch is applied and
+read back transactionally while every servo is torque-off; incomplete rollback
+aborts activation. The bundle copies this exact parameter input.
+
+After completing the hardware bring-up checklist and reviewing the simulation
+log, use position mode for the first hardware trial:
+
+```sh
+./build/apps/x7_follow --config config/follow_example.toml --check
+run_stamp=$(date +%Y%m%d-%H%M%S)
+./build/apps/x7_follow --config config/follow_example.toml \
+  --log "follow-hw-${run_stamp}.csv"
+```
+
+`--check` performs configuration, model, reference, joint-limit, velocity,
+effort, and motor-parameter-file validation without opening the bus. A real run
+uses the feedback-synchronized hardware cycle, servo and host watchdogs, stale
+command rejection, and verified shutdown. Keep the actuator power cutoff in
+reach. At completion, support the arm from below before Enter; torque-off makes
+the arm fall limp. Any home refusal, tracking abort, I/O failure, operator
+timeout, stale submission, or unclean shutdown is a failed run.
+
+#### Portable follow bundles
+
+Create a new immutable simulation archive:
+
+```sh
+./build/apps/x7_follow_sim --config config/follow_example.toml \
+  --bundle backups/follow-sim-20260827
+```
+
+For hardware, replace `x7_follow_sim` with `x7_follow`. The requested bundle
+path must not exist. It is refused before the source configuration is loaded,
+and publishing uses a no-replace rename. `--check` and `--bundle` are mutually
+exclusive. A completed archive contains `source.toml`, portable `follow.toml`,
+the reference, deployment and optional motor parameter files, model and meshes,
+the frontend outputs, `result.toml`, and a SHA-256 `manifest.toml`. Normal
+controller refusals are archived with their result and full log; setup failures
+remove the private staging directory.
+
+Replay a simulation bundle into new files, leaving the archive unchanged:
+
+```sh
+./build/apps/x7_follow_sim \
+  --config backups/follow-sim-20260827/follow.toml \
+  --motion /tmp/follow-reproduced.zvs \
+  --log /tmp/follow-reproduced.csv
+cmp backups/follow-sim-20260827/simulation.zvs /tmp/follow-reproduced.zvs
+cmp backups/follow-sim-20260827/simulation.csv /tmp/follow-reproduced.csv
+```
+
+For strict reproduction, build the Git commit recorded by the manifest. A
+hardware replay is intentionally not expected to be byte-identical because
+measured state and bus timing are physical inputs.
+
 ## Writing a controller (the bridge)
 
 A controller is one function, written once, run anywhere:

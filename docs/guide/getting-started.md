@@ -109,6 +109,21 @@ specifies the start and end TCP poses, timing constraints, profile, and
 IK policy. See [Cartesian PTP planning](usage.md#cartesian-ptp-planning)
 for the full contract.
 
+Use that generated `ptp.zvs` as a servo-side tracking reference:
+
+```sh
+./build/apps/x7_follow_sim --config config/follow_example.toml --check
+./build/apps/x7_follow_sim --config config/follow_example.toml \
+  --motion /tmp/follow-sim.zvs --log /tmp/follow-sim.csv
+rk_anim models/crane_x7/crane_x7.ztk /tmp/follow-sim.zvs
+uv run --project tools tools/plot/follow_tracking.py /tmp/follow-sim.csv \
+  --output /tmp/follow-review.png
+```
+
+The simulation includes home positioning, tracking, and final holding. Review
+it before considering `x7_follow` on hardware. The full configuration and
+safety contract are in [Servo-side trajectory following](usage.md#servo-side-trajectory-following).
+
 ## Regenerating the model
 
 `models/crane_x7/crane_x7.ztk` is generated from the URDF in
@@ -132,7 +147,8 @@ test).
 `config/crane_x7.toml` is the deployment config: serial port and baud
 rate, plus one `[[joint]]` entry per servo in canonical order: bus
 id, model, operating mode (raw Dynamixel value: 3 position,
-1 velocity, 0 current), velocity/effort limits and safety margins.
+1 velocity, 0 current, 5 current-based position), velocity/effort limits and
+safety margins.
 Tests validate it against both the URDF and the canonical joint table.
 
 ## Hardware

@@ -84,7 +84,8 @@ apps/         sources by domain: bus/ (dxl_emu, dxl_inspect,
               bringup/ (x7_onoff, x7_read, x7_set_param,
               x7_move_simple, x7_pose), gravity/ (x7_float,
               x7_gravity_demo), track/ (x7_track, x7_track_sim),
-              plan/ (x7_plan_ptp), ident/ (x7_ident_sim),
+              plan/ (x7_plan_ptp), follow/ (x7_follow, x7_follow_sim),
+              ident/ (x7_ident_sim),
               study/ (x7_efl_study),
               common/ (shared app headers); binaries land flat in
               build/apps/
@@ -94,7 +95,8 @@ models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committe
 config/       crane_x7.toml (bus, joints, limits, margins),
               ptp_example.toml, versioned postures/*.toml
 tools/        port_model.py, ident_analysis.py, replay_compare.py,
-              ct_mass_error_study.py, plot/ptp_trajectory.py (uv),
+              ct_mass_error_study.py, plot/{ptp_trajectory,
+              follow_tracking}.py (uv),
               bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
 docs/         this documentation

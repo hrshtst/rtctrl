@@ -119,6 +119,18 @@ reasons live in the
 [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us).
 Feature coverage is mapped in [parity.md](../records/parity.md).
 
+`x7_follow_sim` and `x7_follow` are the servo-side trajectory-following route.
+They do not unpark `x7_track`: feedback remains inside the Dynamixel servo.
+Before the first hardware trial, generate and inspect the complete simulation
+motion and CSV, run `x7_follow --check`, and review the
+[tracking safety contract](../guide/usage.md#servo-side-trajectory-following).
+Start in position mode at 100 Hz with a short, slow reference. This new
+hardware frontend has emulator and dynamics-simulation coverage but has not yet
+been accepted on the physical arm. Treat its first physical run as a new
+bring-up step with the actuator power cutoff in reach. Its final hold ends only
+after the operator supports the arm from below and presses Enter, or after the
+configured timeout.
+
 > **`x7_track` is PARKED: do NOT run it on hardware. `x7_float`
 > is UN-PARKED (2026-07-31) under the conditions in its bullet
 > below.** Two independent incidents:
