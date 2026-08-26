@@ -134,6 +134,21 @@ def _decorate(axis, ylabel: str) -> None:
     axis.grid(True, alpha=0.25)
 
 
+def _legend_above(axis, handles=None, labels=None, *, ncol: int) -> None:
+    options = {
+        "bbox_to_anchor": (0.5, 1.02),
+        "borderaxespad": 0.0,
+        "framealpha": 1.0,
+        "loc": "lower center",
+        "ncol": ncol,
+        "fontsize": "x-small",
+    }
+    if handles is None:
+        axis.legend(**options)
+    else:
+        axis.legend(handles, labels, **options)
+
+
 def _mark_discontinuities(axis, data: np.ndarray) -> None:
     time = data["time_s"]
     marked = data["profile_derivative_discontinuity"] != 0.0
@@ -155,7 +170,7 @@ def _plot_vector_pair(
             label=f"FK {name}",
         )
     _decorate(axis, ylabel)
-    axis.legend(ncol=2, fontsize="small")
+    _legend_above(axis, ncol=3)
 
 
 def _plot_norm_pair(
@@ -199,23 +214,23 @@ def _plot_norm_pair(
     angular_axis.set_ylabel(angular_label)
     handles, labels = axis.get_legend_handles_labels()
     other_handles, other_labels = angular_axis.get_legend_handles_labels()
-    axis.legend(
-        handles + other_handles, labels + other_labels, ncol=2, fontsize="small"
-    )
+    _legend_above(axis, handles + other_handles, labels + other_labels, ncol=4)
 
 
 def _plot_joints(axis, time, values, ylabel: str) -> None:
     for joint, label in enumerate(JOINT_LABELS):
         axis.plot(time, values[:, joint], label=label)
     _decorate(axis, ylabel)
-    axis.legend(ncol=2, fontsize="x-small")
+    _legend_above(axis, ncol=4)
 
 
 def plot_diagnostics(data: np.ndarray, title: str | None = None):
     import matplotlib.pyplot as plt
 
     time = data["time_s"]
-    figure, axes = plt.subplots(4, 2, figsize=(15, 15), sharex=True)
+    figure, axes = plt.subplots(
+        4, 2, figsize=(15, 17), sharex=True, constrained_layout=True
+    )
     position_axis, attitude_axis = axes[0]
     velocity_axis, acceleration_axis = axes[1]
     joint_axis, joint_velocity_axis = axes[2]
@@ -235,10 +250,9 @@ def plot_diagnostics(data: np.ndarray, title: str | None = None):
         time,
         target_rpy,
         achieved_rpy,
-        "TCP RPY [rad]",
+        "TCP RPY [rad]\n(unwrapped display only)",
         ("roll", "pitch", "yaw"),
     )
-    attitude_axis.set_title("RPY is unwrapped for display only")
 
     _plot_norm_pair(
         velocity_axis,
@@ -309,15 +323,17 @@ def plot_diagnostics(data: np.ndarray, title: str | None = None):
     margin_axis.set_ylabel("joint-limit margin [rad]")
     handles, labels = quality_axis.get_legend_handles_labels()
     other_handles, other_labels = margin_axis.get_legend_handles_labels()
-    quality_axis.legend(
-        handles + other_handles, labels + other_labels, fontsize="small"
+    _legend_above(
+        quality_axis,
+        handles + other_handles,
+        labels + other_labels,
+        ncol=3,
     )
 
     for axis in axes[-1]:
         axis.set_xlabel("time [s]")
     if title:
         figure.suptitle(title)
-    figure.tight_layout(rect=(0, 0, 1, 0.98 if title else 1))
     return figure
 
 
