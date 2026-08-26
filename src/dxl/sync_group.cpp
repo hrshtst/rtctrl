@@ -57,13 +57,13 @@ IoResult SyncGroup::setupIndirect() {
 }
 
 IoResult SyncGroup::readAll(std::vector<Feedback>& out) {
-  std::vector<std::uint8_t> raw;
-  const IoResult r = io_.syncRead(kFeedbackAddr, kFeedbackSlots, ids_, raw);
+  const IoResult r =
+      io_.syncRead(kFeedbackAddr, kFeedbackSlots, ids_, raw_feedback_);
   if (r.comm != 0) return r;
 
   out.resize(ids_.size());
   for (std::size_t i = 0; i < ids_.size(); ++i) {
-    const std::uint8_t* p = &raw[i * kFeedbackSlots];
+    const std::uint8_t* p = &raw_feedback_[i * kFeedbackSlots];
     out[i].position =
         pulseToRad(static_cast<std::int32_t>(leU32(p + 6)));
     out[i].velocity =
@@ -98,27 +98,27 @@ IoResult SyncGroup::writeGoals(const std::vector<double>& current_amps,
       position_rad.size() != ids_.size()) {
     throw std::invalid_argument("SyncGroup::writeGoals: size mismatch");
   }
-  std::vector<std::uint8_t> data(ids_.size() * kGoalSlots);
+  goal_data_.resize(ids_.size() * kGoalSlots);
   for (std::size_t i = 0; i < ids_.size(); ++i) {
-    std::uint8_t* p = &data[i * kGoalSlots];
+    std::uint8_t* p = &goal_data_[i * kGoalSlots];
     putU16(p, static_cast<std::uint16_t>(ampsToCurrent(current_amps[i])));
     putU32(p + 2, static_cast<std::uint32_t>(
                       radPerSecToVelocity(velocity_rad_s[i])));
     putU32(p + 6, static_cast<std::uint32_t>(radToPulse(position_rad[i])));
   }
-  return io_.syncWrite(kGoalAddr, kGoalSlots, ids_, data);
+  return io_.syncWrite(kGoalAddr, kGoalSlots, ids_, goal_data_);
 }
 
 IoResult SyncGroup::writeGoalCurrents(const std::vector<double>& amps) {
   if (amps.size() != ids_.size()) {
     throw std::invalid_argument("SyncGroup::writeGoalCurrents: size mismatch");
   }
-  std::vector<std::uint8_t> data(ids_.size() * 2);
+  goal_data_.resize(ids_.size() * 2);
   for (std::size_t i = 0; i < ids_.size(); ++i) {
-    putU16(&data[i * 2],
+    putU16(&goal_data_[i * 2],
            static_cast<std::uint16_t>(ampsToCurrent(amps[i])));
   }
-  return io_.syncWrite(kGoalAddr, 2, ids_, data);
+  return io_.syncWrite(kGoalAddr, 2, ids_, goal_data_);
 }
 
 IoResult SyncGroup::writeGoalVelocities(const std::vector<double>& rad_s) {
@@ -126,12 +126,12 @@ IoResult SyncGroup::writeGoalVelocities(const std::vector<double>& rad_s) {
     throw std::invalid_argument(
         "SyncGroup::writeGoalVelocities: size mismatch");
   }
-  std::vector<std::uint8_t> data(ids_.size() * 4);
+  goal_data_.resize(ids_.size() * 4);
   for (std::size_t i = 0; i < ids_.size(); ++i) {
-    putU32(&data[i * 4],
+    putU32(&goal_data_[i * 4],
            static_cast<std::uint32_t>(radPerSecToVelocity(rad_s[i])));
   }
-  return io_.syncWrite(kGoalVelocityAddr, 4, ids_, data);
+  return io_.syncWrite(kGoalVelocityAddr, 4, ids_, goal_data_);
 }
 
 IoResult SyncGroup::writeGoalPositions(const std::vector<double>& rad) {
@@ -139,11 +139,12 @@ IoResult SyncGroup::writeGoalPositions(const std::vector<double>& rad) {
     throw std::invalid_argument(
         "SyncGroup::writeGoalPositions: size mismatch");
   }
-  std::vector<std::uint8_t> data(ids_.size() * 4);
+  goal_data_.resize(ids_.size() * 4);
   for (std::size_t i = 0; i < ids_.size(); ++i) {
-    putU32(&data[i * 4], static_cast<std::uint32_t>(radToPulse(rad[i])));
+    putU32(&goal_data_[i * 4],
+           static_cast<std::uint32_t>(radToPulse(rad[i])));
   }
-  return io_.syncWrite(kGoalPositionAddr, 4, ids_, data);
+  return io_.syncWrite(kGoalPositionAddr, 4, ids_, goal_data_);
 }
 
 }  // namespace rtctrl::dxl

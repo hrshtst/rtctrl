@@ -14,7 +14,8 @@ namespace rtctrl::arm {
 // cycle completes; a deadman escalation makes step() return false.
 class RealArm : public Arm {
  public:
-  explicit RealArm(hw::CraneX7& hw) : hw_(hw) {}
+  explicit RealArm(hw::CraneX7& hw)
+      : hw_(hw), command_values_(model::kCanonicalDof) {}
 
   int dof() const override { return model::kCanonicalDof; }
   double dt() const override;
@@ -33,6 +34,7 @@ class RealArm : public Arm {
   std::uint64_t last_feedback_seq_ = 0;
   double last_feedback_time_ = 0.0;
   bool have_feedback_ = false;
+  std::vector<double> command_values_;
 };
 
 }  // namespace rtctrl::arm

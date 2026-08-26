@@ -65,6 +65,8 @@ class SyncGroup {
 
   PacketIO& io_;
   std::vector<std::uint8_t> ids_;
+  std::vector<std::uint8_t> raw_feedback_;
+  std::vector<std::uint8_t> goal_data_;
 };
 
 }  // namespace rtctrl::dxl

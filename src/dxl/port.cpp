@@ -5,6 +5,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace rtctrl::dxl {
@@ -120,25 +121,17 @@ IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
                         const std::vector<std::uint8_t>& ids,
                         std::vector<std::uint8_t>& out) {
   IoResult r;
-  dynamixel::GroupSyncRead group(port_, packet_, addr, len);
-  for (const auto id : ids) group.addParam(id);
-  r.comm = group.txRxPacket();
+  r.comm = packet_->syncReadTx(port_, addr, len,
+                               const_cast<std::uint8_t*>(ids.data()),
+                               static_cast<std::uint16_t>(ids.size()));
   if (r.comm != COMM_SUCCESS) return r;
 
-  out.assign(ids.size() * len, 0);
+  out.resize(ids.size() * len);
   for (std::size_t i = 0; i < ids.size(); ++i) {
     std::uint8_t err = 0;
-    if (group.getError(ids[i], &err) && err != 0 && r.error == 0) {
-      r.error = err;
-    }
-    if (!group.isAvailable(ids[i], addr, len)) {
-      r.comm = COMM_RX_CORRUPT;
-      return r;
-    }
-    for (std::uint16_t b = 0; b < len; ++b) {
-      out[i * len + b] = static_cast<std::uint8_t>(
-          group.getData(ids[i], addr + b, 1));
-    }
+    r.comm = packet_->readRx(port_, ids[i], len, &out[i * len], &err);
+    if (r.comm != COMM_SUCCESS) return r;
+    if (err != 0 && r.error == 0) r.error = err;
   }
   return r;
 }
@@ -147,11 +140,15 @@ IoResult Port::syncWrite(std::uint16_t addr, std::uint16_t len,
                          const std::vector<std::uint8_t>& ids,
                          const std::vector<std::uint8_t>& data) {
   IoResult r;
-  dynamixel::GroupSyncWrite group(port_, packet_, addr, len);
+  sync_write_param_.resize(ids.size() * (1 + len));
   for (std::size_t i = 0; i < ids.size(); ++i) {
-    group.addParam(ids[i], const_cast<std::uint8_t*>(&data[i * len]));
+    auto* param = &sync_write_param_[i * (1 + len)];
+    param[0] = ids[i];
+    std::copy_n(&data[i * len], len, param + 1);
   }
-  r.comm = group.txPacket();
+  r.comm = packet_->syncWriteTxOnly(
+      port_, addr, len, sync_write_param_.data(),
+      static_cast<std::uint16_t>(sync_write_param_.size()));
   return r;
 }
 

@@ -99,7 +99,7 @@ bool RealArm::writeCommand(const JointCommand& cmd,
     if (receipt != nullptr) *receipt = {};
     return false;
   }
-  std::vector<double> values(kCanonicalDof);
+  auto& values = command_values_;
   std::uint64_t seq = 0;
   double time = 0.0;
   bool ok = false;

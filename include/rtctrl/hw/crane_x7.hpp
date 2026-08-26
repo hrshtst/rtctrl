@@ -293,6 +293,12 @@ class CraneX7 {
   bool requireMode(std::uint8_t mode, const char* what);
   bool requireSize(std::size_t n, const char* what);
   bool requireActive(const char* what);
+  bool writeVelocitiesWithFeedback(
+      const std::vector<double>& rad_s,
+      const std::vector<dxl::Feedback>& feedback, WriteOutcome* out);
+  bool writeCurrentsWithFeedback(
+      const std::vector<double>& amps,
+      const std::vector<dxl::Feedback>& feedback, WriteOutcome* out);
   bool setTargets(const std::vector<double>& values,
                   std::uint64_t source_feedback_seq,
                   double source_feedback_time, bool tagged,

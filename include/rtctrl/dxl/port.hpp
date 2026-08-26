@@ -41,6 +41,7 @@ class Port : public PacketIO {
  private:
   dynamixel::PortHandler* port_;
   dynamixel::PacketHandler* packet_;
+  std::vector<std::uint8_t> sync_write_param_;
   bool open_ = false;
 };
 

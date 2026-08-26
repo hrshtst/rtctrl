@@ -330,35 +330,44 @@ bool CraneX7::writePositions(const std::vector<double>& rad,
   if (!requireActive("position command")) return false;
   if (!requireMode(3, "position command")) return false;
   if (!requireSize(rad.size(), "position command")) return false;
-  std::vector<double> clamped(rad.size());
-  std::vector<std::uint8_t> flags(rad.size(), 0);
+  std::vector<double> local_values;
+  std::vector<std::uint8_t> local_flags;
+  auto& clamped = out != nullptr ? out->values : local_values;
+  auto& flags = out != nullptr ? out->flags : local_flags;
+  clamped.resize(rad.size());
+  flags.assign(rad.size(), 0);
   for (std::size_t i = 0; i < rad.size(); ++i) {
     clamped[i] = std::clamp(rad[i], limit_lo_[i], limit_hi_[i]);
     if (clamped[i] != rad[i]) flags[i] |= arm::kCmdClamped;
   }
   if (!group_.writeGoalPositions(clamped).ok()) return false;
-  if (out != nullptr) {
-    out->values = std::move(clamped);
-    out->flags = std::move(flags);
-  }
   last_command_ = now_();
   return true;
 }
 
 bool CraneX7::writeVelocities(const std::vector<double>& rad_s,
                               WriteOutcome* out) {
+  return writeVelocitiesWithFeedback(rad_s, lastFeedback(), out);
+}
+
+bool CraneX7::writeVelocitiesWithFeedback(
+    const std::vector<double>& rad_s,
+    const std::vector<dxl::Feedback>& fb, WriteOutcome* out) {
   if (escalated_) return false;
   if (!requireActive("velocity command")) return false;
   if (!requireMode(1, "velocity command")) return false;
   if (!requireSize(rad_s.size(), "velocity command")) return false;
-  std::vector<dxl::Feedback> fb = lastFeedback();
   if (fb.size() != config_.joints.size()) {
     last_error_ = "velocity command rejected: no position feedback yet "
                   "(software limits need it)";
     return false;
   }
-  std::vector<double> limited(rad_s.size());
-  std::vector<std::uint8_t> flags(rad_s.size(), 0);
+  std::vector<double> local_values;
+  std::vector<std::uint8_t> local_flags;
+  auto& limited = out != nullptr ? out->values : local_values;
+  auto& flags = out != nullptr ? out->flags : local_flags;
+  limited.resize(rad_s.size());
+  flags.assign(rad_s.size(), 0);
   for (std::size_t i = 0; i < rad_s.size(); ++i) {
     const double vmax = config_.joints[i].velocity_limit;
     double v = std::clamp(rad_s[i], -vmax, vmax);
@@ -373,34 +382,33 @@ bool CraneX7::writeVelocities(const std::vector<double>& rad_s,
     limited[i] = v;
   }
   if (!group_.writeGoalVelocities(limited).ok()) return false;
-  if (out != nullptr) {
-    out->values = std::move(limited);
-    out->flags = std::move(flags);
-  }
   last_command_ = now_();
   return true;
 }
 
 bool CraneX7::writeCurrents(const std::vector<double>& amps,
                             WriteOutcome* out) {
+  return writeCurrentsWithFeedback(amps, lastFeedback(), out);
+}
+
+bool CraneX7::writeCurrentsWithFeedback(
+    const std::vector<double>& amps, const std::vector<dxl::Feedback>& fb,
+    WriteOutcome* out) {
   if (escalated_) return false;
   if (!requireActive("current command")) return false;
   if (!requireMode(0, "current command")) return false;
   if (!requireSize(amps.size(), "current command")) return false;
-  std::vector<dxl::Feedback> fb = lastFeedback();
   if (fb.size() != config_.joints.size()) {
     last_error_ = "current command rejected: no position feedback yet "
                   "(software limits need it)";
     return false;
   }
-  std::vector<double> limited;
-  std::vector<std::uint8_t> flags;
-  limitCurrents(amps, fb, &limited, &flags);
-  if (!group_.writeGoalCurrents(limited).ok()) return false;
-  if (out != nullptr) {
-    out->values = std::move(limited);
-    out->flags = std::move(flags);
-  }
+  std::vector<double> local_values;
+  std::vector<std::uint8_t> local_flags;
+  auto* limited = out != nullptr ? &out->values : &local_values;
+  auto* flags = out != nullptr ? &out->flags : &local_flags;
+  limitCurrents(amps, fb, limited, flags);
+  if (!group_.writeGoalCurrents(*limited).ok()) return false;
   last_command_ = now_();
   return true;
 }
@@ -586,6 +594,11 @@ void CraneX7::threadLoop() {
 
   std::vector<dxl::Feedback> fb;
   std::vector<double> targets;
+  fb.reserve(config_.joints.size());
+  targets.reserve(config_.joints.size());
+  WriteOutcome outcome;
+  outcome.values.reserve(config_.joints.size());
+  outcome.flags.reserve(config_.joints.size());
   int failed_reads_row = 0;
   int failed_writes_row = 0;
   std::uint64_t cycle_number = 0;
@@ -643,12 +656,15 @@ void CraneX7::threadLoop() {
       source_feedback_seq = target_source_feedback_seq_;
       source_feedback_time = target_source_feedback_time_;
     }
-    WriteOutcome outcome;
     bool wrote_ok = false;
     switch (mode) {
       case 3: wrote_ok = writePositions(targets, &outcome); break;
-      case 1: wrote_ok = writeVelocities(targets, &outcome); break;
-      case 0: wrote_ok = writeCurrents(targets, &outcome); break;
+      case 1:
+        wrote_ok = writeVelocitiesWithFeedback(targets, fb, &outcome);
+        break;
+      case 0:
+        wrote_ok = writeCurrentsWithFeedback(targets, fb, &outcome);
+        break;
       default: break;
     }
     const double write_time = now_();
