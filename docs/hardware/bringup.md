@@ -199,5 +199,10 @@ Feature coverage is mapped in [parity.md](../records/parity.md).
   (investigate latency_timer, CPU load), or the feedback reads died
   (e.g. servo power was cut mid-run), which apps report as a nonzero
   `read failures` count.
+- A nonzero `command-window misses` count means controller computation or
+  host scheduling did not leave the configured end-of-cycle write margin.
+  Stop the run and inspect CPU load, USB latency, maximum cycle time, and
+  maximum lateness. The scheduler skips missed period boundaries; it never
+  sends catch-up bursts.
 - Offline rehearsal of every step: `./build/apps/dxl_emu --link
   /tmp/ttyDXL &` then add `--port /tmp/ttyDXL` to any app.

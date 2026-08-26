@@ -112,6 +112,44 @@ TEST_CASE("RealArm drives the bridge through the wire protocol",
   REQUIRE(arm.deactivate());
 }
 
+TEST_CASE("RealArm applies a feedback-tagged command in the same bus cycle",
+          "[thread][timing]") {
+  auto config = hw::Config::load("config/crane_x7.toml");
+  BusFixture fixture(config);
+  config.port = fixture.path();
+  dxl::Port port(config.port, config.baudrate);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.02;
+  options.controller_write_margin_s = 0.004;
+  hw::CraneX7 hw_arm(port, config, options);
+  rtctrl::arm::RealArm arm(hw_arm);
+
+  REQUIRE(arm.setMode(rtctrl::arm::ControlMode::Position));
+  REQUIRE(arm.activate());
+  rtctrl::arm::JointState state;
+  REQUIRE(arm.readState(state));
+
+  rtctrl::arm::JointCommand command;
+  command.mode = rtctrl::arm::ControlMode::Position;
+  zVecCopyNC(state.q.get(), command.q.get());
+  zVecElemNC(command.q.get(), 0) += 0.1;
+  rtctrl::arm::CommandReceipt receipt;
+  REQUIRE(arm.writeCommand(command, &receipt));
+  REQUIRE(arm.step());
+
+  rtctrl::arm::CommandSnapshot snapshot;
+  REQUIRE(arm.readState(state, &snapshot));
+  REQUIRE(snapshot.applied.valid);
+  CHECK(snapshot.applied.target_seq == receipt.submitted_seq);
+  CHECK(snapshot.applied.source_feedback_seq + 1 == state.seq);
+  const double delay =
+      snapshot.applied.first_time - receipt.submission_time;
+  CHECK(delay >= 0.0);
+  CHECK(delay < options.control_cycle_s - options.controller_write_margin_s);
+  REQUIRE(arm.deactivate());
+  CHECK(hw_arm.cycleStats().controller_deadline_misses == 0);
+}
+
 TEST_CASE("RealArm rejects a command computed across feedback deadlines",
           "[thread][timing][safety]") {
   auto config = hw::Config::load("config/crane_x7.toml");

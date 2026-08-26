@@ -429,9 +429,10 @@ including the `apps/` header the same relative way, runnable against
 `dxl_emu` or the robot.)
 
 `readState` gives positions, velocities, and torque estimates
-($\hat\tau = k_t\,i$); `step()` blocks on the background read-write
-cycle and returns `false` after a safety escalation. The shipped
-controllers `arm::GravityComp` and `arm::ComputedTorque` follow
+($\hat\tau = k_t\,i$). On hardware it returns a fresh sample while that
+sample's bounded command window is open; `step()` blocks until the next
+successful feedback read and returns `false` after a safety escalation. The
+shipped controllers `arm::GravityComp` and `arm::ComputedTorque` follow
 exactly this pattern; see the
 [theory documents](../theory/gravity-compensation.md) and their
 sources for worked examples.

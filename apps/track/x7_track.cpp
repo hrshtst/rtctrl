@@ -19,8 +19,11 @@
 // the oscillation is a ~13 Hz gear-train structural resonance (output
 // encoder, motor-side torque, elastic gearing between — measured in
 // the run logs), which the host PD pumps because at 13 Hz the 100 Hz
-// bus loop's ~2-cycle delay puts every feedback term >90 degrees out
-// of phase. Countermeasures, all of which this app relies on:
+// bus loop's historically measured ~2-cycle command-to-current delay put
+// every feedback term >90 degrees out of phase. The feedback-synchronized
+// scheduler now removes one host-side waiting period, but that change has not
+// been validated on hardware and does not unpark this app. Countermeasures,
+// all of which this app relies on:
 //   * ComputedTorque low-passes the PD correction (~3 Hz, 4x gain cut
 //     at the resonance) — rigid-joint sims cannot show this mode, so
 //     do not trust them on it;
@@ -304,13 +307,15 @@ int main(int argc, char* argv[]) {
     if (log) std::fclose(log);
     std::printf("cycles %llu, overruns %llu, skipped periods %llu, "
                 "max cycle %.3f ms, max lateness %.3f ms, stale submissions "
-                "%llu, max feedback age %.3f ms, read failures %llu, write "
-                "failures %llu\n",
+                "%llu, command-window misses %llu, max feedback age %.3f ms, "
+                "read failures %llu, write failures %llu\n",
                 static_cast<unsigned long long>(stats.cycles),
                 static_cast<unsigned long long>(stats.overruns),
                 static_cast<unsigned long long>(stats.skipped_periods),
                 1e3 * stats.max_cycle_time_s, 1e3 * stats.max_lateness_s,
                 static_cast<unsigned long long>(stats.stale_submissions),
+                static_cast<unsigned long long>(
+                    stats.controller_deadline_misses),
                 1e3 * stats.max_feedback_age_at_submission_s,
                 static_cast<unsigned long long>(stats.read_failures),
                 static_cast<unsigned long long>(stats.write_failures));

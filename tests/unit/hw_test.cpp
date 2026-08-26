@@ -204,6 +204,59 @@ TEST_CASE("tagged target rejects an over-age unchanged feedback sample",
   REQUIRE(arm.deactivate());
 }
 
+TEST_CASE("feedback-synchronized deadline fallbacks are mode safe",
+          "[hw][timing][safety]") {
+  const auto exercise = [](std::uint8_t mode, double target) {
+    auto config = craneConfig();
+    for (auto& joint : config.joints) joint.operating_mode = mode;
+    auto bus = busFor(config);
+    emu::FakePacketIO io(bus);
+    hw::CraneX7::Options options;
+    options.control_cycle_s = 0.005;
+    options.controller_write_margin_s = 0.001;
+    hw::CraneX7 arm(io, config, options);
+
+    REQUIRE(arm.activate());
+    const auto before = arm.lastFeedbackStamped().seq;
+    REQUIRE(arm.startThread(true));
+    const auto source = arm.waitFeedbackStamped(before);
+    REQUIRE(source.seq > before);
+    const std::vector<double> values(config.joints.size(), target);
+    if (mode == 3) {
+      REQUIRE(arm.setTargetPositionsFromFeedback(values, source.seq,
+                                                 source.time));
+    } else if (mode == 1) {
+      REQUIRE(arm.setTargetVelocitiesFromFeedback(values, source.seq,
+                                                  source.time));
+    } else {
+      REQUIRE(arm.setTargetCurrentsFromFeedback(values, source.seq,
+                                                source.time));
+    }
+
+    auto completed = arm.cycleStats().cycles;
+    REQUIRE(arm.waitCycle(completed) > completed);
+    const auto next = arm.waitFeedbackStamped(source.seq);
+    REQUIRE(next.seq > source.seq);
+    completed = arm.cycleStats().cycles;
+    REQUIRE(arm.waitCycle(completed) > completed);
+    CHECK(arm.cycleStats().controller_deadline_misses == 1);
+
+    const dxl::Reg address = mode == 3   ? reg::kGoalPosition
+                             : mode == 1 ? reg::kGoalVelocity
+                                         : reg::kGoalCurrent;
+    const auto goal = bus.find(config.joints[0].id)->peek(address);
+    arm.stopThread();
+    REQUIRE(arm.deactivate());
+    return goal;
+  };
+
+  CHECK(exercise(3, 0.2) ==
+        static_cast<std::uint32_t>(dxl::radToPulse(0.2)));
+  CHECK(static_cast<std::int32_t>(exercise(1, 0.3)) == 0);
+  CHECK(static_cast<std::int16_t>(exercise(0, 0.3)) ==
+        dxl::ampsToCurrent(0.3));
+}
+
 TEST_CASE(
     "deadman escalation: stalled writes with healthy reads end with the "
     "motors actually stopped",

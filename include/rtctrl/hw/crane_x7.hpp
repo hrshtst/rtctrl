@@ -47,6 +47,9 @@ class CraneX7 {
     // control_cycle_s. Tagged submissions are also rejected if any newer
     // feedback arrived while the controller was computing.
     double controller_deadline_s = 0.0;
+    // Time reserved at the end of a feedback-synchronized cycle for
+    // limiting, bus transmission, and safety bookkeeping.
+    double controller_write_margin_s = 0.002;
     // Consecutive failed cycle reads before escalation. A controller
     // fed frozen feedback keeps commanding torques into a state it can
     // no longer see — as dangerous as a stalled command stream.
@@ -67,6 +70,7 @@ class CraneX7 {
     std::uint64_t read_failures = 0;   // cycles whose feedback read failed
     std::uint64_t write_failures = 0;  // cycles whose target write failed
     std::uint64_t stale_submissions = 0;
+    std::uint64_t controller_deadline_misses = 0;
     double max_cycle_time_s = 0.0;     // read through write/check completion
     double max_lateness_s = 0.0;       // finish time past scheduled deadline
     double max_feedback_age_at_submission_s = 0.0;
@@ -151,6 +155,12 @@ class CraneX7 {
   };
   StampedFeedback lastFeedbackStamped(
       arm::CommandSnapshot* cmds = nullptr) const;
+  // Feedback-synchronized controller snapshot. In synchronized thread mode,
+  // waits for a newer successful acquisition whose command window is still
+  // open, then copies feedback and command records under the same lock.
+  // Returns seq == 0 if the producer stops.
+  StampedFeedback waitFeedbackStamped(
+      std::uint64_t last_seen, arm::CommandSnapshot* cmds = nullptr);
 
   // Soft position limits [rad] enforced by the writers above (servo
   // limits with pos_limit_margin applied); valid after activation. A
@@ -171,14 +181,21 @@ class CraneX7 {
   // Requires a homogeneous operating mode across the group. On each
   // cycle: readAll → route the latest targets through the mode's
   // limited writer → checkDeadman. stopThread() zeroes velocity/
-  // current targets first (torque state is left as-is).
-  bool startThread();
+  // current targets first (torque state is left as-is). When
+  // synchronize_commands is true, every successful read wakes a controller
+  // and waits only until the cycle's write margin for a command tagged with
+  // that feedback. RealArm uses this bounded same-cycle path; direct bus
+  // clients retain the ordinary periodic read/write behavior.
+  bool startThread(bool synchronize_commands = false);
   void stopThread();
   bool threadRunning() const { return thread_.joinable(); }
   CycleStats cycleStats() const;
   // Blocks until a cycle newer than last_seen completes; returns its
   // sequence number (0 if the thread is not running).
   std::uint64_t waitCycle(std::uint64_t last_seen);
+  // Controller-side phase wait: blocks until a successful feedback
+  // acquisition newer than last_seen opens its same-cycle command window.
+  std::uint64_t waitFeedback(std::uint64_t last_seen);
 
   // Thread-safe command targets consumed by the background thread.
   // False (with lastError()) on a size mismatch. Each successful
@@ -235,7 +252,7 @@ class CraneX7 {
   // makes the armed servo Bus Watchdog stop every servo within its
   // 0.1 s interval regardless of host state. One-way for the lifetime
   // of this object.
-  void requestQuiesce() { quiesced_.store(true); }
+  void requestQuiesce();
   bool quiesced() const { return quiesced_.load(); }
 
   // Optional CURRENT-mode activation preload: the per-joint currents
@@ -343,6 +360,11 @@ class CraneX7 {
   double target_source_feedback_time_ = 0.0;
   arm::AppliedTargetRecord applied_rec_;   // first/latest application
   arm::WriteAttemptRecord attempt_rec_;    // every transmission attempt
+  bool synchronize_commands_ = false;
+  bool command_window_open_ = false;
+  std::uint64_t command_window_feedback_seq_ = 0;
+  std::condition_variable feedback_cv_;
+  std::condition_variable target_cv_;
 
   std::thread thread_;
   std::atomic<bool> thread_run_{false};

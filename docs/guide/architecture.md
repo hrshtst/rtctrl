@@ -143,7 +143,7 @@ class Arm {
   bool setMode(ControlMode);    // Position=3 / Velocity=1 / Current=0
   bool readState(JointState&);  // q, dq, tau (est.), t
   bool writeCommand(const JointCommand&);
-  bool step();                  // sim: integrate dt; real: wait cycle
+  bool step();                  // sim: integrate dt; real: wait feedback
 };
 ```
 
@@ -152,8 +152,26 @@ One cycle is `readState → Controller::update → writeCommand → step`
 $(M + \mathrm{diag}\,J_r)\,\ddot q = \tau - b$, with reflected motor
 inertia $J_r$, semi-implicit Euler, inelastic joint stops, and an
 overdamped equal-and-opposite finger coupling. `RealArm` rides `CraneX7`'s
-background thread: `step()` blocks on the next completed
-read→limit→write cycle.
+background thread. A successful grouped read opens a command window and
+wakes the controller. A feedback-tagged command is accepted only before the
+window cutoff, leaving the configured margin for limiting, transmission, and
+safety bookkeeping. `step()` blocks until the next grouped read opens the
+next window.
+
+The default 10 ms cycle reserves its final 2 ms for limiting, bus
+transmission, and safety bookkeeping. A command that misses the open window
+is rejected instead of being applied from stale feedback. On a missed window,
+position mode retains its preceding goal, velocity mode sends zero, and
+current mode retains the preceding bounded current for that cycle. Continued
+misses reach the 250 ms submission deadman. `CycleStats` reports rejected
+stale submissions and command-window misses separately.
+
+Scheduling uses absolute monotonic deadlines. When work finishes after a
+deadline, the producer advances to the next future boundary instead of
+issuing catch-up bus traffic. This bounds burst behavior but is not a hard
+real-time guarantee: the process still uses ordinary operating-system thread
+scheduling. Maximum cycle duration, lateness, skipped periods, failed reads,
+and failed writes remain observable in `CycleStats`.
 
 ## Safety architecture (hardware)
 

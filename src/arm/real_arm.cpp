@@ -18,9 +18,11 @@ bool RealArm::activate() {
   // the armed servo Bus Watchdogs halt the arm (review finding).
   try {
     have_feedback_ = false;
-    cycle_seen_ = 0;
+    feedback_seen_ = 0;
     if (!hw_.activate()) return false;
-    if (!hw_.startThread()) {
+    const auto feedback_before_thread = hw_.lastFeedbackStamped().seq;
+    last_state_read_seq_ = feedback_before_thread;
+    if (!hw_.startThread(true)) {
       // never leave a torqued arm behind a failure — and VERIFY: an
       // unclean (or throwing) deactivation must quiesce the bus so
       // the armed servo watchdogs halt the arm (review finding; this
@@ -33,11 +35,10 @@ bool RealArm::activate() {
       return false;
     }
     // Do not expose activation-era feedback to the first controller update.
-    // Its acquisition may precede model construction and other startup work,
-    // so a correctly tagged first command would immediately be stale. Wait for
-    // one completed producer cycle and make it the step() baseline.
-    cycle_seen_ = hw_.waitCycle(0);
-    if (cycle_seen_ == 0) {
+    // Wait for the background thread's first successful acquisition. It opens
+    // the first bounded command window and becomes step()'s baseline.
+    feedback_seen_ = hw_.waitFeedback(feedback_before_thread);
+    if (feedback_seen_ == 0) {
       try {
         if (!hw_.deactivate()) hw_.requestQuiesce();
       } catch (...) {
@@ -73,9 +74,11 @@ bool RealArm::setMode(ControlMode mode) {
 bool RealArm::readState(JointState& state, CommandSnapshot* cmds) {
   // One producer-side lock hold covers feedback AND command records —
   // the background thread cannot advance between them.
-  const auto stamped = hw_.lastFeedbackStamped(cmds);
+  const auto stamped = hw_.waitFeedbackStamped(last_state_read_seq_, cmds);
   const auto& fb = stamped.feedback;
   if (fb.size() != static_cast<std::size_t>(kCanonicalDof)) return false;
+  last_state_read_seq_ = stamped.seq;
+  feedback_seen_ = stamped.seq;
   for (int i = 0; i < kCanonicalDof; ++i) {
     zVecElemNC(state.q.get(), i) = fb[i].position;
     zVecElemNC(state.dq.get(), i) = fb[i].velocity;
@@ -135,9 +138,9 @@ bool RealArm::writeCommand(const JointCommand& cmd,
 }
 
 bool RealArm::step() {
-  const auto seq = hw_.waitCycle(cycle_seen_);
+  const auto seq = hw_.waitFeedback(feedback_seen_);
   if (seq == 0) return false;  // thread stopped (escalation or stop)
-  cycle_seen_ = seq;
+  feedback_seen_ = seq;
   return !hw_.escalated();
 }
 

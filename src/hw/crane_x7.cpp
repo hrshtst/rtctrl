@@ -296,6 +296,29 @@ CraneX7::StampedFeedback CraneX7::lastFeedbackStamped(
   return {feedback_, feedback_time_, feedback_seq_};
 }
 
+CraneX7::StampedFeedback CraneX7::waitFeedbackStamped(
+    std::uint64_t last_seen, arm::CommandSnapshot* cmds) {
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  if (!thread_run_.load() || quiesced_.load()) return {};
+  feedback_cv_.wait(lock, [this, last_seen] {
+    const bool window_ready =
+        !synchronize_commands_ ||
+        (command_window_open_ &&
+         command_window_feedback_seq_ == feedback_seq_);
+    return (feedback_seq_ > last_seen && window_ready) ||
+           !thread_run_.load() || quiesced_.load();
+  });
+  if (!thread_run_.load() || quiesced_.load() ||
+      feedback_seq_ <= last_seen) {
+    return {};
+  }
+  if (cmds != nullptr) {
+    cmds->applied = applied_rec_;
+    cmds->last_attempt = attempt_rec_;
+  }
+  return {feedback_, feedback_time_, feedback_seq_};
+}
+
 bool CraneX7::requireMode(std::uint8_t mode, const char* what) {
   for (const auto& joint : config_.joints) {
     if (joint.operating_mode != mode) {
@@ -424,7 +447,7 @@ bool CraneX7::setTargets(const std::vector<double>& values,
                          std::uint64_t* seq, double* time) {
   if (!requireSize(values.size(), "target submission")) return false;
   const double submit_time = now_();
-  std::lock_guard<std::mutex> lock(state_mutex_);
+  std::unique_lock<std::mutex> lock(state_mutex_);
   if (tagged) {
     const double age = submit_time - source_feedback_time;
     const double deadline = options_.controller_deadline_s > 0.0
@@ -439,7 +462,10 @@ bool CraneX7::setTargets(const std::vector<double>& values,
     }
     if (source_feedback_seq == 0 ||
         source_feedback_seq != feedback_seq_ || !std::isfinite(age) ||
-        age < 0.0 || age > deadline) {
+        age < 0.0 || age > deadline ||
+        (synchronize_commands_ &&
+         (!command_window_open_ || source_feedback_seq !=
+                                      command_window_feedback_seq_))) {
       // Arm the submission deadman even for the first rejected attempt:
       // a caller that ignores false cannot leave the default target flowing
       // indefinitely while being exempt as a monitor-only session.
@@ -472,6 +498,8 @@ bool CraneX7::setTargets(const std::vector<double>& values,
   target_source_feedback_time_ = tagged ? source_feedback_time : 0.0;
   if (seq != nullptr) *seq = target_seq_;
   if (time != nullptr) *time = target_submit_time_;
+  lock.unlock();
+  target_cv_.notify_all();
   return true;
 }
 bool CraneX7::setTargetVelocities(const std::vector<double>& rad_s,
@@ -505,7 +533,7 @@ bool CraneX7::setTargetCurrentsFromFeedback(
                     time);
 }
 
-bool CraneX7::startThread() {
+bool CraneX7::startThread(bool synchronize_commands) {
   if (thread_.joinable()) return true;
   if (!activated_) {
     last_error_ = "startThread: activate first";
@@ -522,6 +550,14 @@ bool CraneX7::startThread() {
         "startThread: controller deadline must be finite and nonnegative";
     return false;
   }
+  if (synchronize_commands &&
+      (!std::isfinite(options_.controller_write_margin_s) ||
+       options_.controller_write_margin_s < 0.0 ||
+       options_.controller_write_margin_s >= options_.control_cycle_s)) {
+    last_error_ = "startThread: controller write margin must be finite, "
+                  "nonnegative, and shorter than the control cycle";
+    return false;
+  }
   const auto mode = config_.joints.front().operating_mode;
   for (const auto& joint : config_.joints) {
     if (joint.operating_mode != mode) {
@@ -532,6 +568,9 @@ bool CraneX7::startThread() {
   {
     // default target: hold the present state (positions) / stay still
     std::lock_guard<std::mutex> lock(state_mutex_);
+    synchronize_commands_ = synchronize_commands;
+    command_window_open_ = false;
+    command_window_feedback_seq_ = 0;
     if (!have_targets_) {
       targets_.assign(config_.joints.size(), 0.0);
       if (mode == 3) {
@@ -554,6 +593,8 @@ bool CraneX7::startThread() {
 void CraneX7::stopThread() {
   if (!thread_.joinable()) return;
   thread_run_.store(false);
+  feedback_cv_.notify_all();
+  target_cv_.notify_all();
   if (std::this_thread::get_id() == thread_.get_id()) {
     // called from the thread itself (deadman escalation path): just
     // signal; the loop exits on its own and join happens later
@@ -585,10 +626,33 @@ std::uint64_t CraneX7::waitCycle(std::uint64_t last_seen) {
   return cycle_seq_;
 }
 
+std::uint64_t CraneX7::waitFeedback(std::uint64_t last_seen) {
+  std::unique_lock<std::mutex> lock(state_mutex_);
+  if (!thread_run_.load() || quiesced_.load()) return 0;
+  feedback_cv_.wait(lock, [this, last_seen] {
+    const bool window_ready =
+        !synchronize_commands_ ||
+        (command_window_open_ &&
+         command_window_feedback_seq_ == feedback_seq_);
+    return (feedback_seq_ > last_seen && window_ready) ||
+           !thread_run_.load() || quiesced_.load();
+  });
+  return !quiesced_.load() && feedback_seq_ > last_seen ? feedback_seq_ : 0;
+}
+
+void CraneX7::requestQuiesce() {
+  quiesced_.store(true);
+  feedback_cv_.notify_all();
+  target_cv_.notify_all();
+}
+
 void CraneX7::threadLoop() {
   const auto cycle = std::chrono::duration_cast<
       std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(options_.control_cycle_s));
+  const auto write_margin = std::chrono::duration_cast<
+      std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(options_.controller_write_margin_s));
   const auto mode = config_.joints.front().operating_mode;
   auto next = std::chrono::steady_clock::now() + cycle;
 
@@ -627,6 +691,7 @@ void CraneX7::threadLoop() {
   };
   while (thread_run_.load()) {
     ++cycle_number;
+    bool read_ok = false;
     // Quiesce gates: before the read and again before the write. Once
     // requested, no further instruction packet leaves this thread —
     // reads count against the servo Bus Watchdog too, and the ensuing
@@ -635,6 +700,7 @@ void CraneX7::threadLoop() {
     // responsive.
     if (!quiesced_.load()) {
       if (readAll(fb)) {
+        read_ok = true;
         failed_reads_row = 0;
       } else {
         ++failed_reads_row;
@@ -649,12 +715,44 @@ void CraneX7::threadLoop() {
     std::uint64_t tseq = 0;
     std::uint64_t source_feedback_seq = 0;
     double source_feedback_time = 0.0;
+    bool controller_deadline_missed = false;
     {
-      std::lock_guard<std::mutex> lock(state_mutex_);
+      std::unique_lock<std::mutex> lock(state_mutex_);
+      if (synchronize_commands_ && read_ok) {
+        const auto target_before_window = target_seq_;
+        command_window_feedback_seq_ = feedback_seq_;
+        command_window_open_ = true;
+        feedback_cv_.notify_all();
+        target_cv_.wait_until(
+            lock, next - write_margin, [this, target_before_window] {
+              return target_seq_ != target_before_window ||
+                     !thread_run_.load() || quiesced_.load();
+        });
+        const bool received = target_seq_ != target_before_window;
+        command_window_open_ = false;
+        controller_deadline_missed =
+            !received && submission_armed_ && thread_run_.load() &&
+            !quiesced_.load();
+      }
       targets = targets_;
       tseq = target_seq_;
       source_feedback_seq = target_source_feedback_seq_;
       source_feedback_time = target_source_feedback_time_;
+    }
+    if (controller_deadline_missed) {
+      std::lock_guard<std::mutex> lock(cycle_mutex_);
+      ++stats_.controller_deadline_misses;
+    }
+    // A missed velocity update must not keep driving indefinitely. Position
+    // mode naturally holds the preceding goal; current mode retains one
+    // bounded prior command and is terminated by the submission deadman if
+    // the controller does not recover.
+    if (controller_deadline_missed && mode == 1) {
+      std::fill(targets.begin(), targets.end(), 0.0);
+    }
+    if (quiesced_.load() || !thread_run_.load()) {
+      end_cycle();
+      continue;
     }
     bool wrote_ok = false;
     switch (mode) {
@@ -731,6 +829,8 @@ void CraneX7::threadLoop() {
     end_cycle();
   }
   cycle_cv_.notify_all();
+  feedback_cv_.notify_all();
+  target_cv_.notify_all();
 }
 
 bool CraneX7::checkDeadman() {
