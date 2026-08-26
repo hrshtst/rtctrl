@@ -85,7 +85,8 @@ class FollowCsvLog : public CycleSink {
                                "' (it may already exist)");
     }
     std::fprintf(file_,
-                 "schema_version,time_s,phase,phase_time_s,feedback_time_s,"
+                 "schema_version,time_s,phase,command_mode,phase_time_s,"
+                 "feedback_time_s,"
                  "feedback_seq,receipt_accepted,submitted_seq,applied_seq");
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       std::fprintf(file_, ",qref%d_rad,dqref%d_rad_s,ddqref%d_rad_s2", i, i,
@@ -108,9 +109,10 @@ class FollowCsvLog : public CycleSink {
     const auto& cmd = *cycle.command;
     const auto& snapshot = *cycle.snapshot;
     const auto& receipt = *cycle.receipt;
-    std::fprintf(file_, "1,%.9f,%s,%.9f,%.9f,%llu,%d,%llu,%llu",
-                 cycle.time_s, phaseName(cycle.phase), cycle.phase_time_s,
-                 state.t, static_cast<unsigned long long>(state.seq),
+    std::fprintf(file_, "1,%.9f,%s,%u,%.9f,%.9f,%llu,%d,%llu,%llu",
+                 cycle.time_s, phaseName(cycle.phase),
+                 static_cast<unsigned>(cmd.mode), cycle.phase_time_s, state.t,
+                 static_cast<unsigned long long>(state.seq),
                  receipt.accepted ? 1 : 0,
                  static_cast<unsigned long long>(receipt.submitted_seq),
                  static_cast<unsigned long long>(

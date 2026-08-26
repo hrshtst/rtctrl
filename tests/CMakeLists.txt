@@ -72,6 +72,25 @@ set_tests_properties(x7_follow_bundle_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "follow bundle creation and replay OK"
   LABELS integration)
 
+add_test(NAME x7_follow_plot_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    MPLCONFIGDIR=${CMAKE_BINARY_DIR}/mpl-cache
+    uv run --project tools
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_plot_smoke.sh
+      ${CMAKE_SOURCE_DIR}/tests/integration/follow_bundle_smoke.sh
+      $<TARGET_FILE:x7_follow_sim>
+      $<TARGET_FILE:x7_plan_ptp>
+      ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+      ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+      ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
+      ${CMAKE_SOURCE_DIR}/tools/plot/follow_tracking.py
+      ${CMAKE_BINARY_DIR}/follow_plot_smoke)
+set_tests_properties(x7_follow_plot_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "follow telemetry plotting OK"
+  LABELS integration)
+
 add_test(NAME x7_plan_ptp_plot_smoke
   COMMAND ${CMAKE_COMMAND} -E env
     UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
