@@ -147,11 +147,12 @@ uv run --project tools tools/plot/ptp_trajectory.py \
   ptp_pick_approach.csv --output /tmp/ptp-pick-review.png
 ```
 
-It holds the TCP at world RPY `[0, pi/2, 0]`, which points the TCP approach
-axis downward, and descends vertically from 0.22 m to 0.09 m at a horizontal
-reach of 0.28 m. Those coordinates are illustrative. Measure the actual table
-and object frame, check collisions, and update both endpoints before using the
-trajectory around hardware. The plan does not command the gripper to close.
+It starts at `[0.22, -0.10, 0.26]` m with the TCP pointing forward, then reaches
+forward and across the workspace to `[0.28, 0.10, 0.08]` m while pitching by
+`pi/2` so the TCP approach axis finishes downward. Those coordinates are
+illustrative. Measure the actual table and object frame, check collisions, and
+update both endpoints before using the trajectory around hardware. The plan
+does not command the gripper to close.
 
 The configuration schema is:
 

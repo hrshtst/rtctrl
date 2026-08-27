@@ -1,4 +1,4 @@
-# Example top-down approach toward an object on a table.
+# Example spatial reach and reorientation toward an object on a table.
 #
 # This is a kinematic preview, not a hardware-certified pick. Adjust the
 # coordinates for the measured table/object frame, check collisions and joint
@@ -19,16 +19,17 @@ max_linear_velocity = 0.04
 max_angular_velocity = 0.4
 trapezoid_acceleration_fraction = 0.2
 
-# The TCP starts 13 cm above the intended pick point. Its +x approach axis is
-# directed downward by pitch = +pi/2 in the world-frame RPY convention.
+# The TCP starts high and on the negative-y side of the workspace. Zero RPY
+# keeps its +x approach axis pointing forward along world +x.
 [start]
-position = [0.28, 0.0, 0.22]
-rpy_rad = [0.0, 1.5707963267948966, 0.0]
+position = [0.22, -0.1, 0.26]
+rpy_rad = [0.0, 0.0, 0.0]
 
-# Stop at the nominal grasp height. The gripper command is not part of this
-# Cartesian plan, so closing the fingers must be handled separately.
+# Reach forward by 6 cm, sweep 20 cm toward world +y, and descend 18 cm to the
+# nominal grasp height. Pitching by +pi/2 turns the TCP +x approach axis from
+# forward to downward. Closing the fingers must be handled separately.
 [end]
-position = [0.28, 0.0, 0.09]
+position = [0.28, 0.1, 0.08]
 rpy_rad = [0.0, 1.5707963267948966, 0.0]
 
 [ik]
