@@ -361,6 +361,90 @@ hardware tracking app must independently validate the file, starting
 posture, joint rates, operating modes, and collision constraints
 before enabling torque.
 
+### Manual motion teaching
+
+`x7_teach` records a trajectory while an operator guides the arm. It supports
+two acquisition modes:
+
+- `torque-off` leaves every servo disabled and reads position, velocity, and
+  current directly. This is the default and should be tried first.
+- `gravity-compensation` uses the reviewed `x7_float` activation, calibrated
+  gravity preload, soft-limit start gate, current-mode control cycle, servo
+  watchdog, and host deadman. It requires the approved vendor-scale hardware
+  configuration.
+
+Validate the configuration without opening the bus:
+
+```sh
+./build/apps/x7_teach --config config/teach_example.toml --check
+```
+
+For a torque-off recording, support the arm throughout the run. The first
+Enter starts recording and the second Enter stops it:
+
+```sh
+run_stamp=$(date +%Y%m%d-%H%M%S)
+./build/apps/x7_teach --config config/teach_example.toml \
+  --mode torque-off --bundle "/tmp/teach-torque-off-${run_stamp}"
+```
+
+Gravity compensation adds a separate support confirmation. Keep supporting
+the arm during activation, press Enter to start, guide the arm and press Enter
+to stop, then support it from below and press Enter once more to disable
+torque:
+
+```sh
+run_stamp=$(date +%Y%m%d-%H%M%S)
+./build/apps/x7_teach --config config/teach_example.toml \
+  --mode gravity-compensation \
+  --bundle "/tmp/teach-gravity-${run_stamp}"
+```
+
+The recording stops automatically at `recording.max_duration_s` if the second
+Enter is not received. In gravity-compensation mode, torque remains active
+after that stop until the separate support Enter or
+`finalization.operator_timeout_s`. Activation, start wait, recording, and
+support wait share a hard 60 second torqued-session ceiling. A timeout or
+unclean shutdown makes the command fail.
+
+The hardware acquisition loop always reads at 100 Hz. The CSV retains those
+raw samples across the complete session, including the start wait and the
+gravity-mode support wait. It records phase transitions, measured state, and,
+when gravity compensation is active, submitted and applied torque command
+metadata. `recording.sample_rate_hz`, or `--sample-rate`, selects the uniform
+1 to 100 Hz ZVS output rate. The app linearly resamples only the interval
+between the start and stop events and does not smooth it. Use the filtering and
+interpolation settings in `x7_follow` when preparing a manually taught
+reference for replay.
+
+Standalone output files are created exclusively and never overwritten:
+
+```sh
+./build/apps/x7_teach --config config/teach_example.toml \
+  --output /tmp/pick-taught.zvs --log /tmp/pick-taught.csv \
+  --sample-rate 50 --max-duration 20
+rk_anim models/crane_x7/crane_x7.ztk /tmp/pick-taught.zvs
+```
+
+`--bundle` is mutually exclusive with `--output`, `--log`, and `--check`.
+Its target must not exist and is refused before the source configuration is
+loaded. A successful bundle contains the source and effective TOML files, the
+hardware configuration, model and meshes, `trajectory.zvs`, `recording.csv`,
+`result.toml`, and a SHA-256 manifest. The effective `teach.toml` uses paths
+inside the bundle, so its configuration and model can be checked later with:
+
+```sh
+./build/apps/x7_teach --config /tmp/teach-torque-off-STAMP/teach.toml --check
+rk_anim /tmp/teach-torque-off-STAMP/model/crane_x7.ztk \
+  /tmp/teach-torque-off-STAMP/trajectory.zvs
+```
+
+To replay a taught motion, point `reference` in a copy of
+`config/follow_example.toml` at the new ZVS. Run `x7_follow_sim` and inspect its
+full-session log before considering hardware. A taught path records what the
+operator did; it does not provide collision, speed, acceleration, or endpoint
+safety certification.
+
 ### Servo-side trajectory following
 
 `x7_follow_sim` and `x7_follow` run the same phase controller against the

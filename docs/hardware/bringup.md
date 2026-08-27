@@ -131,6 +131,17 @@ bring-up step with the actuator power cutoff in reach. Its final hold ends only
 after the operator supports the arm from below and presses Enter, or after the
 configured timeout.
 
+`x7_teach` records a hand-guided reference in either torque-off or
+gravity-compensation mode. Start with torque-off mode after step 2 above. Its
+gravity mode reuses the accepted `x7_float` calibration gate, held-position
+activation, gravity preload, control timing, and verified shutdown, but the new
+recording workflow has not yet been accepted on the physical arm. Treat its
+first gravity-mode run as a new bring-up step: rehearse it with `dxl_emu`, run
+`--check`, keep the power cutoff in reach, and have a second person ready to
+support the arm. Recording stop does not disable torque; a distinct final Enter
+confirms that the arm is supported before shutdown. See the
+[manual teaching safety contract](../guide/usage.md#manual-motion-teaching).
+
 > **`x7_track` is PARKED: do NOT run it on hardware. `x7_float`
 > is UN-PARKED (2026-07-31) under the conditions in its bullet
 > below.** Two independent incidents:
