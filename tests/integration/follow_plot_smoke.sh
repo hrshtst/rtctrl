@@ -22,6 +22,12 @@ test -s "$ROOT/follow.png"
 grep -q "maximum joint tracking error" "$ROOT/plot.log"
 grep -q "phase cycles" "$ROOT/plot.log"
 
+BUNDLE_PLOTTER="$(dirname "$PLOTTER")/follow_bundle_tracking.py"
+python "$BUNDLE_PLOTTER" "$ROOT/run/archive" \
+  >"$ROOT/bundle-plot.log" 2>&1
+test -s "$ROOT/run/archive/tracking-analysis.png"
+grep -q "maximum joint tracking error" "$ROOT/bundle-plot.log"
+
 printf 'time_s,phase\n0,tracking\n' >"$ROOT/malformed.csv"
 if python "$PLOTTER" "$ROOT/malformed.csv" \
     --output "$ROOT/malformed.png" >"$ROOT/malformed.log" 2>&1; then
