@@ -6,9 +6,10 @@ paths below are relative to that archive's root. The small
 `.dwells.json` sidecars — the tuning records, dwell verdicts, and
 demodulated estimates the documentation quotes — are tracked
 in-repo under `data/` (one per starred file below). Checksums are
-SHA-256 of each file as archived on 2026-07-28; a citation in the
-project records is verifiable by checking the named file against
-its hash. Project records and code comments cite these datasets by
+SHA-256 at the archival date stated by each section; the older tables
+below were archived on 2026-07-28. A citation in the project records
+is verifiable by checking the named file against its hash. Project
+records and code comments cite these datasets by
 bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
 — every such name resolves to a row in the tables below.
 
@@ -99,3 +100,21 @@ configuration, marker-first release, displacement-bounded acceptance.
 | `float3.csv` | M-GC3 back-drive feel-check run (operator back-driving during the window — NOT acceptance evidence): reported distinctly lighter than the 2026-07-29 failed run; zero gates/clamps, 503/503 accepted | `f09057f289066be6d60a9154c97f71ba141e7daccd8b993670ba0df3da7726fd` |
 | `feel_j1_diag1.csv` | Reviewer-authorized gate-free j1 diagnostic session (2026-07-31, v2 instrumented log: event marks + raw counts; NOT acceptance evidence): VALID — `--feel --gate-free` passes, 6001 rows, 9 operator event marks, zero clamps/gates on every axis. Findings: host goal smooth (max 4 counts/cycle over the whole run); static current delivery clean (stationary error ≤ 7 counts at goals up to ~300 counts); all 93 present-current steps > 30 counts (max 73 ≈ 0.47 Nm nominal) occurred DURING motion, none stationary — breakaway/reversal transients; the two most violent in-window transients coincide with the 31.15 s / 34.93 s notch marks | `cd7a2ddac280e2b313213e6c6fc789849e4930c51c98d9398494a755ecf2ba6f` |
 | `feel_j0.csv` … `feel_j6.csv` | M-GC3 per-joint back-drive sessions (feel-check mode, one target joint each, bidirectional coverage log-confirmed on every target; NOT acceptance evidence). Reviewer disposition (2026-07-30, supersedes the preliminary stiction attribution): subjective feel FAILED on j1 (random notchiness; power-off check clean, so torque-ENABLED — suspects XM540 current regulation / load-dependent drivetrain friction / cross-axis j3 gate discontinuities (18 gated cycles in the j1 session, ≈1.01 Nm zeroed ~33.6 s while j1 was stationary — uncorrelatable, no event marks), NOT the gravity model: the trajectory replay agrees within ≈5 % near the high-command extreme; lower-load trajectories show amplitude ratios differing ~10–12 % with small absolute differences) and inconclusive/failed on j4 (hand-guided positive tendency; likely compensation-induced — replay shows rtctrl at ~1.4× the vendor model's twist amplitude, within 1–3 goal counts); j3/j6 pass (symmetric rigidity). Zero clamps, all submissions accepted; position gates by axis: j0 92 / j3 18 (j1 session) / j4 853 / j6 91 cycles (endpoint dwell) | j0 `290b95c786003e7a0c5666c65749a85d9a992d16457dfca16a02ee118f3c5ec6` j1 `d33b607c68c3a8eb2a2c4b354e69ffb56c43ddf674725aca8b92143dd7aedda8` j2 `b01a7299cf77fed9710097175530d3275afad39eacbb7d17d244e98f9bf45e73` j3 `2a5901b2dcad29499ae49d809112bb8977dc22c56b83ef4d387d4cefc1219316` j4 `b8af89f405ec5e4d668a90da14b6a1c2614ddaa035ff49667d454253712b6327` j5 `1ae7c471a86455d90937e864a6c963313147ddc66e60959919fdde23cb37fb26` j6 `3902dbcc17fc7c9b8aacb2577e2bc143da767ddbb8c660071ec1277407a565b6` |
+
+## `follow-cbp-gain-sweep-20260827/` — servo-side gain sweep (2026-08-27)
+
+Complete x7_follow simulation and hardware bundles for the position versus
+current-based position comparison and the subsequent CBP gain sweep. The
+archive also contains motor dumps, derived comparison plots, all intermediate
+TOML configurations, and patches recovered from the reflog after the accidental
+hard reset. The selected tuning and rejected alternatives are summarized in
+[history.md](history.md#current-based-position-gain-decision-2026-08-27).
+
+| file | role | sha256 |
+|---|---|---|
+| `SHA256SUMS` | Archive-wide inventory for 258 files (138 MiB); verified after copying from `backups/` and `/tmp` | `15e9749ec614e2e6d64e58b919b6e3790ca2b873cf38812568040968db7d83d4` |
+| `README.md` | Decision summary, run inventory, source locations, and recovery notes | `bb15f9b844090abb1c8a86f1fbf1240ae21b0a1b00fd58aba171a38b8a32b8d5` |
+| `follow-cbp-75pct-d-id5-p900-20260827-181857/manifest.toml` | First run of the selected tuning | `7e486653a024f8ca2becea728e757a744e7055ae937c632a2d4d55dffbded4cf` |
+| `follow-cbp-75pct-d-id5-p900-20260827-182554/manifest.toml` | Selected-tuning repeat 1 | `74fdee3492f5084db5023725e7fac9aaa142c2a576e03d98a5189dcae12d0b61` |
+| `follow-cbp-75pct-d-id5-p900-20260827-182636/manifest.toml` | Selected-tuning repeat 2 | `cc49732bd514ea66009a66290885efa8017b636510df74f39c5da000f1cda856` |
+| `follow-cbp-25pct-d-20260827-192302/manifest.toml` | Rejected 25% D test | `0bd4e44f76fd7d9d26f10968bab278f638b2b8f1845da183ab5806816889072e` |

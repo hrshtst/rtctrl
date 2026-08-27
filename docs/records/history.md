@@ -165,6 +165,24 @@ milestone — the capability mapping lives in [parity.md](parity.md).
 measured-posture convergence) complete the position-mode toolset;
 none of them touches the current-command path.
 
+### Current-based position gain decision (2026-08-27)
+
+A servo-side gain sweep on the tabletop pick-approach trajectory selected a
+provisional current-based position configuration for the tested Crane-X7 and
+firmware 47: position P gain 800 on every motor except ID 5 at 900, position I
+gain 0, and position D gain 3525 on XM430 motors and 6375 on XM540 motors. The
+host ran at 100 Hz with a 2.5 Nm per-joint effort ceiling. This is an
+experiment-specific selection, not a new project-wide motor default.
+
+Three repeated runs produced aggregate joint RMS errors of 0.017995 to
+0.018138 rad and elbow peak errors of 0.064110 to 0.065628 rad, with no
+overruns, skipped cycles, or stale commands. Compared with the vendor-reset
+current-based position gains, high-frequency measured torque was about 22%
+lower. Reducing D to 25% increased high-frequency velocity and made visible
+vibration worse, so that setting was rejected; D=0 was not attempted. The
+intermediate configurations and all raw evidence are indexed in
+[data-archive.md](data-archive.md#follow-cbp-gain-sweep-20260827-servo-side-gain-sweep-2026-08-27).
+
 ## Computed torque
 
 ### Simulation results
