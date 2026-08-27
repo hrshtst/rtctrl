@@ -1,0 +1,39 @@
+# Example top-down approach toward an object on a table.
+#
+# This is a kinematic preview, not a hardware-certified pick. Adjust the
+# coordinates for the measured table/object frame, check collisions and joint
+# margins, and preview the ZVS and diagnostics before using it as a reference.
+model = "../models/crane_x7/crane_x7.ztk"
+output = "ptp_pick_approach.zvs"
+end_effector = "crane_x7_tcp_link"
+
+[diagnostics]
+enabled = true
+output = "ptp_pick_approach.csv"
+
+[trajectory]
+profile = "minimum-jerk"
+sample_rate = 100.0
+motion_time = 5.0
+max_linear_velocity = 0.04
+max_angular_velocity = 0.4
+trapezoid_acceleration_fraction = 0.2
+
+# The TCP starts 13 cm above the intended pick point. Its +x approach axis is
+# directed downward by pitch = +pi/2 in the world-frame RPY convention.
+[start]
+position = [0.28, 0.0, 0.22]
+rpy_rad = [0.0, 1.5707963267948966, 0.0]
+
+# Stop at the nominal grasp height. The gripper command is not part of this
+# Cartesian plan, so closing the fingers must be handled separately.
+[end]
+position = [0.28, 0.0, 0.09]
+rpy_rad = [0.0, 1.5707963267948966, 0.0]
+
+[ik]
+strict = true
+position_tolerance = 1.0e-4
+attitude_tolerance = 1.0e-3
+max_iterations = 300
+initial_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

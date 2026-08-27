@@ -137,6 +137,22 @@ Start with the checked-in configuration:
 rk_anim models/crane_x7/crane_x7.ztk ptp.zvs
 ```
 
+For a top-down approach toward a nominal tabletop object, use the separate
+pick example:
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_pick_example.toml
+rk_anim models/crane_x7/crane_x7.ztk ptp_pick_approach.zvs
+uv run --project tools tools/plot/ptp_trajectory.py \
+  ptp_pick_approach.csv --output /tmp/ptp-pick-review.png
+```
+
+It holds the TCP at world RPY `[0, pi/2, 0]`, which points the TCP approach
+axis downward, and descends vertically from 0.22 m to 0.09 m at a horizontal
+reach of 0.28 m. Those coordinates are illustrative. Measure the actual table
+and object frame, check collisions, and update both endpoints before using the
+trajectory around hardware. The plan does not command the gripper to close.
+
 The configuration schema is:
 
 ```toml

@@ -49,6 +49,15 @@ set_tests_properties(x7_plan_ptp_generates_example PROPERTIES
   PASS_REGULAR_EXPRESSION "wrote .* frames"
   LABELS unit)
 
+add_test(NAME x7_plan_ptp_generates_pick_example
+  COMMAND x7_plan_ptp --config config/ptp_pick_example.toml
+          --output build/test_ptp_pick_example.zvs
+          --diagnostics build/test_ptp_pick_example.csv)
+set_tests_properties(x7_plan_ptp_generates_pick_example PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "IK warnings: 0"
+  LABELS unit)
+
 add_test(NAME x7_plan_ptp_bundle_smoke
   COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/ptp_bundle_smoke.sh
           $<TARGET_FILE:x7_plan_ptp>
