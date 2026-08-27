@@ -391,6 +391,23 @@ submission receipt, applied target sequence, effort ceiling, and clamp/gate
 flags. The plotter validates this schema and places its legends above the
 traces so they do not obscure the data.
 
+To compare archived position and current-based-position hardware runs, place
+the bundles under `position/` and `cbp/` in one directory, then run:
+
+```sh
+run_dir=/tmp/follow-mode-hw-20260827-155637
+uv run --project tools tools/plot/follow_mode_comparison.py "$run_dir" \
+  --output "$run_dir/comparison.png" \
+  --summary-csv "$run_dir/comparison.csv"
+```
+
+The comparison uses only tracking-phase samples, excluding home positioning
+and the final operator hold. It prints aggregate and per-joint RMS and peak
+errors, cycle-period statistics, rejected command receipts, clamp/gate events,
+and command-application lag. The figure overlays each joint's error and shows
+per-joint RMS and peak bars. Two CSV paths can be supplied instead of the
+common bundle directory.
+
 The checked-in `config/follow_example.toml` documents every option. Input paths
 are relative to that TOML file. Output
 paths are invocation-relative and are created exclusively; an existing file

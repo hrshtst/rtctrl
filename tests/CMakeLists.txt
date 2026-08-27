@@ -94,6 +94,7 @@ add_test(NAME x7_follow_plot_smoke
       ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
       ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
       ${CMAKE_SOURCE_DIR}/tools/plot/follow_tracking.py
+      ${CMAKE_SOURCE_DIR}/tools/plot/follow_mode_comparison.py
       ${CMAKE_BINARY_DIR}/follow_plot_smoke)
 set_tests_properties(x7_follow_plot_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
