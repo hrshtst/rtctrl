@@ -71,6 +71,7 @@ bool CraneX7::verifyServos() {
 
 bool CraneX7::activate() {
   if (activated_) return true;
+  passive_feedback_ready_ = false;
   const bool current_based_position = std::all_of(
       config_.joints.begin(), config_.joints.end(),
       [](const auto& joint) { return joint.operating_mode == 5; });
@@ -99,6 +100,50 @@ bool CraneX7::activate() {
   }
   last_command_ = now_();
   activated_ = true;
+  return true;
+}
+
+bool CraneX7::preparePassiveFeedback() {
+  if (activated_ || thread_.joinable()) {
+    last_error_ = "passive feedback requires an inactive arm";
+    return false;
+  }
+  passive_feedback_ready_ = false;
+  if (!verifyServos()) return false;
+  for (const auto& joint : config_.joints) {
+    if (!io_.write8(joint.id, reg::kTorqueEnable.addr, 0).ok()) {
+      last_error_ = "torque-off failed on id " + std::to_string(joint.id);
+      for (const auto& release : config_.joints) {
+        io_.write8(release.id, reg::kTorqueEnable.addr, 0);
+      }
+      return false;
+    }
+  }
+  for (const auto& joint : config_.joints) {
+    std::uint8_t torque = 1;
+    if (!io_.read8(joint.id, reg::kTorqueEnable.addr, &torque).ok() ||
+        torque != 0) {
+      last_error_ = "torque-off verification failed on id " +
+                    std::to_string(joint.id);
+      return false;
+    }
+  }
+  passive_feedback_ready_ = true;
+  return true;
+}
+
+bool CraneX7::readPassiveFeedback(std::vector<dxl::Feedback>& out) {
+  if (!passive_feedback_ready_ || activated_ || thread_.joinable()) {
+    last_error_ = "passive feedback is not prepared";
+    return false;
+  }
+  if (!group_.readMotion(out).ok()) {
+    last_error_ = "passive feedback read failed";
+    return false;
+  }
+  for (auto& fb : out) {
+    fb.position = std::remainder(fb.position, 2.0 * M_PI);
+  }
   return true;
 }
 

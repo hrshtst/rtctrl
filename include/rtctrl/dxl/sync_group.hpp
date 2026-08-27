@@ -35,6 +35,12 @@ class SyncGroup {
   // Program the indirect maps on every servo. Torque must be off.
   IoResult setupIndirect();
 
+  // Direct one-transaction read of PresentCurrent through PresentPosition.
+  // Unlike readAll(), this does not depend on setupIndirect() and is intended
+  // for passive, torque-off observation that must not rewrite EEPROM-backed
+  // indirect-address slots. Voltage and temperature remain zero.
+  IoResult readMotion(std::vector<Feedback>& out);
+
   // One syncRead of all feedback signals; `out` is resized to ids().
   IoResult readAll(std::vector<Feedback>& out);
 
@@ -65,6 +71,7 @@ class SyncGroup {
 
   PacketIO& io_;
   std::vector<std::uint8_t> ids_;
+  std::vector<std::uint8_t> raw_motion_;
   std::vector<std::uint8_t> raw_feedback_;
   std::vector<std::uint8_t> goal_data_;
 };

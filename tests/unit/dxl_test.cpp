@@ -237,6 +237,25 @@ TEST_CASE("SyncGroup reads all signals in one transaction and writes goals",
   }
 }
 
+TEST_CASE("SyncGroup reads motion directly without an indirect map",
+          "[dxl][emu]") {
+  emu::MotorBus bus = craneBus();
+  emu::FakePacketIO io(bus);
+  dxl::SyncGroup group(io, {2, 3, 4, 5, 6, 7, 8, 9});
+
+  bus.find(2)->poke(reg::kPresentCurrent, 37);
+  bus.find(2)->poke(reg::kPresentVelocity, 19);
+  bus.find(2)->poke(reg::kPresentPosition, 2300);
+  std::vector<dxl::Feedback> feedback;
+  REQUIRE(group.readMotion(feedback).ok());
+  REQUIRE(feedback.size() == 8);
+  CHECK(feedback[0].current == Approx(dxl::currentToAmps(37)));
+  CHECK(feedback[0].velocity == Approx(dxl::velocityToRadPerSec(19)));
+  CHECK(feedback[0].position == Approx(dxl::pulseToRad(2300)));
+  CHECK(feedback[0].voltage == 0.0);
+  CHECK(feedback[0].temperature == 0.0);
+}
+
 TEST_CASE("SyncGroup indirect setup is rejected while torque is on",
           "[dxl][emu]") {
   emu::MotorBus bus = craneBus();

@@ -116,6 +116,13 @@ class CraneX7 {
   const Options& options() const { return options_; }
   const std::string& lastError() const { return last_error_; }
 
+  // Prepare read-only observation with every servo verified torque-off. This
+  // path deliberately does not program operating modes, gains, watchdogs,
+  // goals, limits, or indirect-address slots. It is valid only while the arm
+  // is inactive and the background thread is stopped.
+  bool preparePassiveFeedback();
+  bool readPassiveFeedback(std::vector<dxl::Feedback>& out);
+
   // Grouped IO in canonical joint order. readAll also refreshes the
   // cached feedback used by the software limiters and lastFeedback().
   bool readAll(std::vector<dxl::Feedback>& out);
@@ -372,6 +379,7 @@ class CraneX7 {
   Options options_;
   dxl::SyncGroup group_;
   bool activated_ = false;
+  bool passive_feedback_ready_ = false;
   std::atomic<bool> escalated_{false};
   std::atomic<bool> quiesced_{false};
   std::function<double()> now_;

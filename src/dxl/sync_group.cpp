@@ -27,6 +27,26 @@ SyncGroup::SyncGroup(PacketIO& io, std::vector<std::uint8_t> ids)
   }
 }
 
+IoResult SyncGroup::readMotion(std::vector<Feedback>& out) {
+  constexpr std::uint16_t kMotionAddr = reg::kPresentCurrent.addr;
+  constexpr std::uint16_t kMotionBytes =
+      reg::kPresentPosition.addr + reg::kPresentPosition.len - kMotionAddr;
+  static_assert(kMotionBytes == 10);
+  const IoResult r = io_.syncRead(kMotionAddr, kMotionBytes, ids_, raw_motion_);
+  if (r.comm != 0) return r;
+
+  out.assign(ids_.size(), {});
+  for (std::size_t i = 0; i < ids_.size(); ++i) {
+    const std::uint8_t* p = &raw_motion_[i * kMotionBytes];
+    out[i].current = currentToAmps(static_cast<std::int16_t>(leU16(p)));
+    out[i].velocity =
+        velocityToRadPerSec(static_cast<std::int32_t>(leU32(p + 2)));
+    out[i].position =
+        pulseToRad(static_cast<std::int32_t>(leU32(p + 6)));
+  }
+  return r;
+}
+
 IoResult SyncGroup::setupIndirect() {
   // Source registers backing each indirect slot, in window order.
   std::vector<std::uint16_t> sources;

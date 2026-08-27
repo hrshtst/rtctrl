@@ -89,6 +89,48 @@ TEST_CASE("activation sequence arms safety and causes no motion", "[hw]") {
   }
 }
 
+TEST_CASE("passive feedback disables torque without activation side effects",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  for (const auto& joint : config.joints) {
+    auto* motor = bus.find(joint.id);
+    motor->poke(reg::kPositionPGain, 321);
+    motor->poke(reg::kOperatingMode, 5);
+    motor->poke({reg::kIndirectAddressBase, 2}, 700 + joint.id);
+    REQUIRE(io.write8(joint.id, reg::kTorqueEnable.addr, 1).ok());
+  }
+  bus.find(2)->poke(reg::kPresentPosition, 2300);
+
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.preparePassiveFeedback());
+  std::vector<dxl::Feedback> feedback;
+  REQUIRE(arm.readPassiveFeedback(feedback));
+  REQUIRE(feedback.size() == config.joints.size());
+  CHECK(feedback[0].position == Approx(dxl::pulseToRad(2300)));
+  CHECK_FALSE(arm.activated());
+  for (const auto& joint : config.joints) {
+    auto* motor = bus.find(joint.id);
+    CHECK(motor->peek(reg::kTorqueEnable) == 0);
+    CHECK(motor->peek(reg::kPositionPGain) == 321);
+    CHECK(motor->peek(reg::kOperatingMode) == 5);
+    CHECK(motor->peek(reg::kBusWatchdog) == 0);
+    CHECK(motor->peek({reg::kIndirectAddressBase, 2}) == 700 + joint.id);
+  }
+}
+
+TEST_CASE("passive feedback refuses an active arm", "[hw][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7 arm(io, config);
+  REQUIRE(arm.activate());
+  CHECK_FALSE(arm.preparePassiveFeedback());
+  CHECK(arm.lastError().find("inactive") != std::string::npos);
+  REQUIRE(arm.deactivate());
+}
+
 TEST_CASE("deactivation preserves the configured position P gain",
           "[hw][safety]") {
   const auto config = craneConfig();
