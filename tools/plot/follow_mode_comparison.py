@@ -156,12 +156,45 @@ def _legend_above(axis) -> None:
 def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
     import matplotlib.pyplot as plt
 
+    reference = _joints(position, "qref", "rad")
+    position_q = _joints(position, "q", "rad")
+    cbp_q = _joints(cbp, "q", "rad")
     position_error = _errors(position)
     cbp_error = _errors(cbp)
-    figure, axes = plt.subplots(
-        5, 2, figsize=(15, 17), sharex=False, constrained_layout=True
-    )
-    for joint, axis in enumerate(axes[:4].flat):
+    figure = plt.figure(figsize=(21, 18), constrained_layout=True)
+    grid = figure.add_gridspec(5, 4)
+    position_axes = [
+        figure.add_subplot(grid[joint // 4, joint % 4]) for joint in range(DOF)
+    ]
+    error_axes = [
+        figure.add_subplot(grid[2 + joint // 4, joint % 4]) for joint in range(DOF)
+    ]
+
+    for joint, axis in enumerate(position_axes):
+        axis.plot(
+            position["phase_time_s"],
+            reference[:, joint],
+            color="black",
+            linewidth=1.5,
+            label="reference",
+        )
+        axis.plot(
+            position["phase_time_s"],
+            position_q[:, joint],
+            label="position",
+        )
+        axis.plot(
+            cbp["phase_time_s"],
+            cbp_q[:, joint],
+            label="current-based-position",
+        )
+        axis.set_ylabel(f"{JOINT_LABELS[joint]}\nq [rad]")
+        axis.grid(True, alpha=0.25)
+        _legend_above(axis)
+    for axis in position_axes[4:]:
+        axis.set_xlabel("tracking phase time [s]")
+
+    for joint, axis in enumerate(error_axes):
         axis.plot(
             position["phase_time_s"],
             position_error[:, joint],
@@ -176,13 +209,14 @@ def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
         axis.set_ylabel(f"{JOINT_LABELS[joint]}\nq - qref [rad]")
         axis.grid(True, alpha=0.25)
         _legend_above(axis)
-    for axis in axes[3]:
+    for axis in error_axes[4:]:
         axis.set_xlabel("tracking phase time [s]")
 
     joint_indices = np.arange(DOF)
     width = 0.38
     labels = [f"J{joint}" for joint in range(DOF)]
-    rms_axis, peak_axis = axes[4]
+    rms_axis = figure.add_subplot(grid[4, :2])
+    peak_axis = figure.add_subplot(grid[4, 2:])
     rms_axis.bar(
         joint_indices - width / 2,
         _rms(position_error, axis=0),

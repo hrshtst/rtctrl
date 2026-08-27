@@ -404,9 +404,9 @@ uv run --project tools tools/plot/follow_mode_comparison.py "$run_dir" \
 The comparison uses only tracking-phase samples, excluding home positioning
 and the final operator hold. It prints aggregate and per-joint RMS and peak
 errors, cycle-period statistics, rejected command receipts, clamp/gate events,
-and command-application lag. The figure overlays each joint's error and shows
-per-joint RMS and peak bars. Two CSV paths can be supplied instead of the
-common bundle directory.
+and command-application lag. The figure shows the shared reference with both
+measured responses, together with per-joint error traces and RMS and peak bars.
+Two CSV paths can be supplied instead of the common bundle directory.
 
 The checked-in `config/follow_example.toml` documents every option. Input paths
 are relative to that TOML file. Output
