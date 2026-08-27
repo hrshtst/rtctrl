@@ -85,7 +85,6 @@ int main(int argc, char* argv[]) {
     options.sim_dt = config.simulation.integration_step_s;
     options.kp = config.simulation.position_kp;
     options.kd = config.simulation.position_kd;
-    options.kv = config.simulation.velocity_kp;
     options.effort_limit8.clear();
     for (const auto& joint : hardware.joints) {
       options.effort_limit8.push_back(joint.effort_limit);

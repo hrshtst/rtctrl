@@ -57,6 +57,15 @@ TEST_CASE("current-based position requires an explicit effort ceiling",
   std::remove(valid);
 }
 
+TEST_CASE("follow config rejects velocity mode without a host position loop",
+          "[follow][config]") {
+  const char* path = "build/follow_velocity.toml";
+  writeConfig(path, "[control]\nmode = \"velocity\"\n");
+  CHECK_THROWS_WITH(follow::loadConfig(path),
+                    Catch::Matchers::ContainsSubstring("host-side"));
+  std::remove(path);
+}
+
 TEST_CASE("follow config rejects unsafe rates, threshold order, and typos",
           "[follow][config]") {
   const char* rate = "build/follow_bad_rate.toml";
@@ -102,14 +111,14 @@ TEST_CASE("hardware follow timing and mode derive from one control contract",
           "[follow][hardware]") {
   follow::Config config;
   config.control_rate_hz = 200.0;
-  config.mode = arm::ControlMode::Velocity;
+  config.mode = arm::ControlMode::CurrentBasedPosition;
   auto hardware = rtctrl::hw::Config::load("config/crane_x7.toml");
   follow::selectHardwareMode(&hardware, config.mode,
                              std::string("/dev/follow-test"));
   const auto options = follow::hardwareOptions(config, std::nullopt);
   CHECK(hardware.port == "/dev/follow-test");
   for (const auto& joint : hardware.joints) {
-    CHECK(joint.operating_mode == 1);
+    CHECK(joint.operating_mode == 5);
   }
   CHECK(options.control_cycle_s == 0.005);
   CHECK(options.controller_deadline_s == 0.005);

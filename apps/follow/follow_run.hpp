@@ -210,11 +210,10 @@ class FollowRun {
                      config_.home.motion_time.value_or(0.0)});
   }
 
-  void fillCommand(const model::ZVector& q, const model::ZVector& dq,
+  void fillCommand(const model::ZVector& q,
                    arm::JointCommand* command) const {
     command->mode = config_.mode;
     zVecCopyNC(q.get(), command->q.get());
-    zVecCopyNC(dq.get(), command->dq.get());
     if (config_.mode == arm::ControlMode::CurrentBasedPosition) {
       for (int i = 0; i < model::kCanonicalDof; ++i) {
         command->effort_limit[i] = config_.effort_limit_nm[i];
@@ -224,15 +223,13 @@ class FollowRun {
 
   bool submit(Phase phase, double phase_time, const model::ZVector& qref,
               const model::ZVector& dqref, const model::ZVector& ddqref,
-              const model::ZVector* command_q = nullptr,
-              const model::ZVector* command_dq = nullptr) {
+              const model::ZVector* command_q = nullptr) {
     arm::JointState state;
     arm::CommandSnapshot snapshot;
     if (!robot_.readState(state, &snapshot)) return false;
     storeState(state);
     arm::JointCommand command;
-    fillCommand(command_q != nullptr ? *command_q : qref,
-                command_dq != nullptr ? *command_dq : dqref, &command);
+    fillCommand(command_q != nullptr ? *command_q : qref, &command);
     arm::CommandReceipt receipt;
     if (!robot_.writeCommand(command, &receipt)) return false;
     ++cycles_;
@@ -270,16 +267,14 @@ class FollowRun {
 
   bool settleHome(const zVec home, const zVec command_goal) {
     model::ZVector q(model::kCanonicalDof), dq(model::kCanonicalDof),
-        ddq(model::kCanonicalDof), zero(model::kCanonicalDof),
-        goal(model::kCanonicalDof);
+        ddq(model::kCanonicalDof), goal(model::kCanonicalDof);
     zVecCopyNC(home, q.get());
     zVecCopyNC(command_goal, goal.get());
     const long cycles = static_cast<long>(
         std::ceil(config_.home.settle_time_s / robot_.dt()));
     for (long i = 0; i < cycles; ++i) {
       if (!submit(Phase::HomeCorrection, i * robot_.dt(), q, dq, ddq,
-                  config_.mode == arm::ControlMode::Velocity ? &q : &goal,
-                  &zero)) {
+                  &goal)) {
         return false;
       }
     }
@@ -303,7 +298,7 @@ class FollowRun {
 
   bool moveHome(const zVec start, const zVec home, RunResult* result) {
     if (!runPtp(Phase::Home, start, home)) return false;
-    model::ZVector goal(model::kCanonicalDof), correction_start(model::kCanonicalDof);
+    model::ZVector goal(model::kCanonicalDof);
     zVecCopyNC(home, goal.get());
     std::array<double, model::kCanonicalDof> offset{};
     for (int attempt = 0; attempt <= config_.home.correction_retries; ++attempt) {
@@ -313,28 +308,21 @@ class FollowRun {
       result->worst_home_error_rad = error;
       if (error <= config_.home.tolerance_rad) return true;
       if (attempt == config_.home.correction_retries) break;
-      if (config_.mode == arm::ControlMode::Velocity) {
-        zVecCopyNC(last_state_.q.get(), correction_start.get());
-        if (!runPtp(Phase::HomeCorrection, correction_start.get(), home)) {
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        const double step = std::clamp(
+            zVecElemNC(home, i) - last_state_.q[i], -0.05, 0.05);
+        offset[i] = std::clamp(offset[i] + step, -0.15, 0.15);
+        goal[i] = zVecElemNC(home, i) + offset[i];
+      }
+      model::ZVector zero(model::kCanonicalDof), ddq(model::kCanonicalDof),
+          qref(model::kCanonicalDof);
+      zVecCopyNC(home, qref.get());
+      const long cycles = static_cast<long>(
+          std::ceil(config_.home.settle_time_s / robot_.dt()));
+      for (long i = 0; i < cycles; ++i) {
+        if (!submit(Phase::HomeCorrection, i * robot_.dt(), qref, zero,
+                    ddq, &goal)) {
           return false;
-        }
-      } else {
-        for (int i = 0; i < model::kCanonicalDof; ++i) {
-          const double step = std::clamp(
-              zVecElemNC(home, i) - last_state_.q[i], -0.05, 0.05);
-          offset[i] = std::clamp(offset[i] + step, -0.15, 0.15);
-          goal[i] = zVecElemNC(home, i) + offset[i];
-        }
-        model::ZVector zero(model::kCanonicalDof), ddq(model::kCanonicalDof),
-            qref(model::kCanonicalDof);
-        zVecCopyNC(home, qref.get());
-        const long cycles = static_cast<long>(
-            std::ceil(config_.home.settle_time_s / robot_.dt()));
-        for (long i = 0; i < cycles; ++i) {
-          if (!submit(Phase::HomeCorrection, i * robot_.dt(), qref, zero,
-                      ddq, &goal, &zero)) {
-            return false;
-          }
         }
       }
     }
@@ -402,7 +390,7 @@ class FollowRun {
                                   : config_.finalization.simulation_hold_time_s;
       const long cycles = static_cast<long>(std::ceil(duration / robot_.dt()));
       for (long i = 0; i < cycles; ++i) {
-        if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q, &zero)) {
+        if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q)) {
           return false;
         }
       }
@@ -423,7 +411,7 @@ class FollowRun {
     }
     for (long i = 0; i < cycles; ++i) {
       if (interactive && enter_pressed_ && enter_pressed_()) return true;
-      if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q, &zero)) {
+      if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q)) {
         return false;
       }
     }

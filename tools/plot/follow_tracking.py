@@ -162,13 +162,11 @@ def plot_log(data: np.ndarray, title: str | None = None):
         _joints(data, "dq", "rad_s"),
         "dq [rad/s]",
     )
-    mode = int(data["command_mode"][0])
-    command_prefix, command_unit = ("dqcmd", "rad_s") if mode == 1 else ("qcmd", "rad")
     _plot_joints(
         command_axis,
         time,
-        _joints(data, command_prefix, command_unit),
-        "velocity command [rad/s]" if mode == 1 else "position command [rad]",
+        _joints(data, "qcmd", "rad"),
+        "position command [rad]",
     )
     _plot_joints(torque_axis, time, _joints(data, "tau", "nm"), "measured torque [Nm]")
     _plot_joints(

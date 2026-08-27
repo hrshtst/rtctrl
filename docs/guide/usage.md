@@ -365,9 +365,11 @@ before enabling torque.
 
 `x7_follow_sim` and `x7_follow` run the same phase controller against the
 dynamics simulator and the real arm. They delegate the feedback loop to each
-Dynamixel servo. The host sends position, velocity, or current-based-position
-commands without a host-side tracking correction during the reference phase.
-This is separate from the parked computed-torque `x7_track` app.
+Dynamixel servo. The host sends position or current-based-position commands
+without a host-side tracking correction during the reference phase. This is
+separate from the parked computed-torque `x7_track` app. Velocity mode is not
+offered because replaying a position reference through Goal Velocity requires
+a host-side position loop.
 
 Generate the example reference, validate the follow configuration, and run the
 simulation first:
@@ -397,8 +399,8 @@ is refused. The main processing controls are:
 - `control.rate_hz`: one 20 to 200 Hz cycle rate for every phase. Hardware
   timing has been validated at 100 Hz; other rates print an experimental-use
   warning.
-- `control.mode`: `position`, `velocity`, or `current-based-position`.
-  Current-based position requires one or eight positive
+- `control.mode`: `position` or `current-based-position`. Current-based
+  position requires one or eight positive
   `current_based_position.effort_limit_nm` values, each no greater than the
   deployment limit.
 - `home`: linear, trapezoidal, or minimum-jerk PTP motion to the first
@@ -428,12 +430,12 @@ torque to be disabled. A mode change at the home-to-tracking boundary would
 therefore introduce an unsupported gravity-drop interval. Supporting different
 phase modes requires a separately reviewed in-place transition protocol.
 
-The simulation converts position commands to bounded PD torque and velocity
-commands to bounded velocity-error torque, then integrates the robot dynamics.
-Current-based position uses the same position adapter with the requested
-effort ceiling. These adapters verify phase logic, interpolation, safety gates,
-and command saturation. They are not a high-fidelity model of the Dynamixel
-firmware, current loop, friction, backlash, or gear compliance.
+The simulation converts position commands to bounded PD torque, then integrates
+the robot dynamics. Current-based position uses the same position adapter with
+the requested effort ceiling. These adapters verify phase logic,
+interpolation, safety gates, and command saturation. They are not a
+high-fidelity model of the Dynamixel firmware, current loop, friction,
+backlash, or gear compliance.
 
 #### Motor parameters and hardware run
 

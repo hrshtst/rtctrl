@@ -42,7 +42,6 @@ struct SimulationConfig {
   double integration_step_s = 1e-4;
   double position_kp = 1000.0;
   double position_kd = 5.0;
-  double velocity_kp = 5.0;
 };
 
 struct SafetyConfig {
@@ -184,13 +183,13 @@ inline fs::path outputPath(const toml::table& table, const char* key,
 
 inline arm::ControlMode parseMode(std::string_view value) {
   if (value == "position") return arm::ControlMode::Position;
-  if (value == "velocity") return arm::ControlMode::Velocity;
   if (value == "current-based-position") {
     return arm::ControlMode::CurrentBasedPosition;
   }
   throw std::runtime_error(
-      "follow config: control.mode must be position, velocity, or "
-      "current-based-position");
+      "follow config: control.mode must be position or "
+      "current-based-position; velocity mode requires a host-side "
+      "position loop and is not supported by x7_follow");
 }
 
 inline model::PtpProfile parseProfile(std::string_view value) {
@@ -378,12 +377,14 @@ inline Config loadConfig(const fs::path& path) {
       simulation, "position_kp", config.simulation.position_kp, "simulation");
   config.simulation.position_kd = number(
       simulation, "position_kd", config.simulation.position_kd, "simulation");
-  config.simulation.velocity_kp = number(
-      simulation, "velocity_kp", config.simulation.velocity_kp, "simulation");
+  // Schema-v1 archives may contain this former velocity-adapter gain. Keep
+  // accepting and validating it so position/CBP bundles remain replayable.
+  const double legacy_velocity_kp =
+      number(simulation, "velocity_kp", 5.0, "simulation");
   if (config.simulation.integration_step_s <= 0.0 ||
       config.simulation.position_kp <= 0.0 ||
       config.simulation.position_kd < 0.0 ||
-      config.simulation.velocity_kp <= 0.0) {
+      legacy_velocity_kp <= 0.0) {
     throw std::runtime_error("follow config: invalid simulation gain or step");
   }
 

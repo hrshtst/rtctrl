@@ -32,9 +32,9 @@ const char* profileName(model::PtpProfile profile) {
 const char* modeName(arm::ControlMode mode) {
   switch (mode) {
     case arm::ControlMode::Position: return "position";
-    case arm::ControlMode::Velocity: return "velocity";
     case arm::ControlMode::CurrentBasedPosition:
       return "current-based-position";
+    case arm::ControlMode::Velocity:
     case arm::ControlMode::Current: break;
   }
   throw std::runtime_error("follow bundle: unsupported control mode");
@@ -119,7 +119,6 @@ void writeEffectiveConfig(const fs::path& path, const Config& config,
   out << "\nintegration_step_s = " << config.simulation.integration_step_s
       << "\nposition_kp = " << config.simulation.position_kp
       << "\nposition_kd = " << config.simulation.position_kd
-      << "\nvelocity_kp = " << config.simulation.velocity_kp
       << "\n\n[safety]\nwarning_error_rad = "
       << config.safety.warning_error_rad
       << "\nsustained_abort_error_rad = "

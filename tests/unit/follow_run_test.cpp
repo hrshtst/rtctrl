@@ -51,13 +51,8 @@ class IdealArm : public arm::Arm {
   }
   bool step() override {
     for (int i = 0; i < model::kCanonicalDof; ++i) {
-      if (mode_ == arm::ControlMode::Velocity) {
-        state_.q[i] += command_.dq[i] * dt_;
-        state_.dq[i] = command_.dq[i];
-      } else {
-        state_.q[i] = command_.q[i];
-        state_.dq[i] = 0.0;
-      }
+      state_.q[i] = command_.q[i];
+      state_.dq[i] = 0.0;
     }
     state_.t += dt_;
     ++state_.seq;
@@ -97,14 +92,13 @@ follow::Config baseConfig(arm::ControlMode mode) {
 
 }  // namespace
 
-TEST_CASE("shared follow run completes every phase in all servo modes",
+TEST_CASE("shared follow run completes every phase in supported servo modes",
           "[follow][run]") {
   model::ChainModel chain("models/crane_x7/crane_x7.ztk");
   model::JointMap map(chain);
   const auto path = referenceFile();
   model::ZvsTrajectory reference(path, map);
   for (const auto mode : {arm::ControlMode::Position,
-                          arm::ControlMode::Velocity,
                           arm::ControlMode::CurrentBasedPosition}) {
     IdealArm robot(mode);
     REQUIRE(robot.activate());

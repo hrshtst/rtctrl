@@ -9,7 +9,7 @@ hardware_config = "crane_x7.toml"
 
 [control]
 rate_hz = 100.0
-mode = "position" # position, velocity, or current-based-position
+mode = "position" # position or current-based-position
 
 [home]
 profile = "minimum-jerk" # linear, trapezoidal, or minimum-jerk
@@ -39,7 +39,6 @@ initial_posture = "model" # model or zeros; initial_joints overrides either
 integration_step_s = 0.0001
 position_kp = 1000.0
 position_kd = 5.0
-velocity_kp = 5.0
 
 [safety]
 warning_error_rad = 0.2
