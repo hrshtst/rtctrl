@@ -48,6 +48,18 @@ add_dependencies(x7_follow follow_git_rev)
 target_link_libraries(x7_follow PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_follow PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+set(TEACH_GIT_REV_SRC ${CMAKE_BINARY_DIR}/generated/teach_git_rev.cpp)
+add_custom_target(teach_git_rev
+  COMMAND ${CMAKE_COMMAND} -DOUT=${TEACH_GIT_REV_SRC}
+          -DSRC_DIR=${CMAKE_SOURCE_DIR}
+          -P ${CMAKE_SOURCE_DIR}/cmake/GitRev.cmake
+  BYPRODUCTS ${TEACH_GIT_REV_SRC})
+add_executable(x7_teach teach/x7_teach.cpp teach/teach_bundle.cpp
+  plan/ptp_bundle.cpp ${TEACH_GIT_REV_SRC})
+add_dependencies(x7_teach teach_git_rev)
+target_link_libraries(x7_teach PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_teach PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
         bringup/x7_move_simple bringup/x7_pose gravity/x7_float
         gravity/x7_gravity_demo track/x7_track track/x7_track_sim

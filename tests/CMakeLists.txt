@@ -29,6 +29,8 @@ add_executable(unit_tests
   unit/ident_common_test.cpp
   unit/gravity_demo_test.cpp
   unit/gravity_support_test.cpp
+  unit/teach_config_test.cpp
+  unit/teach_recording_test.cpp
   unit/bringup_test.cpp
   unit/dxl_parameters_test.cpp
   unit/x7_common_test.cpp)
@@ -416,6 +418,17 @@ add_test(NAME x7_float_log_smoke
           ${CMAKE_BINARY_DIR}/float_log_smoke
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_float_log_smoke PROPERTIES LABELS integration)
+
+add_test(NAME x7_teach_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/teach_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_teach>
+          $<TARGET_FILE:dxl_inspect>
+          ${CMAKE_SOURCE_DIR}/config/teach_example.toml
+          ${CMAKE_BINARY_DIR}/teach_smoke)
+set_tests_properties(x7_teach_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "x7_teach emulator workflow OK"
+  LABELS integration)
 
 # x7_ct_mass_error seed CLI contract: uint64 parsed exactly — bad
 # seeds rejected, the maximum accepted, 2^53 vs 2^53+1 distinct.

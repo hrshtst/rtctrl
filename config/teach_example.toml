@@ -1,0 +1,21 @@
+# Manual motion teaching. Torque-off mode is the safer default; select
+# gravity-compensation only after completing and understanding x7_float.
+format = "rtctrl-x7-teach"
+version = 1
+model = "../models/crane_x7/crane_x7.ztk"
+hardware_config = "crane_x7_vendor_scale.toml"
+mode = "torque-off" # torque-off or gravity-compensation
+
+[recording]
+sample_rate_hz = 100.0 # uniformly resampled ZVS rate; hardware reads at 100 Hz
+start_timeout_s = 8.0
+max_duration_s = 30.0
+
+[finalization]
+# Gravity compensation stays active after recording until this separate
+# support confirmation. The three phase limits must total no more than 60 s.
+operator_timeout_s = 15.0
+
+[output]
+motion = "taught.zvs"
+log = "taught.csv"
