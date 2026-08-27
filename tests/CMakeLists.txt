@@ -28,6 +28,7 @@ add_executable(unit_tests
   unit/study_metrics_test.cpp
   unit/ident_common_test.cpp
   unit/gravity_demo_test.cpp
+  unit/gravity_support_test.cpp
   unit/bringup_test.cpp
   unit/dxl_parameters_test.cpp
   unit/x7_common_test.cpp)

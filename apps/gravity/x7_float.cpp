@@ -117,6 +117,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "common/x7_common.hpp"
+#include "gravity/gravity_support.hpp"
 
 namespace arm = rtctrl::arm;
 namespace hw = rtctrl::hw;
@@ -188,10 +189,6 @@ constexpr double kMaxDurationS = 60.0;
 // config/crane_x7_vendor_scale.toml and the log checker): feel mode
 // requires exactly this — near-1 values are effectively the failed
 // calibration, very low values under-support the arm.
-constexpr double kVendorScaleXm430 = 0.810455;
-constexpr double kVendorScaleXm540 = 0.669167;
-constexpr double kVendorScaleTol = 1e-6;
-
 // Per-cycle telemetry via the CycleObserver — invoked AFTER
 // writeCommand, so the row carries this cycle's receipt (was the
 // request accepted?) and the pre-write snapshot's latest-applied
@@ -495,25 +492,19 @@ int main(int argc, char* argv[]) {
     // the outer deadline — and is now mode-independent.)
     {
       const auto probe = hw::Config::load(cli.config_path);
-      for (const auto& joint : probe.joints) {
-        // Not merely "< 1.0" (review finding: 0.999 is effectively
-        // the failed calibration, and 0.5 would under-support): the
-        // APPROVED vendor vector, within a fixed tolerance.
-        const double expected =
-            joint.model_number == rtctrl::dxl::kModelXm540W270
-                ? kVendorScaleXm540
-                : kVendorScaleXm430;
-        if (std::fabs(joint.command_torque_scale - expected) >
-            kVendorScaleTol) {
-          std::fprintf(stderr,
-                       "x7_float requires the APPROVED vendor "
-                       "calibration (%.6f for this servo model); "
-                       "joint '%s' carries %.6f — use "
-                       "config/crane_x7_vendor_scale.toml\n",
-                       expected, joint.name.c_str(),
-                       joint.command_torque_scale);
-          return 1;
-        }
+      // Not merely "< 1.0" (review finding: 0.999 is effectively the
+      // failed calibration, and 0.5 would under-support): the APPROVED
+      // vendor vector, within a fixed tolerance.
+      if (const auto mismatch = x7::gravity::calibrationMismatch(probe)) {
+        const auto& joint = probe.joints[mismatch->joint];
+        std::fprintf(stderr,
+                     "x7_float requires the APPROVED vendor "
+                     "calibration (%.6f for this servo model); "
+                     "joint '%s' carries %.6f — use "
+                     "config/crane_x7_vendor_scale.toml\n",
+                     mismatch->expected, joint.name.c_str(),
+                     mismatch->actual);
+        return 1;
       }
     }
     // The log is REQUIRED and opened BEFORE any bus contact
@@ -574,37 +565,22 @@ int main(int argc, char* argv[]) {
     // Refuse a float from inside the soft-limit margin band, as
     // x7_track does: the current gate would cut the gravity support in
     // one whole direction there.
-    {
-      const auto& lo = session.arm->softLimitLo();
-      const auto& hi = session.arm->softLimitHi();
-      constexpr double kBuffer = 0.05;  // [rad] beyond the margin
-      for (int i = 0; i < model::kCanonicalDof; ++i) {
-        if (fb[i].position < lo[i] + kBuffer ||
-            fb[i].position > hi[i] - kBuffer) {
-          std::fprintf(stderr,
-                       "joint %d is at %.3f rad, within its soft-limit "
-                       "margin band [%.3f, %.3f] — reposition mid-range "
-                       "and rerun\n",
-                       i, fb[i].position, lo[i], hi[i]);
-          shutdown.run();
-          return 1;
-        }
-      }
+    if (const auto violation = x7::gravity::startLimitViolation(
+            fb, session.arm->softLimitLo(), session.arm->softLimitHi())) {
+      std::fprintf(stderr,
+                   "joint %zu is at %.3f rad, within its soft-limit "
+                   "margin band [%.3f, %.3f] — reposition mid-range "
+                   "and rerun\n",
+                   violation->joint, violation->position, violation->lower,
+                   violation->upper);
+      shutdown.run();
+      return 1;
     }
 
     // Calibrated gravity preload from the HELD posture, through THE
     // shared torque boundary (scale applied exactly once).
-    model::ZVector q_held(model::kCanonicalDof);
-    model::ZVector tau_g(model::kCanonicalDof);
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      zVecElemNC(q_held.get(), i) = fb[i].position;
-    }
-    chain.gravityTorque(map, q_held.get(), tau_g.get());
-    std::vector<double> preload(model::kCanonicalDof);
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      preload[i] = hw::commandCurrentFromTorque(session.config.joints[i],
-                                                tau_g[i]);
-    }
+    const auto preload = x7::gravity::gravityPreload(
+        session.config, chain, map, fb);
     std::printf("switching to current mode in place (calibrated gravity "
                 "preload armed)...\n");
     if (!session.arm->switchToCurrentModeWithPreload(preload)) {
