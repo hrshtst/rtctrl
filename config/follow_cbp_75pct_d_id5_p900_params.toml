@@ -1,0 +1,86 @@
+format = "rtctrl-dynamixel-parameters"
+version = 1
+
+# Provisional current-based-position gains selected on the tested Crane-X7
+# with firmware 47. All motors use 75% of their model-specific firmware D
+# gain; the load-bearing elbow servo (ID 5) uses P=900 instead of P=800.
+# These are not project-wide motor defaults.
+[[motor]]
+id = 2
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 3525
+
+[[motor]]
+id = 3
+model_number = 1120
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 6375
+
+[[motor]]
+id = 4
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 3525
+
+[[motor]]
+id = 5
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 900
+position_i_gain = 0
+position_d_gain = 3525
+
+[[motor]]
+id = 6
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 3525
+
+[[motor]]
+id = 7
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 3525
+
+[[motor]]
+id = 8
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 3525
+
+[[motor]]
+id = 9
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+position_i_gain = 0
+position_d_gain = 3525

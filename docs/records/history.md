@@ -172,7 +172,9 @@ provisional current-based position configuration for the tested Crane-X7 and
 firmware 47: position P gain 800 on every motor except ID 5 at 900, position I
 gain 0, and position D gain 3525 on XM430 motors and 6375 on XM540 motors. The
 host ran at 100 Hz with a 2.5 Nm per-joint effort ceiling. This is an
-experiment-specific selection, not a new project-wide motor default.
+experiment-specific selection, not a new project-wide motor default. The
+loadable `config/follow_cbp_75pct_d_id5_p900_params.toml` and matching
+`config/follow_pick_cbp_75pct_d_id5_p900.toml` retain the selected setup.
 
 Three repeated runs produced aggregate joint RMS errors of 0.017995 to
 0.018138 rad and elbow peak errors of 0.064110 to 0.065628 rad, with no

@@ -1,0 +1,57 @@
+# Provisional current-based-position configuration selected for the tabletop
+# pick-approach trajectory on the tested Crane-X7 with firmware 47. Review the
+# simulation and hardware safety checklist before applying it to a physical arm.
+format = "rtctrl-x7-follow"
+version = 1
+model = "../models/crane_x7/crane_x7.ztk"
+reference = "../ptp_pick_approach.zvs"
+hardware_config = "crane_x7.toml"
+motor_parameters = "follow_cbp_75pct_d_id5_p900_params.toml"
+
+[control]
+rate_hz = 100.0
+mode = "current-based-position"
+
+[home]
+profile = "minimum-jerk" # linear, trapezoidal, or minimum-jerk
+velocity_limit = 0.25
+# motion_time = 5.0 # optional lower bound on duration
+trapezoid_acceleration_fraction = 0.2
+strict = true
+tolerance_rad = 0.01
+correction_retries = 5
+settle_time_s = 0.3
+
+[reference_processing]
+filter = "none"                          # none, low-pass, moving-average, or savitzky-golay
+interpolation = "shape-preserving-cubic" # linear or shape-preserving-cubic
+low_pass_cutoff_hz = 5.0
+filter_window = 5
+savitzky_golay_order = 3
+
+# Keep the validated effort ceiling fixed with these servo gains.
+[current_based_position]
+effort_limit_nm = [2.5]
+
+[simulation]
+initial_posture = "model" # model or zeros; initial_joints overrides either
+# initial_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+integration_step_s = 0.0001
+position_kp = 1000.0
+position_kd = 5.0
+
+[safety]
+warning_error_rad = 0.2
+sustained_abort_error_rad = 0.5
+sustained_abort_time_s = 0.2
+immediate_abort_error_rad = 1.0
+
+[finalization]
+wait_time_s = 0.0 # hardware: 0 waits for Enter
+operator_timeout_s = 60.0
+simulation_hold_time_s = 2.0
+
+[output]
+simulation_motion = "follow_sim.zvs"
+simulation_log = "follow_sim.csv"
+hardware_log = "follow_hw.csv"
