@@ -105,6 +105,78 @@ TEST_CASE("follow CLI requires explicit config and separates frontends",
   char check[] = "--check";
   char* incompatible[] = {app, config, path, bundle, archive, check};
   CHECK_THROWS(follow::parseCli(6, incompatible, true));
+
+  char log[] = "--log";
+  char csv[] = "out.csv";
+  char* owned[] = {app, config, path, bundle, archive, log, csv};
+  CHECK_THROWS(follow::parseCli(7, owned, true));
+}
+
+TEST_CASE("follow CLI overrides comparison inputs and control policy",
+          "[follow][config]") {
+  char app[] = "x7_follow_sim";
+  char config_arg[] = "--config";
+  char config_path[] = "run.toml";
+  char reference[] = "--reference";
+  char reference_path[] = "motion.zvs";
+  char mode[] = "--mode";
+  char cbp[] = "current-based-position";
+  char effort[] = "--effort-limit-nm";
+  char effort_value[] = "2.5";
+  char parameters[] = "--motor-parameters";
+  char parameters_path[] = "motors.toml";
+  char filter[] = "--filter";
+  char low_pass[] = "low-pass";
+  char interpolation[] = "--interpolation";
+  char linear[] = "linear";
+  char* argv[] = {app,
+                  config_arg,
+                  config_path,
+                  reference,
+                  reference_path,
+                  mode,
+                  cbp,
+                  effort,
+                  effort_value,
+                  parameters,
+                  parameters_path,
+                  filter,
+                  low_pass,
+                  interpolation,
+                  linear};
+  const auto cli = follow::parseCli(15, argv, true);
+  follow::Config effective;
+  follow::applyOverrides(cli, &effective);
+  CHECK(effective.mode == arm::ControlMode::CurrentBasedPosition);
+  CHECK(effective.effort_limit_set);
+  CHECK(effective.effort_limit_nm[7] == 2.5);
+  CHECK(effective.reference.filter ==
+        rtctrl::model::ReferenceFilter::LowPass);
+  CHECK(effective.reference.interpolation ==
+        rtctrl::model::ReferenceInterpolation::Linear);
+  CHECK(effective.reference_path.is_absolute());
+  CHECK(effective.reference_path.filename() == "motion.zvs");
+  REQUIRE(effective.motor_parameters_path);
+  CHECK(effective.motor_parameters_path->is_absolute());
+}
+
+TEST_CASE("follow CLI validates comparison override values",
+          "[follow][config]") {
+  follow::Config config;
+  follow::Cli cli;
+  cli.mode = arm::ControlMode::CurrentBasedPosition;
+  CHECK_THROWS(follow::applyOverrides(cli, &config));
+
+  cli.effort_limit_nm = 0.0;
+  CHECK_THROWS(follow::applyOverrides(cli, &config));
+
+  char app[] = "x7_follow";
+  char config_arg[] = "--config";
+  char config_path[] = "run.toml";
+  char filter[] = "--filter";
+  char invalid[] = "butterworth";
+  char* argv[] = {app, config_arg, config_path, filter, invalid};
+  CHECK_THROWS(follow::parseCli(5, argv, false));
 }
 
 TEST_CASE("hardware follow timing and mode derive from one control contract",

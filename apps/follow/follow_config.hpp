@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -83,10 +84,16 @@ struct Config {
 
 struct Cli {
   fs::path config_path;
+  std::optional<fs::path> reference_path;
+  std::optional<fs::path> motor_parameters_path;
   std::optional<fs::path> log_path;
   std::optional<fs::path> motion_path;
   std::optional<fs::path> bundle_path;
   std::optional<std::string> port;
+  std::optional<arm::ControlMode> mode;
+  std::optional<double> effort_limit_nm;
+  std::optional<model::ReferenceFilter> filter;
+  std::optional<model::ReferenceInterpolation> interpolation;
   bool check = false;
   bool help = false;
 };
@@ -192,6 +199,27 @@ inline arm::ControlMode parseMode(std::string_view value) {
       "position loop and is not supported by x7_follow");
 }
 
+inline model::ReferenceFilter parseFilter(std::string_view value) {
+  if (value == "none") return model::ReferenceFilter::None;
+  if (value == "low-pass") return model::ReferenceFilter::LowPass;
+  if (value == "moving-average") return model::ReferenceFilter::MovingAverage;
+  if (value == "savitzky-golay") return model::ReferenceFilter::SavitzkyGolay;
+  throw std::runtime_error(
+      "follow config: filter must be none, low-pass, moving-average, or "
+      "savitzky-golay");
+}
+
+inline model::ReferenceInterpolation parseInterpolation(
+    std::string_view value) {
+  if (value == "linear") return model::ReferenceInterpolation::Linear;
+  if (value == "shape-preserving-cubic") {
+    return model::ReferenceInterpolation::ShapePreservingCubic;
+  }
+  throw std::runtime_error(
+      "follow config: interpolation must be linear or "
+      "shape-preserving-cubic");
+}
+
 inline model::PtpProfile parseProfile(std::string_view value) {
   if (value == "linear") return model::PtpProfile::Linear;
   if (value == "trapezoidal") return model::PtpProfile::Trapezoidal;
@@ -283,26 +311,10 @@ inline Config loadConfig(const fs::path& path) {
                  "filter_window", "savitzky_golay_order"},
                 "reference_processing");
   if (const auto value = processing["interpolation"].value<std::string>()) {
-    if (*value == "linear") {
-      config.reference.interpolation = model::ReferenceInterpolation::Linear;
-    } else if (*value == "shape-preserving-cubic") {
-      config.reference.interpolation =
-          model::ReferenceInterpolation::ShapePreservingCubic;
-    } else {
-      throw std::runtime_error(
-          "follow config: unsupported reference interpolation");
-    }
+    config.reference.interpolation = parseInterpolation(*value);
   }
   if (const auto value = processing["filter"].value<std::string>()) {
-    if (*value == "none") config.reference.filter = model::ReferenceFilter::None;
-    else if (*value == "low-pass")
-      config.reference.filter = model::ReferenceFilter::LowPass;
-    else if (*value == "moving-average")
-      config.reference.filter = model::ReferenceFilter::MovingAverage;
-    else if (*value == "savitzky-golay")
-      config.reference.filter = model::ReferenceFilter::SavitzkyGolay;
-    else
-      throw std::runtime_error("follow config: unsupported reference filter");
+    config.reference.filter = parseFilter(*value);
   }
   config.reference.low_pass_cutoff_hz = number(
       processing, "low_pass_cutoff_hz", config.reference.low_pass_cutoff_hz,
@@ -445,6 +457,43 @@ inline Config loadConfig(const fs::path& path) {
   return config;
 }
 
+inline double parseCliNumber(const std::string& option, const char* value) {
+  char* end = nullptr;
+  const double parsed = std::strtod(value, &end);
+  if (end == value || *end != '\0' || !std::isfinite(parsed)) {
+    throw std::runtime_error(option + " requires a finite number");
+  }
+  return parsed;
+}
+
+inline void applyOverrides(const Cli& cli, Config* config) {
+  if (cli.reference_path) {
+    config->reference_path =
+        fs::absolute(*cli.reference_path).lexically_normal();
+  }
+  if (cli.motor_parameters_path) {
+    config->motor_parameters_path =
+        fs::absolute(*cli.motor_parameters_path).lexically_normal();
+  }
+  if (cli.mode) config->mode = *cli.mode;
+  if (cli.effort_limit_nm) {
+    if (*cli.effort_limit_nm <= 0.0) {
+      throw std::runtime_error("--effort-limit-nm must be positive");
+    }
+    config->effort_limit_nm.fill(*cli.effort_limit_nm);
+    config->effort_limit_set = true;
+  }
+  if (cli.filter) config->reference.filter = *cli.filter;
+  if (cli.interpolation) {
+    config->reference.interpolation = *cli.interpolation;
+  }
+  if (config->mode == arm::ControlMode::CurrentBasedPosition &&
+      !config->effort_limit_set) {
+    throw std::runtime_error(
+        "follow config: current-based position requires effort_limit_nm");
+  }
+}
+
 inline Cli parseCli(int argc, char* argv[], bool simulation) {
   Cli cli;
   for (int i = 1; i < argc; ++i) {
@@ -453,13 +502,25 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
       cli.help = true;
     } else if (arg == "--check") {
       cli.check = true;
-    } else if (arg == "--config" || arg == "--log" || arg == "--bundle" ||
-               arg == "--port" || arg == "--motion") {
+    } else if (arg == "--config" || arg == "--reference" ||
+               arg == "--motor-parameters" || arg == "--mode" ||
+               arg == "--effort-limit-nm" || arg == "--filter" ||
+               arg == "--interpolation" || arg == "--log" ||
+               arg == "--bundle" || arg == "--port" || arg == "--motion") {
       if (i + 1 >= argc || argv[i + 1][0] == '-') {
         throw std::runtime_error(arg + " requires a value");
       }
       const fs::path value = argv[++i];
       if (arg == "--config") cli.config_path = value;
+      else if (arg == "--reference") cli.reference_path = value;
+      else if (arg == "--motor-parameters")
+        cli.motor_parameters_path = value;
+      else if (arg == "--mode") cli.mode = parseMode(value.string());
+      else if (arg == "--effort-limit-nm")
+        cli.effort_limit_nm = parseCliNumber(arg, value.c_str());
+      else if (arg == "--filter") cli.filter = parseFilter(value.string());
+      else if (arg == "--interpolation")
+        cli.interpolation = parseInterpolation(value.string());
       else if (arg == "--log") cli.log_path = value;
       else if (arg == "--bundle") cli.bundle_path = value;
       else if (arg == "--port") cli.port = value.string();
@@ -476,6 +537,9 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
   }
   if (cli.check && cli.bundle_path) {
     throw std::runtime_error("--check and --bundle cannot be used together");
+  }
+  if (cli.bundle_path && (cli.log_path || cli.motion_path)) {
+    throw std::runtime_error("--bundle owns --log and --motion outputs");
   }
   return cli;
 }

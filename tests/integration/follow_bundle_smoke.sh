@@ -10,6 +10,8 @@ MODEL="$4"
 HARDWARE="$5"
 ROOT="$6"
 BUNDLE="$ROOT/archive"
+CBP_BUNDLE="$ROOT/cbp-archive"
+PARAMETERS="$ROOT/motor-parameters.toml"
 
 rm -rf "$ROOT"
 mkdir -p "$ROOT"
@@ -18,11 +20,24 @@ mkdir -p "$ROOT"
   --diagnostics "$ROOT/reference.csv" --motion-time 0.2 \
   >"$ROOT/plan.log" 2>&1
 
+cat >"$PARAMETERS" <<EOF
+format = "rtctrl-dynamixel-parameters"
+version = 1
+
+[[motor]]
+id = 2
+model_number = 1020
+firmware_version = 47
+
+[motor.parameters]
+position_p_gain = 800
+EOF
+
 cat >"$ROOT/follow.toml" <<EOF
 format = "rtctrl-x7-follow"
 version = 1
 model = "$MODEL"
-reference = "$ROOT/reference.zvs"
+reference = "$ROOT/not-the-selected-reference.zvs"
 hardware_config = "$HARDWARE"
 
 [control]
@@ -50,7 +65,9 @@ immediate_abort_error_rad = 30.0
 simulation_hold_time_s = 0.02
 EOF
 
-"$FOLLOW_APP" --config "$ROOT/follow.toml" --bundle "$BUNDLE" \
+"$FOLLOW_APP" --config "$ROOT/follow.toml" \
+  --reference "$ROOT/reference.zvs" --filter low-pass \
+  --interpolation linear --bundle "$BUNDLE" \
   >"$ROOT/create.log" 2>&1
 
 for path in source.toml follow.toml reference.zvs hardware.toml \
@@ -60,6 +77,9 @@ for path in source.toml follow.toml reference.zvs hardware.toml \
 done
 grep -q 'model = "model/crane_x7.ztk"' "$BUNDLE/follow.toml"
 grep -q 'reference = "reference.zvs"' "$BUNDLE/follow.toml"
+grep -q 'mode = "position"' "$BUNDLE/follow.toml"
+grep -q 'filter = "low-pass"' "$BUNDLE/follow.toml"
+grep -q 'interpolation = "linear"' "$BUNDLE/follow.toml"
 grep -q 'status = "success"' "$BUNDLE/result.toml"
 
 SIM_HASH=$(sha256sum "$BUNDLE/simulation.zvs" | cut -d ' ' -f 1)
@@ -80,5 +100,24 @@ test "$BEFORE_HASH" = "$AFTER_HASH"
   >"$ROOT/reproduce.log" 2>&1
 cmp "$BUNDLE/simulation.zvs" "$ROOT/reproduced.zvs"
 cmp "$BUNDLE/simulation.csv" "$ROOT/reproduced.csv"
+
+"$FOLLOW_APP" --config "$ROOT/follow.toml" \
+  --reference "$ROOT/reference.zvs" --mode current-based-position \
+  --motor-parameters "$PARAMETERS" --effort-limit-nm 2.5 \
+  --filter low-pass --interpolation linear --bundle "$CBP_BUNDLE" \
+  >"$ROOT/create-cbp.log" 2>&1
+
+for path in follow.toml reference.zvs motor_parameters.toml \
+    simulation.zvs simulation.csv result.toml manifest.toml; do
+  test -f "$CBP_BUNDLE/$path"
+done
+grep -q 'mode = "current-based-position"' "$CBP_BUNDLE/follow.toml"
+grep -q 'motor_parameters = "motor_parameters.toml"' \
+  "$CBP_BUNDLE/follow.toml"
+grep -q 'effort_limit_nm = \[2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5\]' \
+  "$CBP_BUNDLE/follow.toml"
+grep -q 'filter = "low-pass"' "$CBP_BUNDLE/follow.toml"
+grep -q 'interpolation = "linear"' "$CBP_BUNDLE/follow.toml"
+grep -q 'status = "success"' "$CBP_BUNDLE/result.toml"
 
 echo "follow bundle creation and replay OK"

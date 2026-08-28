@@ -1,14 +1,17 @@
 // Dynamics-simulation frontend for servo-side trajectory following.
-// Usage: x7_follow_sim --config run.toml [--motion out.zvs]
-//                      [--log out.csv] [--bundle dir] [--check]
+// Usage: x7_follow_sim --config run.toml [input/control overrides]
+//                      [--motion out.zvs] [--log out.csv]
+//                      [--bundle dir] [--check]
 
 #include <cstdio>
 #include <exception>
 #include <memory>
 #include <stdexcept>
 
+#include "bus/dxl_parameters.hpp"
 #include "follow/follow_bundle.hpp"
 #include "follow/follow_config.hpp"
+#include "follow/follow_hardware.hpp"
 #include "follow/follow_preflight.hpp"
 #include "follow/follow_run.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
@@ -28,13 +31,23 @@ namespace arm = rtctrl::arm;
 namespace follow = x7::follow;
 namespace hw = rtctrl::hw;
 namespace model = rtctrl::model;
+namespace parameters = rtctrl::apps::dxl_parameters;
 
 namespace {
 
 void usage() {
   std::printf(
-      "usage: x7_follow_sim --config FILE [--motion FILE] [--log FILE] "
-      "[--bundle DIR] [--check]\n");
+      "usage: x7_follow_sim --config FILE [options]\n"
+      "  --reference FILE\n"
+      "  --mode position|current-based-position\n"
+      "  --motor-parameters FILE\n"
+      "  --effort-limit-nm VALUE\n"
+      "  --filter none|low-pass|moving-average|savitzky-golay\n"
+      "  --interpolation linear|shape-preserving-cubic\n"
+      "  --motion FILE\n"
+      "  --log FILE\n"
+      "  --bundle NEW_DIRECTORY\n"
+      "  --check\n");
 }
 
 }  // namespace
@@ -51,6 +64,7 @@ int main(int argc, char* argv[]) {
       bundle = std::make_unique<x7::ptp::BundleWorkspace>(*cli.bundle_path);
     }
     auto config = follow::loadConfig(cli.config_path);
+    follow::applyOverrides(cli, &config);
     if (cli.log_path) config.output.simulation_log = *cli.log_path;
     if (cli.motion_path) config.output.simulation_motion = *cli.motion_path;
     if (bundle) {
@@ -65,6 +79,11 @@ int main(int argc, char* argv[]) {
                                    config.reference);
     auto hardware = hw::Config::load(config.hardware_config_path.string());
     follow::validateReference(config, chain, map, reference, hardware);
+    if (config.motor_parameters_path) {
+      const auto parameter_dump =
+          parameters::parseFile(config.motor_parameters_path->string());
+      follow::validateMotorParameters(parameter_dump, hardware);
+    }
     if (config.control_rate_hz != 100.0) {
       std::fprintf(stderr,
                    "warning: hardware timing is validated at 100 Hz; %.1f "

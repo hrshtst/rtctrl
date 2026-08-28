@@ -1,6 +1,6 @@
 // Hardware frontend for servo-side trajectory following.
-// Usage: x7_follow --config run.toml [--port DEV] [--log out.csv]
-//                  [--bundle DIR] [--check]
+// Usage: x7_follow --config run.toml [input/control overrides]
+//                  [--port DEV] [--log out.csv] [--bundle DIR] [--check]
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -42,8 +42,17 @@ namespace {
 
 void usage() {
   std::printf(
-      "usage: x7_follow --config FILE [--port DEV] [--log FILE] "
-      "[--bundle DIR] [--check]\n");
+      "usage: x7_follow --config FILE [options]\n"
+      "  --reference FILE\n"
+      "  --mode position|current-based-position\n"
+      "  --motor-parameters FILE\n"
+      "  --effort-limit-nm VALUE\n"
+      "  --filter none|low-pass|moving-average|savitzky-golay\n"
+      "  --interpolation linear|shape-preserving-cubic\n"
+      "  --port DEV\n"
+      "  --log FILE\n"
+      "  --bundle NEW_DIRECTORY\n"
+      "  --check\n");
 }
 
 class EnterReader {
@@ -97,6 +106,7 @@ int main(int argc, char* argv[]) {
       bundle = std::make_unique<x7::ptp::BundleWorkspace>(*cli.bundle_path);
     }
     auto config = follow::loadConfig(cli.config_path);
+    follow::applyOverrides(cli, &config);
     if (cli.log_path) config.output.hardware_log = *cli.log_path;
     if (bundle) {
       const auto prepared = follow::prepareBundle(bundle->staging(), config);
