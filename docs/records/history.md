@@ -185,6 +185,28 @@ vibration worse, so that setting was rejected; D=0 was not attempted. The
 intermediate configurations and all raw evidence are indexed in
 [data-archive.md](data-archive.md#follow-cbp-gain-sweep-20260827-servo-side-gain-sweep-2026-08-27).
 
+### Manual teaching and playback validation (2026-08-28)
+
+The complete manual-teaching workflow ran on the physical arm in both
+`x7_teach` acquisition modes. The torque-off session recorded 1,924 raw
+samples and produced 1,152 uniform ZVS frames over 11.520 s. The calibrated
+gravity-compensation session recorded 2,514 full-session samples and produced
+1,216 frames over 12.160 s, including the separate support confirmation before
+torque-off. Both bundles report `status = "success"`.
+
+The campaign then exercised the taught-reference playback ladder: position
+and current-based-position dynamics simulations completed successfully before
+the two hardware runs. The archived hardware comparison used the torque-off
+taught trajectory and completed with worst tracking errors of 0.1061 rad in
+position mode and 0.1057 rad in the selected tuned CBP mode. Aggregate RMS
+error was 0.02715 rad for position and 0.02504 rad for CBP. The operator also
+confirmed the workflow with the gravity-compensation teaching path. These
+results establish the acquisition and playback procedure; they do not certify
+an arbitrary future taught trajectory.
+
+The complete bundles and comparison products are indexed in
+[data-archive.md](data-archive.md#teaching-playback-20260828-143834-manual-teaching-and-playback-2026-08-28).
+
 ## Computed torque
 
 ### Simulation results

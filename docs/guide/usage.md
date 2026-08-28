@@ -373,6 +373,12 @@ two acquisition modes:
   watchdog, and host deadman. It requires the approved vendor-scale hardware
   configuration.
 
+Both modes completed successfully on the physical arm 2026-08-28. The
+recorded workflow was then exercised through dynamics simulation and
+position/CBP hardware playback. This establishes the app workflow, not the
+safety of an arbitrary taught path: every new recording still requires visual
+inspection, simulation, preflight, and the normal hardware precautions.
+
 Validate the configuration without opening the bus:
 
 ```sh

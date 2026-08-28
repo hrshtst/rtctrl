@@ -6,6 +6,13 @@ PTP planning or from manual teaching. In either case, first inspect the
 reference, then run both modes in dynamics simulation, and only then consider
 the two hardware runs.
 
+The complete workflow was confirmed on the physical arm 2026-08-28, including
+torque-off and gravity-compensation teaching and servo-side playback. The
+archived campaign contains successful teaching bundles for both modes and
+successful position/CBP simulation and hardware playback bundles. This status
+does not certify future recordings; the simulation-first sequence remains
+mandatory for each new path.
+
 The comparison is between the normal position baseline and the currently
 selected tuned CBP setup. It is not a pure operating-mode-only experiment:
 the CBP run uses an explicit effort ceiling and the checked-in 75 percent D

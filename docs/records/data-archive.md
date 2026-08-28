@@ -118,3 +118,22 @@ hard reset. The selected tuning and rejected alternatives are summarized in
 | `follow-cbp-75pct-d-id5-p900-20260827-182554/manifest.toml` | Selected-tuning repeat 1 | `74fdee3492f5084db5023725e7fac9aaa142c2a576e03d98a5189dcae12d0b61` |
 | `follow-cbp-75pct-d-id5-p900-20260827-182636/manifest.toml` | Selected-tuning repeat 2 | `cc49732bd514ea66009a66290885efa8017b636510df74f39c5da000f1cda856` |
 | `follow-cbp-25pct-d-20260827-192302/manifest.toml` | Rejected 25% D test | `0bd4e44f76fd7d9d26f10968bab278f638b2b8f1845da183ab5806816889072e` |
+
+## `teaching-playback-20260828-143834/` — manual teaching and playback (2026-08-28)
+
+Complete bundles for torque-off and calibrated gravity-compensation teaching,
+the position/CBP dynamics simulations, and the corresponding hardware
+comparison. The archived playback bundles use the torque-off taught trajectory;
+the gravity-compensation teaching bundle retains its separately confirmed
+trajectory and full-session log. Derived planner, simulation, and hardware
+comparison figures and CSV summaries live under `analysis/`.
+
+| file | role | sha256 |
+|---|---|---|
+| `teaching/manifest.toml` | Successful torque-off teaching: 1,924 raw samples, 1,152 ZVS frames, 11.520 s | `15a189f03964c7d68f4efcefb8d315b29970cac2974cda0378c3b09d0c6b43a6` |
+| `teaching-gc/manifest.toml` | Successful gravity-compensation teaching: 2,514 raw samples, 1,216 ZVS frames, 12.160 s | `43b6b788dd4238a5c2337b60164abcc765d9a967be37e53fb12b9ad9d1733b06` |
+| `simulation/position/manifest.toml` | Successful position-mode dynamics playback | `4961c4617dbdbec4d84af6fbaa8348101a6826b3663b429b7be5d28bc03d8483` |
+| `simulation/cbp/manifest.toml` | Successful CBP dynamics playback with the selected tuned parameter input | `e54d6be7ded4c9d4d5bdc5638b26f3aa3a43e654ca49a46ad947648e3cc3001f` |
+| `position/manifest.toml` | Successful position-mode hardware playback | `2e4f68d7f047a34ce92340b3b80db2c5846edbdd705bf800c1af29367aaba475` |
+| `cbp/manifest.toml` | Successful tuned-CBP hardware playback | `74c2475f3e976eaf96a3270f5983eccff0facdfdc6200be7c0a406d263026f92` |
+| `analysis/hardware-comparison.csv` | Per-joint hardware RMS and peak error comparison | `247abc0a34b612e3e5e778df848b76c6af7189ac4f9b3c2183335eab78f999ab` |
