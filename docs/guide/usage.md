@@ -445,6 +445,9 @@ full-session log before considering hardware. A taught path records what the
 operator did; it does not provide collision, speed, acceleration, or endpoint
 safety certification.
 
+The complete two-mode procedure, including immutable campaign storage, is in
+[teaching playback and servo-mode comparison](teaching-playback.md).
+
 ### Servo-side trajectory following
 
 `x7_follow_sim` and `x7_follow` run the same phase controller against the
@@ -454,6 +457,10 @@ without a host-side tracking correction during the reference phase. This is
 separate from the parked computed-torque `x7_track` app. Velocity mode is not
 offered because replaying a position reference through Goal Velocity requires
 a host-side position loop.
+
+For a command-by-command position-versus-CBP campaign using a planned or
+manually taught reference, see
+[teaching playback and servo-mode comparison](teaching-playback.md).
 
 Generate the example reference, validate the follow configuration, and run the
 simulation first:
