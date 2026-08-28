@@ -124,12 +124,16 @@ They do not unpark `x7_track`: feedback remains inside the Dynamixel servo.
 Before the first hardware trial, generate and inspect the complete simulation
 motion and CSV, run `x7_follow --check`, and review the
 [tracking safety contract](../guide/usage.md#servo-side-trajectory-following).
-Start in position mode at 100 Hz with a short, slow reference. This new
-hardware frontend has emulator and dynamics-simulation coverage but has not yet
-been accepted on the physical arm. Treat its first physical run as a new
-bring-up step with the actuator power cutoff in reach. Its final hold ends only
-after the operator supports the arm from below and presses Enter, or after the
-configured timeout.
+Start in position mode at 100 Hz with a short, slow reference. The frontend
+ran on the physical arm on 2026-08-27 in both modes: the position versus
+current-based-position comparison, then the current-based-position gain sweep
+whose selected tuning repeated three times at RMS ≈ 0.018 rad with clean cycle
+statistics (see the
+[gain decision](../records/history.md#current-based-position-gain-decision-2026-08-27)).
+That tuning is provisional and specific to the pick-approach reference; treat
+every new reference, mode, or gain set as a fresh trial with the actuator power
+cutoff in reach. Its final hold ends only after the operator supports the arm
+from below and presses Enter, or after the configured timeout.
 
 `x7_teach` records a hand-guided reference in either torque-off or
 gravity-compensation mode. Start with torque-off mode after step 2 above. Its
