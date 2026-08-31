@@ -110,7 +110,7 @@ uv run --project tools tools/plot/ptp_trajectory.py ptp.csv \
 
 `models/crane_x7/crane_x7.init.ztk` is a hand-written `[roki::chain::init]`
 posture (shoulder pitched back 40 deg, forearm level and reaching along +x,
-gripper hanging straight down, fingers open: the pose of the RT product
+gripper pointing down with a slight forward tilt, fingers open: the pose of the RT product
 photo); `rk_pen` loads it with `-init`, and its `export .zri file` menu
 writes the current pose back in the same format. The camera options put the
 eye 1.4 m out on the -y side, looking at the arm's mid-height, so +x is to

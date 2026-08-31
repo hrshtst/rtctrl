@@ -4,12 +4,13 @@
 #     -x 0 -y -- -1.4 -z 0.18 -fz 0.18 -fovy 20 -lx 0 -ly -- -20 -lz 10
 # Reproduces the RT Corporation product-photo pose: shoulder pitched back
 # 40 deg, elbow folded so the forearm is level and reaching forward (+x),
-# wrist pitched so the gripper hangs straight down, fingers open.
+# wrist pitched so the gripper points down, tilted slightly forward,
+# fingers open.
 # Values are joint displacements in degrees (roki revolute convention);
 # joints omitted here stay at zero (pan, both twists, wrist roll).
 [roki::chain::init]
 joint: crane_x7_upper_arm_fixed_part_link 40
 joint: crane_x7_lower_arm_fixed_part_link -130
-joint: crane_x7_wrist_link -90
+joint: crane_x7_wrist_link -70
 joint: crane_x7_gripper_finger_a_link 30
 joint: crane_x7_gripper_finger_b_link 30
