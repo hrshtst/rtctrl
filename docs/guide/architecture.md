@@ -55,7 +55,8 @@ flowchart TB
 - **`arm/`: the bridge.** `Arm` (activate/deactivate/setMode/
   readState/writeCommand/step), `Controller` + `run()`, the two
   implementations `SimArm`/`RealArm`, and the shipped controllers
-  `GravityComp` and `ComputedTorque`.
+  `GravityComp`, textbook `ComputedTorque`, and the retained historical
+  `PracticalComputedTorque`.
 - **`hw/`: the real robot.** `Config` (TOML), `CraneX7` (activation
   sequence, mode-checked limited writers, background RW thread,
   deadman), consumed by `RealArm`.
@@ -96,7 +97,7 @@ config/       crane_x7.toml (bus, joints, limits, margins),
               ptp_example.toml, versioned postures/*.toml
 tools/        port_model.py, ident_analysis.py, replay_compare.py,
               ct_mass_error_study.py, plot/{ptp_trajectory,
-              follow_tracking,follow_mode_comparison}.py (uv),
+              follow_tracking,follow_mode_comparison,track_comparison}.py (uv),
               bootstrap_milib.sh
 tests/{unit,integration}/   Catch2; integration = pty emulator + sim
 docs/         this documentation

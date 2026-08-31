@@ -117,7 +117,8 @@ invisible; the encoder only sees the mode when the *output* moves.
 ## Probing a closed loop without modeling the controller
 
 The arm cannot be excited open-loop: gravity would drop it. The probe
-therefore rides on the proven anchor controller (a `ComputedTorque`
+therefore rides on the retained practical anchor controller (a
+`PracticalComputedTorque`
 holding a constant posture), and a stepped-sine torque
 
 ```math

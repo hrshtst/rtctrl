@@ -1,7 +1,10 @@
 # Computed-torque trajectory control
 
-*Implemented in `arm::ComputedTorque`
-(`include/rtctrl/arm/computed_torque.hpp`) on top of
+*The textbook law is implemented in `arm::ComputedTorque`
+(`include/rtctrl/arm/computed_torque.hpp`). The previous hardened controller
+is retained as `arm::PracticalComputedTorque`
+(`include/rtctrl/arm/practical_computed_torque.hpp`) for historical
+identification and offline studies. Both use
 `model::ChainModel::inverseDynamics`. Prerequisite reading:
 [dynamics foundations](dynamics-foundations.md).*
 
@@ -18,9 +21,10 @@ servo's internal loop fights the arm's coupled inertia on its own.
 rtctrl implements the **inverse-dynamics feedforward** form of
 computed torque: the full inverse dynamics evaluated **along the
 desired trajectory**, plus PD feedback on the tracking error
-$e = q_d - q$ (this textbook form is what the theory below analyzes;
-the shipped controller hardens it; see
-[what the hardware taught us](#what-the-hardware-taught-us)):
+$e = q_d - q$. This is exactly what `ComputedTorque` and the renewed
+`x7_track` suite run. The former app's hardened implementation is retained as
+`PracticalComputedTorque`; see
+[what the hardware taught us](#what-the-hardware-taught-us):
 
 ```math
 \boxed{\;
@@ -127,7 +131,8 @@ joint limit.
   the hardened loop.
   Note the sim adds reflected rotor inertia that the ID model does not
   include, so even in simulation the feedback carries a real residual.
-- **Hardware.** `apps/x7_track` runs the same controller on the robot:
+- **Historical hardware.** The former `apps/x7_track` ran the practical
+  controller on the robot:
   a reduced-speed (0.3 rad/s) excursion on tilt/elbow/wrist and back,
   printing per-leg and per-joint RMS. Accepted 2026-07-21 at
   RMS 0.019/0.022 rad over the two legs, with the hardware-hardened
@@ -135,9 +140,16 @@ joint limit.
 
 ## What the hardware taught us
 
-The boxed law above is **not stable on the real arm**. A nine-run
-campaign (2026-07-21, eight runs logged as per-cycle CSVs and
-diagnosed offline) reshaped the shipped controller into
+This section describes `PracticalComputedTorque` and the former
+excursion-based app. None of these compensating terms are enabled by the
+renewed trajectory-replay `x7_track`; it deliberately returns to the boxed law
+so simulation and hardware can expose the original discrepancy. The former
+app-layer controller wrapper and its regression tests remain under
+`apps/track/legacy/`.
+
+The boxed law above was **not stable on the real arm** in the historical
+campaign. Nine runs (2026-07-21, eight logged as per-cycle CSVs and diagnosed
+offline) reshaped the retained practical controller into
 
 ```math
 \tau \;=\; \mathrm{ID}\big(q_d, \dot q_d, \ddot q_d\big)
@@ -201,10 +213,11 @@ observed net positive (runs 7–8 diverged). More low-passing is not a
 monotonic cure: it deepens the lag while also cutting the gain; the
 shipped corner bought 13 Hz protection at the price of the 4–5 Hz
 phase margin. The quantitative budget and the energy argument are in
-[flexible-mode identification](identification.md). `x7_track` caps
-its scale accordingly.
+[flexible-mode identification](identification.md). The former app capped its
+excursion scale accordingly.
 
-**Operational status (2026-07-28): `x7_track` is PARKED.** A
+**Historical operational status (2026-07-28): the former hardened
+`x7_track` was PARKED.** A
 scale-0.5 session never left the settle phase: from a compact resting
 posture the pan grew a 4.33 Hz oscillation from ~50 to ~350 mrad
 peak-to-peak within a second of torque-on (operator power cut; settle

@@ -298,7 +298,7 @@ band — recurring after every honest acceptance. Gain scaling cannot
 fix it (the scales are PD-only; the integral is unscaled). The
 reviewer-directed fix was **per-joint integral latching**: each joint
 freezes its integral at its own 0.3 s in-band-and-quiet readiness,
-with the frozen bias persisting (`ComputedTorque::freezeIntegral` and
+with the frozen bias persisting (`PracticalComputedTorque::freezeIntegral` and
 the per-joint freeze mask — still in the library). A separate 8.9 Hz
 ±13 mrad controller-pumped pan limit cycle under stationary holds was
 bounded by a joint-0 PD scale of 0.5 (`kIdentScale0`; FRFs are

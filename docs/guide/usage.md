@@ -361,6 +361,88 @@ hardware tracking app must independently validate the file, starting
 posture, joint rates, operating modes, and collision constraints
 before enabling torque.
 
+### Host-side computed-torque tracking
+
+`x7_track_sim` and `x7_track` replay a ZVS reference with the same host-side
+current controller:
+
+```math
+tau = ID(qref, dqref, ddqref) + Kp (qref - q) + Kd (dqref - dq)
+```
+
+The controller uses measured velocity directly. It has no host velocity
+estimator, low-pass filter, integral term, per-joint gain scaling, friction
+term, or current-mode settling controller. Those historical countermeasures
+remain available in `arm::PracticalComputedTorque`, but the renewed app does
+not select them.
+
+Generate a synthetic reference, check the complete configuration, and run the
+dynamics simulation first:
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_example.toml
+./build/apps/x7_track_sim --config config/track_example.toml --check
+./build/apps/x7_track_sim --config config/track_example.toml \
+  --motion /tmp/track-sim.zvs --log /tmp/track-sim.csv
+```
+
+A manually taught ZVS can be selected with `--reference`. Use the same
+filtering decision made during the teaching review, commonly `--filter
+low-pass` for raw taught motion. Synthetic planner output normally uses
+`--filter none`.
+
+Deliberately slow the reference without changing its path:
+
+```sh
+./build/apps/x7_track_sim --config config/track_example.toml \
+  --playback-rate 0.5 --bundle /tmp/track-half-speed
+```
+
+A playback rate in `(0, 1]` multiplies reference velocity by the rate and
+acceleration by its square. The total tracking duration is divided by the
+rate. `--kp`, `--kd`, `--effort-limit-nm`, `--filter`, and `--interpolation`
+are also shared by both frontends.
+
+Both frontends first move to reference frame zero in servo position mode. The
+hardware frontend settles there, stops the command thread, calculates gravity
+current at that stationary posture, and performs the reviewed position to
+current transition with the preload already staged. Tracking begins on fresh
+current-mode feedback. No mode change occurs during motion.
+
+Tracking error is assessed separately from execution status. The result stores
+aggregate, per-joint RMS, and peak errors plus `tracking_pass`. Missing the
+assessment thresholds does not abort or make an otherwise clean invocation
+fail. The larger hard-error envelope, position gates, command rejection,
+watchdogs, I/O checks, and verified shutdown remain active.
+
+The hardware app is intentionally experimental and has not been validated on
+the renewed path. The plain law was unstable in the historical campaign. Keep
+the actuator cutoff in reach, use a short slow reference, inspect the complete
+simulation first, and support the arm before ending the final hold.
+
+```sh
+./build/apps/x7_track --config config/track_example.toml \
+  --playback-rate 0.5 --check
+./build/apps/x7_track --config config/track_example.toml \
+  --playback-rate 0.5 --bundle /tmp/track-campaign/hardware
+```
+
+Create the matching simulation at `/tmp/track-campaign/simulation` with the
+same configuration and overrides. Do not run these commands back-to-back
+without inspecting the simulation and preparing the hardware workspace.
+
+Archive simulation and hardware runs beneath a common campaign directory, then
+compare them:
+
+```sh
+uv run --project tools tools/plot/track_comparison.py /tmp/track-campaign \
+  --output /tmp/track-campaign/comparison.png \
+  --summary-csv /tmp/track-campaign/comparison.csv
+```
+
+The directory form expects `simulation/simulation.csv` and
+`hardware/hardware.csv`. Two explicit CSV paths can be supplied instead.
+
 ### Manual motion teaching
 
 `x7_teach` records a trajectory while an operator guides the arm. It supports
@@ -699,7 +781,8 @@ including the `apps/` header the same relative way, runnable against
 ($\hat\tau = k_t\,i$). On hardware it returns a fresh sample while that
 sample's bounded command window is open; `step()` blocks until the next
 successful feedback read and returns `false` after a safety escalation. The
-shipped controllers `arm::GravityComp` and `arm::ComputedTorque` follow
+shipped controllers `arm::GravityComp`, `arm::ComputedTorque`, and the retained
+historical `arm::PracticalComputedTorque` follow
 exactly this pattern; see the
 [theory documents](../theory/gravity-compensation.md) and their
 sources for worked examples.

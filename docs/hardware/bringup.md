@@ -110,12 +110,13 @@ Power on the arm, connect USB, then:
 
 The controller phases build on this checklist in order:
 `examples/x7_wave` (multi-joint position mode), `apps/x7_float`
-(gravity compensation: the arm floats and is hand-guidable), and
-`apps/x7_track` (computed-torque tracking; rehearse the identical run
-offline with `apps/x7_track_sim` first). `x7_track` settles the arm
-before moving, refuses to start from a joint parked at a soft limit,
-and caps its excursion at the verified stability envelope; the
-reasons live in the
+(gravity compensation: the arm floats and is hand-guidable), and the renewed
+`apps/x7_track` trajectory replay. Rehearse the exact configuration with
+`apps/x7_track_sim`, inspect the motion and CSV, then run `x7_track --check`
+before any hardware session. The app homes in position mode and switches while
+stationary to current mode with a staged gravity preload. Its tracking law is
+deliberately the plain computed-torque equation and omits every practical term
+described in the
 [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us).
 Feature coverage is mapped in [parity.md](../records/parity.md).
 
@@ -147,11 +148,12 @@ reach during hardware use. Recording stop does not disable torque; a distinct
 final Enter confirms that the arm is supported before shutdown. See the
 [manual teaching safety contract](../guide/usage.md#manual-motion-teaching).
 
-> **`x7_track` is PARKED: do NOT run it on hardware. `x7_float`
-> is UN-PARKED (2026-07-31) under the conditions in its bullet
-> below.** Two independent incidents:
+> **The former hardened `x7_track` implementation was PARKED. The renewed
+> textbook app is a new, hardware-unvalidated experiment, not an un-parking of
+> that controller. `x7_float` is UN-PARKED (2026-07-31) under the conditions
+> in its bullet below.** Two independent incidents:
 >
-> - **`x7_track` (2026-07-28):** a scale-0.5 session never left the
+> - **Former hardened `x7_track` (2026-07-28):** a scale-0.5 session never left the
 >   settle phase: from a compact resting posture the pan (canonical
 >   joint 0) anti-damped at 4.33 Hz, growing ~50 → ~350 mrad
 >   peak-to-peak within a second of torque-on; operator power cut.

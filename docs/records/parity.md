@@ -87,11 +87,14 @@ plan's post-completion review notes):
 - Servo Bus Watchdog + host deadman with bus-silence escalation — on
   stale command writes *and* on persistently failing feedback reads
   (the frozen-feedback trap).
-- Computed-torque trajectory tracking (`arm::ComputedTorque`,
-  `apps/x7_track`): inverse-dynamics feedforward + hardware-hardened
-  filtered PID — no vendor equivalent exists.
-- Offline twin of the tracking run (`apps/x7_track_sim`) with logged
-  hardware-pose replay, disturbance seeding, and lag models.
+- Textbook computed-torque trajectory replay (`arm::ComputedTorque`,
+  `apps/x7_track`): desired-state inverse-dynamics feedforward plus raw PD,
+  with no vendor equivalent.
+- Retained historical practical controller (`arm::PracticalComputedTorque`):
+  filtered PID, host velocity estimation, and anti-windup used by the archived
+  hardware and offline studies.
+- Offline twin of the renewed tracking run (`apps/x7_track_sim`) with the same
+  configuration, reference processing, phases, and controller.
 - Firmware/model verification before torque; activation goal snap.
 - Sim⇄real bridge (`Arm`): identical controller code on roki dynamics
   and hardware; motor emulator down to the wire protocol.
