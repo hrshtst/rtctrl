@@ -26,7 +26,7 @@ inline constexpr double kIntegralClampNm = 1.5;  // [Nm]
 // resonance; the smooth feedforward passes unfiltered).
 inline constexpr double kPdFilterTau = 0.05;  // [s]
 
-// Nominal control period — ComputedTorque::setNominalDt (bounds the
+// Nominal control period — PracticalComputedTorque::setNominalDt (bounds the
 // filter/integrator dt at 3x nominal). Matches
 // hw::CraneX7::Options::control_cycle_s.
 inline constexpr double kNominalDt = 0.01;  // [s]

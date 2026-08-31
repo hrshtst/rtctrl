@@ -2,10 +2,10 @@
 // docs/records/history.md (EFL frozen specification)). Experimental code — consumed
 // only by x7_efl_study and its tests, never by the hardware apps.
 //
-//  * HostVelocityEstimator — a standalone duplicate of ComputedTorque's
+//  * HostVelocityEstimator — a standalone duplicate of PracticalComputedTorque's
 //    host-side estimator. Deliberately NOT shared code: the study
 //    definition requires parity to be unit-tested against
-//    ComputedTorque::velocityEstimate(), not assumed
+//    PracticalComputedTorque::velocityEstimate(), not assumed
 //    (tests/unit/efl_test.cpp).
 //  * AccelDomainController — the acceleration-domain family:
 //      v = q̈_d + K_d'(q̇_d − v̂) + K_p'(q_d − q)
@@ -16,10 +16,10 @@
 //  * PracticalReplica — the shipped practical law, replicated so the
 //    flexible-mode comparator PRACTICAL-GF can remove model gravity
 //    from the feedforward BEFORE anti-windup and the final clamp
-//    (subtracting after ComputedTorque's internal clamp would corrupt
+//    (subtracting after PracticalComputedTorque's internal clamp would corrupt
 //    the saturation telemetry, let anti-windup react to fictitious
 //    gravity, and break the common limit — review finding). Ordinary
-//    (gravity-on) mode is parity-tested against ComputedTorque.
+//    (gravity-on) mode is parity-tested against PracticalComputedTorque.
 #pragma once
 
 #include <algorithm>
@@ -54,7 +54,7 @@ class ConstantTrajectory : public model::Trajectory {
   model::ZVector q_;
 };
 
-// Standalone duplicate of ComputedTorque's host velocity estimator:
+// Standalone duplicate of PracticalComputedTorque's host velocity estimator:
 // first sample records positions with a zero estimate; raw-dt backward
 // difference; EMA with alpha = dt_f/(0.02 + dt_f), dt_f = min(dt,
 // 3*nominal_dt); duplicate timestamps hold all state.
@@ -174,7 +174,7 @@ class AccelDomainController : public arm::Controller {
     for (int i = 0; i < model::kCanonicalDof; ++i) tau_raw_[i] -= g_[i];
   }
 
-  // Identical clamp semantics to ComputedTorque::emitOutput.
+  // Identical clamp semantics to PracticalComputedTorque::emitOutput.
   void emitOutput(arm::JointCommand& cmd) {
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       double out = tau_raw_[i];
@@ -209,10 +209,10 @@ class AccelDomainController : public arm::Controller {
 };
 
 // The shipped practical law, replicated statement-for-statement from
-// arm::ComputedTorque (defaults included), plus the ONE study change:
+// arm::PracticalComputedTorque (defaults included), plus the ONE study change:
 // with gravity_free, model gravity leaves the feedforward BEFORE the
 // integrator's anti-windup and the final clamp. Ordinary mode is
-// parity-tested against ComputedTorque in tests/unit/efl_test.cpp —
+// parity-tested against PracticalComputedTorque in tests/unit/efl_test.cpp —
 // any divergence from the shipped controller is a test failure, not a
 // silent drift.
 class PracticalReplica : public arm::Controller {
@@ -324,9 +324,9 @@ class PracticalReplica : public arm::Controller {
   double kp_;
   double kd_;
   bool gravity_free_;
-  double pd_tau_ = 0.05;      // [s] — ComputedTorque default
-  double ki_ = 6.0;           // [Nm/(rad s)] — ComputedTorque default
-  double i_clamp_ = 1.5;      // [Nm] — ComputedTorque default
+  double pd_tau_ = 0.05;      // [s] — practical default
+  double ki_ = 6.0;           // [Nm/(rad s)] — practical default
+  double i_clamp_ = 1.5;      // [Nm] — practical default
   double nominal_dt_ = 0.01;  // [s]
   bool has_limits_ = false;
   double t_prev_ = -1.0;

@@ -1,6 +1,5 @@
-// Shared between x7_track (hardware) and x7_track_sim: the wrapped
-// computed-torque controller with per-joint tracking statistics and
-// optional per-cycle CSV logging.
+// Shared between the former x7_track frontends: the practical controller,
+// settle gate, statistics, and per-cycle telemetry.
 #pragma once
 
 #include <algorithm>
@@ -10,7 +9,7 @@
 
 #include "common/latency_verifier.hpp"
 #include "common/quiescence_metric.hpp"
-#include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -202,7 +201,8 @@ inline SettleResult settleArm(arm::Arm& robot, SettleController& settle,
   return res;
 }
 
-// One continuous tracking run: ComputedTorque wrapped with per-joint,
+// Historical practical tracking run: PracticalComputedTorque wrapped with
+// per-joint,
 // per-leg statistics, sequence-keyed submission→application latency
 // verification, and the full-telemetry CSV. Controller (update) and
 // CycleObserver (observe) on ONE object, so the controller state stays
@@ -272,7 +272,7 @@ struct TrackingRun : arm::Controller, arm::CycleObserver {
     }
   }
 
-  arm::ComputedTorque inner;
+  arm::PracticalComputedTorque inner;
 
  private:
   void writeRow(double t, const arm::JointState& state,

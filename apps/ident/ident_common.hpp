@@ -1,6 +1,6 @@
 // The stepped-sine identification core, consumed by x7_ident_sim (and
 // formerly the removed x7_ident hardware app): the stepped-sine
-// identification run — a constant-anchor ComputedTorque with a torque
+// identification run — a constant-anchor PracticalComputedTorque with a torque
 // probe superposed on ONE joint, online I/Q demodulation, all-joint
 // safety monitors with the hard/soft fault taxonomy, and the session
 // duration budget (docs/records/history.md (identification)).
@@ -20,7 +20,7 @@
 
 #include "common/latency_verifier.hpp"
 #include "common/quiescence_metric.hpp"
-#include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -828,7 +828,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
                ? floor_tau_val_[dwell]
                : 0.0;
   }
-  const arm::ComputedTorque& inner() const { return inner_; }
+  const arm::PracticalComputedTorque& inner() const { return inner_; }
 
   // True when run() ended by this object's own Done veto rather than a
   // fault: Completed and DeadlineStop are successful terminations.
@@ -1536,7 +1536,7 @@ class IdentRun : public arm::Controller, public arm::CycleObserver {
   Options options_;
   model::ZVector anchor_;
   AnchorCaptureTrajectory hold_traj_;
-  arm::ComputedTorque inner_;
+  arm::PracticalComputedTorque inner_;
   std::FILE* log_;
   LatencyVerifier verifier_;
 

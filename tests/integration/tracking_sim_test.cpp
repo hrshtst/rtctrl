@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/runner.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
@@ -15,6 +16,7 @@
 #include "rtctrl/model/zvector.hpp"
 
 using rtctrl::arm::ComputedTorque;
+using rtctrl::arm::PracticalComputedTorque;
 using rtctrl::arm::Controller;
 using rtctrl::arm::ControlMode;
 using rtctrl::arm::JointCommand;
@@ -102,12 +104,6 @@ TEST_CASE("computed torque tracks in sim and beats bare PD",
 
   constexpr double kKp = 20.0, kKd = 2.0;
   ComputedTorque computed(chain, map, trajectory, kKp, kKd);
-  // This test checks the computed-torque MATH in the ideal rigid sim,
-  // so the hardware countermeasures (PD low-pass sized for the gear
-  // resonance, friction integrator) are switched off; at Kp=20 the
-  // filter pole would sit on the loop crossover and dominate the RMS.
-  computed.setPdFilterTau(0.0);
-  computed.setIntegral(0.0, 0.0);
   PdOnly pd(trajectory, kKp, kKd);
 
   const double rms_computed = trackingRms(trajectory, computed, duration);
@@ -119,7 +115,7 @@ TEST_CASE("computed torque tracks in sim and beats bare PD",
   CHECK(rms_computed < 0.5 * rms_pd);  // and clearly beats bare PD
 }
 
-TEST_CASE("shipped configuration tracks the x7_track excursion",
+TEST_CASE("practical controller tracks the former x7_track excursion",
           "[tracking][sim]") {
   // The exact numbers the hardware runs (crane_x7_tuning.hpp) on the
   // exact excursion shape x7_track commands, over one continuous round
@@ -143,7 +139,7 @@ TEST_CASE("shipped configuration tracks the x7_track excursion",
       MinJerkTrajectory::withVelocityLimit(q0, qf, 0.3, min_T),
       MinJerkTrajectory::withVelocityLimit(qf, q0, 0.3, min_T));
 
-  ComputedTorque ctl(chain, map, trip, tuning::kKp, tuning::kKd);
+  PracticalComputedTorque ctl(chain, map, trip, tuning::kKp, tuning::kKd);
   ctl.setIntegral(tuning::kKi, tuning::kIntegralClampNm);
   ctl.setGainScales(tuning::kGainScale);
   ctl.setNominalDt(tuning::kNominalDt);
@@ -153,7 +149,7 @@ TEST_CASE("shipped configuration tracks the x7_track excursion",
 
   // track error and the commanded-torque continuity across the split
   struct Wrap : Controller {
-    Wrap(ComputedTorque& inner, const Trajectory& trip, double split)
+    Wrap(PracticalComputedTorque& inner, const Trajectory& trip, double split)
         : inner_(inner), trip_(trip), split_(split) {}
     void update(const JointState& state, JointCommand& cmd,
                 double t) override {
@@ -177,7 +173,7 @@ TEST_CASE("shipped configuration tracks the x7_track excursion",
       if (!split_seen && t >= split_) split_seen = true;
       have_prev = true;
     }
-    ComputedTorque& inner_;
+    PracticalComputedTorque& inner_;
     const Trajectory& trip_;
     double split_;
     ZVector q_d{kCanonicalDof};
@@ -235,8 +231,6 @@ TEST_CASE("computed torque holds the acceptance bound under mass error",
     wrong.scaleMassProperties(scale);
     JointMap map(wrong);
     ComputedTorque computed(wrong, map, trajectory, 20.0, 2.0);
-    computed.setPdFilterTau(0.0);
-    computed.setIntegral(0.0, 0.0);
     const double rms = trackingRms(trajectory, computed, duration);
     INFO("mass scale " << scale << " -> RMS " << rms << " rad");
     CHECK(rms < 0.02);

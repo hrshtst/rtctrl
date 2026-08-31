@@ -33,7 +33,7 @@
 #include <memory>
 #include <string>
 
-#include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
@@ -170,7 +170,8 @@ int main(int argc, char* argv[]) {
       ctrl_model.perturbMassProperties(mass_error, com_error, seed);
     }
     model::JointMap map(ctrl_model);
-    arm::ComputedTorque controller(ctrl_model, map, trajectory, 20.0, 2.0);
+    arm::PracticalComputedTorque controller(ctrl_model, map, trajectory, 20.0,
+                                            2.0);
     controller.setPdFilterTau(0.0);
     controller.setIntegral(ki, ki > 0.0 ? 1.5 : 0.0);
 

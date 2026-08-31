@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "study/exact_feedback_linearization.hpp"
-#include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
@@ -42,7 +42,7 @@ arm::JointState traceState(double t) {
 
 }  // namespace
 
-TEST_CASE("host estimator parity with ComputedTorque on a jittered trace",
+TEST_CASE("host estimator parity with PracticalComputedTorque on a jittered trace",
           "[efl]") {
   model::ChainModel chain(kModelPath);
   model::JointMap map(chain);
@@ -50,7 +50,7 @@ TEST_CASE("host estimator parity with ComputedTorque on a jittered trace",
   for (int i = 0; i < kCanonicalDof; ++i) qf[i] = 0.1;
   const auto traj = model::MinJerkTrajectory::withVelocityLimit(q0, qf, 0.3);
 
-  arm::ComputedTorque shipped(chain, map, traj, 6.0, 1.0);
+  arm::PracticalComputedTorque shipped(chain, map, traj, 6.0, 1.0);
   shipped.setNominalDt(0.01);
   x7::HostVelocityEstimator replica(0.01);
 
@@ -132,7 +132,7 @@ TEST_CASE("acceleration channel is the mass-matrix action", "[efl]") {
   }
 }
 
-TEST_CASE("PRACTICAL-GF replica matches ComputedTorque in ordinary mode",
+TEST_CASE("PRACTICAL-GF replica matches PracticalComputedTorque in ordinary mode",
           "[efl]") {
   model::ChainModel chain(kModelPath);
   model::JointMap map(chain);
@@ -146,7 +146,7 @@ TEST_CASE("PRACTICAL-GF replica matches ComputedTorque in ordinary mode",
   const double scales[kCanonicalDof] = {1.0, 1.0, 0.7, 0.7,
                                         0.1, 0.3, 0.2, 0.2};
 
-  arm::ComputedTorque shipped(chain, map, traj, 6.0, 1.0);
+  arm::PracticalComputedTorque shipped(chain, map, traj, 6.0, 1.0);
   x7::PracticalReplica replica(chain, map, traj, 6.0, 1.0, false);
   shipped.setIntegral(6.0, 1.5);
   shipped.setGainScales(scales);

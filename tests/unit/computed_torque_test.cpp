@@ -1,4 +1,4 @@
-// ComputedTorque hardening regressions (docs/records/history.md (pass-1 record) D5):
+// PracticalComputedTorque hardening regressions
 // first-sample initialization, duplicate-timestamp freeze, measured-dt
 // velocity estimation, and direction-aware anti-windup with the
 // committed-state output identity.
@@ -8,6 +8,7 @@
 #include <cmath>
 
 #include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/trajectory.hpp"
@@ -43,12 +44,38 @@ struct Harness {
   model::ChainModel chain;
   model::JointMap map;
   model::MinJerkTrajectory hold;  // constant reference at the zero pose
-  arm::ComputedTorque ctl;
+  arm::PracticalComputedTorque ctl;
   arm::JointState state;
   arm::JointCommand cmd;
 };
 
 }  // namespace
+
+TEST_CASE("ComputedTorque is exactly desired inverse dynamics plus raw PD",
+          "[computed_torque][textbook]") {
+  model::ChainModel chain(kModelPath);
+  model::JointMap map(chain);
+  model::ZVector q0(kCanonicalDof), qf(kCanonicalDof);
+  qf[1] = 0.4;
+  qf[3] = -0.6;
+  model::MinJerkTrajectory trajectory(q0.get(), qf.get(), 2.0);
+  arm::ComputedTorque controller(chain, map, trajectory, 12.0, 1.5);
+  arm::JointState state;
+  state.q[1] = -0.1;
+  state.dq[1] = 0.7;
+  arm::JointCommand command;
+  controller.update(state, command, 0.8);
+
+  CHECK(command.mode == arm::ControlMode::Current);
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    const double expected_pd =
+        12.0 * (controller.desiredPosition()[i] - state.q[i]) +
+        1.5 * (controller.desiredVelocity()[i] - state.dq[i]);
+    CHECK(controller.feedback()[i] == Approx(expected_pd).margin(1e-12));
+    CHECK(command.tau[i] ==
+          Approx(controller.feedforward()[i] + expected_pd).margin(1e-12));
+  }
+}
 
 TEST_CASE("first sample emits feedforward only; servo dq never seeds",
           "[computed_torque]") {

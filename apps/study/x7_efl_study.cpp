@@ -31,7 +31,7 @@
 
 #include "study/exact_feedback_linearization.hpp"
 #include "common/lagged_arm.hpp"
-#include "rtctrl/arm/computed_torque.hpp"
+#include "rtctrl/arm/practical_computed_torque.hpp"
 #include "rtctrl/arm/crane_x7_tuning.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/model/chain_model.hpp"
@@ -291,7 +291,7 @@ RunResult runCell(model::ChainModel& chain, const model::JointMap& map,
                   const std::string& trace_path) {
   switch (s.kind) {
     case Kind::Practical: {
-      arm::ComputedTorque ctl(chain, map, *s.traj, tuning::kKp,
+      arm::PracticalComputedTorque ctl(chain, map, *s.traj, tuning::kKp,
                               tuning::kKd);
       ctl.setIntegral(tuning::kKi, tuning::kIntegralClampNm);
       ctl.setGainScales(tuning::kGainScale);
