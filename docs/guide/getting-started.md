@@ -89,7 +89,11 @@ displacement; any dropped position command makes the run exit nonzero.
 **3. See the model and a simulated motion** (needs roki-gl):
 
 ```sh
-rk_pen models/crane_x7/crane_x7.ztk            # pose editor
+rk_pen models/crane_x7/crane_x7.ztk            # pose editor, upright zero posture
+rk_pen models/crane_x7/crane_x7.ztk \
+  -init models/crane_x7/crane_x7.init.ztk \
+  -x 0 -y -- -1.4 -z 0.18 -fz 0.18 -fovy 20 \
+  -lx 0 -ly -- -20 -lz 10                      # product-photo posture, side view
 ./build/examples/make_motion motion.zvs        # kinematic min-jerk sweep
 rk_anim models/crane_x7/crane_x7.ztk motion.zvs
 
@@ -103,6 +107,17 @@ uv run --project tools tools/plot/ptp_trajectory.py ptp.csv \
 ./build/apps/x7_plan_ptp --config config/ptp_example.toml \
   --bundle /tmp/ptp-example-bundle
 ```
+
+`models/crane_x7/crane_x7.init.ztk` is a hand-written `[roki::chain::init]`
+posture (shoulder pitched back 40 deg, forearm level and reaching along +x,
+gripper hanging straight down, fingers open: the pose of the RT product
+photo); `rk_pen` loads it with `-init`, and its `export .zri file` menu
+writes the current pose back in the same format. The camera options put the
+eye 1.4 m out on the -y side, looking at the arm's mid-height, so +x is to
+the right and the logo reads correctly; the light options move the lamp to
+that same side (the default lamp sits at +x and leaves the visible faces
+dim). roki's option parser treats every `-`-prefixed token as a key, so a
+bare `--` must precede each negative value.
 
 `x7_plan_ptp` is offline and never opens the motor bus. Its TOML file
 specifies the start and end TCP poses, timing constraints, profile, and
