@@ -11,6 +11,7 @@ add_executable(unit_tests
   unit/ptp_config_test.cpp
   unit/follow_config_test.cpp
   unit/follow_run_test.cpp
+  unit/track_config_test.cpp
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/cycle_timing_test.cpp
@@ -35,8 +36,8 @@ add_executable(unit_tests
   unit/dxl_parameters_test.cpp
   unit/x7_common_test.cpp)
 target_link_libraries(unit_tests PRIVATE rtctrl::rtctrl Catch2::Catch2WithMain)
-# track_common_test exercises the app-layer orchestration (settle gate,
-# TrackingRun latency verification) directly from apps/ — headers only.
+# track_common_test preserves the backed-up practical app orchestration
+# (settle gate and latency verification) directly from apps.
 target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 # Test code refers to models/ and config/ by repo-root-relative paths.
 catch_discover_tests(unit_tests
@@ -82,6 +83,38 @@ add_test(NAME x7_follow_bundle_smoke
 set_tests_properties(x7_follow_bundle_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "follow bundle creation and replay OK"
+  LABELS integration)
+
+add_test(NAME x7_track_bundle_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/track_bundle_smoke.sh
+          $<TARGET_FILE:x7_track_sim>
+          $<TARGET_FILE:x7_plan_ptp>
+          ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+          ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+          ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
+          ${CMAKE_BINARY_DIR}/track_bundle_smoke)
+set_tests_properties(x7_track_bundle_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "track bundle creation and replay OK"
+  LABELS integration)
+
+add_test(NAME x7_track_plot_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    MPLCONFIGDIR=${CMAKE_BINARY_DIR}/mpl-cache
+    uv run --project tools
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/track_plot_smoke.sh
+      ${CMAKE_SOURCE_DIR}/tests/integration/track_bundle_smoke.sh
+      $<TARGET_FILE:x7_track_sim>
+      $<TARGET_FILE:x7_plan_ptp>
+      ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+      ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+      ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
+      ${CMAKE_SOURCE_DIR}/tools/plot/track_comparison.py
+      ${CMAKE_BINARY_DIR}/track_plot_smoke)
+set_tests_properties(x7_track_plot_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "track telemetry plotting OK"
   LABELS integration)
 
 add_test(NAME x7_follow_plot_smoke

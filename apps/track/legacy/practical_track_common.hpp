@@ -1,5 +1,5 @@
-// Shared between the former x7_track frontends: the practical controller,
-// settle gate, statistics, and per-cycle telemetry.
+// Retained orchestration from the former hardened x7_track frontends: the
+// practical controller, settle gate, statistics, and per-cycle telemetry.
 #pragma once
 
 #include <algorithm>

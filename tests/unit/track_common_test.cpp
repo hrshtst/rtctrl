@@ -1,4 +1,5 @@
-// Application-orchestration regressions for apps/track/track_common.hpp:
+// Historical application-orchestration regressions for the backed-up
+// practical track wrapper:
 // the settle quiescence gate and TrackingRun's sequence-keyed latency
 // verification. These exist because the settle gate once reported
 // quiescent on a timeout whose FINAL sample merely dipped below the
@@ -10,7 +11,7 @@
 #include <cstdint>
 #include <functional>
 
-#include "track/track_common.hpp"
+#include "track/legacy/practical_track_common.hpp"
 
 using Catch::Approx;
 namespace arm = rtctrl::arm;

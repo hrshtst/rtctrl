@@ -1,5 +1,6 @@
 // The hardware-validated quiescence metric, shared by the settle gate
-// (track_common.hpp) and the identification capture phase.
+// (track/legacy/practical_track_common.hpp) and the identification capture
+// phase.
 #pragma once
 
 #include <algorithm>
