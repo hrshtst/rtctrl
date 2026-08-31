@@ -374,7 +374,9 @@ The controller uses measured velocity directly. It has no host velocity
 estimator, low-pass filter, integral term, per-joint gain scaling, friction
 term, or current-mode settling controller. Those historical countermeasures
 remain available in `arm::PracticalComputedTorque`, but the renewed app does
-not select them.
+not select them. For the complete timestamped bundle workflow, hardware
+procedure, and analysis commands, see
+[Host-side controller comparison](host-side-controller-comparison.md).
 
 Generate a synthetic reference, check the complete configuration, and run the
 dynamics simulation first:

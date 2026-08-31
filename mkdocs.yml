@@ -69,6 +69,7 @@ nav:
       - Architecture: guide/architecture.md
       - Usage: guide/usage.md
       - Teaching playback: guide/teaching-playback.md
+      - Host-side controller comparison: guide/host-side-controller-comparison.md
   - Theory:
       - Dynamics foundations: theory/dynamics-foundations.md
       - Gravity compensation: theory/gravity-compensation.md
