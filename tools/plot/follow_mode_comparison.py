@@ -40,18 +40,60 @@ def _errors(data: np.ndarray) -> np.ndarray:
     return _joints(data, "error", "rad")
 
 
-def _validate_comparable(position: np.ndarray, cbp: np.ndarray) -> None:
-    if len(position) != len(cbp) or not np.allclose(
-        position["phase_time_s"], cbp["phase_time_s"], rtol=1e-9, atol=1e-9
-    ):
-        raise SystemExit("tracking logs use different reference sample times")
+def _validate_comparable(
+    position: np.ndarray,
+    cbp: np.ndarray,
+    *,
+    failure_analysis: bool,
+    cbp_aborted: bool,
+) -> tuple[np.ndarray, float | None]:
+    if failure_analysis:
+        if not cbp_aborted:
+            raise SystemExit(
+                "--failure-analysis requires a CBP log with an abort_hold phase"
+            )
+        if len(cbp) > len(position):
+            raise SystemExit(
+                "--failure-analysis requires CBP tracking to end no later than "
+                "position tracking"
+            )
+        comparable_position = position[: len(cbp)]
+        if not np.allclose(
+            comparable_position["phase_time_s"],
+            cbp["phase_time_s"],
+            rtol=1e-9,
+            atol=1e-9,
+        ):
+            raise SystemExit(
+                "tracking logs use different reference sample times before "
+                "the CBP abort"
+            )
+        abort_time = float(cbp["phase_time_s"][-1])
+    else:
+        if len(position) != len(cbp):
+            raise SystemExit(
+                "tracking logs have different lengths "
+                f"(position {len(position)}, CBP {len(cbp)}); use "
+                "--failure-analysis only for a confirmed CBP abort"
+            )
+        comparable_position = position
+        abort_time = None
+        if not np.allclose(
+            position["phase_time_s"],
+            cbp["phase_time_s"],
+            rtol=1e-9,
+            atol=1e-9,
+        ):
+            raise SystemExit("tracking logs use different reference sample times")
     if not np.allclose(
-        _joints(position, "qref", "rad"),
+        _joints(comparable_position, "qref", "rad"),
         _joints(cbp, "qref", "rad"),
         rtol=1e-9,
         atol=1e-9,
     ):
-        raise SystemExit("tracking logs contain different joint references")
+        suffix = " before the CBP abort" if failure_analysis else ""
+        raise SystemExit(f"tracking logs contain different joint references{suffix}")
+    return comparable_position, abort_time
 
 
 def _rms(values: np.ndarray, axis=None):
@@ -85,8 +127,17 @@ def _print_run_summary(label: str, data: np.ndarray) -> None:
     )
 
 
-def print_summary(position: np.ndarray, cbp: np.ndarray) -> None:
-    print("tracking-phase comparison")
+def print_summary(
+    position: np.ndarray, cbp: np.ndarray, cbp_abort_time: float | None
+) -> None:
+    if cbp_abort_time is None:
+        print("tracking-phase comparison")
+    else:
+        print(
+            "FAILURE ANALYSIS: CBP tracking ended in abort_hold after its "
+            f"last sample at {cbp_abort_time:.6g} s"
+        )
+        print("tracking-phase comparison is limited to the shared prefix")
     _print_run_summary("position", position)
     _print_run_summary("current-based-position", cbp)
     print("\nper-joint RMS / peak absolute error [rad]")
@@ -105,41 +156,47 @@ def print_summary(position: np.ndarray, cbp: np.ndarray) -> None:
 
 
 def write_summary_csv(
-    path: pathlib.Path, position: np.ndarray, cbp: np.ndarray
+    path: pathlib.Path,
+    position: np.ndarray,
+    cbp: np.ndarray,
+    cbp_abort_time: float | None,
 ) -> None:
     position_error = _errors(position)
     cbp_error = _errors(cbp)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(
-            (
-                "joint",
-                "position_rms_rad",
-                "position_peak_abs_rad",
-                "current_based_position_rms_rad",
-                "current_based_position_peak_abs_rad",
-            )
+        header = (
+            "joint",
+            "position_rms_rad",
+            "position_peak_abs_rad",
+            "current_based_position_rms_rad",
+            "current_based_position_peak_abs_rad",
         )
+        if cbp_abort_time is not None:
+            header += ("analysis_scope", "cbp_last_tracking_sample_s")
+        writer.writerow(header)
         for joint, label in enumerate(JOINT_LABELS):
-            writer.writerow(
-                (
-                    label,
-                    _rms(position_error[:, joint]),
-                    np.max(np.abs(position_error[:, joint])),
-                    _rms(cbp_error[:, joint]),
-                    np.max(np.abs(cbp_error[:, joint])),
-                )
+            row = (
+                label,
+                _rms(position_error[:, joint]),
+                np.max(np.abs(position_error[:, joint])),
+                _rms(cbp_error[:, joint]),
+                np.max(np.abs(cbp_error[:, joint])),
             )
-        writer.writerow(
-            (
-                "all joints",
-                _rms(position_error),
-                np.max(np.abs(position_error)),
-                _rms(cbp_error),
-                np.max(np.abs(cbp_error)),
-            )
+            if cbp_abort_time is not None:
+                row += ("cbp_abort_common_prefix", cbp_abort_time)
+            writer.writerow(row)
+        row = (
+            "all joints",
+            _rms(position_error),
+            np.max(np.abs(position_error)),
+            _rms(cbp_error),
+            np.max(np.abs(cbp_error)),
         )
+        if cbp_abort_time is not None:
+            row += ("cbp_abort_common_prefix", cbp_abort_time)
+        writer.writerow(row)
 
 
 def _legend_above(axis) -> None:
@@ -153,12 +210,21 @@ def _legend_above(axis) -> None:
     )
 
 
-def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
+def plot_comparison(
+    position: np.ndarray,
+    cbp: np.ndarray,
+    title: str | None,
+    *,
+    full_position: np.ndarray | None = None,
+    cbp_abort_time: float | None = None,
+):
     import matplotlib.pyplot as plt
 
-    reference = _joints(position, "qref", "rad")
-    position_q = _joints(position, "q", "rad")
+    position_plot = full_position if full_position is not None else position
+    reference = _joints(position_plot, "qref", "rad")
+    position_q = _joints(position_plot, "q", "rad")
     cbp_q = _joints(cbp, "q", "rad")
+    position_plot_error = _errors(position_plot)
     position_error = _errors(position)
     cbp_error = _errors(cbp)
     figure = plt.figure(figsize=(21, 18), constrained_layout=True)
@@ -172,14 +238,14 @@ def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
 
     for joint, axis in enumerate(position_axes):
         axis.plot(
-            position["phase_time_s"],
+            position_plot["phase_time_s"],
             reference[:, joint],
             color="black",
             linewidth=1.5,
             label="reference",
         )
         axis.plot(
-            position["phase_time_s"],
+            position_plot["phase_time_s"],
             position_q[:, joint],
             label="position",
         )
@@ -188,6 +254,14 @@ def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
             cbp_q[:, joint],
             label="current-based-position",
         )
+        if cbp_abort_time is not None:
+            axis.axvline(
+                cbp_abort_time,
+                color="red",
+                linestyle=":",
+                linewidth=1.5,
+                label="CBP abort",
+            )
         axis.set_ylabel(f"{JOINT_LABELS[joint]}\nq [rad]")
         axis.grid(True, alpha=0.25)
         _legend_above(axis)
@@ -196,8 +270,8 @@ def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
 
     for joint, axis in enumerate(error_axes):
         axis.plot(
-            position["phase_time_s"],
-            position_error[:, joint],
+            position_plot["phase_time_s"],
+            position_plot_error[:, joint],
             label="position",
         )
         axis.plot(
@@ -205,6 +279,14 @@ def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
             cbp_error[:, joint],
             label="current-based-position",
         )
+        if cbp_abort_time is not None:
+            axis.axvline(
+                cbp_abort_time,
+                color="red",
+                linestyle=":",
+                linewidth=1.5,
+                label="CBP abort",
+            )
         axis.axhline(0.0, color="black", linewidth=0.7, alpha=0.5)
         axis.set_ylabel(f"{JOINT_LABELS[joint]}\nq - qref [rad]")
         axis.grid(True, alpha=0.25)
@@ -251,6 +333,11 @@ def plot_comparison(position: np.ndarray, cbp: np.ndarray, title: str | None):
         axis.grid(True, axis="y", alpha=0.25)
         _legend_above(axis)
     if title:
+        if cbp_abort_time is not None:
+            title += (
+                "\nFailure analysis: CBP abort after last tracking sample "
+                f"at {cbp_abort_time:.3f} s; metrics use shared prefix"
+            )
         figure.suptitle(title)
     return figure
 
@@ -288,6 +375,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--summary-csv", type=pathlib.Path, help="write per-joint metrics as CSV"
     )
     parser.add_argument(
+        "--failure-analysis",
+        action="store_true",
+        help=(
+            "compare through a confirmed CBP abort_hold, mark its last tracking "
+            "sample, and calculate metrics over the shared reference prefix"
+        ),
+    )
+    parser.add_argument(
         "--show", action="store_true", help="open an interactive plot window"
     )
     parser.add_argument("--title", help="figure title")
@@ -309,21 +404,32 @@ def main(argv: list[str] | None = None) -> int:
 
         matplotlib.use("Agg")
     position_path, cbp_path = _resolve_logs(args.input, args.cbp_log)
-    position = _tracking(load_log(position_path), POSITION_MODE, position_path)
-    cbp = _tracking(load_log(cbp_path), CBP_MODE, cbp_path)
-    _validate_comparable(position, cbp)
+    position_log = load_log(position_path)
+    cbp_log = load_log(cbp_path)
+    full_position = _tracking(position_log, POSITION_MODE, position_path)
+    cbp = _tracking(cbp_log, CBP_MODE, cbp_path)
+    position, cbp_abort_time = _validate_comparable(
+        full_position,
+        cbp,
+        failure_analysis=args.failure_analysis,
+        cbp_aborted=np.any(cbp_log["phase"] == "abort_hold"),
+    )
     logs = {position_path.resolve(), cbp_path.resolve()}
     outputs = [path.resolve() for path in (args.output, args.summary_csv) if path]
     if any(path in logs for path in outputs):
         raise SystemExit("refusing to overwrite an input CSV log")
     if len(outputs) != len(set(outputs)):
         raise SystemExit("plot and summary outputs must be different files")
-    print_summary(position, cbp)
+    print_summary(position, cbp, cbp_abort_time)
     figure = plot_comparison(
-        position, cbp, args.title or "x7_follow hardware mode comparison"
+        position,
+        cbp,
+        args.title or "x7_follow mode comparison",
+        full_position=full_position if cbp_abort_time is not None else None,
+        cbp_abort_time=cbp_abort_time,
     )
     if args.summary_csv:
-        write_summary_csv(args.summary_csv, position, cbp)
+        write_summary_csv(args.summary_csv, position, cbp, cbp_abort_time)
         print(f"wrote {args.summary_csv}")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
