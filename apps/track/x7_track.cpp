@@ -184,8 +184,10 @@ int main(int argc, char* argv[]) {
                                    crane.lastError());
         }
         arm::RealArm current_arm(crane);
-        if (!current_arm.setMode(arm::ControlMode::Current) ||
-            !current_arm.activate()) {
+        // The in-place switch keeps CraneX7 active and updates its runtime
+        // joint modes. RealArm::setMode deliberately rejects an active
+        // device, so only attach a fresh bridge and restart its thread here.
+        if (!current_arm.activate()) {
           throw std::runtime_error("current controller activation failed: " +
                                    crane.lastError());
         }

@@ -8,6 +8,7 @@
 #include <sstream>
 #include <thread>
 
+#include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/emu/fake_packet_io.hpp"
@@ -1094,13 +1095,16 @@ TEST_CASE("current-mode activation preload is clamped and lands before "
 }
 
 TEST_CASE("in-place position->current switch: preload lands before "
-          "torque re-enable, nothing is re-verified",
+          "torque re-enable and a current bridge reattaches",
           "[hw][safety]") {
   const auto config = craneConfig();  // position mode per the config
   auto bus = busFor(config);
   emu::FakePacketIO io(bus);
   hw::CraneX7 arm(io, config);
-  REQUIRE(arm.activate());
+  rtctrl::arm::RealArm position_bridge(arm);
+  REQUIRE(position_bridge.setMode(rtctrl::arm::ControlMode::Position));
+  REQUIRE(position_bridge.activate());
+  arm.stopThread();
 
   std::vector<double> preload(config.joints.size(), 0.0);
   preload[1] = 0.5;
@@ -1114,10 +1118,21 @@ TEST_CASE("in-place position->current switch: preload lands before "
   const auto goal1 = static_cast<std::int16_t>(
       bus.find(config.joints[1].id)->peek(reg::kGoalCurrent));
   CHECK(dxl::currentToAmps(goal1) == Approx(0.5).margin(0.01));
-  // the object's mode followed the servos: current commands accepted
-  std::vector<double> amps(config.joints.size(), 0.0);
-  CHECK(arm.writeCurrents(amps));
-  REQUIRE(arm.deactivate());
+  // The device stayed active, so setMode is no longer a valid operation.
+  // A fresh bridge instead attaches directly and restarts the synchronized
+  // thread without repeating the hardware activation sequence.
+  rtctrl::arm::RealArm current_bridge(arm);
+  CHECK_FALSE(current_bridge.setMode(rtctrl::arm::ControlMode::Current));
+  REQUIRE(current_bridge.activate());
+  rtctrl::arm::JointState state;
+  REQUIRE(current_bridge.readState(state));
+  rtctrl::arm::JointCommand command;
+  command.mode = rtctrl::arm::ControlMode::Current;
+  rtctrl::arm::CommandReceipt receipt;
+  REQUIRE(current_bridge.writeCommand(command, &receipt));
+  CHECK(receipt.accepted);
+  REQUIRE(current_bridge.step());
+  REQUIRE(current_bridge.deactivate());
 
   // a preload the limiter would clip REFUSES the switch and leaves the
   // arm exactly as it was (active, position mode, torqued)
