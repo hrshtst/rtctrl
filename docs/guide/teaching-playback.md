@@ -26,14 +26,15 @@ artifacts from one comparison share a storage root:
 
 ```sh
 run_stamp=$(date +%Y%m%d-%H%M%S)
-storage="/external/some-label-${run_stamp}"
+label="teaching-playback"
+storage="/external/${label}-${run_stamp}"
 mkdir -p "$storage/simulation" "$storage/analysis"
 ```
 
 The commands below create this layout:
 
 ```text
-some-label-TIMESTAMP/
+LABEL-TIMESTAMP/
   reference/ or teaching/       source trajectory bundle
   simulation/
     position/                   position simulation bundle
@@ -192,6 +193,26 @@ uv run --project tools tools/plot/follow_mode_comparison.py \
 The comparison tool refuses logs with different tracking sample times or
 joint references. Do not proceed if either simulation fails, triggers a safety
 abort, or produces a reference mismatch.
+
+To preserve a CBP safety failure as analysis rather than as a candidate for
+hardware playback, opt in to a shared-prefix comparison:
+
+```sh
+uv run --project tools tools/plot/follow_mode_comparison.py \
+  "$storage/simulation/position/simulation.csv" \
+  "$storage/simulation/cbp/simulation.csv" \
+  --failure-analysis \
+  --output "$storage/analysis/simulation-failure.png" \
+  --summary-csv "$storage/analysis/simulation-failure.csv"
+```
+
+`--failure-analysis` requires the CBP log to contain `abort_hold`, verifies
+that its available timestamps and joint references match the beginning of the
+position run, and calculates metrics only over that shared prefix. The figure
+keeps the complete position run visible and marks the last CBP tracking sample
+with a red abort line. Its title, console output, and summary CSV identify the
+result as a partial failure analysis. Do not use this option to justify moving
+an aborted simulation to hardware.
 
 ## Preflight and execute on hardware
 

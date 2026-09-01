@@ -587,7 +587,10 @@ and the final operator hold. It prints aggregate and per-joint RMS and peak
 errors, cycle-period statistics, rejected command receipts, clamp/gate events,
 and command-application lag. The figure shows the shared reference with both
 measured responses, together with per-joint error traces and RMS and peak bars.
-Two CSV paths can be supplied instead of the common bundle directory.
+Two CSV paths can be supplied instead of the common bundle directory. A
+confirmed CBP `abort_hold` can be examined with the explicit
+`--failure-analysis` shared-prefix mode documented in
+[Teaching playback and servo-mode comparison](teaching-playback.md#simulate-both-playback-modes).
 
 The checked-in `config/follow_example.toml` documents every option. Input paths
 are relative to that TOML file. Output
