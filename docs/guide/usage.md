@@ -99,6 +99,22 @@ not authored posture files. Archived sidecars remain usable through the
 explicit `--legacy-anchor-sidecar <file.dwells.json>` compatibility
 option. Arbitrary text or JSON is not accepted by `--posture`.
 
+Hardware placement defaults to normal servo position mode. Select
+current-based-position explicitly when that mode is part of the experiment:
+
+```sh
+./build/apps/x7_pose --posture config/postures/zeros.toml \
+  --mode current-based-position --effort-limit-nm 2.5
+```
+
+The CBP path stages the requested all-joint effort ceiling before torque-on
+and carries it through placement and the final hold. The ceiling defaults to
+2.5 Nm when omitted and must not exceed any joint's configured limit.
+`--effort-limit-nm` is rejected in position mode so a safety-relevant value is
+never silently ignored. CBP changes the servo operating mode; it does not add
+host-side feedback or computed torque. Keep the power cutoff in reach and
+support the arm before pressing Enter to disable torque.
+
 ## Trajectories and motion files
 
 ```cpp

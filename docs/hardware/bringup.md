@@ -215,8 +215,10 @@ final Enter confirms that the arm is supported before shutdown. See the
 > `track9.csv`/`track9.csv.settle` and `float1.csv`, section
 > `incidents-2026-07/` in [data-archive.md](../records/data-archive.md).
 > `x7_wave`, `x7_move_simple`,
-> `x7_pose`, `x7_read`, and `x7_onoff` remain usable (position mode
-> or no torque; none touches the current-command path); the
+> `x7_pose`, `x7_read`, and `x7_onoff` remain usable in their default
+> position or no-torque modes; those defaults do not touch the current-command
+> path. The opt-in `x7_pose --mode current-based-position` path is outside
+> this recovery ladder. The
 > post-incident recovery ladder is steps 1–6 above.
 
 ## Troubleshooting
