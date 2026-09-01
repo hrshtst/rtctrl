@@ -1,5 +1,5 @@
-// Position-mode placement used by x7_pose (and formerly the removed
-// x7_ident --pose-first startup):
+// Position or current-based-position placement used by x7_pose (and formerly
+// used in position mode by the removed x7_ident --pose-first startup):
 // a velocity-limited min-jerk move followed by goal-offset iterations
 // that converge the MEASURED posture (position mode has no integral
 // action — the stock P gain leaves 0.03-0.06 rad of friction sag, which
@@ -37,18 +37,30 @@ inline bool placementAccepted(bool converged, int write_failures) {
   return converged && write_failures == 0;
 }
 
-// Moves the activated position-mode arm to `target8`, then iterates
+// Moves the activated position or current-based-position arm to `target8`,
+// then iterates
 // goal offsets (goal = target + accumulated measured error) until the
 // measured posture is within `tol` or `max_iters` is exhausted. The
-// command stream stays alive throughout (both watchdog layers fed).
+// command stream stays alive throughout (both watchdog layers fed). A
+// nonempty `current_limits_amps` selects current-based-position writes and
+// must contain one ceiling for every joint.
 inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
                            const double* target8, double vel, double tol,
-                           int max_iters) {
+                           int max_iters,
+                           const std::vector<double>& current_limits_amps = {}) {
   PoseResult res;
-  PositionWriteMonitor writes;
+  const bool current_based_position = !current_limits_amps.empty();
+  PositionWriteMonitor writes(
+      stderr, current_based_position ? "current-based position" : "position");
   const auto failed = [&] {
     res.write_failures = writes.failures();
     return res;
+  };
+  const auto write = [&](const std::vector<double>& positions) {
+    return current_based_position
+               ? arm.writeCurrentBasedPositions(positions,
+                                                current_limits_amps)
+               : arm.writePositions(positions);
   };
   constexpr double kCycleS = 0.01;  // 100 Hz
   constexpr double kBuffer = 0.05;  // stay clear of the gate band
@@ -56,6 +68,10 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
   std::vector<rtctrl::dxl::Feedback> fb;
   if (!arm.readAll(fb)) return failed();
   const int n = static_cast<int>(fb.size());
+  if (current_based_position &&
+      static_cast<int>(current_limits_amps.size()) != n) {
+    return failed();
+  }
   const auto& lo = arm.softLimitLo();
   const auto& hi = arm.softLimitHi();
   model::ZVector start(n), target(n), q(n);
@@ -78,7 +94,7 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
     const double t = std::min(move_loop.elapsed(), move.duration());
     move.sample(t, q);
     for (int i = 0; i < n; ++i) cmd[i] = q[i];
-    writes.record(arm.writePositions(cmd), "placement");
+    writes.record(write(cmd), "placement");
     if (arm.escalated()) return failed();
     if (!arm.checkDeadman()) return failed();
     if (t >= move.duration()) break;
@@ -108,7 +124,7 @@ inline PoseResult movePose(rtctrl::hw::CraneX7& arm,
     // settle the servo loop while keeping the stream alive
     PeriodicLoop settle_loop(kCycleS);
     while (settle_loop.elapsed() < 0.3) {
-      writes.record(arm.writePositions(goal), "placement");
+      writes.record(write(goal), "placement");
       if (arm.escalated()) return failed();
       if (!arm.checkDeadman()) return failed();
       settle_loop.waitNext();

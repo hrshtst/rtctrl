@@ -9,17 +9,18 @@ namespace x7 {
 // reports ordinary success after dropping a command.
 class PositionWriteMonitor {
  public:
-  explicit PositionWriteMonitor(std::FILE* output = stderr)
-      : output_(output) {}
+  explicit PositionWriteMonitor(std::FILE* output = stderr,
+                                const char* command_name = "position")
+      : output_(output), command_name_(command_name) {}
 
   bool record(bool succeeded, const char* phase) {
     if (succeeded) return true;
     ++failures_;
     if (failures_ == 1 && output_ != nullptr) {
       std::fprintf(output_,
-                   "%s: position command write failed; command stream "
+                   "%s: %s command write failed; command stream "
                    "remains under deadman protection\n",
-                   phase);
+                   phase, command_name_);
     }
     return false;
   }
@@ -29,13 +30,14 @@ class PositionWriteMonitor {
 
   void reportSummary(const char* phase) const {
     if (failures_ > 0 && output_ != nullptr) {
-      std::fprintf(output_, "%s: %d position command write(s) failed\n",
-                   phase, failures_);
+      std::fprintf(output_, "%s: %d %s command write(s) failed\n",
+                   phase, failures_, command_name_);
     }
   }
 
  private:
   std::FILE* output_;
+  const char* command_name_;
   int failures_ = 0;
 };
 

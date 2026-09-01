@@ -1,6 +1,7 @@
-// Positioning aid: moves the arm to a canonical posture in POSITION
-// mode so the operator sees the real target on hardware, holds it,
-// then goes limp on request while the operator supports the arm.
+// Positioning aid: moves the arm to a canonical posture in position or
+// current-based-position mode so the operator sees the real target on
+// hardware, holds it, then goes limp on request while the operator supports
+// the arm. Position mode remains the default.
 // Built as the manual-fallback handover for the (since removed)
 // identification campaign; it remains a general positioning aid for
 // visually confirming a posture on hardware. Hardware success requires
@@ -12,6 +13,8 @@
 // BEFORE pressing Enter. Power cutoff within reach.
 //
 // Usage: x7_pose [--config path] [--port dev]
+//                [--mode position|current-based-position]
+//                [--effort-limit-nm value]
 //                (--posture <file.toml> |
 //                 --legacy-anchor-sidecar <file.dwells.json> |
 //                 --tcp X Y Z ROLL_RAD PITCH_RAD YAW_RAD)
@@ -30,6 +33,10 @@
 //              motion. The hardware solve seeds from the measured
 //              posture, so of multiple IK branches the nearest wins.
 //   --vel      joint speed limit [rad/s], default 0.25, max 0.5
+//   --mode     servo operating mode, default position
+//   --effort-limit-nm
+//              positive all-joint ceiling for current-based-position;
+//              default 2.5 Nm and invalid in position mode
 //   --preview  solve/load the target, write <basename>.init.ztk, and
 //              exit WITHOUT touching the bus; view with
 //              rk_pen -model models/crane_x7/crane_x7.ztk -init <file>
@@ -42,11 +49,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "bringup/pose_common.hpp"
 #include "common/legacy_anchor.hpp"
+#include "rtctrl/hw/command_current.hpp"
 #include "rtctrl/model/attitude.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/ik_solver.hpp"
@@ -136,6 +145,11 @@ int main(int argc, char* argv[]) {
   double tcp[6] = {};
   bool have_tcp = false;
   double vel = 0.25;
+  int operating_mode = 3;
+  const char* mode_name = "position";
+  const char* command_name = "position";
+  double effort_limit_nm = 2.5;
+  bool effort_limit_given = false;
   const auto& rest = cli.rest;
   for (std::size_t i = 0; i < rest.size(); ++i) {
     if (std::strcmp(rest[i], "--posture") == 0 && i + 1 < rest.size()) {
@@ -172,6 +186,37 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "--vel: invalid value %s\n", rest[i]);
         return 1;
       }
+    } else if (std::strcmp(rest[i], "--mode") == 0) {
+      if (i + 1 >= rest.size()) {
+        std::fprintf(stderr, "--mode requires a value\n");
+        return 1;
+      }
+      const char* value = rest[++i];
+      if (std::strcmp(value, "position") == 0) {
+        operating_mode = 3;
+        mode_name = "position";
+        command_name = "position";
+      } else if (std::strcmp(value, "current-based-position") == 0) {
+        operating_mode = 5;
+        mode_name = "current-based-position";
+        command_name = "current-based position";
+      } else {
+        std::fprintf(stderr,
+                     "--mode must be position or current-based-position\n");
+        return 1;
+      }
+    } else if (std::strcmp(rest[i], "--effort-limit-nm") == 0) {
+      if (i + 1 >= rest.size()) {
+        std::fprintf(stderr, "--effort-limit-nm requires a value\n");
+        return 1;
+      }
+      if (!x7::parseStrictDouble(rest[++i], &effort_limit_nm) ||
+          effort_limit_nm <= 0.0) {
+        std::fprintf(stderr,
+                     "--effort-limit-nm must be finite and positive\n");
+        return 1;
+      }
+      effort_limit_given = true;
     } else {
       std::fprintf(stderr, "unknown argument: %s\n", rest[i]);
       return 1;
@@ -191,6 +236,12 @@ int main(int argc, char* argv[]) {
                  "a target is required: --posture <file.toml> or "
                  "--legacy-anchor-sidecar <file.dwells.json> or "
                  "--tcp X Y Z ROLL_RAD PITCH_RAD YAW_RAD\n");
+    return 1;
+  }
+  if (operating_mode == 3 && effort_limit_given) {
+    std::fprintf(stderr,
+                 "--effort-limit-nm is only valid with "
+                 "--mode current-based-position\n");
     return 1;
   }
   vel = std::clamp(vel, 0.05, 0.5);
@@ -233,8 +284,37 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    auto session = x7::openSession(cli, /*operating_mode_override=*/3);
+    auto session = x7::openSession(
+        cli, operating_mode, [&](rtctrl::hw::Config& config) {
+          if (operating_mode != 5) return;
+          for (std::size_t i = 0; i < config.joints.size(); ++i) {
+            if (effort_limit_nm > config.joints[i].effort_limit) {
+              throw std::runtime_error(
+                  "current-based-position effort ceiling exceeds the "
+                  "configured limit on joint " +
+                  std::to_string(i));
+            }
+          }
+        });
     auto& arm = *session.arm;
+    std::vector<double> current_limits_amps;
+    if (operating_mode == 5) {
+      current_limits_amps.reserve(session.config.joints.size());
+      for (const auto& joint : session.config.joints) {
+        current_limits_amps.push_back(std::fabs(
+            rtctrl::hw::commandCurrentFromTorque(joint, effort_limit_nm)));
+      }
+      arm.setActivationCurrentBasedPositionLimits(current_limits_amps);
+      std::printf("current-based-position effort ceiling: %.3f Nm per "
+                  "joint\n",
+                  effort_limit_nm);
+    }
+    const auto write_pose = [&](const std::vector<double>& positions) {
+      return operating_mode == 5
+                 ? arm.writeCurrentBasedPositions(positions,
+                                                  current_limits_amps)
+                 : arm.writePositions(positions);
+    };
     if (!arm.activate()) {
       std::fprintf(stderr, "activation failed: %s\n",
                    arm.lastError().c_str());
@@ -289,11 +369,12 @@ int main(int argc, char* argv[]) {
 
     // converging placement: goal-offset iterations close the friction
     // sag so "reached" means the MEASURED posture
-    const auto placed = x7::movePose(arm, posture, vel, 0.01, 5);
+    const auto placed = x7::movePose(arm, posture, vel, 0.01, 5,
+                                     current_limits_amps);
     if (placed.write_failures > 0) {
       std::fprintf(stderr,
-                   "placement: %d position command write(s) failed\n",
-                   placed.write_failures);
+                   "placement: %d %s command write(s) failed\n",
+                   placed.write_failures, command_name);
     }
     if (!placed.ok) {
       if (!placed.converged && !placed.measured.empty()) {
@@ -311,18 +392,20 @@ int main(int argc, char* argv[]) {
     constexpr double kCycleS = 0.01;  // 100 Hz
 
     std::printf(
-        "\nHOLDING the posture in position mode.\n"
+        "\nHOLDING the posture in %s mode.\n"
         ">>> The arm goes LIMP and drops when you continue. CATCH,\n"
         ">>> don't hold: support from below (forearm/under-elbow)\n"
         ">>> only against the drop — do NOT grip or lift, or the\n"
-        ">>> posture is lost. Press Enter to torque off.\n");
+        ">>> posture is lost. Press Enter to torque off.\n",
+        mode_name);
     // keep the command stream (and both watchdog layers) alive while
     // waiting — a silent bus would trip the servo Bus Watchdogs
     (void)n;
-    x7::PositionWriteMonitor hold_writes;
+    x7::PositionWriteMonitor hold_writes(
+        stderr, command_name);
     x7::PeriodicLoop hold_loop(kCycleS);
     while (!enterPressed()) {
-      hold_writes.record(arm.writePositions(placed.hold_goal), "hold");
+      hold_writes.record(write_pose(placed.hold_goal), "hold");
       if (arm.escalated()) {
         hold_writes.reportSummary("hold");
         shutdown.run();

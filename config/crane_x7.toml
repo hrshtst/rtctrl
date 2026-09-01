@@ -6,8 +6,8 @@
 # drops them, so they are authored here and cross-checked against the
 # URDF-derived values by tests/unit/model_test.cpp.
 #
-# operating_mode uses raw Dynamixel values: 3 = position, 1 = velocity,
-# 0 = current (torque).
+# operating_mode uses raw Dynamixel values: 0 = current (torque), 1 = velocity,
+# 3 = position, 5 = current-based position.
 
 [bus]
 port = "/dev/ttyUSB0"

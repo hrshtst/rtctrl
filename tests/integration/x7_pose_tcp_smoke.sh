@@ -19,6 +19,29 @@ for _ in $(seq 1 50); do
 done
 [ -e "$LINK" ] || { echo "emulator link never appeared"; exit 1; }
 
+# Current-based-position is opt-in and carries an explicit effort ceiling
+# through activation, placement, and hold. The emulator starts at the zeros
+# posture, which keeps this additional mode-path check short.
+CBP_OUTPUT=$( (sleep 4; echo) | "$POSE" --port "$LINK" \
+  --posture config/postures/zeros.toml \
+  --mode current-based-position 2>&1)
+echo "$CBP_OUTPUT" | grep -q \
+  "HOLDING the posture in current-based-position mode" || {
+  echo "current-based-position placement did not reach its hold:"
+  echo "$CBP_OUTPUT"
+  exit 1
+}
+echo "$CBP_OUTPUT" | grep -q "current-based-position effort ceiling: 2.500 Nm" || {
+  echo "current-based-position ceiling was not reported:"
+  echo "$CBP_OUTPUT"
+  exit 1
+}
+if echo "$CBP_OUTPUT" | grep -Eq "SHUTDOWN FAULT|DEADMAN"; then
+  echo "current-based-position placement hit a watchdog fault:"
+  echo "$CBP_OUTPUT"
+  exit 1
+fi
+
 # The zero-seeded target takes about 9 s at 0.5 rad/s. Deliver ENTER after
 # placement so the app exercises its verified deactivation path as well.
 OUTPUT=$( (sleep 12; echo) | "$POSE" --port "$LINK" \
@@ -31,6 +54,11 @@ echo "$OUTPUT" | grep -q "moving to the posture" || {
 }
 echo "$OUTPUT" | grep -q "the arm is limp" || {
   echo "TCP placement did not shut down cleanly:"
+  echo "$OUTPUT"
+  exit 1
+}
+echo "$OUTPUT" | grep -q "HOLDING the posture in position mode" || {
+  echo "default position mode was not preserved:"
   echo "$OUTPUT"
   exit 1
 }

@@ -400,6 +400,24 @@ add_test(NAME x7_pose_requires_a_target COMMAND x7_pose)
 set_tests_properties(x7_pose_requires_a_target PROPERTIES
   PASS_REGULAR_EXPRESSION "a target is required"
   FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_rejects_unknown_mode
+  COMMAND x7_pose --posture config/postures/p1.toml --mode current)
+set_tests_properties(x7_pose_rejects_unknown_mode PROPERTIES
+  PASS_REGULAR_EXPRESSION "position or current-based-position"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_rejects_position_effort_ceiling
+  COMMAND x7_pose --posture config/postures/p1.toml
+          --mode position --effort-limit-nm 2.5)
+set_tests_properties(x7_pose_rejects_position_effort_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "only valid with"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
+add_test(NAME x7_pose_rejects_excessive_cbp_effort_ceiling
+  COMMAND x7_pose --posture config/postures/p1.toml
+          --mode current-based-position --effort-limit-nm 4.1)
+set_tests_properties(x7_pose_rejects_excessive_cbp_effort_ceiling PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "exceeds the configured limit"
+  FAIL_REGULAR_EXPRESSION "bus:" LABELS unit)
 add_test(NAME x7_pose_tcp_preview_writes_init
   COMMAND x7_pose --tcp 0.2 0 0.25 0 0 0
           --preview ${CMAKE_BINARY_DIR}/tcp_preview
