@@ -1,6 +1,7 @@
 #include "rtctrl/arm/sim_arm.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 
@@ -97,6 +98,7 @@ bool SimArm::setMode(ControlMode mode) {
 }
 
 bool SimArm::readState(JointState& state, CommandSnapshot* cmds) {
+  if (lf_faulted_) return false;  // never expose a rejected state
   for (int i = 0; i < kCanonicalDof; ++i) {
     const int offset = map_.rokiOffset(i);
     zVecElemNC(state.q.get(), i) = q9_[offset];
@@ -113,7 +115,7 @@ bool SimArm::readState(JointState& state, CommandSnapshot* cmds) {
 }
 
 bool SimArm::writeCommand(const JointCommand& cmd, CommandReceipt* receipt) {
-  if (cmd.mode != mode_) {  // mode is fixed while active
+  if (lf_faulted_ || cmd.mode != mode_) {  // mode is fixed while active
     if (receipt != nullptr) *receipt = {false, 0, time_};
     return false;
   }
@@ -266,12 +268,29 @@ bool SimArm::step() {
       !std::isfinite(options_.sim_dt) || options_.sim_dt <= 0.0) {
     return false;
   }
+  if (lf_prepared_ || lf_faulted_) return stepWithLinkForce();
+
+  // Without a link-force spec: the original arithmetic, plus interval
+  // bookkeeping that reads but never feeds back into the state.
+  LinkForceInterval& interval = lf_interval_;
+  interval = LinkForceInterval{};
+  interval.attempt = lf_attempts_++;
+  interval.start_seq = interval.end_seq = seq_;
+  interval.start_s = interval.end_s = time_;
   double remaining = options_.control_dt;
   while (remaining > 0.0) {
     const double dt = std::min(options_.sim_dt, remaining);
+    const double eval = time_;
     substep(dt);
+    ++interval.substeps_completed;
+    interval.last_eval_s = eval;
+    interval.last_substep_dt = dt;
+    interval.end_s = time_;
     for (int i = 0; i < kModelDof; ++i) {
-      if (!std::isfinite(q9_[i]) || !std::isfinite(v9_[i])) return false;
+      if (!std::isfinite(q9_[i]) || !std::isfinite(v9_[i])) {
+        interval.status = LinkForceStatus::NonFiniteState;
+        return false;
+      }
     }
     remaining -= dt;
     if (remaining < 1e-15 * options_.control_dt) remaining = 0.0;
@@ -280,7 +299,194 @@ bool SimArm::step() {
     log_->frame(options_.control_dt, q9_.get());
   }
   ++seq_;  // one fresh feedback sample per control step
+  interval.complete = true;
+  interval.end_seq = seq_;
   return true;
+}
+
+bool SimArm::stepWithLinkForce() {
+  LinkForceInterval& interval = lf_interval_;
+  interval = LinkForceInterval{};
+  interval.attempt = lf_attempts_++;
+  interval.start_seq = interval.end_seq = seq_;
+  interval.start_s = interval.end_s = time_;
+  interval.prepared = lf_prepared_;
+  interval.started = lf_started_;
+  if (lf_faulted_) {
+    interval.status = LinkForceStatus::FaultLatched;
+    return false;
+  }
+  double remaining = options_.control_dt;
+  while (remaining > 0.0) {
+    const double dt = std::min(options_.sim_dt, remaining);
+    const LinkForceStatus status = substepWithLinkForce(dt);
+    if (status != LinkForceStatus::Ok) {
+      // Nothing of the rejected substep was committed: the clock and the
+      // state stay at the last completed substep, and the arm latches.
+      interval.status = status;
+      interval.rejected = true;
+      interval.rejected_eval_s = time_;
+      interval.end_s = time_;
+      lf_faulted_ = true;
+      return false;
+    }
+    remaining -= dt;
+    if (remaining < 1e-15 * options_.control_dt) remaining = 0.0;
+  }
+  if (log_ != nullptr) {
+    log_->frame(options_.control_dt, q9_.get());
+  }
+  ++seq_;
+  interval.complete = true;
+  interval.end_seq = seq_;
+  interval.end_s = time_;
+  return true;
+}
+
+LinkForceStatus SimArm::substepWithLinkForce(double dt) {
+  computeTorques();
+
+  rkChain* chain = model_.chain();
+  rkChainSetJointDisAll(chain, q9_.get());
+  rkChainUpdateFK(chain);
+  rkChainSetJointVelAll(chain, v9_.get());
+
+  const double eval = time_;
+  const auto point =
+      model_.linkPointWorldPos(lf_link_, lf_spec_.point_link_m);
+  detail::SubstepFacts facts;
+  double scale = 0.0;
+  std::array<double, 3> force{};
+  std::array<double, 3> force_impulse = lf_interval_.force_impulse_ns;
+  std::array<double, kCanonicalDof> joint_impulse =
+      lf_interval_.joint_impulse_nms;
+  if (lf_started_) {
+    scale = lf_spec_.profile.scale(eval - lf_start_time_);
+    facts.force_requested = scale * lf_spec_.magnitude_n > 0.0;
+  }
+  if (facts.force_requested) {
+    std::array<double, 3> unit{};
+    facts.direction_defined = model::linkForceDirection(lf_spec_, point, &unit);
+    if (facts.direction_defined) {
+      const double magnitude = scale * lf_spec_.magnitude_n;
+      for (int k = 0; k < 3; ++k) force[k] = magnitude * unit[k];
+      model_.forceJointTorqueModel(lf_link_, lf_spec_.point_link_m, force,
+                                   ext9_.get());
+      map_.reduceTorque(ext9_.get(), ext8_.get());
+      bool finite = true;
+      for (int k = 0; k < 3; ++k) {
+        force_impulse[k] += force[k] * dt;
+        finite = finite && std::isfinite(point[k]) &&
+                 std::isfinite(force[k]) && std::isfinite(force_impulse[k]);
+      }
+      for (int i = 0; i < kModelDof; ++i) {
+        finite = finite && std::isfinite(ext9_[i]);
+      }
+      for (int i = 0; i < kCanonicalDof; ++i) {
+        joint_impulse[i] += ext8_[i] * dt;
+        finite = finite && std::isfinite(joint_impulse[i]);
+      }
+      facts.force_finite = finite;
+    }
+  }
+  LinkForceStatus status = detail::classifySubstep(facts);
+  if (status != LinkForceStatus::Ok) return status;
+
+  // The same equation as substep(), with J^T f added after the actuator
+  // effort clamp (tau9_ is already clamped).
+  rkChainInertiaMatBiasVecG(chain, mass_mat_, rhs9_.get(), RK_GRAVITY6D);
+  for (int i = 0; i < kModelDof; ++i) {
+    zMatElemNC(mass_mat_, i, i) += options_.reflected_inertia;
+  }
+  zVecSubDRC(rhs9_.get(), tau9_.get());  // rhs = bias - tau
+  zVecRevDRC(rhs9_.get());               // rhs = tau - bias
+  if (facts.force_requested) zVecAddDRC(rhs9_.get(), ext9_.get());
+  facts.solve_ok =
+      zLESolveGauss(mass_mat_, rhs9_.get(), acc9_.get()) != nullptr;
+  status = detail::classifySubstep(facts);
+  if (status != LinkForceStatus::Ok) return status;
+
+  // Staged semi-implicit Euler with inelastic joint stops: the same
+  // operations as substep(), committed only if finite.
+  bool finite = true;
+  for (int i = 0; i < kModelDof; ++i) {
+    double v = v9_[i] + acc9_[i] * dt;
+    double q = q9_[i] + v * dt;
+    if (q < limit_lo_[i]) {
+      q = limit_lo_[i];
+      if (v < 0.0) v = 0.0;
+    } else if (q > limit_hi_[i]) {
+      q = limit_hi_[i];
+      if (v > 0.0) v = 0.0;
+    }
+    q_next_[i] = q;
+    v_next_[i] = v;
+    finite = finite && std::isfinite(q) && std::isfinite(v);
+  }
+  facts.state_finite = finite;
+  status = detail::classifySubstep(facts);
+  if (status != LinkForceStatus::Ok) return status;
+
+  for (int i = 0; i < kModelDof; ++i) {
+    q9_[i] = q_next_[i];
+    v9_[i] = v_next_[i];
+  }
+  time_ += dt;
+
+  LinkForceInterval& interval = lf_interval_;
+  ++interval.substeps_completed;
+  interval.last_eval_s = eval;
+  interval.last_substep_dt = dt;
+  interval.last_scale = scale;
+  interval.last_point_world = point;
+  interval.end_s = time_;
+  if (facts.force_requested) {
+    interval.last_force_world = force;
+    for (int i = 0; i < kCanonicalDof; ++i) {
+      interval.last_joint_torque_nm[i] = ext8_[i];
+    }
+    interval.force_impulse_ns = force_impulse;
+    interval.joint_impulse_nms = joint_impulse;
+    interval.active = true;
+    if (!lf_applied_) lf_first_applied_ = eval;
+    lf_applied_ = true;
+    lf_last_applied_ = eval;
+  } else {
+    interval.last_force_world = {};
+    interval.last_joint_torque_nm = {};
+  }
+  return LinkForceStatus::Ok;
+}
+
+void SimArm::setLinkForce(const model::LinkForceSpec& spec) {
+  model::validateLinkForce(spec);
+  const int link = model_.linkIndex(spec.link);
+  if (link < 0) {
+    throw std::invalid_argument("SimArm::setLinkForce: unknown link '" +
+                                spec.link + "'");
+  }
+  lf_spec_ = spec;
+  lf_link_ = link;
+  lf_prepared_ = true;
+  lf_started_ = false;
+}
+
+void SimArm::startLinkForce(double start_time) {
+  if (!lf_prepared_) {
+    throw std::logic_error("SimArm::startLinkForce: no link force is set");
+  }
+  if (!std::isfinite(start_time)) {
+    throw std::invalid_argument(
+        "SimArm::startLinkForce: start time must be finite");
+  }
+  lf_start_time_ = start_time;
+  lf_started_ = true;
+}
+
+void SimArm::clearLinkForce() {
+  lf_prepared_ = false;
+  lf_started_ = false;
+  lf_link_ = -1;
 }
 
 void SimArm::setDisturbance(int canonical_or_finger_b, double torque) {

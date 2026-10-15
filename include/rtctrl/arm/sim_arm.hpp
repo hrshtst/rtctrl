@@ -6,8 +6,10 @@
 #include <vector>
 
 #include "rtctrl/arm/arm.hpp"
+#include "rtctrl/arm/link_force_interval.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/link_force.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
 
@@ -29,6 +31,22 @@ namespace rtctrl::arm {
 // opposite on both fingers, plus half of the commanded gripper effort.
 // Joint limits are enforced inelastically (position clamped, velocity
 // zeroed at the stop).
+//
+// JointState::tau reports the servo-equivalent canonical torque BEFORE
+// the model-coordinate effort clamp (and without the setDisturbance and
+// numeric-damping terms), so under saturation it can differ from the
+// effort the forward dynamics used. Only the link-force telemetry below
+// is exact about what was applied.
+//
+// Link-force disturbance (setLinkForce): a prescribed external force on
+// one link, added to the forward dynamics as J^T f AFTER the actuator
+// effort clamp. The controller never sees it except through motion. Once
+// a spec is set, every substep is accounted strictly (see
+// LinkForceStatus); the first rejected substep commits nothing and
+// latches the arm: readState and writeCommand then fail, every later
+// step() fails without advancing, deactivate() still succeeds, and only
+// a fresh SimArm clears the latch. Without a spec the arithmetic path is
+// unchanged.
 class SimArm : public Arm {
  public:
   struct Options {
@@ -88,9 +106,32 @@ class SimArm : public Arm {
   rkChain* chain() const { return model_.chain(); }
   void logTo(model::ZvsWriter* writer) { log_ = writer; }  // per control step
 
+  // Link-force lifecycle. setLinkForce validates the spec and resolves
+  // its link (std::invalid_argument otherwise) and enables strict
+  // accounting; the force stays zero until startLinkForce starts the
+  // profile clock at start_time (sim time; finite; std::logic_error
+  // without a spec). Zero requested force (before onset, after release,
+  // magnitude 0) skips the direction evaluation entirely, so a
+  // degenerate anchor faults only while force is requested.
+  // clearLinkForce removes the spec but never clears a fault latch.
+  void setLinkForce(const model::LinkForceSpec& spec);
+  void startLinkForce(double start_time);
+  void clearLinkForce();
+  const LinkForceInterval& lastLinkForceInterval() const {
+    return lf_interval_;
+  }
+  bool linkForceFaulted() const { return lf_faulted_; }
+  // Whether a completed substep applied nonzero force, and the first and
+  // last such substep start times (NaN before any).
+  bool linkForceApplied() const { return lf_applied_; }
+  double firstLinkForceTime() const { return lf_first_applied_; }
+  double lastLinkForceTime() const { return lf_last_applied_; }
+
  private:
   void computeTorques();
   void substep(double dt);
+  LinkForceStatus substepWithLinkForce(double dt);
+  bool stepWithLinkForce();
 
   Options options_;
   model::ChainModel model_;
@@ -117,6 +158,23 @@ class SimArm : public Arm {
   model::ZVector damping9_{model::kModelDof};
   model::ZVector disturbance_{model::kCanonicalDof + 1};  // [8] = finger_b
   model::ZvsWriter* log_ = nullptr;
+
+  // Link-force state (see setLinkForce).
+  model::LinkForceSpec lf_spec_;
+  int lf_link_ = -1;
+  bool lf_prepared_ = false;
+  bool lf_started_ = false;
+  double lf_start_time_ = 0.0;
+  bool lf_faulted_ = false;
+  bool lf_applied_ = false;
+  double lf_first_applied_ = LinkForceInterval::kNaN;
+  double lf_last_applied_ = LinkForceInterval::kNaN;
+  std::uint64_t lf_attempts_ = 0;
+  LinkForceInterval lf_interval_;
+  model::ZVector ext9_{model::kModelDof};    // J^T f of the current substep
+  model::ZVector ext8_{model::kCanonicalDof};
+  model::ZVector q_next_{model::kModelDof};  // staged integration
+  model::ZVector v_next_{model::kModelDof};
 };
 
 }  // namespace rtctrl::arm

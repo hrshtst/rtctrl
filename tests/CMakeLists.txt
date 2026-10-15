@@ -7,6 +7,7 @@ add_executable(unit_tests
   unit/link_force_test.cpp
   unit/force_budget_test.cpp
   unit/force_budget_config_test.cpp
+  unit/link_force_substep_test.cpp
   unit/posture_test.cpp
   unit/trajectory_test.cpp
   unit/zvs_trajectory_test.cpp
@@ -186,6 +187,7 @@ set_tests_properties(x7_plan_ptp_plot_smoke PROPERTIES
 
 add_executable(integration_tests
   integration/sim_arm_test.cpp
+  integration/link_force_sim_test.cpp
   integration/pty_test.cpp
   integration/thread_test.cpp
   integration/gravity_sim_test.cpp

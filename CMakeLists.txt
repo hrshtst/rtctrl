@@ -35,6 +35,7 @@ add_library(rtctrl
   src/model/zvs_trajectory.cpp
   src/model/zvs_writer.cpp
   src/model/ik_solver.cpp
+  src/arm/link_force_interval.cpp
   src/arm/sim_arm.cpp
   src/dxl/sync_group.cpp
   src/dxl/port.cpp
