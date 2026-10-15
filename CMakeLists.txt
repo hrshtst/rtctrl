@@ -25,6 +25,7 @@ add_library(rtctrl
   src/milib_cpp_compat.cpp
   src/model/attitude.cpp
   src/model/chain_model.cpp
+  src/model/force_budget.cpp
   src/model/joint_map.cpp
   src/model/link_force.cpp
   src/model/posture.cpp
