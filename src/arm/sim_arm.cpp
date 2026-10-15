@@ -1,5 +1,7 @@
 #include "rtctrl/arm/sim_arm.hpp"
 
+#include "rtctrl/arm/link_force_log.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -268,8 +270,16 @@ bool SimArm::step() {
       !std::isfinite(options_.sim_dt) || options_.sim_dt <= 0.0) {
     return false;
   }
-  if (lf_prepared_ || lf_faulted_) return stepWithLinkForce();
+  const bool advanced =
+      lf_prepared_ || lf_faulted_ ? stepWithLinkForce() : stepPlain();
+  // Recording failures never reject physics, but they fail the step.
+  if (lf_log_ != nullptr && !lf_log_->write(lf_interval_)) {
+    lf_log_failed_ = true;
+  }
+  return advanced && !lf_log_failed_;
+}
 
+bool SimArm::stepPlain() {
   // Without a link-force spec: the original arithmetic, plus interval
   // bookkeeping that reads but never feeds back into the state.
   LinkForceInterval& interval = lf_interval_;

@@ -15,6 +15,8 @@
 
 namespace rtctrl::arm {
 
+class LinkForceCsvLog;
+
 // Simulated Arm: plain roki forward dynamics (rkChainFD) integrated
 // with semi-implicit Euler, no contact machinery.
 //
@@ -126,11 +128,19 @@ class SimArm : public Arm {
   bool linkForceApplied() const { return lf_applied_; }
   double firstLinkForceTime() const { return lf_first_applied_; }
   double lastLinkForceTime() const { return lf_last_applied_; }
+  // Writes one LinkForceInterval row at the end of every step() attempt
+  // (rejected and latched ones included). A row that cannot be written
+  // does not undo or reject the physics: the interval stays as computed
+  // and feedback stays valid, but linkForceLogFailed() latches true and
+  // that step() and every later one return false.
+  void linkForceLogTo(LinkForceCsvLog* log) { lf_log_ = log; }
+  bool linkForceLogFailed() const { return lf_log_failed_; }
 
  private:
   void computeTorques();
   void substep(double dt);
   LinkForceStatus substepWithLinkForce(double dt);
+  bool stepPlain();
   bool stepWithLinkForce();
 
   Options options_;
@@ -171,6 +181,8 @@ class SimArm : public Arm {
   double lf_last_applied_ = LinkForceInterval::kNaN;
   std::uint64_t lf_attempts_ = 0;
   LinkForceInterval lf_interval_;
+  LinkForceCsvLog* lf_log_ = nullptr;
+  bool lf_log_failed_ = false;
   model::ZVector ext9_{model::kModelDof};    // J^T f of the current substep
   model::ZVector ext8_{model::kCanonicalDof};
   model::ZVector q_next_{model::kModelDof};  // staged integration

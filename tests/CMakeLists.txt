@@ -8,6 +8,7 @@ add_executable(unit_tests
   unit/force_budget_test.cpp
   unit/force_budget_config_test.cpp
   unit/link_force_substep_test.cpp
+  unit/link_force_log_test.cpp
   unit/posture_test.cpp
   unit/trajectory_test.cpp
   unit/zvs_trajectory_test.cpp
