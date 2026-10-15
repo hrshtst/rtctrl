@@ -48,21 +48,34 @@ struct LinkForceRunReport {
   bool log_ok = true;
 };
 
-// Sets the spec and log on the simulator (strict accounting from now on)
-// and starts the profile clock at the feedback time of the run's first
-// tracking cycle. Run is follow::FollowRun or track::TrackingRun.
-template <class Run>
-void armLinkForce(rtctrl::arm::SimArm& robot,
-                  const rtctrl::model::LinkForceSpec& spec,
-                  rtctrl::arm::LinkForceCsvLog* log, Run& run,
-                  LinkForceRunReport* report) {
+// Sets the spec and log on the simulator: strict accounting and one log
+// row per step from now on, the force still zero.
+inline void prepareLinkForce(rtctrl::arm::SimArm& robot,
+                             const rtctrl::model::LinkForceSpec& spec,
+                             rtctrl::arm::LinkForceCsvLog* log) {
   robot.setLinkForce(spec);
   robot.linkForceLogTo(log);
+}
+
+// Starts the profile clock at the feedback time of the run's first
+// tracking cycle. Run is follow::FollowRun or track::TrackingRun.
+template <class Run>
+void startLinkForceAtTracking(rtctrl::arm::SimArm& robot, Run& run,
+                              LinkForceRunReport* report) {
   run.setTrackingStartHook(
       [&robot, report](const rtctrl::arm::JointState& state) {
         robot.startLinkForce(state.t);
         report->outcome.started = true;
       });
+}
+
+template <class Run>
+void armLinkForce(rtctrl::arm::SimArm& robot,
+                  const rtctrl::model::LinkForceSpec& spec,
+                  rtctrl::arm::LinkForceCsvLog* log, Run& run,
+                  LinkForceRunReport* report) {
+  prepareLinkForce(robot, spec, log);
+  startLinkForceAtTracking(robot, run, report);
 }
 
 // Collects what the simulator actually did and closes the interval log.

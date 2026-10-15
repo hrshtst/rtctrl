@@ -18,7 +18,10 @@ struct PreparedBundle {
 
 PreparedBundle prepareBundle(const std::filesystem::path& staging,
                              const Config& effective_config);
+// provenance: extra root-level TOML lines appended verbatim (e.g. the
+// link-force provenance from common/link_force_bundle.hpp).
 void writeBundleResult(const std::filesystem::path& root,
-                       const std::string& frontend, const RunResult& result);
+                       const std::string& frontend, const RunResult& result,
+                       const std::string& provenance = std::string());
 
 }  // namespace x7::track

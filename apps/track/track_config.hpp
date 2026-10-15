@@ -195,8 +195,10 @@ inline Config loadConfig(const fs::path& path) {
   const auto& simulation = optionalTable(root, "simulation");
   rejectUnknown(simulation,
                 {"initial_posture", "initial_joints", "integration_step_s",
-                 "position_kp", "position_kd"},
+                 "position_kp", "position_kd", "link_force"},
                 "simulation");
+  const auto link_force = inputPath(simulation, "link_force", path, false);
+  if (!link_force.empty()) config.simulation.link_force_path = link_force;
   if (const auto value = simulation["initial_posture"].value<std::string>()) {
     if (*value == "model") {
       config.simulation.initial_posture = SimulationConfig::InitialPosture::Model;

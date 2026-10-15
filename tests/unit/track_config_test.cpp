@@ -1,7 +1,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 
 #include "rtctrl/arm/arm.hpp"
@@ -151,4 +153,27 @@ TEST_CASE("tracking assessment failure completes while hard error aborts",
   track::TrackingRun guarded(unsafe, chain, map, hold, config, true);
   const auto guarded_result = guarded.run();
   CHECK(guarded_result.status == track::RunStatus::HardTrackingError);
+}
+
+TEST_CASE("track config resolves an optional simulation link force",
+          "[track][config][link_force]") {
+  const char* absent = "build/track_no_link_force.toml";
+  writeConfig(absent);
+  CHECK_FALSE(track::loadConfig(absent).simulation.link_force_path);
+  std::remove(absent);
+
+  const char* relative = "build/track_link_force.toml";
+  writeConfig(relative, "[simulation]\nlink_force = \"push.toml\"\n");
+  const auto config = track::loadConfig(relative);
+  REQUIRE(config.simulation.link_force_path);
+  CHECK(*config.simulation.link_force_path ==
+        std::filesystem::absolute("build/push.toml").lexically_normal());
+  std::remove(relative);
+
+  const char* empty = "build/track_empty_link_force.toml";
+  writeConfig(empty, "[simulation]\nlink_force = \"\"\n");
+  CHECK_THROWS_WITH(track::loadConfig(empty),
+                    Catch::Matchers::ContainsSubstring(
+                        "link_force must be a non-empty path"));
+  std::remove(empty);
 }

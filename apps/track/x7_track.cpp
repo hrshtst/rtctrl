@@ -11,6 +11,7 @@
 #include <optional>
 #include <stdexcept>
 
+#include "common/link_force_bundle.hpp"
 #include "common/x7_common.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/port.hpp"
@@ -101,6 +102,9 @@ int main(int argc, char* argv[]) {
     }
     auto config = track::loadConfig(cli.config_path);
     track::applyOverrides(cli, &config);
+    if (config.simulation.link_force_path) {
+      std::fprintf(stderr, "%s\n", x7::kHardwareLinkForceNotice);
+    }
     if (cli.log_path) config.output.hardware_log = *cli.log_path;
     if (bundle) {
       const auto prepared = track::prepareBundle(bundle->staging(), config);
@@ -204,7 +208,10 @@ int main(int argc, char* argv[]) {
 
     std::string display_log = config.output.hardware_log.string();
     if (bundle) {
-      track::writeBundleResult(bundle->staging(), "hardware", result);
+      track::writeBundleResult(
+          bundle->staging(), "hardware", result,
+          config.simulation.link_force_path ? x7::hardwareLinkForceProvenance()
+                                            : std::string());
       x7::ptp::writeBundleManifestFor(
           bundle->staging(), "rtctrl-x7-track-bundle", 1,
           rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);

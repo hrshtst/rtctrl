@@ -6,6 +6,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/link_force_bundle.hpp"
+
 namespace x7::track {
 
 namespace fs = std::filesystem;
@@ -99,6 +101,9 @@ void writeEffectiveConfig(const fs::path& path, const Config& config) {
                      ? "model"
                      : "zeros");
   }
+  if (config.simulation.link_force_path) {
+    out << "\nlink_force = " << quote(x7::kLinkForceBundleFile);
+  }
   out << "\n\n[safety]\nwarning_error_rad = "
       << config.safety.warning_error_rad
       << "\nsustained_abort_error_rad = "
@@ -135,6 +140,11 @@ PreparedBundle prepareBundle(const fs::path& staging,
                                  staging / "reference.zvs");
   x7::ptp::copyBundleRegularFile(effective_config.hardware_config_path,
                                  staging / "hardware.toml");
+  if (effective_config.simulation.link_force_path) {
+    x7::ptp::copyBundleRegularFile(
+        *effective_config.simulation.link_force_path,
+        staging / x7::kLinkForceBundleFile);
+  }
   const auto config_path = staging / "track.toml";
   writeEffectiveConfig(config_path, effective_config);
   return {config_path, staging / "simulation.zvs",
@@ -142,7 +152,8 @@ PreparedBundle prepareBundle(const fs::path& staging,
 }
 
 void writeBundleResult(const fs::path& root, const std::string& frontend,
-                       const RunResult& result) {
+                       const RunResult& result,
+                       const std::string& provenance) {
   const auto path = root / "result.toml";
   std::ofstream out(path, std::ios::out | std::ios::trunc);
   if (!out) throw std::runtime_error("cannot write " + path.string());
@@ -162,7 +173,9 @@ void writeBundleResult(const fs::path& root, const std::string& frontend,
   writeArray(out, result.joint_rms_error_rad);
   out << "\njoint_peak_error_rad = ";
   writeArray(out, result.joint_peak_error_rad);
-  out << '\n';
+  out << '\n' << provenance;
+  out.close();
+  if (!out) throw std::runtime_error("cannot finish " + path.string());
 }
 
 }  // namespace x7::track

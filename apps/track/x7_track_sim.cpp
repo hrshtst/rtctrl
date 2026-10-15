@@ -3,12 +3,17 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
+#include "common/link_force_bundle.hpp"
+#include "common/link_force_run.hpp"
+#include "rtctrl/arm/link_force_log.hpp"
 #include "rtctrl/arm/sim_arm.hpp"
 #include "rtctrl/hw/config.hpp"
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
+#include "rtctrl/model/link_force.hpp"
 #include "rtctrl/model/zvs_trajectory.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
 #include "rtctrl/version.hpp"
@@ -83,6 +88,16 @@ int main(int argc, char* argv[]) {
                    "Hz is experimental\n",
                    config.control_rate_hz);
     }
+    std::optional<model::LinkForceSpec> link_force;
+    if (config.simulation.link_force_path) {
+      link_force =
+          model::loadLinkForce(config.simulation.link_force_path->string());
+      // the profile clock runs in elapsed tracking time: the playback-scaled
+      // reference duration plus the final hold
+      x7::preflightLinkForce(
+          *link_force, chain,
+          reference.duration() + config.finalization.simulation_hold_time_s);
+    }
     if (cli.check) {
       std::printf("configuration and reference preflight passed\n");
       return 0;
@@ -90,6 +105,12 @@ int main(int argc, char* argv[]) {
     track::requireNewOutput(config.output.simulation_motion,
                             "simulation motion");
     track::requireNewOutput(config.output.simulation_log, "simulation log");
+    const auto disturbance_log_path =
+        x7::disturbanceLogPath(config.output.simulation_log);
+    if (link_force) {
+      track::requireNewOutput(disturbance_log_path,
+                              "simulation disturbance log");
+    }
 
     arm::SimArm::Options options;
     options.model_path = config.model_path.string();
@@ -117,11 +138,22 @@ int main(int argc, char* argv[]) {
 
     track::RunResult result;
     bool released = false;
+    x7::LinkForceRunReport force_report;
     {
       model::ZvsWriter motion(config.output.simulation_motion.string());
       track::TrackCsvLog log(config.output.simulation_log.string());
+      std::unique_ptr<arm::LinkForceCsvLog> force_log;
+      if (link_force) {
+        force_log =
+            std::make_unique<arm::LinkForceCsvLog>(disturbance_log_path);
+      }
       arm::SimArm robot(options);
       robot.logTo(&motion);
+      // logged from the first homing step; started at the first tracking
+      // cycle, after the current-mode switch
+      if (link_force) {
+        x7::prepareLinkForce(robot, *link_force, force_log.get());
+      }
       if (!robot.setMode(arm::ControlMode::Position) || !robot.activate()) {
         throw std::runtime_error("simulation position activation failed");
       }
@@ -136,17 +168,24 @@ int main(int argc, char* argv[]) {
         }
         track::TrackingRun run(robot, chain, map, reference, config, true,
                                &log);
+        if (link_force) {
+          x7::startLinkForceAtTracking(robot, run, &force_report);
+        }
         result = run.run();
         result.cycles += home.cycles;
         result.worst_home_error_rad = home.worst_home_error_rad;
         released = robot.deactivate();
       }
+      if (link_force) x7::finishLinkForce(robot, *force_log, &force_report);
     }
 
     std::string display_motion = config.output.simulation_motion.string();
     std::string display_log = config.output.simulation_log.string();
     if (bundle) {
-      track::writeBundleResult(bundle->staging(), "simulation", result);
+      track::writeBundleResult(
+          bundle->staging(), "simulation", result,
+          link_force ? x7::simulationLinkForceProvenance(force_report.outcome)
+                     : std::string());
       x7::ptp::writeBundleManifestFor(
           bundle->staging(), "rtctrl-x7-track-bundle", 1,
           rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);
@@ -163,7 +202,17 @@ int main(int argc, char* argv[]) {
         result.peak_error_rad);
     std::printf("motion: %s\nlog: %s\n", display_motion.c_str(),
                 display_log.c_str());
-    return result.status == track::RunStatus::Success && released ? 0 : 1;
+    bool force_ok = true;
+    if (link_force) {
+      const auto display_force =
+          bundle ? (bundle->target() / "simulation_disturbance.csv").string()
+                 : disturbance_log_path.string();
+      force_ok = x7::printLinkForceReport(force_report, display_force);
+    }
+    return result.status == track::RunStatus::Success && released &&
+                   force_ok
+               ? 0
+               : 1;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "x7_track_sim: %s\n", error.what());
     return 1;

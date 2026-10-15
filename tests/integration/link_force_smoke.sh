@@ -7,7 +7,7 @@
 # and no disturbance output without a configured force.
 set -eu
 
-FRONTEND="$1"  # follow
+FRONTEND="$1"  # follow or track
 APP="$2"
 PLAN_APP="$3"
 PLAN_CONFIG="$4"
@@ -67,6 +67,46 @@ immediate_abort_error_rad = 30.0
 simulation_hold_time_s = 1.5
 EOF
       ;;
+    track)
+      # playback_rate 0.5: the profile clock is elapsed tracking time
+      cat >"$ROOT/$1.toml" <<EOF
+format = "rtctrl-x7-track"
+version = 1
+model = "$MODEL"
+reference = "$ROOT/reference.zvs"
+hardware_config = "$HARDWARE"
+
+[control]
+rate_hz = 100
+kp = 20
+kd = 2
+playback_rate = 0.5
+
+[home]
+velocity_limit = 4.0
+strict = $3
+tolerance_rad = $4
+settle_time_s = 0.02
+
+[simulation]
+initial_posture = "zeros"
+integration_step_s = 0.0001
+$2
+
+[safety]
+warning_error_rad = 10.0
+sustained_abort_error_rad = 20.0
+sustained_abort_time_s = 0.2
+immediate_abort_error_rad = 30.0
+
+[assessment]
+rms_error_rad = 1.0
+peak_error_rad = 2.0
+
+[finalization]
+simulation_hold_time_s = 1.5
+EOF
+      ;;
     *)
       echo "unknown frontend $FRONTEND" >&2
       exit 2
@@ -118,12 +158,14 @@ test ! -e "$ROOT/plain/simulation_disturbance.csv"
 test ! -e "$ROOT/plain/link_force.toml"
 if grep -q link_force "$ROOT/plain/result.toml"; then exit 1; fi
 
-python3 - "$B" "$ROOT/plain" "$EXAMPLE_SPEC" <<'PY'
+python3 - "$B" "$ROOT/plain" "$EXAMPLE_SPEC" "$FRONTEND" <<'PY'
 import csv
 import sys
 import tomllib
 
-force, plain, spec_path = sys.argv[1:4]
+force, plain, spec_path, frontend = sys.argv[1:5]
+# the main log's feedback-time column
+time_key = "feedback_time_s" if frontend == "follow" else "time_s"
 with open(spec_path, "rb") as stream:
     spec = tomllib.load(stream)
 profile = spec["profile"]
@@ -141,7 +183,7 @@ with open(f"{force}/simulation_disturbance.csv") as stream:
 seqs = [int(r["feedback_seq"]) for r in main]
 assert [int(r["attempt"]) for r in rows] == list(range(len(rows)))
 assert all(r["complete"] == "1" and r["status"] == "ok" for r in rows)
-# follow records every cycle before stepping it
+# a successful run records every cycle before stepping it
 assert len(rows) == len(main), (len(rows), len(main))
 
 # partial join by seq, never by timestamp
@@ -154,7 +196,7 @@ for s in seqs:
 
 # the profile clock starts at the first tracking state
 first_tracking = next(r for r in main if r["phase"] == "tracking")
-t0 = float(first_tracking["feedback_time_s"])
+t0 = float(first_tracking[time_key])
 s0 = int(first_tracking["feedback_seq"])
 before = next(r for r in rows if int(r["end_seq"]) == s0)
 after = next(r for r in rows if int(r["start_seq"]) == s0)
@@ -212,5 +254,33 @@ fi
 run 0 zero --config "$ROOT/zero.toml" --bundle "$ROOT/zero"
 grep -q '^link_force_started = true$' "$ROOT/zero/result.toml"
 grep -q '^link_force_applied = false$' "$ROOT/zero/result.toml"
+
+if [ "$FRONTEND" = track ]; then
+  # an assessment abort records its cycle without stepping it: that main
+  # row has no following interval, and every interval still joins
+  sed -e 's/^warning_error_rad = .*/warning_error_rad = 1e-8/' \
+    -e 's/^sustained_abort_error_rad = .*/sustained_abort_error_rad = 1e-7/' \
+    -e 's/^immediate_abort_error_rad = .*/immediate_abort_error_rad = 1e-6/' \
+    "$ROOT/force.toml" >"$ROOT/abort.toml"
+  run 1 abort --config "$ROOT/abort.toml" --log "$ROOT/abort.csv" \
+    --motion "$ROOT/abort.zvs"
+  python3 - "$ROOT/abort.csv" "$ROOT/abort_disturbance.csv" <<'PY'
+import csv
+import sys
+
+with open(sys.argv[1]) as stream:
+    main = list(csv.DictReader(stream))
+with open(sys.argv[2]) as stream:
+    rows = list(csv.DictReader(stream))
+seqs = [int(r["feedback_seq"]) for r in main]
+last = main[-1]
+assert last["phase"] == "tracking", last["phase"]
+assert all(int(r["start_seq"]) != seqs[-1] for r in rows)
+assert len(rows) == len(main) - 1
+for r in rows:
+    assert r["complete"] == "1"
+    assert seqs.count(int(r["end_seq"])) == 1
+PY
+fi
 
 echo "link force smoke OK ($FRONTEND)"
