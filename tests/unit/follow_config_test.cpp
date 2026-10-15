@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 
 #include "follow/follow_config.hpp"
@@ -216,4 +217,34 @@ TEST_CASE("hardware follow refuses a parameter dump that owns mode",
   dump.motors.front().id = 42;
   CHECK_THROWS_WITH(follow::validateMotorParameters(dump, hardware),
                     Catch::Matchers::ContainsSubstring("unconfigured"));
+}
+
+TEST_CASE("follow config resolves an optional simulation link force",
+          "[follow][config][link_force]") {
+  const char* absent = "build/follow_no_link_force.toml";
+  writeConfig(absent);
+  CHECK_FALSE(follow::loadConfig(absent).simulation.link_force_path);
+  std::remove(absent);
+
+  const char* relative = "build/follow_link_force.toml";
+  writeConfig(relative, "[simulation]\nlink_force = \"push.toml\"\n");
+  const auto config = follow::loadConfig(relative);
+  REQUIRE(config.simulation.link_force_path);
+  CHECK(*config.simulation.link_force_path ==
+        std::filesystem::absolute("build/push.toml").lexically_normal());
+  std::remove(relative);
+
+  const char* empty = "build/follow_empty_link_force.toml";
+  writeConfig(empty, "[simulation]\nlink_force = \"\"\n");
+  CHECK_THROWS_WITH(follow::loadConfig(empty),
+                    Catch::Matchers::ContainsSubstring(
+                        "link_force must be a non-empty path"));
+  std::remove(empty);
+
+  const char* number = "build/follow_numeric_link_force.toml";
+  writeConfig(number, "[simulation]\nlink_force = 3\n");
+  CHECK_THROWS_WITH(follow::loadConfig(number),
+                    Catch::Matchers::ContainsSubstring(
+                        "link_force must be a non-empty path"));
+  std::remove(number);
 }

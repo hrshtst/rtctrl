@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/link_force_bundle.hpp"
 #include "plan/ptp_bundle.hpp"
 
 namespace x7::follow {
@@ -118,8 +119,11 @@ void writeEffectiveConfig(const fs::path& path, const Config& config,
   }
   out << "\nintegration_step_s = " << config.simulation.integration_step_s
       << "\nposition_kp = " << config.simulation.position_kp
-      << "\nposition_kd = " << config.simulation.position_kd
-      << "\n\n[safety]\nwarning_error_rad = "
+      << "\nposition_kd = " << config.simulation.position_kd;
+  if (config.simulation.link_force_path) {
+    out << "\nlink_force = " << quote(x7::kLinkForceBundleFile);
+  }
+  out << "\n\n[safety]\nwarning_error_rad = "
       << config.safety.warning_error_rad
       << "\nsustained_abort_error_rad = "
       << config.safety.sustained_abort_error_rad
@@ -156,6 +160,11 @@ PreparedBundle prepareBundle(const fs::path& staging,
     x7::ptp::copyBundleRegularFile(*effective_config.motor_parameters_path,
                                    staging / "motor_parameters.toml");
   }
+  if (effective_config.simulation.link_force_path) {
+    x7::ptp::copyBundleRegularFile(
+        *effective_config.simulation.link_force_path,
+        staging / x7::kLinkForceBundleFile);
+  }
   const auto config_path = staging / "follow.toml";
   writeEffectiveConfig(config_path, effective_config,
                        effective_config.motor_parameters_path.has_value());
@@ -165,8 +174,8 @@ PreparedBundle prepareBundle(const fs::path& staging,
 
 void writeBundleResult(const fs::path& root, const std::string& frontend,
                        const std::string& status, std::uint64_t cycles,
-                       double worst_home_error,
-                       double worst_tracking_error) {
+                       double worst_home_error, double worst_tracking_error,
+                       const std::string& provenance) {
   const auto path = root / "result.toml";
   std::ofstream out(path, std::ios::out | std::ios::trunc);
   if (!out) throw std::runtime_error("cannot write " + path.string());
@@ -175,7 +184,10 @@ void writeBundleResult(const fs::path& root, const std::string& frontend,
       << "frontend = " << quote(frontend) << "\nstatus = " << quote(status)
       << "\ncycles = " << cycles
       << "\nworst_home_error_rad = " << worst_home_error
-      << "\nworst_tracking_error_rad = " << worst_tracking_error << '\n';
+      << "\nworst_tracking_error_rad = " << worst_tracking_error << '\n'
+      << provenance;
+  out.close();
+  if (!out) throw std::runtime_error("cannot finish " + path.string());
 }
 
 }  // namespace x7::follow

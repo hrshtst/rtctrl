@@ -12,6 +12,7 @@
 #include <stdexcept>
 
 #include "bus/dxl_parameters.hpp"
+#include "common/link_force_bundle.hpp"
 #include "common/x7_common.hpp"
 #include "follow/follow_config.hpp"
 #include "follow/follow_bundle.hpp"
@@ -107,6 +108,9 @@ int main(int argc, char* argv[]) {
     }
     auto config = follow::loadConfig(cli.config_path);
     follow::applyOverrides(cli, &config);
+    if (config.simulation.link_force_path) {
+      std::fprintf(stderr, "%s\n", x7::kHardwareLinkForceNotice);
+    }
     if (cli.log_path) config.output.hardware_log = *cli.log_path;
     if (bundle) {
       const auto prepared = follow::prepareBundle(bundle->staging(), config);
@@ -186,7 +190,9 @@ int main(int argc, char* argv[]) {
       follow::writeBundleResult(
           bundle->staging(), "hardware", follow::statusName(result.status),
           result.cycles, result.worst_home_error_rad,
-          result.worst_tracking_error_rad);
+          result.worst_tracking_error_rad,
+          config.simulation.link_force_path ? x7::hardwareLinkForceProvenance()
+                                            : std::string());
       x7::ptp::writeBundleManifestFor(
           bundle->staging(), "rtctrl-x7-follow-bundle", 1,
           rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);

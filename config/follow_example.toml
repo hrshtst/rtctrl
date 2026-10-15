@@ -39,6 +39,8 @@ initial_posture = "model" # model or zeros; initial_joints overrides either
 integration_step_s = 0.0001
 position_kp = 1000.0
 position_kd = 5.0
+# Prescribed link-force disturbance (simulation only; hardware ignores it):
+# link_force = "link_force_example.toml"
 
 [safety]
 warning_error_rad = 0.2
