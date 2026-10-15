@@ -1,0 +1,28 @@
+# Force-budget SCREEN example: the largest force amplitude satisfying the
+# user-supplied joint holding-torque allowances below at sampled reference
+# poses under a quasi-static model. It is not a hardware safety or fuse
+# rating. First generate the referenced trajectory:
+#   ./build/apps/x7_plan_ptp --config config/ptp_example.toml
+format = "rtctrl-x7-force-budget"
+version = 1
+model = "../models/crane_x7/crane_x7.ztk"
+reference = "../ptp.zvs"
+link_force = "link_force_example.toml" # geometry and planned magnitude
+
+[reference_processing]
+filter = "none" # none, low-pass, moving-average, or savitzky-golay
+interpolation = "shape-preserving-cubic" # linear or shape-preserving-cubic
+low_pass_cutoff_hz = 5.0
+filter_window = 5
+savitzky_golay_order = 3
+
+[budget]
+# Joint holding-torque allowances [Nm]: one value for every joint or eight
+# canonical values. These are engineering inputs that this screen does not
+# establish; actuator effort limits are not allowable external mechanical
+# loads. The values below only illustrate the format.
+joint_allowance_nm = [2.0]
+sample_rate_hz = 1000.0
+
+[output]
+csv = "force_budget.csv"
