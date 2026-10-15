@@ -87,7 +87,7 @@ apps/         sources by domain: bus/ (dxl_emu, dxl_inspect,
               x7_gravity_demo), track/ (x7_track, x7_track_sim),
               plan/ (x7_plan_ptp), follow/ (x7_follow, x7_follow_sim),
               ident/ (x7_ident_sim),
-              study/ (x7_efl_study),
+              study/ (x7_efl_study), disturb/ (x7_force_budget),
               common/ (shared app headers); binaries land flat in
               build/apps/
 examples/     make_motion, make_pose (kinematic .zvs), x7_wave
@@ -95,7 +95,8 @@ examples/     make_motion, make_pose (kinematic .zvs), x7_wave
 models/crane_x7/   crane_x7.ztk + meshes + contactinfo.ztk  (generated, committed),
               crane_x7.init.ztk (hand-written rk_pen posture)
 config/       crane_x7.toml (bus, joints, limits, margins),
-              ptp_example.toml, versioned postures/*.toml
+              ptp_example.toml, link_force_example.toml,
+              force_budget_example.toml, versioned postures/*.toml
 tools/        port_model.py, ident_analysis.py, replay_compare.py,
               ct_mass_error_study.py, plot/{ptp_trajectory,
               follow_tracking,follow_mode_comparison,track_comparison}.py (uv),

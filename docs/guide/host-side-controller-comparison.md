@@ -238,6 +238,16 @@ command receipt faults occurred. Introduce friction compensation, filtering,
 integral action, gain scaling, or other practical terms only in later,
 separately timestamped campaigns.
 
+## Disturbance campaigns
+
+A prescribed link force can be added to the simulation side with
+`[simulation] link_force`; it starts at the first tracking cycle, is logged
+per simulator step, and is recorded as unapplied by the hardware frontend.
+Keep the spec identical across compared runs, and treat any physical
+disturbance as a separate apparatus whose loads `x7_force_budget` only
+screens. See
+[Link-force disturbances and the force-budget screen](usage.md#link-force-disturbances-and-the-force-budget-screen).
+
 ## Preserve the complete campaign
 
 Keep the complete campaign directory, not only the plots. Each simulation and

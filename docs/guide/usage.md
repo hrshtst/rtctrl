@@ -461,6 +461,11 @@ uv run --project tools tools/plot/track_comparison.py /tmp/track-campaign \
 The directory form expects `simulation/simulation.csv` and
 `hardware/hardware.csv`. Two explicit CSV paths can be supplied instead.
 
+`x7_track_sim` also accepts an optional `[simulation] link_force` spec, a
+prescribed external force started at the first tracking cycle, after the
+current-mode switch. See
+[link-force disturbances](#link-force-disturbances-and-the-force-budget-screen).
+
 ### Manual motion teaching
 
 `x7_teach` records a trajectory while an operator guides the arm. It supports
@@ -640,6 +645,9 @@ is refused. The main processing controls are:
   the final posture commanded until the operator supports the arm from below
   and presses Enter, bounded by `operator_timeout_s`. The nonblocking Enter
   check cannot starve the hardware command cycle.
+- `simulation.link_force`: an optional prescribed link-force disturbance for
+  `x7_follow_sim`; the hardware frontend ignores it. See
+  [link-force disturbances](#link-force-disturbances-and-the-force-budget-screen).
 
 This first version deliberately uses one homogeneous motor mode for home,
 tracking, and finalization. Changing a Dynamixel operating mode requires
@@ -713,6 +721,203 @@ cmp backups/follow-sim-20260827/simulation.csv /tmp/follow-reproduced.csv
 For strict reproduction, build the Git commit recorded by the manifest. A
 hardware replay is intentionally not expected to be byte-identical because
 measured state and bus timing are physical inputs.
+
+### Link-force disturbances and the force-budget screen
+
+These tools support disturbance experiments in which a force acts on the arm
+during motion and is then removed, so that the baselines here and controllers
+in dependent projects can be compared under one loading rule. They provide a
+reusable simulated disturbance and an offline load screen. Physical apparatus
+operation and fuse qualification are outside this repository.
+
+#### Link-force specification
+
+One `rtctrl-x7-link-force` TOML file describes the disturbance for the
+simulators, the force-budget screen, and external code
+(`model::loadLinkForce`). `config/link_force_example.toml`:
+
+```toml
+format = "rtctrl-x7-link-force"
+version = 1
+link = "crane_x7_tcp_link"
+point_link_m = [0.0, 0.0, 0.0] # in the link's own frame
+magnitude_n = 3.0
+direction_world = [0.0, 1.0, 0.0] # or anchor_world_m = [x, y, z]
+
+[profile]
+onset_s = 0.4
+rise_s = 0.2
+hold_s = 0.6
+fall_s = 0.2
+```
+
+- `direction_world` is a fixed world direction, normalized on use.
+  `anchor_world_m` instead pulls the application point toward a fixed world
+  point, which models a cable over a pulley. Exactly one is required.
+- The amplitude is `magnitude_n` times a profile that is zero before onset,
+  rises over `rise_s` with a raised cosine, holds, and falls over `fall_s` with
+  a raised cosine. Both ramps have zero slope at their ends, so the force has
+  no steps. `rise_s` and `fall_s` must be positive and all four profile keys
+  are required.
+- The profile clock starts at the first tracking cycle (the feedback time of
+  that cycle's state) and runs in elapsed tracking time. It is not scaled by
+  `playback_rate`, so compare runs only at the same playback rate and
+  reference processing.
+
+Every controller receives the same scalar force profile under the same loading
+rule. In anchor mode the realized world vector and joint torques depend on
+where each controller holds the attachment point, so they are logged rather
+than assumed equal. A fixed world direction is the simpler first comparison.
+
+#### Simulating a disturbance
+
+Point the simulation table of a follow or track configuration at a spec:
+
+```toml
+[simulation]
+link_force = "link_force_example.toml" # relative to this config
+```
+
+`x7_follow_sim` and `x7_track_sim` load the spec during `--check`, reject an
+unknown link and an onset at or after the end of the run (tracking plus final
+hold), and warn when the profile outlasts the run. The force is added to the
+forward dynamics as `J^T f` after the actuator effort clamp, so it is never
+truncated by the effort limits and the controller sees it only through motion.
+`SimArm::setDisturbance`, the older constant joint torque, is applied before
+that clamp instead.
+
+Besides the main log, a run writes `<log stem>_disturbance.csv` (in a bundle,
+`simulation_disturbance.csv`) with one row per simulator step attempt. Each row
+records the attempt index, the step's `start_seq`/`end_seq` in the main log's
+`feedback_seq` numbering, its sim-time bounds, the last completed substep's
+force, application point and joint torques, and the force and joint impulses
+of the completed substeps. Within a substep the force is constant, so the
+impulses are exactly what the integrator applied. A pulse shorter than one
+control period therefore still appears in its row's impulse.
+
+Join the two logs by seq, never by timestamp. The main row with feedback seq
+`s` joins the complete row with `end_seq = s` (the step that produced it) and
+the row with `start_seq = s` (the step that followed it). Some rows are
+unmatched by design:
+
+- the initial main row has no preceding step;
+- the final successful step has no later main row;
+- a rejected step, and every `fault_latched` row after it, has no later main
+  row;
+- a track main row recorded without a step (an assessment abort) has no
+  following step.
+
+Zero-substep rows repeat their start time and seq. Keep the unmatched rows in
+any analysis.
+
+Once a spec is set, every substep is accounted strictly. When a nonzero force
+is requested, an undefined direction (an anchor within 1 mm of the point) is
+`anchor_fault` and a non-finite force is `non_finite_force`; for every
+substep, a failed dynamics solve is `solve_failed` and a non-finite state
+update is `non_finite_state`. A zero requested force (before onset, after
+release, or a zero magnitude) never evaluates the direction. A rejected
+substep commits nothing: the state and the clock stay at the last completed
+substep, and the simulator latches. It then refuses feedback and commands,
+records `fault_latched` for further steps, and still deactivates. The run
+fails with the status printed. Failing to write a disturbance row is
+different: the physics stays complete and feedback stays valid, but the step
+and the run fail because the log is incomplete.
+
+`JointState::tau` in the main log keeps its meaning: the servo-equivalent
+torque before the model-coordinate effort clamp. Under saturation it can
+differ from the effort the dynamics used, so only the disturbance log is exact
+about what was applied. The tracking-error columns measure error against the
+time-indexed reference. Analysis of rejoining the path after a delay belongs
+to the controller under study and must separate path deviation from delayed
+progress.
+
+Bundles archive the spec as `link_force.toml`, write
+`link_force = "link_force.toml"` into the portable configuration, and add
+provenance to `result.toml`: `link_force_enabled`, `link_force_started` (the
+tracking start was reached), and `link_force_applied` (a completed substep
+applied a nonzero force) with the first and last application times. A replay
+reproduces all three outputs byte for byte. Hardware frontends ignore the key,
+print a notice that it is simulation-only, and record
+`link_force_enabled = false` with a note: an archived simulation spec is not
+evidence that any apparatus applied a force.
+
+#### Force-budget screen
+
+`x7_force_budget` is a model-based screen with this contract: compute the
+largest force amplitude satisfying user-supplied joint holding-torque
+allowances at sampled reference poses under a quasi-static model. It is not a
+hardware safety or fuse rating. It never opens the bus.
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_example.toml
+./build/apps/x7_force_budget --config config/force_budget_example.toml
+```
+
+At every sample (`N = ceil(duration * sample_rate_hz)` intervals, endpoints
+included, one sample for a zero duration) it evaluates the gravity load `g`
+at the reference pose and the joint torque per newton `a = J^T u` of the
+spec's application point and direction. The bound requires feasibility for
+every amplitude from zero up to it, `|g_i - a_i F| <= allow_i` for all
+`0 <= F <= F_max`:
+
+- a joint whose gravity load already exceeds its allowance is infeasible,
+  even if some positive force would compensate it;
+- otherwise the joint bound is `(allow_i + sgn(a_i) g_i) / |a_i|`, computed
+  without avoidable overflow;
+- `a_i = 0` imposes no bound from that modeled constraint (`inf`), which never
+  means unlimited physical loading;
+- a bound that cannot be represented, a non-finite pose, gravity, point, or
+  torque coefficient, and a degenerate anchor are failed evaluations.
+
+The amplitude bound is the minimum over joints and samples, reported with the
+binding joint and the earliest binding time, plus a disturbance-only bound
+that ignores gravity. The whole reference path is screened, and denser
+sampling is not a continuous-path guarantee. The tool prints the bound, the
+planned `magnitude_n`, and a headroom ratio. The ratio reads `n/a` when the
+planned magnitude is zero, the bound is unbounded, or the evaluation failed.
+Only a successful evaluation whose planned magnitude is within the bound
+prints `within the supplied sampled model allowances` and exits 0. Exceeding,
+infeasible, and failed evaluations exit 1 and still write the CSV. Invalid
+input exits 1 without one. The CSV begins with `#` lines that carry the
+contract and qualification, then one schema-versioned row per sample.
+
+`budget.joint_allowance_nm` (one or eight values) is an engineering input
+that this screen does not establish. Actuator effort limits, such as the
+torque constant times the current limit or the ceilings derived for the EFL
+study, describe actuator and model effort, not allowable external mechanical
+loads. The screen excludes motion transients, off-path yielding of compliant
+controllers, fuse release, friction, bearing and bracket loads, and the
+individual finger-linkage loads behind the gripper's reduced torque. Selecting
+a physical fuse, including its release tolerance and transient loading, is a
+separate engineering decision.
+
+#### Using a link force from your own controller
+
+Dependent projects drive the same disturbance through the library. Set the
+spec before the run, start its clock when tracking starts, and attach the
+interval log:
+
+```cpp
+#include "rtctrl/arm/link_force_log.hpp"
+#include "rtctrl/arm/sim_arm.hpp"
+#include "rtctrl/model/link_force.hpp"
+
+const auto spec = model::loadLinkForce("config/link_force_example.toml");
+arm::LinkForceCsvLog log("run_disturbance.csv");  // exclusive; outlives sim
+arm::SimArm sim(options);
+sim.setLinkForce(spec);    // strict accounting from here on, force still zero
+sim.linkForceLogTo(&log);  // one row per step() attempt
+sim.setMode(arm::ControlMode::Position);
+sim.activate();
+// ... at the first tracking cycle, with that cycle's feedback state:
+sim.startLinkForce(state.t);
+// ... after the run:
+const bool clean = !sim.linkForceFaulted() && !sim.linkForceLogFailed() &&
+                   log.close();
+```
+
+`model::evaluateForceBudget` and `model::writeForceBudgetCsv` expose the
+screen in the same way.
 
 ## Writing a controller (the bridge)
 
