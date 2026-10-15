@@ -1,5 +1,7 @@
 #include "rtctrl/model/chain_model.hpp"
 
+#include <roki/rk_jacobi.h>
+
 #include <cmath>
 #include <filesystem>
 #include <random>
@@ -43,6 +45,8 @@ ChainModel::~ChainModel() {
   zVecFree(zero_acc9_);
   zVecFree(vel9_);
   zVecFree(acc9_);
+  zVecFree(force9_);
+  zMatFree(lin_jacobi_);
   if (owns_) rkChainDestroy(&chain_);
 }
 
@@ -55,8 +59,11 @@ void ChainModel::allocScratch() {
   zero_acc9_ = zVecAlloc(n);
   vel9_ = zVecAlloc(n);
   acc9_ = zVecAlloc(n);
+  force9_ = zVecAlloc(n);
+  lin_jacobi_ = zMatAlloc(3, n);
   if (q9_ == nullptr || tau9_ == nullptr || zero_vel9_ == nullptr ||
-      zero_acc9_ == nullptr || vel9_ == nullptr || acc9_ == nullptr) {
+      zero_acc9_ == nullptr || vel9_ == nullptr || acc9_ == nullptr ||
+      force9_ == nullptr || lin_jacobi_ == nullptr) {
     throw std::bad_alloc();
   }
   zVecZero(zero_vel9_);
@@ -80,6 +87,59 @@ void ChainModel::inverseDynamics(const JointMap& map, const zVec q8,
   map.expand(ddq8, acc9_);
   rkChainID_G(&chain_, q9_, vel9_, acc9_, RK_GRAVITY6D, tau9_);
   map.reduceTorque(tau9_, tau8);
+}
+
+void ChainModel::checkLinkIndex(int link_index, const char* caller) const {
+  if (link_index < 0 || link_index >= rkChainLinkNum(&chain_)) {
+    throw std::invalid_argument(std::string("ChainModel::") + caller +
+                                ": link index " + std::to_string(link_index) +
+                                " out of range");
+  }
+}
+
+std::array<double, 3> ChainModel::linkPointWorldPos(
+    int link_index, const std::array<double, 3>& p_link) const {
+  checkLinkIndex(link_index, "linkPointWorldPos");
+  zVec3D p;
+  zVec3DCreate(&p, p_link[0], p_link[1], p_link[2]);
+  zVec3D world;
+  rkChainLinkPointWldPos(&chain_, link_index, &p, &world);
+  return {world.c.x, world.c.y, world.c.z};
+}
+
+void ChainModel::forceJointTorqueModel(int link_index,
+                                       const std::array<double, 3>& p_link,
+                                       const std::array<double, 3>& f_world,
+                                       zVec tau_model) {
+  checkLinkIndex(link_index, "forceJointTorqueModel");
+  if (tau_model == nullptr || zVecSizeNC(tau_model) != jointSize()) {
+    throw std::invalid_argument(
+        "ChainModel::forceJointTorqueModel: vector size mismatch");
+  }
+  allocScratch();
+  // roki takes the point non-const; it is only read (rk_jacobi.c).
+  zVec3D p;
+  zVec3DCreate(&p, p_link[0], p_link[1], p_link[2]);
+  rkChainLinkWldLinJacobi(&chain_, link_index, &p, lin_jacobi_);
+  const double f[3] = {f_world[0], f_world[1], f_world[2]};
+  for (int j = 0; j < jointSize(); ++j) {
+    double value = 0.0;
+    for (int r = 0; r < 3; ++r) value += zMatElemNC(lin_jacobi_, r, j) * f[r];
+    zVecElemNC(tau_model, j) = value;
+  }
+}
+
+void ChainModel::forceJointTorque(const JointMap& map, const zVec q8,
+                                  int link_index,
+                                  const std::array<double, 3>& p_link,
+                                  const std::array<double, 3>& f_world,
+                                  zVec tau8) {
+  checkLinkIndex(link_index, "forceJointTorque");
+  allocScratch();
+  map.expand(q8, q9_);
+  fk(q9_);
+  forceJointTorqueModel(link_index, p_link, f_world, force9_);
+  map.reduceTorque(force9_, tau8);
 }
 
 ChainModel::ChainModel(ChainModel&& other) noexcept

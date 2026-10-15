@@ -3,12 +3,14 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <limits>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include "rtctrl/model/chain_model.hpp"
@@ -408,4 +410,173 @@ TEST_CASE("the rk_pen initial-state file round-trips through roki's reader",
   CHECK(got.c.y == Approx(want.c.y).margin(1e-6));
   CHECK(got.c.z == Approx(want.c.z).margin(1e-6));
   std::remove(path);
+}
+
+namespace {
+
+// A generic, non-singular canonical pose (finger opened slightly).
+constexpr double kForcePose[kCanonicalDof] = {0.3,  -0.6, 0.2, -1.4,
+                                              0.25, -0.5, 0.4, 0.3};
+
+double project(const std::array<double, 3>& f, const std::array<double, 3>& a,
+               const std::array<double, 3>& b, double scale) {
+  return (f[0] * (a[0] - b[0]) + f[1] * (a[1] - b[1]) + f[2] * (a[2] - b[2])) *
+         scale;
+}
+
+}  // namespace
+
+TEST_CASE("link-point force torque satisfies virtual work in canonical "
+          "coordinates",
+          "[model][link_force]") {
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  const std::array<double, 3> p_link = {0.012, -0.021, 0.034};
+  const std::array<double, 3> f_world = {1.3, -0.7, 2.1};
+  constexpr double kEps = 1e-6;
+
+  for (const char* name :
+       {"crane_x7_lower_arm_revolute_part_link", "crane_x7_tcp_link",
+        "crane_x7_gripper_finger_a_link", "crane_x7_gripper_finger_b_link"}) {
+    INFO(name);
+    const int link = model.linkIndex(name);
+    REQUIRE(link >= 0);
+    ZVecGuard q8(kCanonicalDof), q9(kModelDof), tau8(kCanonicalDof);
+    for (int i = 0; i < kCanonicalDof; ++i) zVecElemNC(q8.vec, i) = kForcePose[i];
+    model.forceJointTorque(map, q8.vec, link, p_link, f_world, tau8.vec);
+
+    // tau8[i] = f . dp/dq8[i]: the gripper coordinate moves both fingers
+    // through the mimic expansion, exactly as the reduction assumes.
+    for (int i = 0; i < kCanonicalDof; ++i) {
+      INFO("canonical joint " << i);
+      const double q0 = zVecElemNC(q8.vec, i);
+      zVecElemNC(q8.vec, i) = q0 + kEps;
+      map.expand(q8.vec, q9.vec);
+      model.fk(q9.vec);
+      const auto plus = model.linkPointWorldPos(link, p_link);
+      zVecElemNC(q8.vec, i) = q0 - kEps;
+      map.expand(q8.vec, q9.vec);
+      model.fk(q9.vec);
+      const auto minus = model.linkPointWorldPos(link, p_link);
+      zVecElemNC(q8.vec, i) = q0;
+      CHECK(zVecElemNC(tau8.vec, i) ==
+            Approx(project(f_world, plus, minus, 0.5 / kEps)).margin(1e-7));
+    }
+  }
+}
+
+TEST_CASE("model-coordinate force torque keeps finger_b independent",
+          "[model][link_force]") {
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  const int link = model.linkIndex("crane_x7_gripper_finger_b_link");
+  REQUIRE(link >= 0);
+  const std::array<double, 3> p_link = {0.005, 0.01, 0.02};
+  const std::array<double, 3> f_world = {-0.4, 1.1, 0.6};
+  constexpr double kEps = 1e-6;
+
+  ZVecGuard q8(kCanonicalDof), q9(kModelDof), tau9(kModelDof);
+  ZVecGuard before(kModelDof), after(kModelDof);
+  for (int i = 0; i < kCanonicalDof; ++i) zVecElemNC(q8.vec, i) = kForcePose[i];
+  map.expand(q8.vec, q9.vec);
+  // finger_b deliberately away from the mimic value, as in the simulator
+  zVecElemNC(q9.vec, map.rokiOffsetFingerB()) = 0.1;
+  model.fk(q9.vec);
+  model.jointDisplacement(before.vec);
+  model.forceJointTorqueModel(link, p_link, f_world, tau9.vec);
+
+  // no state change (compared with roki's stored displacement, which
+  // need not round-trip the input bit for bit)
+  model.jointDisplacement(after.vec);
+  for (int j = 0; j < kModelDof; ++j) {
+    CHECK(zVecElemNC(after.vec, j) == zVecElemNC(before.vec, j));
+  }
+  // tau9[j] = f . dp/dq9[j] per independent model coordinate
+  for (int j = 0; j < kModelDof; ++j) {
+    INFO("model joint " << j);
+    const double q0 = zVecElemNC(q9.vec, j);
+    zVecElemNC(q9.vec, j) = q0 + kEps;
+    model.fk(q9.vec);
+    const auto plus = model.linkPointWorldPos(link, p_link);
+    zVecElemNC(q9.vec, j) = q0 - kEps;
+    model.fk(q9.vec);
+    const auto minus = model.linkPointWorldPos(link, p_link);
+    zVecElemNC(q9.vec, j) = q0;
+    CHECK(zVecElemNC(tau9.vec, j) ==
+          Approx(project(f_world, plus, minus, 0.5 / kEps)).margin(1e-7));
+  }
+  // the finger_a column is zero for a point on finger_b
+  CHECK(zVecElemNC(tau9.vec, map.rokiOffset(kCanonicalDof - 1)) == 0.0);
+}
+
+TEST_CASE("roki's link external wrench changes inverse dynamics by minus "
+          "the force joint torque",
+          "[model][link_force]") {
+  // Independent oracle: rk_link.c subtracts the link external wrench
+  // (link frame, moment about the link origin) in the Newton-Euler
+  // recursion. Pins both the frame convention and the sign.
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  const int link = model.linkIndex("crane_x7_lower_arm_revolute_part_link");
+  REQUIRE(link >= 0);
+  const std::array<double, 3> p_link = {0.02, -0.01, 0.05};
+  const std::array<double, 3> f_world = {0.9, 1.7, -2.4};
+
+  ZVecGuard q8(kCanonicalDof), dq8(kCanonicalDof), ddq8(kCanonicalDof);
+  ZVecGuard q9(kModelDof), plain(kCanonicalDof), loaded(kCanonicalDof);
+  ZVecGuard force(kCanonicalDof);
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    zVecElemNC(q8.vec, i) = kForcePose[i];
+    zVecElemNC(dq8.vec, i) = 0.3 - 0.07 * i;
+    zVecElemNC(ddq8.vec, i) = -0.5 + 0.11 * i;
+  }
+  model.inverseDynamics(map, q8.vec, dq8.vec, ddq8.vec, plain.vec);
+  model.forceJointTorque(map, q8.vec, link, p_link, f_world, force.vec);
+
+  map.expand(q8.vec, q9.vec);
+  model.fk(q9.vec);
+  zVec3D fw, fl, p;
+  zVec3DCreate(&fw, f_world[0], f_world[1], f_world[2]);
+  zMulMat3DTVec3D(rkChainLinkWldAtt(model.chain(), link), &fw, &fl);
+  zVec3DCreate(&p, p_link[0], p_link[1], p_link[2]);
+  rkLinkSetExtForce(rkChainLink(model.chain(), link), &fl, &p);
+  // The wrench persists on this throwaway model; nothing else reads it.
+  model.inverseDynamics(map, q8.vec, dq8.vec, ddq8.vec, loaded.vec);
+
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    INFO("canonical joint " << i);
+    CHECK(zVecElemNC(loaded.vec, i) - zVecElemNC(plain.vec, i) ==
+          Approx(-zVecElemNC(force.vec, i)).margin(1e-9));
+  }
+}
+
+TEST_CASE("link-point helpers validate their arguments",
+          "[model][link_force]") {
+  ChainModel model(kModelPath);
+  JointMap map(model);
+  const std::array<double, 3> zero = {0.0, 0.0, 0.0};
+  ZVecGuard q8(kCanonicalDof), tau8(kCanonicalDof), tau9(kModelDof);
+  ZVecGuard wrong(kCanonicalDof);
+  CHECK_THROWS_AS(model.linkPointWorldPos(-1, zero), std::invalid_argument);
+  CHECK_THROWS_AS(model.linkPointWorldPos(model.linkCount(), zero),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(model.forceJointTorqueModel(-1, zero, zero, tau9.vec),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(
+      model.forceJointTorque(map, q8.vec, model.linkCount(), zero, zero,
+                             tau8.vec),
+      std::invalid_argument);
+  const int link = model.linkIndex("crane_x7_tcp_link");
+  CHECK_THROWS_AS(model.forceJointTorqueModel(link, zero, zero, wrong.vec),
+                  std::invalid_argument);
+
+  // the point helper is the link frame transform: the link origin maps to
+  // the link's world position
+  ZVecGuard q9(kModelDof);
+  model.fk(q9.vec);
+  const auto origin = model.linkPointWorldPos(link, zero);
+  const zVec3D expected = model.linkWorldPos(link);
+  CHECK(origin[0] == expected.c.x);
+  CHECK(origin[1] == expected.c.y);
+  CHECK(origin[2] == expected.c.z);
 }

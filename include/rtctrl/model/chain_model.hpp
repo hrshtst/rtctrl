@@ -2,6 +2,7 @@
 
 #include <roki/rk_chain.h>
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -95,8 +96,34 @@ class ChainModel {
   void inverseDynamics(const JointMap& map, const zVec q8, const zVec dq8,
                        const zVec ddq8, zVec tau8);
 
+  // World position of the point p_link (expressed in the frame of link
+  // link_index) at the CURRENT kinematic state, i.e. after fk() or any
+  // other forward-kinematics update of chain().
+  std::array<double, 3> linkPointWorldPos(
+      int link_index, const std::array<double, 3>& p_link) const;
+
+  // Generalized force J9ᵀ f that a world-frame force f_world, applied at
+  // p_link on link link_index, exerts on the model joints (tau_model has
+  // jointSize() entries), evaluated at the CURRENT kinematic state with
+  // no state change: every joint keeps its own displacement, including
+  // an independently simulated finger_b. The actuator torque holding a
+  // posture against the force is the inverse dynamics minus this torque,
+  // matching roki's link external-wrench convention.
+  void forceJointTorqueModel(int link_index,
+                             const std::array<double, 3>& p_link,
+                             const std::array<double, 3>& f_world,
+                             zVec tau_model);
+
+  // Canonical variant: forward kinematics at q8 expanded to the model
+  // coordinates (finger_b mimics), then the same reduction as
+  // gravityTorque (gripper torque = finger_a + finger_b).
+  void forceJointTorque(const JointMap& map, const zVec q8, int link_index,
+                        const std::array<double, 3>& p_link,
+                        const std::array<double, 3>& f_world, zVec tau8);
+
  private:
   void allocScratch();
+  void checkLinkIndex(int link_index, const char* caller) const;
 
   mutable rkChain chain_{};  // the roki C API takes non-const rkChain*
   bool owns_{false};
@@ -107,6 +134,8 @@ class ChainModel {
   zVec zero_acc9_ = nullptr;  // stays zero — gravityTorque only
   zVec vel9_ = nullptr;
   zVec acc9_ = nullptr;
+  zVec force9_ = nullptr;     // forceJointTorque model-coordinate result
+  zMat lin_jacobi_ = nullptr;  // 3 x jointSize() point Jacobian
 };
 
 }  // namespace rtctrl::model
