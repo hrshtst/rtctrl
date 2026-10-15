@@ -26,6 +26,7 @@ add_library(rtctrl
   src/model/attitude.cpp
   src/model/chain_model.cpp
   src/model/joint_map.cpp
+  src/model/link_force.cpp
   src/model/posture.cpp
   src/model/ptp_csv.cpp
   src/model/ptp_planner.cpp

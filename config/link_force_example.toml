@@ -1,0 +1,21 @@
+# Prescribed link-force disturbance for the dynamics simulators
+# (x7_follow_sim, x7_track_sim) and the x7_force_budget screen.
+# The profile clock starts at the first tracking cycle and runs in
+# elapsed tracking time (not scaled by playback_rate). With the 2 s
+# example reference and its 2 s final hold, this pulse ends at 1.4 s and
+# leaves the rest of the run for recovery.
+format = "rtctrl-x7-link-force"
+version = 1
+link = "crane_x7_tcp_link"
+point_link_m = [0.0, 0.0, 0.0] # in the link's own frame
+magnitude_n = 3.0
+# Exactly one direction: a fixed world direction (normalized on use) ...
+direction_world = [0.0, 1.0, 0.0]
+# ... or a fixed world point the force pulls toward (cable over a pulley).
+# anchor_world_m = [0.3, 0.3, 0.2]
+
+[profile]
+onset_s = 0.4
+rise_s = 0.2 # raised-cosine ramp, > 0
+hold_s = 0.6
+fall_s = 0.2 # raised-cosine ramp, > 0
