@@ -149,6 +149,15 @@ class FollowRun {
         sink_(sink),
         enter_pressed_(std::move(enter_pressed)) {}
 
+  // Called exactly once, at the first Tracking cycle: after that cycle's
+  // feedback is read and before its command is written and stepped. It is
+  // not called when the run ends before tracking. Hardware apps leave it
+  // unset; simulators use it to start disturbance profiles.
+  void setTrackingStartHook(
+      std::function<void(const arm::JointState&)> hook) {
+    tracking_start_hook_ = std::move(hook);
+  }
+
   RunResult run() {
     RunResult result;
     arm::JointState initial;
@@ -228,6 +237,10 @@ class FollowRun {
     arm::CommandSnapshot snapshot;
     if (!robot_.readState(state, &snapshot)) return false;
     storeState(state);
+    if (phase == Phase::Tracking && !tracking_started_) {
+      tracking_started_ = true;
+      if (tracking_start_hook_) tracking_start_hook_(state);
+    }
     arm::JointCommand command;
     fillCommand(command_q != nullptr ? *command_q : qref, &command);
     arm::CommandReceipt receipt;
@@ -428,6 +441,8 @@ class FollowRun {
   bool simulation_;
   CycleSink* sink_;
   std::function<bool()> enter_pressed_;
+  std::function<void(const arm::JointState&)> tracking_start_hook_;
+  bool tracking_started_ = false;
   arm::JointState last_state_;
   double global_origin_ = 0.0;
   std::uint64_t cycles_ = 0;

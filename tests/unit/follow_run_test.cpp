@@ -1,7 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <vector>
 
 #include "follow/follow_run.hpp"
 
@@ -125,5 +128,94 @@ TEST_CASE("strict home gate refuses a nonmoving arm", "[follow][run]") {
   config.home.correction_retries = 1;
   follow::FollowRun run(robot, reference, config, true);
   CHECK(run.run().status == follow::RunStatus::HomeNotConverged);
+  std::remove(path.c_str());
+}
+
+namespace {
+
+class CountingArm : public IdealArm {
+ public:
+  using IdealArm::IdealArm;
+  bool writeCommand(const arm::JointCommand& command,
+                    arm::CommandReceipt* receipt = nullptr) override {
+    ++writes;
+    return IdealArm::writeCommand(command, receipt);
+  }
+  bool step() override {
+    ++steps;
+    return IdealArm::step();
+  }
+  int writes = 0;
+  int steps = 0;
+};
+
+struct PhaseRecorder : follow::CycleSink {
+  bool record(const follow::CycleRecord& cycle) override {
+    phases.push_back(cycle.phase);
+    seqs.push_back(cycle.state->seq);
+    return true;
+  }
+  std::vector<follow::Phase> phases;
+  std::vector<std::uint64_t> seqs;
+};
+
+}  // namespace
+
+TEST_CASE("follow tracking-start hook fires once before the first tracking "
+          "command",
+          "[follow][run][hook]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto path = referenceFile();
+  model::ZvsTrajectory reference(path, map);
+  CountingArm robot(arm::ControlMode::Position);
+  REQUIRE(robot.activate());
+  const auto config = baseConfig(arm::ControlMode::Position);
+  PhaseRecorder sink;
+  follow::FollowRun run(robot, reference, config, true, &sink);
+  int calls = 0;
+  std::uint64_t hook_seq = 0;
+  int writes_at = -1, steps_at = -1;
+  std::size_t records_at = 0;
+  run.setTrackingStartHook([&](const arm::JointState& state) {
+    ++calls;
+    hook_seq = state.seq;
+    writes_at = robot.writes;
+    steps_at = robot.steps;
+    records_at = sink.phases.size();
+  });
+  REQUIRE(run.run().status == follow::RunStatus::Success);
+  CHECK(calls == 1);
+  const auto first = static_cast<std::size_t>(
+      std::find(sink.phases.begin(), sink.phases.end(),
+                follow::Phase::Tracking) -
+      sink.phases.begin());
+  REQUIRE(first < sink.phases.size());
+  REQUIRE(first > 0);  // homing came first
+  CHECK(records_at == first);  // before the first tracking record,
+  CHECK(sink.seqs[first] == hook_seq);  // with that cycle's feedback,
+  CHECK(writes_at == static_cast<int>(first));  // before its command
+  CHECK(steps_at == static_cast<int>(first));   // and before its step
+  std::remove(path.c_str());
+}
+
+TEST_CASE("follow tracking-start hook does not fire when homing fails",
+          "[follow][run][hook]") {
+  class StuckArm : public IdealArm {
+   public:
+    StuckArm() : IdealArm(arm::ControlMode::Position) {}
+    bool step() override { return true; }
+  } robot;
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto path = referenceFile();
+  model::ZvsTrajectory reference(path, map);
+  auto config = baseConfig(arm::ControlMode::Position);
+  config.home.correction_retries = 1;
+  follow::FollowRun run(robot, reference, config, true);
+  int calls = 0;
+  run.setTrackingStartHook([&](const arm::JointState&) { ++calls; });
+  CHECK(run.run().status == follow::RunStatus::HomeNotConverged);
+  CHECK(calls == 0);
   std::remove(path.c_str());
 }

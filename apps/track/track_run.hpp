@@ -271,6 +271,16 @@ class TrackingRun {
         enter_pressed_(std::move(enter_pressed)),
         controller_(chain, map, reference, config.kp, config.kd) {}
 
+  // Called exactly once, at the first Tracking cycle: after that cycle's
+  // feedback is read and the completion check passes, before its command
+  // is written and stepped. It is not called when the run ends before
+  // tracking. Hardware apps leave it unset; simulators use it to start
+  // disturbance profiles.
+  void setTrackingStartHook(
+      std::function<void(const arm::JointState&)> hook) {
+    tracking_start_hook_ = std::move(hook);
+  }
+
   RunResult run() {
     RunResult result;
     arm::JointState initial;
@@ -295,6 +305,10 @@ class TrackingRun {
         *phase_complete = true;
         return true;
       }
+    }
+    if (phase == Phase::Tracking && !tracking_started_) {
+      tracking_started_ = true;
+      if (tracking_start_hook_) tracking_start_hook_(state);
     }
     arm::JointCommand command;
     controller_.update(state, command, phase_time);
@@ -414,6 +428,8 @@ class TrackingRun {
   bool simulation_;
   CycleSink* sink_;
   std::function<bool()> enter_pressed_;
+  std::function<void(const arm::JointState&)> tracking_start_hook_;
+  bool tracking_started_ = false;
   arm::ComputedTorque controller_;
   std::array<double, model::kCanonicalDof> sum_sq_{};
   double origin_ = 0.0;

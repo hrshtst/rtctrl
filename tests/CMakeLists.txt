@@ -16,6 +16,7 @@ add_executable(unit_tests
   unit/ptp_config_test.cpp
   unit/follow_config_test.cpp
   unit/follow_run_test.cpp
+  unit/track_run_test.cpp
   unit/track_config_test.cpp
   unit/ik_test.cpp
   unit/dxl_test.cpp
