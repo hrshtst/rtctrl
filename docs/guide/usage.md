@@ -791,9 +791,15 @@ Besides the main log, a run writes `<log stem>_disturbance.csv` (in a bundle,
 records the attempt index, the step's `start_seq`/`end_seq` in the main log's
 `feedback_seq` numbering, its sim-time bounds, the last completed substep's
 force, application point and joint torques, and the force and joint impulses
-of the completed substeps. Within a substep the force is constant, so the
-impulses are exactly what the integrator applied. A pulse shorter than one
-control period therefore still appears in its row's impulse.
+of the completed substeps. Within a substep the force is constant at its value
+at the substep start, so the impulses are exactly what the integrator applied.
+A substep that contains the end of the rise, the end of the hold, or the
+release ends there, so every phase of the profile is sampled even when it is
+shorter than the integration step (`integration_step_s`). A pulse shorter than
+one control period, or than one integration step, therefore still appears in
+its row's impulse. A phase shorter than the integration step is applied as one
+constant sample, though: the shape, and with unequal ramps the impulse, is
+resolved only to the integration step.
 
 Join the two logs by seq, never by timestamp. The main row with feedback seq
 `s` joins the complete row with `end_seq = s` (the step that produced it) and
@@ -813,8 +819,10 @@ any analysis.
 Once a spec is set, every substep is accounted strictly. When a nonzero force
 is requested, an undefined direction (an anchor within 1 mm of the point) is
 `anchor_fault` and a non-finite force is `non_finite_force`; for every
-substep, a failed dynamics solve is `solve_failed` and a non-finite state
-update is `non_finite_state`. A zero requested force (before onset, after
+substep, a failed dynamics solve is `solve_failed` and a non-finite
+acceleration or state update is `non_finite_state`. The update is checked
+before the joint stops, which could otherwise clip an infinite position to a
+finite limit. A zero requested force (before onset, after
 release, or a zero magnitude) never evaluates the direction. A rejected
 substep commits nothing: the state and the clock stay at the last completed
 substep, and the simulator latches. It then refuses feedback and commands,

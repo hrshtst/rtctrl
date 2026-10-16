@@ -16,7 +16,7 @@ enum class LinkForceStatus {
   AnchorFault,     // nonzero force requested, direction undefined
   NonFiniteForce,  // force, point, or generalized torque not finite
   SolveFailed,     // the dynamics solve failed
-  NonFiniteState,  // the integrated state update was not finite
+  NonFiniteState,  // acceleration or unclipped state update not finite
   FaultLatched,    // step attempted after an earlier rejection
 };
 

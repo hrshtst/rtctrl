@@ -42,9 +42,12 @@ class LinkForceCsvLog;
 //
 // Link-force disturbance (setLinkForce): a prescribed external force on
 // one link, added to the forward dynamics as J^T f AFTER the actuator
-// effort clamp. The controller never sees it except through motion. Once
-// a spec is set, every substep is accounted strictly (see
-// LinkForceStatus); the first rejected substep commits nothing and
+// effort clamp. The controller never sees it except through motion. The
+// force is constant over each substep at its value at the substep start,
+// and a substep ends early at the profile's rise end, hold end, or release
+// so that every phase is sampled. Once a spec is set, every substep is
+// accounted strictly (see LinkForceStatus; finiteness is checked before
+// the joint stops); the first rejected substep commits nothing and
 // latches the arm: readState and writeCommand then fail, every later
 // step() fails without advancing, deactivate() still succeeds, and only
 // a fresh SimArm clears the latch. Without a spec the arithmetic path is
@@ -139,6 +142,7 @@ class SimArm : public Arm {
  private:
   void computeTorques();
   void substep(double dt);
+  double shortenToProfileBreakpoint(double dt) const;
   LinkForceStatus substepWithLinkForce(double dt);
   bool stepPlain();
   bool stepWithLinkForce();

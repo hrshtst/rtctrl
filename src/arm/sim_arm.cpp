@@ -328,7 +328,8 @@ bool SimArm::stepWithLinkForce() {
   }
   double remaining = options_.control_dt;
   while (remaining > 0.0) {
-    const double dt = std::min(options_.sim_dt, remaining);
+    const double dt =
+        shortenToProfileBreakpoint(std::min(options_.sim_dt, remaining));
     const LinkForceStatus status = substepWithLinkForce(dt);
     if (status != LinkForceStatus::Ok) {
       // Nothing of the rejected substep was committed: the clock and the
@@ -351,6 +352,28 @@ bool SimArm::stepWithLinkForce() {
   interval.end_seq = seq_;
   interval.end_s = time_;
   return true;
+}
+
+double SimArm::shortenToProfileBreakpoint(double dt) const {
+  // The force is sampled at each substep start, so a profile phase that
+  // lies inside one substep would go unsampled. Ending the substep at the
+  // first breakpoint inside it (the end of the rise, the end of the hold,
+  // the release) samples every phase however short. The onset is not a
+  // breakpoint: the force there is zero, and splitting would perturb the
+  // force-free motion before the force acts. Breakpoints are compared in
+  // sim time, so b > time_ guarantees the shortened substep advances the
+  // clock.
+  if (!lf_started_ || !(lf_spec_.magnitude_n > 0.0)) return dt;
+  const model::ForceProfile& profile = lf_spec_.profile;
+  const double rise_end = profile.onset_s + profile.rise_s;
+  const double breakpoints[] = {rise_end, rise_end + profile.hold_s,
+                                profile.end_s()};
+  const double substep_end = time_ + dt;
+  for (const double relative : breakpoints) {
+    const double b = lf_start_time_ + relative;
+    if (time_ < b && b < substep_end) return b - time_;
+  }
+  return dt;
 }
 
 LinkForceStatus SimArm::substepWithLinkForce(double dt) {
@@ -417,11 +440,15 @@ LinkForceStatus SimArm::substepWithLinkForce(double dt) {
   if (status != LinkForceStatus::Ok) return status;
 
   // Staged semi-implicit Euler with inelastic joint stops: the same
-  // operations as substep(), committed only if finite.
+  // operations as substep(), committed only if finite. The acceleration
+  // and the unclipped update are checked before the stops, which would
+  // otherwise turn an infinite position into a finite limit.
   bool finite = true;
   for (int i = 0; i < kModelDof; ++i) {
     double v = v9_[i] + acc9_[i] * dt;
     double q = q9_[i] + v * dt;
+    finite = finite && std::isfinite(acc9_[i]) && std::isfinite(v) &&
+             std::isfinite(q);
     if (q < limit_lo_[i]) {
       q = limit_lo_[i];
       if (v < 0.0) v = 0.0;

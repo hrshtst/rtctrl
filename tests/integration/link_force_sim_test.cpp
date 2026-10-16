@@ -352,6 +352,34 @@ TEST_CASE("a profile shorter than one control period is fully accounted",
   CHECK_FALSE(arm.lastLinkForceInterval().active);
 }
 
+TEST_CASE("a pulse shorter than one integration step is still sampled",
+          "[sim][link_force]") {
+  // rise, hold and fall all inside the first 100 us substep
+  SimArm arm(options());
+  activate(arm, ControlMode::Position);
+  const auto s = spec(5.0, 40e-6, 5e-6, 10e-6, 5e-6, {0.0, 1.0, 0.0});
+  arm.setLinkForce(s);
+  arm.startLinkForce(arm.time());
+  REQUIRE(arm.step());
+  const auto iv = arm.lastLinkForceInterval();
+  CHECK(iv.complete);
+  CHECK(iv.active);
+  // that substep ends at the rise end, the hold end and the release
+  CHECK(iv.substeps_completed == 103);
+  CHECK(arm.linkForceApplied());
+  CHECK(arm.firstLinkForceTime() == Approx(45e-6).margin(1e-15));
+  CHECK(arm.lastLinkForceTime() == Approx(55e-6).margin(1e-15));
+  // sampled at the substep starts: none over the rise, full over the hold
+  // and the fall, which for equal ramps is the analytic impulse
+  CHECK(iv.force_impulse_ns[1] == Approx(5.0 * 15e-6).epsilon(1e-9));
+  CHECK(iv.force_impulse_ns[1] ==
+        Approx(5.0 * s.profile.impulseScale()).epsilon(1e-9));
+  CHECK(iv.force_impulse_ns[0] == 0.0);
+  CHECK(iv.last_scale == 0.0);
+  REQUIRE(arm.step());
+  CHECK_FALSE(arm.lastLinkForceInterval().active);
+}
+
 TEST_CASE("interval timing reports a shortened final substep",
           "[sim][link_force]") {
   SimArm arm(options(0.01, 3e-4));
@@ -500,31 +528,61 @@ TEST_CASE(
   CHECK(arm.linkForceFaulted());
 }
 
-TEST_CASE("an armed force before its onset is bitwise identical to none",
+TEST_CASE("an armed force that never acts is bitwise identical to none",
           "[sim][link_force]") {
-  SimArm plain(options()), armed(options());
-  activate(plain, ControlMode::Position);
-  activate(armed, ControlMode::Position);
-  armed.setLinkForce(spec(5.0, 100.0, 0.1, 0.1, 0.1));
-  armed.startLinkForce(armed.time());
-  for (int k = 0; k < 80; ++k) {
-    for (SimArm* arm : {&plain, &armed}) {
-      JointCommand cmd;
-      cmd.mode = ControlMode::Position;
-      for (int i = 0; i < kCanonicalDof; ++i) {
-        zVecElemNC(cmd.q.get(), i) = kStart[i] + 0.2 * std::sin(0.05 * k + i);
+  auto check = [](const LinkForceSpec& s) {
+    SimArm plain(options()), armed(options());
+    activate(plain, ControlMode::Position);
+    activate(armed, ControlMode::Position);
+    armed.setLinkForce(s);
+    armed.startLinkForce(armed.time());
+    for (int k = 0; k < 80; ++k) {
+      for (SimArm* arm : {&plain, &armed}) {
+        JointCommand cmd;
+        cmd.mode = ControlMode::Position;
+        for (int i = 0; i < kCanonicalDof; ++i) {
+          zVecElemNC(cmd.q.get(), i) =
+              kStart[i] + 0.2 * std::sin(0.05 * k + i);
+        }
+        REQUIRE(arm->writeCommand(cmd));
+        REQUIRE(arm->step());
       }
-      REQUIRE(arm->writeCommand(cmd));
-      REQUIRE(arm->step());
     }
+    CHECK_FALSE(armed.linkForceApplied());
+    const Snapshot a = snapshot(plain);
+    const Snapshot b = snapshot(armed);
+    CHECK(a.q == b.q);
+    CHECK(a.dq == b.dq);
+    CHECK(a.tau == b.tau);
+    CHECK(a.t == b.t);
+    CHECK(plain.fingerBDis() == armed.fingerBDis());
+  };
+  SECTION("onset after the run") { check(spec(5.0, 100.0, 0.1, 0.1, 0.1)); }
+  SECTION("zero magnitude, breakpoints off the substep grid") {
+    // no substep is split for a force that is zero throughout
+    check(spec(0.0, 0.05, 0.00013, 0.1, 0.00017));
   }
-  const Snapshot a = snapshot(plain);
-  const Snapshot b = snapshot(armed);
-  CHECK(a.q == b.q);
-  CHECK(a.dq == b.dq);
-  CHECK(a.tau == b.tau);
-  CHECK(a.t == b.t);
-  CHECK(plain.fingerBDis() == armed.fingerBDis());
+}
+
+TEST_CASE("a non-finite acceleration is rejected before the joint stops",
+          "[sim][link_force]") {
+  // A valid, finite force large enough that the solved acceleration
+  // overflows; the inelastic stops would clip the infinite update to a
+  // finite joint limit with zero velocity if it were checked afterwards.
+  SimArm arm(options());
+  activate(arm, ControlMode::Position);
+  arm.setLinkForce(holding(1e308));
+  arm.startLinkForce(-0.1);
+  CHECK_FALSE(arm.step());
+  const auto& iv = arm.lastLinkForceInterval();
+  CHECK(iv.rejected);
+  CHECK(iv.status == LinkForceStatus::NonFiniteState);  // force was finite
+  CHECK(iv.substeps_completed == 0);
+  CHECK(iv.force_impulse_ns == std::array<double, 3>{0.0, 0.0, 0.0});
+  CHECK(arm.time() == 0.0);
+  CHECK(arm.linkForceFaulted());
+  JointState state;
+  CHECK_FALSE(arm.readState(state));
 }
 
 TEST_CASE("link-force runs are deterministic", "[sim][link_force]") {
