@@ -39,10 +39,11 @@ namespace rtctrl::util {
 // A queue overflow, by contrast, is reported by the commit that hits it.
 //
 // Durability: committed rows are in memory until a write of them returns.
-// A process that is killed loses the batch being written and every row
-// queued behind it (up to capacity_bytes); normally that is the last
-// flush interval, but after a blocked write it can be much more. Normal
-// exits, exceptions and the destructor drain the queue.
+// A process that is killed loses the unwritten part of the batch being
+// written (up to capacity_bytes) and every row queued behind it (up to
+// capacity_bytes more), so up to twice capacity_bytes in all. Normally
+// that is the last flush interval, but after a blocked write it can be
+// much more. Normal exits, exceptions and the destructor drain the queue.
 class AsyncWriter {
  public:
   struct Options {

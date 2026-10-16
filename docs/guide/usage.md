@@ -1056,9 +1056,10 @@ Failure detection is asynchronous and has no time bound. A write's failure is
 known only when the write returns: while a write is blocked in the kernel,
 commits keep succeeding and `ok()` stays true. The failure then surfaces at the
 next `commitRow`, and `close()` always reports it. A queue overflow is reported
-by the commit that hits it. A killed process loses the batch being written and
-every row queued behind it, up to the queue capacity; without a blocked write
-that is about the last 20 ms of rows.
+by the commit that hits it. A killed process loses the unwritten part of the
+batch being written (up to the queue capacity) and every row queued behind it
+(up to the capacity again), so up to about 8 MiB with the default; without a
+blocked write that is about the last 20 ms of rows.
 
 Whether a failed log aborts the run is the application's decision. `x7_follow`
 and `x7_track` abort once a failure is known, as they always did on a failed
