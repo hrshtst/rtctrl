@@ -14,6 +14,7 @@
 
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/util/async_writer.hpp"
 #include "teach/teach_config.hpp"
 
 namespace x7::teach {
@@ -211,70 +212,78 @@ struct LogRow {
   std::array<int, model::kCanonicalDof> gated{};
 };
 
+// Rows are queued through an AsyncWriter, so the acquisition loop never
+// blocks on file I/O. A dropped row or failed write latches in the writer
+// and is reported by finish(); the session itself is not aborted for it.
 class TeachCsvLog {
  public:
-  TeachCsvLog(const fs::path& path, Mode mode, double sample_rate_hz) {
-    file_ = std::fopen(path.string().c_str(), "wx");
-    if (file_ == nullptr) {
-      throw std::runtime_error("cannot create teach log " + path.string());
-    }
-    std::fprintf(file_, "# format: rtctrl-x7-teach-log\n# version: 1\n");
-    std::fprintf(file_, "# mode: %s\n# acquisition_rate_hz: 100\n",
-                 modeName(mode));
-    std::fprintf(file_, "# output_sample_rate_hz: %.17g\n", sample_rate_hz);
-    std::fprintf(file_,
-                 "schema_version,session_time_s,recording_time_s,phase,event,"
-                 "mode,feedback_time_s,feedback_seq,command_valid,"
-                 "submitted_seq,submission_time_s,receipt_accepted,"
-                 "applied_valid,applied_seq,latest_apply_time_s");
+  TeachCsvLog(const fs::path& path, Mode mode, double sample_rate_hz)
+      : writer_(openExclusive(path), rtctrl::util::AsyncWriter::AdoptStream{}) {
+    writer_.appendf("# format: rtctrl-x7-teach-log\n# version: 1\n");
+    writer_.appendf("# mode: %s\n# acquisition_rate_hz: 100\n", modeName(mode));
+    writer_.appendf("# output_sample_rate_hz: %.17g\n", sample_rate_hz);
+    writer_.appendf(
+        "schema_version,session_time_s,recording_time_s,phase,event,"
+        "mode,feedback_time_s,feedback_seq,command_valid,"
+        "submitted_seq,submission_time_s,receipt_accepted,"
+        "applied_valid,applied_seq,latest_apply_time_s");
     for (int joint = 0; joint < model::kCanonicalDof; ++joint) {
-      std::fprintf(file_,
-                   ",q%d_rad,dq%d_rad_s,tau%d_nm,tau_request%d_nm,"
-                   "tau_applied%d_nm,clamped%d,gated%d",
-                   joint, joint, joint, joint, joint, joint, joint);
+      writer_.appendf(
+          ",q%d_rad,dq%d_rad_s,tau%d_nm,tau_request%d_nm,"
+          "tau_applied%d_nm,clamped%d,gated%d",
+          joint, joint, joint, joint, joint, joint, joint);
     }
-    std::fprintf(file_, "\n");
+    writer_.appendf("\n");
+    (void)writer_.commitRow();  // the header block as one queued row
   }
 
   TeachCsvLog(const TeachCsvLog&) = delete;
   TeachCsvLog& operator=(const TeachCsvLog&) = delete;
 
-  ~TeachCsvLog() {
-    if (file_ != nullptr) std::fclose(file_);
-  }
-
   void row(const LogRow& row, Mode mode) {
-    std::fprintf(file_,
-                 "1,%.9f,%.9f,%s,%s,%s,%.9f,%llu,%d,%llu,%.9f,%d,%d,"
-                 "%llu,%.9f",
-                 row.session_time_s, row.recording_time_s,
-                 phaseName(row.phase), eventName(row.event), modeName(mode),
-                 row.feedback_time_s,
-                 static_cast<unsigned long long>(row.feedback_seq),
-                 row.command_valid ? 1 : 0,
-                 static_cast<unsigned long long>(row.submitted_seq),
-                 row.submission_time_s, row.receipt_accepted ? 1 : 0,
-                 row.applied_valid ? 1 : 0,
-                 static_cast<unsigned long long>(row.applied_seq),
-                 row.latest_apply_time_s);
+    writer_.appendf(
+        "1,%.9f,%.9f,%s,%s,%s,%.9f,%llu,%d,%llu,%.9f,%d,%d,"
+        "%llu,%.9f",
+        row.session_time_s, row.recording_time_s, phaseName(row.phase),
+        eventName(row.event), modeName(mode), row.feedback_time_s,
+        static_cast<unsigned long long>(row.feedback_seq),
+        row.command_valid ? 1 : 0,
+        static_cast<unsigned long long>(row.submitted_seq),
+        row.submission_time_s, row.receipt_accepted ? 1 : 0,
+        row.applied_valid ? 1 : 0,
+        static_cast<unsigned long long>(row.applied_seq),
+        row.latest_apply_time_s);
     for (int joint = 0; joint < model::kCanonicalDof; ++joint) {
-      std::fprintf(file_, ",%.9f,%.9f,%.9f,%.9f,%.9f,%d,%d", row.q[joint],
-                   row.dq[joint], row.tau[joint], row.tau_request[joint],
-                   row.tau_applied[joint], row.clamped[joint],
-                   row.gated[joint]);
+      writer_.appendf(",%.9f,%.9f,%.9f,%.9f,%.9f,%d,%d", row.q[joint],
+                      row.dq[joint], row.tau[joint], row.tau_request[joint],
+                      row.tau_applied[joint], row.clamped[joint],
+                      row.gated[joint]);
     }
-    std::fprintf(file_, "\n");
+    writer_.appendf("\n");
+    (void)writer_.commitRow();
   }
 
+  // Appends the status, then writes out every queued row and closes the
+  // file (blocks on I/O: call it after the session). Throws if any row
+  // was dropped or any write failed.
   void finish(const std::string& status) {
-    std::fprintf(file_, "# status: %s\n", status.c_str());
-    if (std::fflush(file_) != 0) {
+    writer_.appendf("# status: %s\n", status.c_str());
+    (void)writer_.commitRow();
+    if (!writer_.close()) {
       throw std::runtime_error("cannot finish teach log");
     }
   }
 
  private:
-  std::FILE* file_ = nullptr;
+  static std::FILE* openExclusive(const fs::path& path) {
+    std::FILE* file = std::fopen(path.string().c_str(), "wx");
+    if (file == nullptr) {
+      throw std::runtime_error("cannot create teach log " + path.string());
+    }
+    return file;
+  }
+
+  rtctrl::util::AsyncWriter writer_;
 };
 
 }  // namespace x7::teach
