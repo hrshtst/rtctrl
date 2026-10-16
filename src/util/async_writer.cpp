@@ -49,6 +49,9 @@ void AsyncWriter::start(std::FILE* stream, Options options) {
           "flush_interval_s finite and positive");
     }
     options_ = options;
+    // At least one byte: a zero threshold would keep the writer's wait
+    // predicate true on an empty queue, so it would never release the lock.
+    wake_bytes_ = std::max<std::size_t>(1, options_.capacity_bytes / 2);
     row_.resize(kInitialRowBytes);
     // Both buffers hold a full queue, so neither commitRow nor the swap
     // ever allocates.
@@ -114,7 +117,7 @@ bool AsyncWriter::commitRow() {
     queue_.append(row_.data(), size);
     ++stats_.rows_committed;
     stats_.max_queued_bytes = std::max(stats_.max_queued_bytes, queue_.size());
-    wake = queue_.size() >= options_.capacity_bytes / 2;
+    wake = queue_.size() >= wake_bytes_;
   }
   if (wake) wake_.notify_one();
   return true;
@@ -137,7 +140,7 @@ void AsyncWriter::writerLoop() {
   std::unique_lock<std::mutex> lock(mutex_);
   for (;;) {
     wake_.wait_for(lock, interval, [this] {
-      return stop_ || queue_.size() >= options_.capacity_bytes / 2;
+      return stop_ || queue_.size() >= wake_bytes_;
     });
     if (!queue_.empty()) {
       queue_.swap(writing_);

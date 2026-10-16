@@ -50,6 +50,7 @@ struct GatedSink {
   bool open = true;
   bool entered = false;  // a write is in progress or has happened
   bool closed = false;
+  bool fail = false;  // writes fail once the gate opens
   std::string data;
 
   void shut() {
@@ -78,6 +79,7 @@ ssize_t gatedWrite(void* cookie, const char* buffer, size_t size) {
   sink->entered = true;
   sink->changed.notify_all();
   sink->changed.wait(lock, [sink] { return sink->open; });
+  if (sink->fail) return -1;
   sink->data.append(buffer, size);
   return static_cast<ssize_t>(size);
 }
@@ -216,6 +218,65 @@ TEST_CASE("async writer reports a failed write at a later commit and at close",
   CHECK_FALSE(writer.ok());
   CHECK_FALSE(writer.close());
   CHECK_FALSE(writer.close());  // idempotent
+}
+
+TEST_CASE("async writer reports a blocked write's failure only once it returns",
+          "[util][async_writer]") {
+  GatedSink sink;
+  sink.shut();
+  sink.fail = true;
+  AsyncWriter writer(openGated(&sink), AsyncWriter::AdoptStream{}, fast());
+  writer.append("first\n");
+  REQUIRE(writer.commitRow());
+  REQUIRE(sink.waitEntered());
+  // While the write is blocked its outcome is unknown: commits keep
+  // succeeding and queue behind it, however long that takes.
+  for (int i = 0; i < 50; ++i) {
+    writer.appendf("row %d\n", i);
+    REQUIRE(writer.commitRow());
+  }
+  CHECK(writer.ok());
+  sink.release();  // the blocked write now returns, failed
+  bool reported = false;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!reported && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    reported = !writer.ok();
+  }
+  CHECK(reported);
+  writer.append("late\n");
+  CHECK_FALSE(writer.commitRow());
+  CHECK_FALSE(writer.close());
+}
+
+TEST_CASE("async writer works at the smallest queue capacities",
+          "[util][async_writer]") {
+  // A half-capacity wake threshold of zero once kept the writer thread
+  // awake and holding the lock forever, so commits and close() hung. The
+  // pause lets the writer thread start before the first commit, which is
+  // when the hang appeared.
+  const auto let_writer_start = [] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  };
+  for (const std::size_t capacity : {std::size_t{1}, std::size_t{2}}) {
+    INFO("capacity " << capacity);
+    TempPath fits("tiny_fits.csv");
+    {
+      AsyncWriter writer(fits.path(), fast(capacity));
+      let_writer_start();
+      writer.append("a");
+      REQUIRE(writer.commitRow());
+      REQUIRE(writer.close());
+    }
+    CHECK(slurp(fits.path()) == "a");
+    TempPath oversized("tiny_oversized.csv");
+    AsyncWriter writer(oversized.path(), fast(capacity));
+    let_writer_start();
+    writer.append("abc");  // larger than the whole queue
+    CHECK_FALSE(writer.commitRow());
+    CHECK_FALSE(writer.close());
+  }
 }
 
 TEST_CASE("async writer close discards an uncommitted row",

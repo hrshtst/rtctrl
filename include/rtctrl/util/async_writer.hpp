@@ -23,27 +23,33 @@ namespace rtctrl::util {
 // The producer (one control thread) formats a row into memory with
 // appendf/append and queues it with commitRow, which only appends to a
 // preallocated buffer under a mutex that the writer thread never holds
-// during I/O. The writer thread wakes every flush_interval_s (or early
-// when the queue is half full), swaps the queue out, and writes and
-// flushes it. Rows reach the file whole and in commit order.
+// during I/O. The writer thread wakes every flush_interval_s (nominally;
+// or early when the queue is half full), swaps the queue out, and writes
+// and flushes it. Rows reach the file whole and in commit order.
 //
 // The queue is bounded: a row that does not fit is dropped and the writer
 // latches failed, as does any failed write or flush. Once failed, every
 // later commitRow drops its row and returns false, so the log is either
-// complete or reported incomplete; it never silently has gaps. Failures
-// are detected asynchronously: a failed write surfaces at a later
-// commitRow (within about one flush interval) and always at close().
+// complete or reported incomplete; it never silently has gaps.
 //
-// Durability: rows committed within the last flush interval are still in
-// memory; a process that is killed loses them. Normal exits, exceptions
-// and the destructor drain the queue.
+// Failure detection has no time bound. A write's failure is known only
+// when the write returns: while it is blocked in the kernel, commits keep
+// succeeding (rows queue behind it) and ok() stays true. Afterwards the
+// failure surfaces at the next commitRow, and close() always reports it.
+// A queue overflow, by contrast, is reported by the commit that hits it.
+//
+// Durability: committed rows are in memory until a write of them returns.
+// A process that is killed loses the batch being written and every row
+// queued behind it (up to capacity_bytes); normally that is the last
+// flush interval, but after a blocked write it can be much more. Normal
+// exits, exceptions and the destructor drain the queue.
 class AsyncWriter {
  public:
   struct Options {
     // Bound on committed bytes not yet handed to the writer thread. The
     // default absorbs about 30 s of a 100 Hz, 1.2 kB-per-row log.
     std::size_t capacity_bytes = std::size_t{4} << 20;
-    double flush_interval_s = 0.02;
+    double flush_interval_s = 0.02;  // nominal writer wake period
   };
   struct AdoptStream {};
   struct Stats {
@@ -93,6 +99,7 @@ class AsyncWriter {
 
   std::FILE* file_ = nullptr;
   Options options_;
+  std::size_t wake_bytes_ = 1;  // queue size that wakes the writer early
   std::vector<char> row_;  // producer-owned pending row
   std::size_t row_size_ = 0;
   bool row_failed_ = false;  // a formatting error in the pending row
