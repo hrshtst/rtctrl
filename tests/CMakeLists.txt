@@ -9,6 +9,7 @@ add_executable(unit_tests
   unit/force_budget_config_test.cpp
   unit/link_force_substep_test.cpp
   unit/link_force_log_test.cpp
+  unit/async_writer_test.cpp
   unit/link_force_bundle_test.cpp
   unit/posture_test.cpp
   unit/trajectory_test.cpp
