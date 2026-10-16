@@ -13,6 +13,7 @@
 #include "rtctrl/model/ptp_planner.hpp"
 #include "rtctrl/model/trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/util/async_writer.hpp"
 #include "track/track_config.hpp"
 
 namespace x7::track {
@@ -113,57 +114,78 @@ class CycleSink {
 
 class TrackCsvLog : public CycleSink {
  public:
+  // The header and every row go through an AsyncWriter, so the control
+  // loop never blocks on file I/O.
   explicit TrackCsvLog(const std::string& path)
-      : file_(std::fopen(path.c_str(), "wx")) {
-    if (file_ == nullptr) {
-      throw std::runtime_error("track log: cannot create '" + path +
-                               "' (it may already exist)");
-    }
-    std::fprintf(file_,
-                 "schema_version,time_s,phase,phase_time_s,command_mode,"
-                 "feedback_seq,receipt_accepted,submitted_seq,applied_seq");
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      std::fprintf(file_,
-                   ",qref%d_rad,dqref%d_rad_s,ddqref%d_rad_s2,q%d_rad,"
-                   "dq%d_rad_s,tau_measured%d_nm,tau_ff%d_nm,tau_pd%d_nm,"
-                   "tau_command%d_nm,error%d_rad,applied%d,flags%d",
-                   i, i, i, i, i, i, i, i, i, i, i, i);
-    }
-    std::fprintf(file_, "\n");
+      : writer_(openExclusive(path), rtctrl::util::AsyncWriter::AdoptStream{}) {
+    writeHeader();
   }
-
-  ~TrackCsvLog() override {
-    if (file_ != nullptr) std::fclose(file_);
+  // Takes ownership of an already-open stream (tests inject failing ones).
+  TrackCsvLog(std::FILE* stream, rtctrl::util::AsyncWriter::AdoptStream)
+      : writer_(stream, rtctrl::util::AsyncWriter::AdoptStream{}) {
+    writeHeader();
   }
 
   bool record(const CycleRecord& cycle) override {
     const auto& applied = cycle.snapshot.applied;
-    std::fprintf(file_, "1,%.9f,%s,%.9f,%u,%llu,%d,%llu,%llu",
-                 cycle.state.t, phaseName(cycle.phase), cycle.phase_time_s,
-                 static_cast<unsigned>(cycle.command.mode),
-                 static_cast<unsigned long long>(cycle.state.seq),
-                 cycle.receipt.accepted ? 1 : 0,
-                 static_cast<unsigned long long>(cycle.receipt.submitted_seq),
-                 static_cast<unsigned long long>(
-                     applied.valid ? applied.target_seq : 0));
+    writer_.appendf(
+        "1,%.9f,%s,%.9f,%u,%llu,%d,%llu,%llu", cycle.state.t,
+        phaseName(cycle.phase), cycle.phase_time_s,
+        static_cast<unsigned>(cycle.command.mode),
+        static_cast<unsigned long long>(cycle.state.seq),
+        cycle.receipt.accepted ? 1 : 0,
+        static_cast<unsigned long long>(cycle.receipt.submitted_seq),
+        static_cast<unsigned long long>(applied.valid ? applied.target_seq
+                                                      : 0));
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double error = cycle.qref[i] - cycle.state.q[i];
-      std::fprintf(file_,
-                   ",%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
-                   "%.9g,%u",
-                   cycle.qref[i], cycle.dqref[i], cycle.ddqref[i],
-                   cycle.state.q[i], cycle.state.dq[i], cycle.state.tau[i],
-                   cycle.feedforward[i], cycle.feedback[i],
-                   cycle.command.tau[i], error,
-                   applied.valid ? applied.applied[i] : 0.0,
-                   applied.valid ? applied.flags[i] : 0);
+      writer_.appendf(
+          ",%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
+          "%.9g,%u",
+          cycle.qref[i], cycle.dqref[i], cycle.ddqref[i], cycle.state.q[i],
+          cycle.state.dq[i], cycle.state.tau[i], cycle.feedforward[i],
+          cycle.feedback[i], cycle.command.tau[i], error,
+          applied.valid ? applied.applied[i] : 0.0,
+          applied.valid ? applied.flags[i] : 0);
     }
-    std::fprintf(file_, "\n");
-    return std::fflush(file_) == 0;
+    writer_.appendf("\n");
+    // False once a row was dropped (full queue) or a queued write failed;
+    // a failed write surfaces here within about one flush interval.
+    return writer_.commitRow();
   }
 
+  // Writes out the queued rows and closes the file (blocks on I/O: call
+  // it after the run). False if any row was dropped or a write failed.
+  bool close() { return writer_.close(); }
+
  private:
-  std::FILE* file_ = nullptr;
+  void writeHeader() {
+    writer_.appendf(
+        "schema_version,time_s,phase,phase_time_s,command_mode,"
+        "feedback_seq,receipt_accepted,submitted_seq,applied_seq");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      writer_.appendf(
+          ",qref%d_rad,dqref%d_rad_s,ddqref%d_rad_s2,q%d_rad,"
+          "dq%d_rad_s,tau_measured%d_nm,tau_ff%d_nm,tau_pd%d_nm,"
+          "tau_command%d_nm,error%d_rad,applied%d,flags%d",
+          i, i, i, i, i, i, i, i, i, i, i, i);
+    }
+    writer_.appendf("\n");
+    if (!writer_.commitRow()) {
+      throw std::runtime_error("track log: cannot queue the header");
+    }
+  }
+
+  static std::FILE* openExclusive(const std::string& path) {
+    std::FILE* file = std::fopen(path.c_str(), "wx");
+    if (file == nullptr) {
+      throw std::runtime_error("track log: cannot create '" + path +
+                               "' (it may already exist)");
+    }
+    return file;
+  }
+
+  rtctrl::util::AsyncWriter writer_;
 };
 
 inline double homeDuration(const arm::Arm& robot, const HomeConfig& config,

@@ -146,6 +146,7 @@ int main(int argc, char* argv[]) {
     follow::RunResult result;
     hw::CraneX7::CycleStats stats;
     bool released = false;
+    bool log_ok = false;
     {
       EnterReader enter;
       if (config.finalization.wait_time_s == 0.0 && !enter.ready()) {
@@ -184,6 +185,8 @@ int main(int argc, char* argv[]) {
       result = run.run();
       stats = crane.cycleStats();
       released = shutdown.run();
+      // Drains the queued rows: file I/O only after the arm is released.
+      log_ok = log.close();
     }
     std::string display_log = config.output.hardware_log.string();
     if (bundle) {
@@ -216,7 +219,13 @@ int main(int argc, char* argv[]) {
                     stats.controller_deadline_misses),
                 1000.0 * stats.max_cycle_time_s);
     std::printf("log: %s\n", display_log.c_str());
-    return result.status == follow::RunStatus::Success && released ? 0 : 1;
+    if (!log_ok) {
+      std::fprintf(stderr, "log: writing %s failed; the log is incomplete\n",
+                   display_log.c_str());
+    }
+    return result.status == follow::RunStatus::Success && released && log_ok
+               ? 0
+               : 1;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "x7_follow: %s\n", error.what());
     return 1;

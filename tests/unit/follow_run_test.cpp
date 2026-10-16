@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 #include "follow/follow_run.hpp"
@@ -218,4 +220,59 @@ TEST_CASE("follow tracking-start hook does not fire when homing fails",
   CHECK(run.run().status == follow::RunStatus::HomeNotConverged);
   CHECK(calls == 0);
   std::remove(path.c_str());
+}
+
+TEST_CASE("follow CSV log records the run and reports an incomplete log",
+          "[follow][run][log]") {
+  SECTION("every cycle reaches the file") {
+    model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+    model::JointMap map(chain);
+    const auto path = referenceFile();
+    model::ZvsTrajectory reference(path, map);
+    const std::string log_path = "build/follow_run_log.csv";
+    std::remove(log_path.c_str());
+    IdealArm robot(arm::ControlMode::Position);
+    REQUIRE(robot.activate());
+    const auto config = baseConfig(arm::ControlMode::Position);
+    follow::FollowCsvLog log(log_path);
+    follow::FollowRun run(robot, reference, config, true, &log);
+    const auto result = run.run();
+    REQUIRE(result.status == follow::RunStatus::Success);
+    REQUIRE(log.close());
+    std::ifstream in(log_path);
+    std::string line;
+    REQUIRE(std::getline(in, line));
+    CHECK(line.rfind("schema_version,time_s,phase,", 0) == 0);
+    std::uint64_t rows = 0;
+    while (std::getline(in, line)) {
+      CHECK(line.rfind("1,", 0) == 0);
+      ++rows;
+    }
+    CHECK(rows == result.cycles);
+    std::remove(log_path.c_str());
+    std::remove(path.c_str());
+  }
+  SECTION("a failed write fails a later record and the close") {
+    std::FILE* full = std::fopen("/dev/full", "w");
+    REQUIRE(full != nullptr);
+    follow::FollowCsvLog log(full, rtctrl::util::AsyncWriter::AdoptStream{});
+    arm::JointState state;
+    arm::JointCommand command;
+    model::ZVector q(model::kCanonicalDof), dq(model::kCanonicalDof),
+        ddq(model::kCanonicalDof);
+    arm::CommandSnapshot snapshot;
+    arm::CommandReceipt receipt;
+    const follow::CycleRecord cycle{follow::Phase::Tracking, 0.0, 0.0,
+                                    &state, &command, &q, &dq, &ddq,
+                                    &snapshot, &receipt};
+    bool refused = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!refused && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      refused = !log.record(cycle);
+    }
+    CHECK(refused);
+    CHECK_FALSE(log.close());
+  }
 }

@@ -145,6 +145,7 @@ int main(int argc, char* argv[]) {
 
     follow::RunResult result;
     bool released = false;
+    bool log_ok = false;
     x7::LinkForceRunReport force_report;
     {
       model::ZvsWriter motion(config.output.simulation_motion.string());
@@ -166,6 +167,7 @@ int main(int argc, char* argv[]) {
       }
       result = run.run();
       released = robot.deactivate();
+      log_ok = log.close();
       if (link_force) x7::finishLinkForce(robot, *force_log, &force_report);
     }
     std::string display_motion = config.output.simulation_motion.string();
@@ -193,6 +195,10 @@ int main(int argc, char* argv[]) {
                 result.worst_tracking_error_rad);
     std::printf("motion: %s\nlog: %s\n", display_motion.c_str(),
                 display_log.c_str());
+    if (!log_ok) {
+      std::fprintf(stderr, "log: writing %s failed; the log is incomplete\n",
+                   display_log.c_str());
+    }
     bool force_ok = true;
     if (link_force) {
       const auto display_force =
@@ -201,7 +207,7 @@ int main(int argc, char* argv[]) {
       force_ok = x7::printLinkForceReport(force_report, display_force);
     }
     return result.status == follow::RunStatus::Success && released &&
-                   force_ok
+                   log_ok && force_ok
                ? 0
                : 1;
   } catch (const std::exception& error) {

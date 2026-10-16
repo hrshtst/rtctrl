@@ -13,6 +13,7 @@
 #include "rtctrl/model/ptp_planner.hpp"
 #include "rtctrl/model/zvs_trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/util/async_writer.hpp"
 
 namespace x7::follow {
 
@@ -78,30 +79,16 @@ class CycleSink {
 
 class FollowCsvLog : public CycleSink {
  public:
+  // The header and every row go through an AsyncWriter, so the control
+  // loop never blocks on file I/O.
   explicit FollowCsvLog(const std::string& path)
-      : file_(std::fopen(path.c_str(), "wx")) {
-    if (file_ == nullptr) {
-      throw std::runtime_error("follow log: cannot create '" + path +
-                               "' (it may already exist)");
-    }
-    std::fprintf(file_,
-                 "schema_version,time_s,phase,command_mode,phase_time_s,"
-                 "feedback_time_s,"
-                 "feedback_seq,receipt_accepted,submitted_seq,applied_seq");
-    for (int i = 0; i < model::kCanonicalDof; ++i) {
-      std::fprintf(file_, ",qref%d_rad,dqref%d_rad_s,ddqref%d_rad_s2", i, i,
-                   i);
-      std::fprintf(file_, ",q%d_rad,dq%d_rad_s,tau%d_nm", i, i, i);
-      std::fprintf(file_,
-                   ",qcmd%d_rad,dqcmd%d_rad_s,effort_limit%d_nm,error%d_rad,"
-                   "applied%d,applied_effort_limit%d_nm,flags%d",
-                   i, i, i, i, i, i, i);
-    }
-    std::fprintf(file_, "\n");
+      : writer_(openExclusive(path), rtctrl::util::AsyncWriter::AdoptStream{}) {
+    writeHeader();
   }
-
-  ~FollowCsvLog() override {
-    if (file_ != nullptr) std::fclose(file_);
+  // Takes ownership of an already-open stream (tests inject failing ones).
+  FollowCsvLog(std::FILE* stream, rtctrl::util::AsyncWriter::AdoptStream)
+      : writer_(stream, rtctrl::util::AsyncWriter::AdoptStream{}) {
+    writeHeader();
   }
 
   bool record(const CycleRecord& cycle) override {
@@ -109,18 +96,17 @@ class FollowCsvLog : public CycleSink {
     const auto& cmd = *cycle.command;
     const auto& snapshot = *cycle.snapshot;
     const auto& receipt = *cycle.receipt;
-    std::fprintf(file_, "1,%.9f,%s,%u,%.9f,%.9f,%llu,%d,%llu,%llu",
-                 cycle.time_s, phaseName(cycle.phase),
-                 static_cast<unsigned>(cmd.mode), cycle.phase_time_s, state.t,
-                 static_cast<unsigned long long>(state.seq),
-                 receipt.accepted ? 1 : 0,
-                 static_cast<unsigned long long>(receipt.submitted_seq),
-                 static_cast<unsigned long long>(
-                     snapshot.applied.valid ? snapshot.applied.target_seq : 0));
+    writer_.appendf(
+        "1,%.9f,%s,%u,%.9f,%.9f,%llu,%d,%llu,%llu", cycle.time_s,
+        phaseName(cycle.phase), static_cast<unsigned>(cmd.mode),
+        cycle.phase_time_s, state.t, static_cast<unsigned long long>(state.seq),
+        receipt.accepted ? 1 : 0,
+        static_cast<unsigned long long>(receipt.submitted_seq),
+        static_cast<unsigned long long>(
+            snapshot.applied.valid ? snapshot.applied.target_seq : 0));
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double qref = (*cycle.reference_q)[i];
-      std::fprintf(
-          file_,
+      writer_.appendf(
           ",%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%u",
           qref, (*cycle.reference_dq)[i], (*cycle.reference_ddq)[i], state.q[i],
           state.dq[i], state.tau[i], cmd.q[i], cmd.dq[i], cmd.effort_limit[i],
@@ -129,12 +115,46 @@ class FollowCsvLog : public CycleSink {
           snapshot.applied.valid ? snapshot.applied.effort_limit[i] : 0.0,
           snapshot.applied.valid ? snapshot.applied.flags[i] : 0);
     }
-    std::fprintf(file_, "\n");
-    return std::fflush(file_) == 0;
+    writer_.appendf("\n");
+    // False once a row was dropped (full queue) or a queued write failed;
+    // a failed write surfaces here within about one flush interval.
+    return writer_.commitRow();
   }
 
+  // Writes out the queued rows and closes the file (blocks on I/O: call
+  // it after the run). False if any row was dropped or a write failed.
+  bool close() { return writer_.close(); }
+
  private:
-  std::FILE* file_ = nullptr;
+  void writeHeader() {
+    writer_.appendf(
+        "schema_version,time_s,phase,command_mode,phase_time_s,"
+        "feedback_time_s,"
+        "feedback_seq,receipt_accepted,submitted_seq,applied_seq");
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      writer_.appendf(",qref%d_rad,dqref%d_rad_s,ddqref%d_rad_s2", i, i, i);
+      writer_.appendf(",q%d_rad,dq%d_rad_s,tau%d_nm", i, i, i);
+      writer_.appendf(
+          ",qcmd%d_rad,dqcmd%d_rad_s,effort_limit%d_nm,error%d_rad,"
+          "applied%d,applied_effort_limit%d_nm,flags%d",
+          i, i, i, i, i, i, i);
+    }
+    writer_.appendf("\n");
+    if (!writer_.commitRow()) {
+      throw std::runtime_error("follow log: cannot queue the header");
+    }
+  }
+
+  static std::FILE* openExclusive(const std::string& path) {
+    std::FILE* file = std::fopen(path.c_str(), "wx");
+    if (file == nullptr) {
+      throw std::runtime_error("follow log: cannot create '" + path +
+                               "' (it may already exist)");
+    }
+    return file;
+  }
+
+  rtctrl::util::AsyncWriter writer_;
 };
 
 class FollowRun {

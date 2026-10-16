@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace arm = rtctrl::arm;
@@ -164,4 +166,57 @@ TEST_CASE(
   CHECK(calls == 0);
   CHECK(robot.steps == 0);
   std::remove(path.c_str());
+}
+
+TEST_CASE("track CSV log records the run and reports an incomplete log",
+          "[track][run][log]") {
+  SECTION("every cycle reaches the file") {
+    model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+    model::JointMap map(chain);
+    const auto path = referenceFile();
+    model::ZvsTrajectory reference(path, map);
+    const std::string log_path = "build/track_run_log.csv";
+    std::remove(log_path.c_str());
+    const auto config = shortConfig();
+    ClockArm robot;
+    track::TrackCsvLog log(log_path);
+    track::TrackingRun run(robot, chain, map, reference, config, true, &log);
+    const auto result = run.run();
+    REQUIRE(result.status == track::RunStatus::Success);
+    REQUIRE(log.close());
+    std::ifstream in(log_path);
+    std::string line;
+    REQUIRE(std::getline(in, line));
+    CHECK(line.rfind("schema_version,time_s,phase,", 0) == 0);
+    std::uint64_t rows = 0;
+    while (std::getline(in, line)) {
+      CHECK(line.rfind("1,", 0) == 0);
+      ++rows;
+    }
+    CHECK(rows == result.cycles);
+    std::remove(log_path.c_str());
+    std::remove(path.c_str());
+  }
+  SECTION("a failed write fails a later record and the close") {
+    std::FILE* full = std::fopen("/dev/full", "w");
+    REQUIRE(full != nullptr);
+    track::TrackCsvLog log(full, rtctrl::util::AsyncWriter::AdoptStream{});
+    arm::JointState state;
+    arm::JointCommand command;
+    model::ZVector zero(model::kCanonicalDof);
+    arm::CommandSnapshot snapshot;
+    arm::CommandReceipt receipt;
+    const track::CycleRecord cycle{track::Phase::Tracking, 0.0, state,
+                                   command, zero, zero, zero, zero, zero,
+                                   snapshot, receipt};
+    bool refused = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!refused && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      refused = !log.record(cycle);
+    }
+    CHECK(refused);
+    CHECK_FALSE(log.close());
+  }
 }
