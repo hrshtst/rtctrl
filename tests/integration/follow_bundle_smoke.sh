@@ -120,4 +120,27 @@ grep -q 'filter = "low-pass"' "$CBP_BUNDLE/follow.toml"
 grep -q 'interpolation = "linear"' "$CBP_BUNDLE/follow.toml"
 grep -q 'status = "success"' "$CBP_BUNDLE/result.toml"
 
+# Log failure: a file-size cap makes the kernel refuse the queued log
+# writes (EFBIG; SIGXFSZ ignored). The run aborts once a failed write
+# surfaces at a later row, or the close reports it; either way the
+# frontend reports the incomplete log and exits 1.
+set +e
+(
+  ulimit -f 8
+  trap '' XFSZ
+  exec "$FOLLOW_APP" --config "$BUNDLE/follow.toml" \
+    --motion "$ROOT/capped.zvs" --log "$ROOT/capped.csv"
+) >"$ROOT/capped.log" 2>&1
+CAPPED_RC=$?
+set -e
+if [ "$CAPPED_RC" -eq 0 ]; then
+  echo "capped log: expected a failing exit"; cat "$ROOT/capped.log"; exit 1
+fi
+grep -q "log: writing .*capped.csv failed; the log is incomplete" \
+  "$ROOT/capped.log" || {
+  echo "capped log: missing the incomplete-log report"
+  cat "$ROOT/capped.log"; exit 1;
+}
+[ "$(stat -c %s "$ROOT/capped.csv")" -le 8192 ]
+
 echo "follow bundle creation and replay OK"
