@@ -117,7 +117,7 @@ class FollowCsvLog : public CycleSink {
     }
     writer_.appendf("\n");
     // False once a row was dropped (full queue) or a queued write failed;
-    // a failed write surfaces here within about one flush interval.
+    // a write's failure surfaces here only after that write returns.
     return writer_.commitRow();
   }
 

@@ -1045,17 +1045,26 @@ const bool log_ok = log.close();  // drains, flushes, closes
 ```
 
 The queue is bounded (4 MiB by default, about 30 s of a 100 Hz log with
-1.2 kB rows), so a commit never allocates or waits for the file. A row that
-does not fit, and any failed write or flush, latches the writer: later rows are
-refused and `close()` returns false, so a log is either complete or reported
-incomplete, never silently gapped. Failures surface asynchronously, at a later
-`commitRow` (within about one 20 ms flush interval) and always at `close()`.
-Rows from the last flush interval are lost if the process is killed.
+1.2 kB rows), so a commit never allocates or waits for the file. The writer
+thread hands the queue to the file every 20 ms; that interval is nominal,
+since a blocked write delays the next one. A row that does not fit, and any
+failed write or flush, latches the writer: later rows are refused and
+`close()` returns false, so a log is either complete or reported incomplete,
+never silently gapped.
+
+Failure detection is asynchronous and has no time bound. A write's failure is
+known only when the write returns: while a write is blocked in the kernel,
+commits keep succeeding and `ok()` stays true. The failure then surfaces at the
+next `commitRow`, and `close()` always reports it. A queue overflow is reported
+by the commit that hits it. A killed process loses the batch being written and
+every row queued behind it, up to the queue capacity; without a blocked write
+that is about the last 20 ms of rows.
 
 Whether a failed log aborts the run is the application's decision. `x7_follow`
-and `x7_track` abort, as they always did on a failed write. `x7_float`,
-`x7_gravity_demo`, and `x7_teach` finish the session, because an abort would
-de-torque an arm the operator may already have released, and then void it.
+and `x7_track` abort once a failure is known, as they always did on a failed
+write. `x7_float`, `x7_gravity_demo`, and `x7_teach` finish the session,
+because an abort would de-torque an arm the operator may already have
+released, and then void it.
 
 ## Talking to servos directly
 
