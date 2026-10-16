@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
@@ -28,7 +28,7 @@ jobs:
       # regressions via `uv run --project tools` (hermetic: the ctest
       # sets UV_CACHE_DIR into the build tree)
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Bootstrap mi-lib
         run: MILIB_LIBS="zeda zm zeo dzco roki roki-fd liw" ./tools/bootstrap_milib.sh
