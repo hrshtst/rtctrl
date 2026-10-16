@@ -48,6 +48,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,6 +62,7 @@
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/util/async_writer.hpp"
 #include "common/x7_common.hpp"
 
 namespace arm = rtctrl::arm;
@@ -100,7 +102,7 @@ bool pollStopKey() {
 // command, not output-shaft torque
 // (docs/theory/gravity-compensation.md).
 struct DemoObserver : arm::CycleObserver {
-  DemoObserver(std::FILE* log, std::vector<double> inv_scale)
+  DemoObserver(rtctrl::util::AsyncWriter* log, std::vector<double> inv_scale)
       : log_(log), inv_scale_(std::move(inv_scale)) {}
 
   bool observe(double t, const arm::JointState& state,
@@ -115,19 +117,20 @@ struct DemoObserver : arm::CycleObserver {
     }
     if (log_ != nullptr) {
       const auto& applied = cmds.applied;
-      std::fprintf(log_, "%.4f", t);
+      log_->appendf("%.4f", t);
       for (int i = 0; i < model::kCanonicalDof; ++i) {
-        std::fprintf(
-            log_, ",%.6f,%.6f,%.4f,%.4f,%d,%d",
-            zVecElemNC(state.q.get(), i), zVecElemNC(state.dq.get(), i),
-            zVecElemNC(cmd.tau.get(), i),
+        log_->appendf(
+            ",%.6f,%.6f,%.4f,%.4f,%d,%d", zVecElemNC(state.q.get(), i),
+            zVecElemNC(state.dq.get(), i), zVecElemNC(cmd.tau.get(), i),
             zVecElemNC(state.tau.get(), i) * inv_scale_[i],
-            (applied.valid && (applied.flags[i] & arm::kCmdClamped)) ? 1
-                                                                     : 0,
-            (applied.valid && (applied.flags[i] & arm::kCmdGated)) ? 1
-                                                                   : 0);
+            (applied.valid && (applied.flags[i] & arm::kCmdClamped)) ? 1 : 0,
+            (applied.valid && (applied.flags[i] & arm::kCmdGated)) ? 1 : 0);
       }
-      std::fprintf(log_, "\n");
+      log_->appendf("\n");
+      // A dropped row or failed write latches in the writer and voids the
+      // session after the run (main checks close()); the run itself goes
+      // on, since aborting here would de-torque a floating arm.
+      (void)log_->commitRow();
     }
     if (t - last_report_ >= 1.0) {
       last_report_ = t;
@@ -143,53 +146,53 @@ struct DemoObserver : arm::CycleObserver {
     return true;
   }
 
-  std::FILE* log_;
+  rtctrl::util::AsyncWriter* log_;  // rows are queued, never written here
   std::vector<double> inv_scale_;  // 1/scale = kt_effective/kt_nominal
   double last_report_ = -1.0;
   bool user_stop_ = false;
   double t_stop_ = 0.0;
 };
 
-void writeDemoLogHeader(std::FILE* log, const hw::Config& config,
+void writeDemoLogHeader(rtctrl::util::AsyncWriter& log,
+                        const hw::Config& config,
                         const gravity_demo::TorqueConstants& kt,
                         double duration_s, bool experimental) {
-  std::fprintf(log, "# app: x7_gravity_demo\n");
+  log.appendf("# app: x7_gravity_demo\n");
   // Self-classification, same contract as x7_float's demonstration
   // windows: this log must never be readable as acceptance evidence,
   // and an experimental-calibration session must never be readable as
   // the approved vendor demonstration.
-  std::fprintf(log, "# run_mode: demonstration\n");
-  std::fprintf(log, "# calibration: %s\n",
-               experimental ? "EXPERIMENTAL" : "vendor-approved");
-  std::fprintf(log, "# duration_s: %.1f\n", duration_s);
-  std::fprintf(log, "# kt_nominal_Nm_per_A:");
+  log.appendf("# run_mode: demonstration\n");
+  log.appendf("# calibration: %s\n",
+              experimental ? "EXPERIMENTAL" : "vendor-approved");
+  log.appendf("# duration_s: %.1f\n", duration_s);
+  log.appendf("# kt_nominal_Nm_per_A:");
   for (const auto& joint : config.joints) {
-    std::fprintf(log, " %.6f",
-                 rtctrl::dxl::torqueConstant(joint.model_number));
+    log.appendf(" %.6f", rtctrl::dxl::torqueConstant(joint.model_number));
   }
-  std::fprintf(log, "\n# kt_effective_Nm_per_A:");
+  log.appendf("\n# kt_effective_Nm_per_A:");
   for (const auto& joint : config.joints) {
-    std::fprintf(log, " %.6f",
-                 gravity_demo::ktFor(joint.model_number, kt));
+    log.appendf(" %.6f", gravity_demo::ktFor(joint.model_number, kt));
   }
-  std::fprintf(log, "\n# command_torque_scale:");
+  log.appendf("\n# command_torque_scale:");
   for (const auto& joint : config.joints) {
-    std::fprintf(log, " %.6f", joint.command_torque_scale);
+    log.appendf(" %.6f", joint.command_torque_scale);
   }
-  std::fprintf(log, "\n");
-  std::fprintf(log,
-               "# tau_model is the cycle's g(q) torque request [Nm]; "
-               "tau_meas is present current x kt_effective [Nm] — a "
-               "current-loop agreement check, NOT an output-shaft "
-               "measurement; clamped/gated are the limiter flags of "
-               "the LATEST APPLIED command at the row's snapshot "
-               "(0 before the first application).\n");
-  std::fprintf(log, "t");
+  log.appendf("\n");
+  log.appendf(
+      "# tau_model is the cycle's g(q) torque request [Nm]; "
+      "tau_meas is present current x kt_effective [Nm] — a "
+      "current-loop agreement check, NOT an output-shaft "
+      "measurement; clamped/gated are the limiter flags of "
+      "the LATEST APPLIED command at the row's snapshot "
+      "(0 before the first application).\n");
+  log.appendf("t");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
-    std::fprintf(log, ",q%d,dq%d,tau_model%d,tau_meas%d,clamped%d,gated%d",
-                 i, i, i, i, i, i);
+    log.appendf(",q%d,dq%d,tau_model%d,tau_meas%d,clamped%d,gated%d", i, i, i,
+                i, i, i);
   }
-  std::fprintf(log, "\n");
+  log.appendf("\n");
+  (void)log.commitRow();  // the header block as one queued row
 }
 
 }  // namespace
@@ -344,7 +347,8 @@ int main(int argc, char* argv[]) {
                 "accordingly\n");
   }
 
-  std::FILE* log = nullptr;
+  // Declared outside the try so every exit path drains the queue.
+  std::unique_ptr<rtctrl::util::AsyncWriter> log;
   try {
     // Refusals before ANY device open: the REQUIRED log path, the
     // customized config (probe load; the session reloads and
@@ -364,8 +368,8 @@ int main(int argc, char* argv[]) {
       customize(probe);
       probe.validate();
     }
-    log = std::fopen(log_path.c_str(), "wx");
-    if (log == nullptr) {
+    std::FILE* log_file = std::fopen(log_path.c_str(), "wx");
+    if (log_file == nullptr) {
       if (errno == EEXIST) {
         std::fprintf(stderr,
                      "log file %s already exists — never overwritten; "
@@ -377,6 +381,8 @@ int main(int argc, char* argv[]) {
       }
       return 1;
     }
+    log = std::make_unique<rtctrl::util::AsyncWriter>(
+        log_file, rtctrl::util::AsyncWriter::AdoptStream{});
 
     // POSITION-mode session: activation holds the arm (goals snap to
     // the present posture) — no free-fall instant. The switch to
@@ -391,7 +397,7 @@ int main(int argc, char* argv[]) {
                   gravity_demo::ktFor(joint.model_number, kt),
                   joint.command_torque_scale);
     }
-    writeDemoLogHeader(log, session.config, kt, duration_s,
+    writeDemoLogHeader(*log, session.config, kt, duration_s,
                        experimental_kt);
 
     model::ChainModel chain("models/crane_x7/crane_x7.ztk");
@@ -481,14 +487,15 @@ int main(int argc, char* argv[]) {
       inv_scale[i] = 1.0 / session.config.joints[i].command_torque_scale;
     }
     arm::GravityComp controller(chain, map);
-    DemoObserver observer(log, std::move(inv_scale));
+    DemoObserver observer(log.get(), std::move(inv_scale));
     std::printf("floating DEMONSTRATION (%.0f s) — the arm is supported "
                 "by the calibrated gravity currents; back-drive it "
                 "gently; press ENTER to end the session early\n",
                 duration_s);
     const bool ran = arm::run(robot, controller, duration_s, &observer);
     const bool clean = shutdown.run();
-    if (log != nullptr) std::fclose(log);
+    // Drains the queued rows: file I/O only after the arm is released.
+    const bool log_ok = log == nullptr || log->close();
     // Verdict: a completed session or the operator's stop are the two
     // clean ends; anything else aborted. SHUTDOWN FAULT dominates —
     // success text must never print over an unverified shutdown.
@@ -496,6 +503,12 @@ int main(int argc, char* argv[]) {
     if (!clean) {
       std::printf("SHUTDOWN FAULT (run %s)\n",
                   success ? "done" : "ABORTED");
+      return 1;
+    }
+    if (!log_ok) {
+      std::printf("LOG INCOMPLETE: writing %s failed — the telemetry of "
+                  "this session is not complete\n",
+                  log_path.c_str());
       return 1;
     }
     if (observer.user_stop_) {

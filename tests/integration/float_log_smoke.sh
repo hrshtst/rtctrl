@@ -24,7 +24,7 @@ LINK="$OUT/ttyDXL"
 # from a previous run must be cleared or reruns would be refused.
 rm -f "$LINK" "$OUT/float.csv" "$OUT/float_demo.csv" \
   "$OUT/float_feel.csv" "$OUT/float_feel_bad.csv" \
-  "$OUT/float_feel_gated.csv"
+  "$OUT/float_feel_gated.csv" "$OUT/float_capped.csv"
 "$EMU" --link "$LINK" &
 EMU_PID=$!
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
@@ -143,3 +143,34 @@ if python3 "$(dirname "$0")/check_float_log.py" --feel --gate-free \
   exit 1
 fi
 echo "gated row correctly voids a --gate-free session"
+
+# Log failure: a file-size cap makes the kernel refuse the queued writes
+# once the log outgrows it (EFBIG; SIGXFSZ ignored so the process
+# survives). The run is NOT aborted for it (an abort would de-torque a
+# released arm): the window still completes, then the attempt is voided
+# as LOG INCOMPLETE with exit 1 and no success verdict.
+set +e
+CAPPED=$( (sleep 1; echo) | (
+  ulimit -f 8
+  trap '' XFSZ
+  exec "$FLOAT" --config config/crane_x7_vendor_scale.toml \
+    --port "$LINK" --log "$OUT/float_capped.csv" --evaluation-time 5 15
+) 2>&1)
+RC=$?
+set -e
+if [ "$RC" -eq 0 ]; then
+  echo "capped log: expected a failing exit"; echo "$CAPPED"; exit 1
+fi
+echo "$CAPPED" | grep -q "^LOG INCOMPLETE: writing .*float_capped.csv failed" || {
+  echo "capped log: missing the LOG INCOMPLETE verdict:"; echo "$CAPPED"; exit 1;
+}
+echo "$CAPPED" | grep -q "^RELEASED (t=" || {
+  echo "capped log: the release marker never registered:"; echo "$CAPPED"
+  exit 1
+}
+if echo "$CAPPED" | grep -q "ABORTED\|window complete\|DEADMAN"; then
+  echo "capped log: unexpected abort or success verdict:"; echo "$CAPPED"
+  exit 1
+fi
+[ "$(stat -c %s "$OUT/float_capped.csv")" -le 8192 ]
+echo "capped log voids the attempt without aborting the run"

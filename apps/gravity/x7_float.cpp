@@ -105,6 +105,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -116,6 +117,7 @@
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
+#include "rtctrl/util/async_writer.hpp"
 #include "common/x7_common.hpp"
 #include "gravity/gravity_support.hpp"
 
@@ -197,7 +199,7 @@ constexpr double kMaxDurationS = 60.0;
 // it was ever accepted or applied). Also owns the release-marker
 // detection and the marker-anchored termination.
 struct FloatLogObserver : arm::CycleObserver {
-  FloatLogObserver(std::FILE* log, ReleaseMarker* marker,
+  FloatLogObserver(rtctrl::util::AsyncWriter* log, ReleaseMarker* marker,
                    const hw::Config* config, bool feel,
                    double outer_deadline_s, double evaluation_window_s)
       : log_(log), marker_(marker), config_(config), feel_(feel),
@@ -243,17 +245,15 @@ struct FloatLogObserver : arm::CycleObserver {
       // POSTDATE this row's feedback (the producer reads before it
       // writes), so the offset is signed; both are meaningful only
       // when applied_valid = 1.
-      std::fprintf(log_,
-                   "%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu,%.6f,%.6f,%d,%d",
-                   t, state.t,
-                   static_cast<unsigned long long>(state.seq),
-                   static_cast<unsigned long long>(receipt.submitted_seq),
-                   receipt.submission_time, receipt.accepted ? 1 : 0,
-                   applied.valid ? 1 : 0,
-                   static_cast<unsigned long long>(applied.target_seq),
-                   applied.valid ? applied.latest_time : 0.0,
-                   applied.valid ? state.t - applied.latest_time : 0.0,
-                   marker_->released ? 1 : 0, event_mark ? 1 : 0);
+      log_->appendf("%.4f,%.6f,%llu,%llu,%.6f,%d,%d,%llu,%.6f,%.6f,%d,%d", t,
+                    state.t, static_cast<unsigned long long>(state.seq),
+                    static_cast<unsigned long long>(receipt.submitted_seq),
+                    receipt.submission_time, receipt.accepted ? 1 : 0,
+                    applied.valid ? 1 : 0,
+                    static_cast<unsigned long long>(applied.target_seq),
+                    applied.valid ? applied.latest_time : 0.0,
+                    applied.valid ? state.t - applied.latest_time : 0.0,
+                    marker_->released ? 1 : 0, event_mark ? 1 : 0);
       for (int i = 0; i < model::kCanonicalDof; ++i) {
         // RAW goal/present current counts (reviewer-directed
         // instrumentation — a deliberate raw-unit exception in this
@@ -271,17 +271,19 @@ struct FloatLogObserver : arm::CycleObserver {
                 : 0;
         const int present_cnt = rtctrl::dxl::ampsToCurrent(
             zVecElemNC(state.tau.get(), i) / kt);
-        std::fprintf(log_, ",%.6f,%.6f,%.4f,%.4f,%.4f,%d,%d,%d,%d",
-                     zVecElemNC(state.q.get(), i),
-                     zVecElemNC(state.dq.get(), i),
-                     zVecElemNC(state.tau.get(), i),
-                     zVecElemNC(cmd.tau.get(), i),
-                     applied.valid ? applied.applied[i] : 0.0,
-                     (applied.flags[i] & arm::kCmdClamped) ? 1 : 0,
-                     (applied.flags[i] & arm::kCmdGated) ? 1 : 0,
-                     goal_cnt, present_cnt);
+        log_->appendf(
+            ",%.6f,%.6f,%.4f,%.4f,%.4f,%d,%d,%d,%d",
+            zVecElemNC(state.q.get(), i), zVecElemNC(state.dq.get(), i),
+            zVecElemNC(state.tau.get(), i), zVecElemNC(cmd.tau.get(), i),
+            applied.valid ? applied.applied[i] : 0.0,
+            (applied.flags[i] & arm::kCmdClamped) ? 1 : 0,
+            (applied.flags[i] & arm::kCmdGated) ? 1 : 0, goal_cnt, present_cnt);
       }
-      std::fprintf(log_, "\n");
+      log_->appendf("\n");
+      // A dropped row or failed write latches in the writer and voids the
+      // attempt after the run (main checks close()); the run itself goes
+      // on, since aborting here would de-torque a released arm.
+      (void)log_->commitRow();
     }
     // Marker-anchored termination (docs/records/history.md gravity calibration M-GC1):
     // the full evaluation window is always logged; a run past the
@@ -301,7 +303,7 @@ struct FloatLogObserver : arm::CycleObserver {
     return true;
   }
 
-  std::FILE* log_;
+  rtctrl::util::AsyncWriter* log_;  // rows are queued, never written here
   ReleaseMarker* marker_;
   const hw::Config* config_;  // per-joint model numbers for the counts
   bool feel_;
@@ -319,8 +321,9 @@ std::FILE* openFloatLogFile(const std::string& path) {
   return std::fopen(path.c_str(), "wx");
 }
 
-void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
-                         bool feel, bool demonstration, double duration_s,
+void writeFloatLogHeader(rtctrl::util::AsyncWriter& log,
+                         const hw::Config& config, bool feel,
+                         bool demonstration, double duration_s,
                          double evaluation_window_s) {
   // The log self-classifies: feel-check and non-default demonstration
   // windows must never be readable as acceptance evidence. The requested
@@ -329,46 +332,47 @@ void writeFloatLogHeader(std::FILE* log, const hw::Config& config,
   // a truncated feel session passed validation).
   const char* run_mode =
       feel ? "feel-check" : (demonstration ? "demonstration" : "acceptance");
-  std::fprintf(log, "# run_mode: %s\n", run_mode);
-  std::fprintf(log, "# duration_s: %.1f\n", duration_s);
+  log.appendf("# run_mode: %s\n", run_mode);
+  log.appendf("# duration_s: %.1f\n", duration_s);
   if (!feel) {
-    std::fprintf(log, "# evaluation_window_s: %.17g\n",
-                 evaluation_window_s);
+    log.appendf("# evaluation_window_s: %.17g\n", evaluation_window_s);
   }
-  std::fprintf(log,
-               "# events per row: FEEDBACK (feedback_time/feedback_seq, "
-               "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
-               "(submitted_seq/submission_time/accepted, tau_request — "
-               "applied LATER) | LATEST APPLIED in the coherent "
-               "snapshot (applied_valid/applied_seq/latest_apply_time, "
-               "tau_applied, clamped/gated). feedback_minus_latest_apply "
-               "is SIGNED: the producer reads before it writes, so the "
-               "latest apply may post-date this row's feedback; applied "
-               "fields are meaningful only when applied_valid=1. "
-               "released flips to 1 at the operator's marker, which "
-               "PRECEDES the physical release. operator_event marks a "
-               "post-release ENTER press on its row (the row's t is "
-               "the operator's event timestamp). goal_cnt/present_cnt "
-               "are RAW servo current counts (goal from the LATEST "
-               "APPLIED record, 0 while applied_valid=0; present from "
-               "this row's feedback), reconstructed through the "
-               "wire's own conversion at the 2.69 mA LSB.\n");
-  std::fprintf(log, "# command_torque_scale:");
+  log.appendf(
+      "# events per row: FEEDBACK (feedback_time/feedback_seq, "
+      "q, dqservo, tau_meas) | THIS CYCLE'S REQUEST "
+      "(submitted_seq/submission_time/accepted, tau_request — "
+      "applied LATER) | LATEST APPLIED in the coherent "
+      "snapshot (applied_valid/applied_seq/latest_apply_time, "
+      "tau_applied, clamped/gated). feedback_minus_latest_apply "
+      "is SIGNED: the producer reads before it writes, so the "
+      "latest apply may post-date this row's feedback; applied "
+      "fields are meaningful only when applied_valid=1. "
+      "released flips to 1 at the operator's marker, which "
+      "PRECEDES the physical release. operator_event marks a "
+      "post-release ENTER press on its row (the row's t is "
+      "the operator's event timestamp). goal_cnt/present_cnt "
+      "are RAW servo current counts (goal from the LATEST "
+      "APPLIED record, 0 while applied_valid=0; present from "
+      "this row's feedback), reconstructed through the "
+      "wire's own conversion at the 2.69 mA LSB.\n");
+  log.appendf("# command_torque_scale:");
   for (const auto& joint : config.joints) {
-    std::fprintf(log, " %.6f", joint.command_torque_scale);
+    log.appendf(" %.6f", joint.command_torque_scale);
   }
-  std::fprintf(log, "\n");
-  std::fprintf(log, "t,feedback_time,feedback_seq,submitted_seq,"
-                    "submission_time,accepted,applied_valid,applied_seq,"
-                    "latest_apply_time,feedback_minus_latest_apply,"
-                    "released,operator_event");
+  log.appendf("\n");
+  log.appendf(
+      "t,feedback_time,feedback_seq,submitted_seq,"
+      "submission_time,accepted,applied_valid,applied_seq,"
+      "latest_apply_time,feedback_minus_latest_apply,"
+      "released,operator_event");
   for (int i = 0; i < model::kCanonicalDof; ++i) {
-    std::fprintf(log,
-                 ",q%d,dqservo%d,tau_meas%d,tau_request%d,tau_applied%d,"
-                 "clamped%d,gated%d,goal_cnt%d,present_cnt%d",
-                 i, i, i, i, i, i, i, i, i);
+    log.appendf(
+        ",q%d,dqservo%d,tau_meas%d,tau_request%d,tau_applied%d,"
+        "clamped%d,gated%d,goal_cnt%d,present_cnt%d",
+        i, i, i, i, i, i, i, i, i);
   }
-  std::fprintf(log, "\n");
+  log.appendf("\n");
+  (void)log.commitRow();  // the header block as one queued row
 }
 
 }  // namespace
@@ -481,7 +485,8 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  std::FILE* log = nullptr;
+  // Declared outside the try so every exit path drains the queue.
+  std::unique_ptr<rtctrl::util::AsyncWriter> log;
   try {
     // EVERY session requires the approved vendor vector BEFORE any
     // bus contact (un-parking decision 2026-07-31): default-scale
@@ -517,8 +522,8 @@ int main(int argc, char* argv[]) {
                    "telemetry under a unique filename\n");
       return 1;
     }
-    log = openFloatLogFile(log_path);
-    if (log == nullptr) {
+    std::FILE* log_file = openFloatLogFile(log_path);
+    if (log_file == nullptr) {
       if (errno == EEXIST) {
         std::fprintf(stderr,
                      "log file %s already exists — never overwritten; "
@@ -530,12 +535,14 @@ int main(int argc, char* argv[]) {
       }
       return 1;
     }
+    log = std::make_unique<rtctrl::util::AsyncWriter>(
+        log_file, rtctrl::util::AsyncWriter::AdoptStream{});
     // POSITION-mode session: activation holds the arm (goals snap to
     // the present posture) — no free-fall instant. The switch to
     // current mode below carries the calibrated gravity preload.
     auto session = x7::openSession(cli, /*operating_mode_override=*/3);
     if (log != nullptr) {
-      writeFloatLogHeader(log, session.config, feel_mode,
+      writeFloatLogHeader(*log, session.config, feel_mode,
                           demonstration_mode, duration_s,
                           evaluation_window_s);
     }
@@ -620,7 +627,7 @@ int main(int argc, char* argv[]) {
     }
     ReleaseMarker marker;
     ReportingGravityComp controller(chain, map);
-    FloatLogObserver observer(log, &marker, &session.config, feel_mode,
+    FloatLogObserver observer(log.get(), &marker, &session.config, feel_mode,
                               duration_s, evaluation_window_s);
     if (feel_mode) {
       std::printf("FEEL-CHECK session (outer deadline %.0f s) — press "
@@ -640,7 +647,8 @@ int main(int argc, char* argv[]) {
     }
     const bool ran = arm::run(robot, controller, duration_s, &observer);
     const bool clean = shutdown.run();
-    if (log != nullptr) std::fclose(log);
+    // Drains the queued rows: file I/O only after the arm is released.
+    const bool log_ok = log == nullptr || log->close();
     // Verdict. Acceptance: ONLY a completed evaluation window is
     // success (review finding: a ran-based form could print "done"
     // after a marker whose window the outer deadline truncated).
@@ -653,6 +661,12 @@ int main(int argc, char* argv[]) {
     if (!clean) {
       std::printf("SHUTDOWN FAULT (run %s)\n",
                   success_pending ? "done" : "ABORTED");
+      return 1;
+    }
+    if (!log_ok) {
+      std::printf("LOG INCOMPLETE: writing %s failed — the telemetry of "
+                  "this attempt is not complete (void attempt)\n",
+                  log_path.c_str());
       return 1;
     }
     if (marker.marker_timeout) {

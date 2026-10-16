@@ -11,7 +11,7 @@ mkdir -p "$OUT"
 LINK="$OUT/ttyDXL"
 # Logs are created EXCLUSIVELY (never overwritten): clear previous runs.
 rm -f "$LINK" "$OUT/demo_default.csv" "$OUT/demo_custom.csv" \
-  "$OUT/demo_stop.csv"
+  "$OUT/demo_stop.csv" "$OUT/demo_capped.csv"
 "$EMU" --link "$LINK" &
 EMU_PID=$!
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
@@ -78,4 +78,26 @@ PHASE3=$( (sleep 1; echo) | "$DEMO" --port "$LINK" \
 echo "$PHASE3" | grep -q "stopped by operator" || {
   echo "phase 3 missing the early-stop verdict:"; echo "$PHASE3"; exit 1;
 }
+# Log failure: a file-size cap makes the kernel refuse the queued writes
+# (EFBIG; SIGXFSZ ignored). The session is not aborted for it; after the
+# operator's stop it reports LOG INCOMPLETE and exits 1.
+set +e
+CAPPED=$( (sleep 2; echo) | (
+  ulimit -f 4
+  trap '' XFSZ
+  exec "$DEMO" --port "$LINK" --log "$OUT/demo_capped.csv" 30
+) 2>&1)
+RC=$?
+set -e
+if [ "$RC" -eq 0 ]; then
+  echo "capped log: expected a failing exit"; echo "$CAPPED"; exit 1
+fi
+echo "$CAPPED" | grep -q "^LOG INCOMPLETE: writing .*demo_capped.csv failed" || {
+  echo "capped log: missing the LOG INCOMPLETE verdict:"; echo "$CAPPED"; exit 1;
+}
+if echo "$CAPPED" | grep -q "ABORTED\|stopped by operator\|DEADMAN"; then
+  echo "capped log: unexpected abort or success verdict:"; echo "$CAPPED"
+  exit 1
+fi
+[ "$(stat -c %s "$OUT/demo_capped.csv")" -le 4096 ]
 echo "gravity demo smoke OK"
