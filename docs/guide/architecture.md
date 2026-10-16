@@ -60,6 +60,9 @@ flowchart TB
 - **`hw/`: the real robot.** `Config` (TOML), `CraneX7` (activation
   sequence, mode-checked limited writers, background RW thread,
   deadman), consumed by `RealArm`.
+- **`util/`: support.** `AsyncWriter` keeps row-oriented file logging
+  off control threads: rows go into a bounded in-memory queue that its
+  own writer thread drains. Every app run log goes through it.
 - **`emu/`: the test double.** One control-table state machine, two
   transports. Everything ships in the single `rtctrl` library for
   build simplicity, so the emulator is *linked* everywhere, but no
@@ -73,13 +76,14 @@ library, so this, not linkage, is the real boundary): `dxl` and
 (command records and snapshots: types only, no behavior); `arm`'s
 bridge types and `SimArm` depend on `model`, and its `RealArm` adapter
 additionally on `hw` (the arm→hw edge exists solely there); `emu`
-depends only on `dxl` types. Controllers depend on `arm` (and `model`
-for dynamics), never on `dxl`/`hw`/`emu` directly.
+depends only on `dxl` types; `util` depends on nothing else in the
+library. Controllers depend on `arm` (and `model` for dynamics), never on
+`dxl`/`hw`/`emu` directly.
 
 ## Directory map
 
 ```
-include/rtctrl/{dxl,model,arm,hw,emu}/   public headers (src/ mirrors)
+include/rtctrl/{dxl,model,arm,hw,emu,util}/   public headers (src/ mirrors)
 apps/         sources by domain: bus/ (dxl_emu, dxl_inspect,
               dxl_load_params),
               bringup/ (x7_onoff, x7_read, x7_set_param,
@@ -177,6 +181,13 @@ issuing catch-up bus traffic. This bounds burst behavior but is not a hard
 real-time guarantee: the process still uses ordinary operating-system thread
 scheduling. Maximum cycle duration, lateness, skipped periods, failed reads,
 and failed writes remain observable in `CycleStats`.
+
+File I/O stays off the control thread for the same reason. A buffered write
+to a regular file can block in the kernel for tens to hundreds of
+milliseconds, long enough to miss command windows, trip `arm::run`'s 25 ms
+feedback-gap abort, or reach the 250 ms deadman. The apps therefore queue their
+CSV rows through `util::AsyncWriter` and close the log only after the arm is
+released.
 
 ## Safety architecture (hardware)
 

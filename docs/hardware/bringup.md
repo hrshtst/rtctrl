@@ -227,10 +227,25 @@ final Enter confirms that the arm is supported before shutdown. See the
 - `firmware vNN lacks Bus Watchdog`: update servo firmware with the
   ROBOTIS tools before proceeding; activation intentionally refuses.
 - `DEADMAN: command stream stale`: the host silenced the bus and the
-  servos halted themselves. Two causes: the host command loop stalled
-  (investigate latency_timer, CPU load), or the feedback reads died
+  servos halted themselves. The message is printed for every escalation,
+  so it does not name the cause by itself. Causes: the host command loop
+  stalled (investigate latency_timer, CPU load), the feedback reads died
   (e.g. servo power was cut mid-run), which apps report as a nonzero
-  `read failures` count.
+  `read failures` count, or the command writes kept failing. Run logs are
+  written by a separate thread, so a slow disk no longer stalls the loop.
+  Before 2026-10-16 a log write that blocked for 250 ms or more caused this
+  abort, and one that blocked for 25 ms or more ended `x7_float` and
+  `x7_gravity_demo` runs with a bare `ABORTED` and `x7_teach` recordings
+  with status `feedback_gap` (torque off) or `control_failure` (gravity
+  compensation).
+- `LOG INCOMPLETE: writing <log> failed` (`x7_float`, `x7_gravity_demo`),
+  `log: writing <log> failed; the log is incomplete` (`x7_follow`,
+  `x7_track`), or `cannot finish teach log` (`x7_teach`): the filesystem
+  refused a queued log write (for example, a full disk), or it stalled for
+  about 30 s and the queue filled. The attempt is void. `x7_follow` and
+  `x7_track` abort the run once the failure is detected; the other apps
+  finish the session first, so that a released arm is not de-torqued, and
+  exit 1 afterwards.
 - A nonzero `command-window misses` count means controller computation or
   host scheduling did not leave the configured end-of-cycle write margin.
   Stop the run and inspect CPU load, USB latency, maximum cycle time, and
