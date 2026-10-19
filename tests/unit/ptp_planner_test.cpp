@@ -216,6 +216,7 @@ TEST_CASE("Cartesian PTP output is a parseable 9-DOF zvs sequence",
       writer.frame(plan.interval, displacement.get());
     }
     CHECK(writer.frames() == static_cast<int>(plan.samples.size()));
+    CHECK(writer.close());
   }
 
   zSeq sequence;

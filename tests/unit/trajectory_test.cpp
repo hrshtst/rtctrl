@@ -99,8 +99,12 @@ TEST_CASE("zvs output re-parses as a zm sequence", "[trajectory][zvs]") {
     ZvsWriter writer(path);
     for (int f = 0; f < kFrames; ++f) {
       q[0] = 0.01 * f;
-      writer.frame(kDt, q);
+      CHECK(writer.frame(kDt, q));
     }
+    CHECK(writer.frames() == kFrames);
+    CHECK(writer.close());
+    CHECK(writer.close());  // idempotent
+    CHECK_FALSE(writer.frame(kDt, q));
     CHECK(writer.frames() == kFrames);
   }
 
@@ -116,6 +120,38 @@ TEST_CASE("zvs output re-parses as a zm sequence", "[trajectory][zvs]") {
   CHECK(count == kFrames);
   zSeqFree(&seq);
   std::remove(path);
+}
+
+TEST_CASE("a failed zvs write is reported, never silent", "[trajectory][zvs]") {
+  // /dev/full accepts the open and buffered frames, then fails every
+  // flush with ENOSPC.
+  ZVector q(kDof);
+  SECTION("a failure inside the buffer surfaces at close") {
+    ZvsWriter writer("/dev/full");
+    CHECK(writer.frame(0.01, q));
+    CHECK_FALSE(writer.failed());
+    CHECK_FALSE(writer.close());
+    CHECK(writer.failed());
+    CHECK_FALSE(writer.close());
+  }
+  SECTION("a failed flush latches and stops counting frames") {
+    ZvsWriter writer("/dev/full");
+    int accepted = 0;
+    bool rejected = false;
+    for (int f = 0; f < 10000 && !rejected; ++f) {
+      if (writer.frame(0.01, q)) {
+        ++accepted;
+      } else {
+        rejected = true;
+      }
+    }
+    REQUIRE(rejected);  // the stdio buffer overflowed into a failed write
+    CHECK(writer.failed());
+    CHECK(writer.frames() == accepted);
+    CHECK_FALSE(writer.frame(0.01, q));
+    CHECK(writer.frames() == accepted);
+    CHECK_FALSE(writer.close());
+  }
 }
 
 TEST_CASE("round trip is C2-continuous at the split", "[trajectory]") {
