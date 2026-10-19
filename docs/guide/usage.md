@@ -129,10 +129,20 @@ traj.sample(t, q, dq, ddq);     // C² quintic; dq/ddq optional
 
 model::ZvsWriter log("motion.zvs");   // one "<dt> <zVec>" line per frame
 log.frame(0.01, q9);                  // view: rk_anim <model.ztk> motion.zvs
+if (!log.close()) { /* a write failed; the file is incomplete */ }
 
 chain.writeInitZtk("pose.init.ztk", q9);  // static posture for
                                           // rk_pen -model <model.ztk> -init pose.init.ztk
 ```
+
+`ZvsWriter` buffers its frames, so a write error (a full disk, for example)
+often surfaces only when the buffer is flushed. The first failure latches:
+`frame()` returns false for it and every later frame, and `close()` returns
+false. Only `close()` returning true means the file holds every counted frame.
+Every app and example that writes through `ZvsWriter` checks it: the planner
+fails with `cannot finish PTP output` before publishing a bundle, and the
+follow and track simulators report `motion: writing <file> failed; the motion
+is incomplete` and exit 1.
 
 `writeInitZtk` delegates to roki's own `rkChainInitWriteZTK`: the
 `[roki::chain::init]` format stores revolute displacements in degrees,
