@@ -89,4 +89,26 @@ fi
 cmp "$BUNDLE/trajectory.zvs" "$REPRODUCED"
 cmp "$BUNDLE/trajectory.csv" "$REPRODUCED_CSV"
 
+# Output failure: a file-size cap below the 10 kB trajectory makes the kernel
+# refuse its write (EFBIG; SIGXFSZ ignored). The planner fails instead of
+# reporting the truncated file as written.
+set +e
+(
+  cd "$ROOT"
+  ulimit -f 4
+  trap '' XFSZ
+  exec "$APP" --config "$BUNDLE/plan.toml" --output "$ROOT/capped.zvs" \
+    --no-diagnostics
+) >"$ROOT/capped.log" 2>&1
+CAPPED_RC=$?
+set -e
+if [ "$CAPPED_RC" -eq 0 ]; then
+  echo "capped output: expected a failing exit"; cat "$ROOT/capped.log"; exit 1
+fi
+grep -q "cannot finish PTP output '.*capped.zvs'" "$ROOT/capped.log" || {
+  echo "capped output: missing the unfinished-output report"
+  cat "$ROOT/capped.log"; exit 1;
+}
+[ "$(stat -c %s "$ROOT/capped.zvs")" -le 4096 ]
+
 echo "PTP bundle creation and replay OK"

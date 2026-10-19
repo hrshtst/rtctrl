@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 
 #include "plan/ptp_bundle.hpp"
 #include "plan/ptp_config.hpp"
@@ -123,6 +124,10 @@ int main(int argc, char* argv[]) {
           displacement[i] = sample.displacement[i];
         }
         writer.frame(plan.interval, displacement.get());
+      }
+      if (!writer.close()) {
+        throw std::runtime_error("cannot finish PTP output '" +
+                                 config.output_path.string() + "'");
       }
       written_frames = writer.frames();
     }
