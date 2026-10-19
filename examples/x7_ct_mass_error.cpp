@@ -269,6 +269,10 @@ int main(int argc, char* argv[]) {
     }
     std::printf("  all-joint RMS %.4f rad\n",
                 std::sqrt(sum_all / (samples * model::kCanonicalDof)));
+    bool zvs_ok = true;
+    for (model::ZvsWriter* w : {zvs.get(), zvs_ref.get()}) {
+      if (w != nullptr && !w->close()) zvs_ok = false;
+    }
     if (zvs) {
       std::printf("%d zvs frames -> %s\n  view with:  rk_anim "
                   "models/crane_x7/crane_x7.ztk %s\n",
@@ -277,6 +281,11 @@ int main(int argc, char* argv[]) {
     if (zvs_ref) {
       std::printf("%d reference zvs frames -> %s\n", zvs_ref->frames(),
                   zvs_ref_path.c_str());
+    }
+    if (!zvs_ok) {
+      std::fprintf(stderr, "zvs: writing a motion file failed; it is "
+                           "incomplete\n");
+      return 1;
     }
     return 0;
   } catch (const std::exception& e) {

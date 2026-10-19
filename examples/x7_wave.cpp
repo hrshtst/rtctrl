@@ -132,17 +132,22 @@ int main(int argc, char* argv[]) {
                 duration_s);
     const bool ok = arm::run(robot, controller, duration_s, observer.get());
     const bool clean = shutdown.run();
+    const bool zvs_ok = zvs == nullptr || zvs->close();
     if (zvs != nullptr && zvs->frames() > 0) {
       std::printf("%d reference zvs frames -> %s\n  view with:  rk_anim "
                   "models/crane_x7/crane_x7.ztk %s\n",
                   zvs->frames(), zvs_path.c_str(), zvs_path.c_str());
+    }
+    if (!zvs_ok) {
+      std::fprintf(stderr, "zvs: writing %s failed; it is incomplete\n",
+                   zvs_path.c_str());
     }
     if (!clean) {
       std::printf("SHUTDOWN FAULT (run %s)\n", ok ? "done" : "ABORTED");
       return 1;
     }
     std::printf("%s\n", ok ? "done" : "ABORTED");
-    return ok ? 0 : 1;
+    return ok && zvs_ok ? 0 : 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: %s\n", e.what());
     return 1;

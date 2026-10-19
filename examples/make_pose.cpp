@@ -67,6 +67,10 @@ int main(int argc, char* argv[]) {
   {
     model::ZvsWriter writer(base + ".zvs");
     for (int k = 0; k < 5; ++k) writer.frame(1.0, q9.get());
+    if (!writer.close()) {
+      std::fprintf(stderr, "cannot write %s.zvs\n", base.c_str());
+      return 1;
+    }
   }
 
   // rk_pen initial-state file, through roki's own writer: the

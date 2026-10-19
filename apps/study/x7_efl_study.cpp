@@ -475,6 +475,10 @@ int main(int argc, char* argv[]) {
       return csv;
     };
     int zvs_files = 0;
+    int zvs_failed = 0;
+    auto finish_zvs = [&zvs_failed](model::ZvsWriter* zvs) {
+      if (zvs != nullptr && !zvs->close()) ++zvs_failed;
+    };
     // practical baseline on the identical scenario (the discard rule
     // compares against its peak error)
     CellSpec base;
@@ -491,6 +495,7 @@ int main(int argc, char* argv[]) {
     }
     const auto base_r = runCell(chain, map, *base_arm, base,
                                 out_dir + "/grid_practical.csv");
+    finish_zvs(base_zvs.get());
     for (const double omega : kOmegaGrid) {
       for (const double zeta : kZetaGrid) {
         for (const Kind kind : {Kind::DesiredHost, Kind::EflHost}) {
@@ -512,6 +517,7 @@ int main(int argc, char* argv[]) {
           }
           grid.push_back({omega, zeta, kind,
                           runCell(chain, map, *plant, s, name)});
+          finish_zvs(zvs.get());
         }
       }
     }
@@ -684,6 +690,7 @@ int main(int argc, char* argv[]) {
         }
         cells.push_back(
             {cd.id, kind, runCell(chain, map, robot, s, trace)});
+        finish_zvs(zvs.get());
         std::printf("case %-3s %-12s rms %.5f peak %.5f tau_peak %.3f "
                     "sat %ld%s\n",
                     cd.id, kindName(kind), cells.back().r.rms_total,
@@ -1110,6 +1117,12 @@ int main(int argc, char* argv[]) {
     if (want_zvs) {
       std::printf("zvs motion files: %d (play: rk_anim %s <file>)\n",
                   zvs_files, kModelPath);
+      if (zvs_failed > 0) {
+        std::fprintf(stderr,
+                     "zvs: writing %d of %d motion files failed; they are "
+                     "incomplete\n",
+                     zvs_failed, zvs_files);
+      }
     }
     if (have_decision) {
       std::printf("decision: C1 %d C2 %d C3 %d C4 %d -> %s\n", c1, c2,
@@ -1124,7 +1137,7 @@ int main(int argc, char* argv[]) {
         std::printf("  - %s\n", r.c_str());
       }
     }
-    return 0;
+    return zvs_failed == 0 ? 0 : 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "fatal: %s\n", e.what());
     return 1;

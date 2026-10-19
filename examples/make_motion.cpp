@@ -50,6 +50,10 @@ int main(int argc, char* argv[]) {
     writer.frame(kDt, q9);
   }
 
+  if (!writer.close()) {
+    std::fprintf(stderr, "cannot finish %s\n", out_path);
+    return 1;
+  }
   std::printf("wrote %d frames to %s\n", writer.frames(), out_path);
   std::printf("view with:  rk_anim models/crane_x7/crane_x7.ztk %s\n",
               out_path);
