@@ -302,6 +302,42 @@ TEST_CASE("a full timing ring keeps the oldest records and counts drops",
   CHECK(stats.timing_drops == stats.cycles - 4);
 }
 
+TEST_CASE("timing records number cycles across a thread restart and mark "
+          "each run's segment",
+          "[hw][timing]") {
+  // x7_track stops and restarts the background thread at its mode switch
+  // with one timing log open: the numbering must not restart.
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  emu::FakePacketIO io(bus);
+  hw::CraneX7::Options options;
+  options.control_cycle_s = 0.002;
+  options.timing_ring_capacity = 256;
+  hw::CraneX7 arm(io, config, options);
+  REQUIRE(arm.activate());
+  std::uint64_t seen = 0;
+  REQUIRE(arm.startThread());
+  while (seen < 4) seen = arm.waitCycle(seen);
+  arm.stopThread();
+  const auto first_run = arm.cycleStats().cycles;
+  REQUIRE(arm.startThread());
+  while (seen < first_run + 4) seen = arm.waitCycle(seen);
+  arm.stopThread();
+  REQUIRE(arm.deactivate());
+  const auto stats = arm.cycleStats();
+  std::vector<CycleRecord> records;
+  CycleRecord r;
+  while (arm.popCycleRecord(&r)) records.push_back(r);
+  REQUIRE(stats.timing_drops == 0);
+  REQUIRE(records.size() == stats.cycles);
+  REQUIRE(records.size() > first_run);
+  for (std::size_t i = 0; i < records.size(); ++i) {
+    CAPTURE(i);
+    CHECK(records[i].cycle == i + 1);
+    CHECK(records[i].segment == (i < first_run ? 1u : 2u));
+  }
+}
+
 TEST_CASE("timing records are off by default; the statistics are kept",
           "[hw][timing]") {
   const auto config = craneConfig();

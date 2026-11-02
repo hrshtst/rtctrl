@@ -449,6 +449,7 @@ class CraneX7 {
   mutable std::mutex cycle_mutex_;
   std::condition_variable cycle_cv_;
   std::uint64_t cycle_seq_ = 0;
+  std::uint32_t thread_segment_ = 0;  // startThread() runs so far
   CycleStats stats_;
   const std::chrono::steady_clock::time_point timing_epoch_ =
       std::chrono::steady_clock::now();

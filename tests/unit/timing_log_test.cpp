@@ -81,6 +81,7 @@ TEST_CASE("the cycle timing log holds one row per background cycle",
     const auto cells = columns(lines[i]);
     REQUIRE(cells.size() == width);
     CHECK(cells.front() == std::to_string(i));
+    CHECK(cells[1] == "1");  // one thread run: segment 1
     CHECK(cells.back() == "periodic");
   }
   std::filesystem::remove(path);

@@ -705,7 +705,10 @@ write failures, maximum lateness, maximum feedback age at submission), and
 `host-measured phases:` quantiles of each phase of the cycle. `--timing-log
 FILE` (hardware only, not with `--bundle`; `x7_track` accepts it too) also
 writes one CSV row of host stamps per background cycle, drained off the control
-threads; an incomplete timing log fails the run. The stamps are host
+threads; an incomplete timing log fails the run. The `cycle` column numbers the
+rows 1, 2, ... over the whole run, and `segment` counts background-thread runs:
+`x7_track` restarts its thread at the mode switch, so its log has two. The
+stamps are host
 observations: `read_start_ns` is when the host began the feedback transaction,
 not when the servos sampled, and `write_return_ns` is when the host's write
 returned, not when the bytes left the adapter.

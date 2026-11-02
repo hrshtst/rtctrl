@@ -17,6 +17,11 @@ Host stamps are host observations: read_start is when the host began the
 feedback transaction, not when the servos sampled, and the age of a
 servo's internal measurement is unknown.
 
+App logs number their cycles 1, 2, ... over the whole file and mark each
+background-thread run with a segment (x7_track restarts its thread at the
+mode switch). Periods and consecutive skips are taken within a segment;
+the restart gap between two segments is not a period.
+
 Percentiles are exact nearest-rank values over the recorded cycles.
 Threshold defaults are the plan's PROPOSED values; the frozen values are
 whatever the qualification record's command line states.
@@ -94,17 +99,26 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
     cycles = data["cycle"]
     wake = data["wake_ns"]
     skipped = data["skipped_periods"]
+    # Probe logs are one segment and carry no column.
+    segment = data.get("segment", np.ones(len(cycles), dtype=np.int64))
     s: dict = {"kind": kind, "rate_hz": rate_hz, "period_s": period,
                "cycles": int(len(cycles))}
-    # A complete log numbers its cycles 1, 2, ... without gaps.
+    # A complete log numbers its cycles 1, 2, ... without gaps over the
+    # whole file, and its segments 1, 2, ... in order.
     expected = np.arange(1, len(cycles) + 1)
-    s["record_gaps"] = int(np.count_nonzero(cycles != expected))
-    periods = np.diff(wake).astype(np.float64) * 1e-9
+    steps = np.diff(segment)
+    s["record_gaps"] = int(np.count_nonzero(cycles != expected) +
+                           np.count_nonzero((steps != 0) & (steps != 1)) +
+                           (segment[0] != 1))
+    s["segments"] = int(np.count_nonzero(steps == 1) + 1)
+    within = steps == 0  # consecutive cycles of one thread run
+    periods = np.diff(wake)[within].astype(np.float64) * 1e-9
     s["mean_period_s"] = float(periods.mean()) if len(periods) else math.nan
     s["skipped_periods"] = int(skipped.sum())
     flagged = skipped > 0
     s["consecutive_skips"] = int(np.count_nonzero(skipped >= 2) +
-                                 np.count_nonzero(flagged[1:] & flagged[:-1]))
+                                 np.count_nonzero(flagged[1:] & flagged[:-1]
+                                                  & within))
     s["read_failures"] = int(np.count_nonzero(data["read_ok"] == 0))
     s["write_failures"] = int(np.count_nonzero(
         (data["write_ok"] == 0) & (data["write_return_ns"] >= 0)))
@@ -207,7 +221,8 @@ def check(s: dict, loaded: bool, args: argparse.Namespace) -> list[tuple]:
 
 
 def print_summary(s: dict) -> None:
-    print(f"{s['kind']} log: {s['cycles']} cycles at {s['rate_hz']:g} Hz "
+    print(f"{s['kind']} log: {s['cycles']} cycles in {s['segments']} "
+          f"segment(s) at {s['rate_hz']:g} Hz "
           f"(period {1e3 * s['period_s']:.3f} ms)")
     print(f"  mean period {1e3 * s['mean_period_s']:.4f} ms, "
           f"{s['skipped_periods']} skipped, {s['read_failures']} read / "

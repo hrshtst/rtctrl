@@ -760,6 +760,7 @@ bool CraneX7::startThread(bool synchronize_commands) {
     timing_ring_ = std::make_unique<util::SpscRing<CycleRecord>>(
         options_.timing_ring_capacity);
   }
+  ++thread_segment_;
   thread_run_.store(true);
   thread_ = std::thread(&CraneX7::threadLoop, this);
   return true;
@@ -858,7 +859,10 @@ void CraneX7::threadLoop() {
   outcome.flags.reserve(config_.joints.size());
   int failed_reads_row = 0;
   int failed_writes_row = 0;
+  // Per thread run (the applied-target record's cycle numbers); timing
+  // records use the lifetime count and this run's segment instead.
   std::uint64_t cycle_number = 0;
+  const std::uint32_t segment = thread_segment_;
   auto cycle_started = std::chrono::steady_clock::now();
   using Clock = std::chrono::steady_clock;
   // This cycle's timing record, completed and published by end_cycle.
@@ -880,6 +884,7 @@ void CraneX7::threadLoop() {
       std::lock_guard<std::mutex> lock(cycle_mutex_);
       ++cycle_seq_;
       ++stats_.cycles;
+      cycle_rec.cycle = stats_.cycles;
       if (advance.skipped_periods > 0) ++stats_.overruns;
       stats_.skipped_periods += advance.skipped_periods;
       stats_.max_cycle_time_s =
@@ -900,7 +905,7 @@ void CraneX7::threadLoop() {
   while (thread_run_.load()) {
     ++cycle_number;
     cycle_rec = CycleRecord{};
-    cycle_rec.cycle = cycle_number;
+    cycle_rec.segment = segment;
     cycle_rec.scheduled_wake_ns = timingNs(scheduled_wake);
     cycle_rec.wake_ns = timingNs(cycle_started);
     bool read_ok = false;

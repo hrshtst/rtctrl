@@ -41,8 +41,10 @@ inline const char* commandKindName(rtctrl::hw::CommandKind kind) {
   return "unknown";
 }
 
+// cycle runs 1, 2, ... over the whole file; segment counts thread starts
+// (x7_track restarts its thread at the mode switch).
 inline constexpr const char* kCycleRecordCsvHeader =
-    "cycle,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
+    "cycle,segment,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
     "first_reply_ns,last_reply_ns,read_end_ns,window_open_ns,"
     "controller_wake_ns,submit_ns,limit_start_ns,bus_write_start_ns,"
     "write_return_ns,cycle_end_ns,feedback_seq,applied_target_seq,"
@@ -52,9 +54,10 @@ inline constexpr const char* kCycleRecordCsvHeader =
 inline void appendCycleRecordCsv(rtctrl::util::AsyncWriter& log,
                                  const rtctrl::hw::CycleRecord& r) {
   log.appendf(
-      "%llu,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
+      "%llu,%u,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
       "%lld,%lld,%llu,%llu,%llu,%u,%d,%d,%s\n",
       static_cast<unsigned long long>(r.cycle),
+      static_cast<unsigned>(r.segment),
       static_cast<long long>(r.scheduled_wake_ns),
       static_cast<long long>(r.wake_ns),
       static_cast<long long>(r.read_start_ns),

@@ -54,6 +54,7 @@ with open(sys.argv[1], newline="") as stream:
 assert len(rows) > 50, len(rows)
 for i, row in enumerate(rows, start=1):
     assert int(row["cycle"]) == i, (i, row["cycle"])
+    assert row["segment"] == "1", row  # follow never restarts its thread
     assert row["command_kind"] in {"fresh", "fallback", "none"}, row
 fresh = [row for row in rows if row["command_kind"] == "fresh"]
 assert len(fresh) > 0.9 * len(rows), (len(fresh), len(rows))

@@ -30,7 +30,7 @@ PROBE_HEADER = (
     "completion_upper_ns,cycle_end_ns,read_ok,write_ok,ack_ok,"
     "skipped_periods")
 APP_HEADER = (
-    "cycle,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
+    "cycle,segment,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
     "first_reply_ns,last_reply_ns,read_end_ns,window_open_ns,"
     "controller_wake_ns,submit_ns,limit_start_ns,bus_write_start_ns,"
     "write_return_ns,cycle_end_ns,feedback_seq,applied_target_seq,"
@@ -59,10 +59,13 @@ def probe_rows(n, lateness_ns=20_000, skip_at=None, read_fail_at=None):
     return PROBE_HEADER, rows
 
 
-def app_rows(n, fallback_at=None):
+def app_rows(n, fallback_at=None, restart_at=None, restart_gap_ns=0):
+    """restart_at: the first cycle of a second thread run (segment 2),
+    which wakes restart_gap_ns later than the period grid."""
     rows = []
     for k in range(1, n + 1):
-        sched = (k - 1) * PERIOD_NS
+        second = restart_at is not None and k >= restart_at
+        sched = (k - 1) * PERIOD_NS + (restart_gap_ns if second else 0)
         wake = sched + 10_000
         read_start = wake + 1_000
         read_end = read_start + 600_000
@@ -75,7 +78,8 @@ def app_rows(n, fallback_at=None):
         ret = bus + 30_000
         end = ret + 5_000
         kind = "fallback" if fallback or k == 1 else "fresh"
-        rows.append([k, sched, wake, read_start, read_start + 20_000,
+        rows.append([k, 2 if second else 1, sched, wake, read_start,
+                     read_start + 20_000,
                      read_start + 400_000, read_end - 3_000, read_end, window,
                      ctrl, submit, limit, bus, ret, end, k + 1, k, k + 1, 0, 1,
                      1, kind])
@@ -165,6 +169,31 @@ kind, data = ts.load(path)
 s = ts.summarize(kind, data, 500.0, None, None)
 assert s["in_run_fallbacks"] == 1
 assert verdicts(ts.check(s, False, defaults()))["T4"][1] == "FAIL"
+path.unlink()
+
+# Two thread runs (x7_track's mode switch): one numbering, two segments.
+# The 0.5 s restart gap is not a period, and nothing is missing.
+path = write(*app_rows(200, restart_at=120, restart_gap_ns=500_000_000))
+kind, data = ts.load(path)
+s = ts.summarize(kind, data, 500.0, None, None)
+assert s["segments"] == 2 and s["record_gaps"] == 0, s
+assert abs(s["mean_period_s"] - 2e-3) < 1e-12
+assert verdicts(ts.check(s, False, defaults()))["T1"][1] == "PASS"
+path.unlink()
+# Numbering that restarts with the thread, or a skipped segment, is a gap.
+header, rows = app_rows(200, restart_at=120, restart_gap_ns=500_000_000)
+for k, row in enumerate(rows[119:], start=1):
+    row[0] = k
+path = write(header, rows)
+kind, data = ts.load(path)
+assert ts.summarize(kind, data, 500.0, None, None)["record_gaps"] > 0
+path.unlink()
+header, rows = app_rows(200, restart_at=120, restart_gap_ns=500_000_000)
+for row in rows[119:]:
+    row[1] = 3
+path = write(header, rows)
+kind, data = ts.load(path)
+assert ts.summarize(kind, data, 500.0, None, None)["record_gaps"] > 0
 path.unlink()
 
 # A missing cycle number is a record gap (a dropped record).

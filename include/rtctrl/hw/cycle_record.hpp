@@ -24,7 +24,12 @@ enum class CommandKind : std::uint8_t {
 // does not establish when its contents were measured. write_return is
 // when the host's write() returned, not when the bytes left the adapter.
 struct CycleRecord {
+  // Numbered 1, 2, ... over the CraneX7's lifetime, across thread
+  // restarts: the CycleStats::cycles count once this cycle completed.
   std::uint64_t cycle = 0;
+  // Which startThread() run produced the record (1 for the first). A
+  // restart begins a new segment; no period spans two segments.
+  std::uint32_t segment = 0;
   std::int64_t scheduled_wake_ns = -1;
   std::int64_t wake_ns = -1;
   std::int64_t read_start_ns = -1;
