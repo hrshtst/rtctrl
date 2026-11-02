@@ -24,6 +24,7 @@ add_executable(unit_tests
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/cycle_timing_test.cpp
+  unit/cycle_record_test.cpp
   unit/hw_test.cpp
   unit/hw_modes_test.cpp
   unit/gravity_test.cpp
@@ -50,6 +51,15 @@ target_link_libraries(unit_tests PRIVATE rtctrl::rtctrl Catch2::Catch2WithMain)
 target_include_directories(unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 # Test code refers to models/ and config/ by repo-root-relative paths.
 catch_discover_tests(unit_tests
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PROPERTIES LABELS unit)
+
+# Replaces the global operator new to count allocations, so it cannot
+# share an executable with the other unit tests.
+add_executable(alloc_free_tests unit/alloc_free_test.cpp)
+target_link_libraries(alloc_free_tests PRIVATE rtctrl::rtctrl
+                      Catch2::Catch2WithMain)
+catch_discover_tests(alloc_free_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
 

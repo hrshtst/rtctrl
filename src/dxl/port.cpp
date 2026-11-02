@@ -120,17 +120,24 @@ IoResult Port::write(std::uint8_t id, std::uint16_t addr,
 IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
                         const std::vector<std::uint8_t>& ids,
                         std::vector<std::uint8_t>& out) {
+  using Clock = std::chrono::steady_clock;
+  SyncReadTiming& timing = last_sync_read_timing_;
+  timing = {};
   IoResult r;
   r.comm = packet_->syncReadTx(port_, addr, len,
                                const_cast<std::uint8_t*>(ids.data()),
                                static_cast<std::uint16_t>(ids.size()));
   if (r.comm != COMM_SUCCESS) return r;
+  timing.instruction_sent = Clock::now();
+  timing.sent = true;
 
   out.resize(ids.size() * len);
   for (std::size_t i = 0; i < ids.size(); ++i) {
     std::uint8_t err = 0;
     r.comm = packet_->readRx(port_, ids[i], len, &out[i * len], &err);
     if (r.comm != COMM_SUCCESS) return r;
+    timing.last_reply = Clock::now();
+    if (timing.replies++ == 0) timing.first_reply = timing.last_reply;
     if (err != 0 && r.error == 0) r.error = err;
   }
   return r;

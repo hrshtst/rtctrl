@@ -1,11 +1,22 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <vector>
 
 #include "rtctrl/dxl/error.hpp"
 
 namespace rtctrl::dxl {
+
+// Host-side stamps of one syncRead, for timing records only. They mark
+// when the host's calls returned, not when bytes were on the wire.
+struct SyncReadTiming {
+  std::chrono::steady_clock::time_point instruction_sent{};  // write returned
+  std::chrono::steady_clock::time_point first_reply{};
+  std::chrono::steady_clock::time_point last_reply{};
+  int replies = 0;      // status packets received
+  bool sent = false;    // the instruction was transmitted
+};
 
 // Abstract Dynamixel bus transactions — the mocking seam. Implemented
 // by dxl::Port over DynamixelSDK and by emu::FakePacketIO over the
@@ -31,6 +42,10 @@ class PacketIO {
   virtual IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
                              const std::vector<std::uint8_t>& ids,
                              const std::vector<std::uint8_t>& data) = 0;
+
+  // Stamps of the most recent syncRead, read back by the thread that made
+  // it; an implementation without stamps reports none (sent == false).
+  virtual SyncReadTiming lastSyncReadTiming() const { return {}; }
 
   // Typed single-register conveniences.
   IoResult write8(std::uint8_t id, std::uint16_t addr, std::uint8_t value) {

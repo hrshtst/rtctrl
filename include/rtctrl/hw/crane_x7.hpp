@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -14,6 +15,8 @@
 #include "rtctrl/dxl/sync_group.hpp"
 #include "rtctrl/arm/types.hpp"  // shared bridge DATA types only
 #include "rtctrl/hw/config.hpp"
+#include "rtctrl/hw/cycle_record.hpp"
+#include "rtctrl/util/spsc_ring.hpp"
 
 namespace rtctrl::hw {
 
@@ -65,6 +68,10 @@ class CraneX7 {
     // The callback must leave torque disabled on every servo.
     std::function<bool(dxl::PacketIO&, std::string*)>
         activation_configurator;
+    // Per-cycle CycleRecords kept for popCycleRecord(), rounded up to a
+    // power of two. 0 (the default) keeps no records and allocates
+    // nothing; the CycleStats timing histograms are kept either way.
+    std::size_t timing_ring_capacity = 0;
   };
 
   struct CycleStats {
@@ -80,6 +87,11 @@ class CraneX7 {
     double max_cycle_time_s = 0.0;     // read through write/check completion
     double max_lateness_s = 0.0;       // finish time past scheduled deadline
     double max_feedback_age_at_submission_s = 0.0;
+    // Records a full timing ring refused (never blocks the cycle).
+    std::uint64_t timing_drops = 0;
+    // Host-measured phase intervals (see CycleRecord for what each
+    // stamp does and does not establish).
+    CycleTimingStats timing;
   };
 
   CraneX7(dxl::PacketIO& io, Config config);
@@ -141,6 +153,9 @@ class CraneX7 {
     // this for the applied positive current ceiling [A].
     std::vector<double> auxiliary;
     std::vector<std::uint8_t> flags;
+    // When limiting finished and the sync write was about to be issued;
+    // left at the epoch if the writer refused before reaching the bus.
+    std::chrono::steady_clock::time_point bus_write_start{};
   };
 
   // Position [rad]: clamped to the servo limits minus pos_limit_margin.
@@ -211,6 +226,11 @@ class CraneX7 {
   void stopThread();
   bool threadRunning() const { return thread_.joinable(); }
   CycleStats cycleStats() const;
+  // Takes the oldest unread CycleRecord (false when none is pending or
+  // Options::timing_ring_capacity is 0). One consumer thread only; it
+  // never blocks the background thread, which drops records (counted in
+  // CycleStats::timing_drops) rather than wait for it.
+  bool popCycleRecord(CycleRecord* out);
   // Blocks until a cycle newer than last_seen completes; returns its
   // sequence number (0 if the thread is not running).
   std::uint64_t waitCycle(std::uint64_t last_seen);
@@ -373,6 +393,13 @@ class CraneX7 {
                               std::vector<std::uint8_t>* flags) const;
   std::vector<std::uint8_t> ids() const;
   void threadLoop();
+  void stampControllerWake();  // caller holds state_mutex_
+  // CycleRecord stamp: steady_clock ns since construction.
+  std::int64_t timingNs(std::chrono::steady_clock::time_point t) const {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               t - timing_epoch_)
+        .count();
+  }
 
   dxl::PacketIO& io_;
   Config config_;
@@ -410,6 +437,10 @@ class CraneX7 {
   bool synchronize_commands_ = false;
   bool command_window_open_ = false;
   std::uint64_t command_window_feedback_seq_ = 0;
+  // Timing stamps crossing threads (CycleRecord ns): the first controller
+  // return for the open window, and the accepted target's submission.
+  std::int64_t window_controller_wake_ns_ = -1;
+  std::int64_t target_submit_ns_ = -1;
   std::condition_variable feedback_cv_;
   std::condition_variable target_cv_;
 
@@ -419,6 +450,11 @@ class CraneX7 {
   std::condition_variable cycle_cv_;
   std::uint64_t cycle_seq_ = 0;
   CycleStats stats_;
+  const std::chrono::steady_clock::time_point timing_epoch_ =
+      std::chrono::steady_clock::now();
+  // Allocated by startThread (never on the background thread) when
+  // Options::timing_ring_capacity > 0.
+  std::unique_ptr<util::SpscRing<CycleRecord>> timing_ring_;
 };
 
 }  // namespace rtctrl::hw

@@ -25,6 +25,10 @@ class FakePacketIO : public dxl::PacketIO {
   dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
                           const std::vector<std::uint8_t>& ids,
                           const std::vector<std::uint8_t>& data) override;
+  // Stamped like dxl::Port, so timing records are testable in-process.
+  dxl::SyncReadTiming lastSyncReadTiming() const override {
+    return last_sync_read_timing_;
+  }
 
   // Fault injection: all transactions fail with this comm code.
   void setCommFailure(int comm_code) { forced_comm_ = comm_code; }
@@ -47,6 +51,7 @@ class FakePacketIO : public dxl::PacketIO {
 
  private:
   MotorBus& bus_;
+  dxl::SyncReadTiming last_sync_read_timing_;
   int forced_comm_ = 0;
   int forced_write_comm_ = 0;
   int forced_read_comm_ = 0;

@@ -44,8 +44,13 @@ dxl::IoResult FakePacketIO::write(std::uint8_t id, std::uint16_t addr,
 dxl::IoResult FakePacketIO::syncRead(std::uint16_t addr, std::uint16_t len,
                                      const std::vector<std::uint8_t>& ids,
                                      std::vector<std::uint8_t>& out) {
+  using Clock = std::chrono::steady_clock;
+  dxl::SyncReadTiming& timing = last_sync_read_timing_;
+  timing = {};
   if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
   if (forced_read_comm_ != 0) return {forced_read_comm_, dxl::kErrNone};
+  timing.instruction_sent = Clock::now();
+  timing.sent = true;
   out.assign(ids.size() * len, 0);
   dxl::IoResult result;
   for (std::size_t i = 0; i < ids.size(); ++i) {
@@ -53,6 +58,8 @@ dxl::IoResult FakePacketIO::syncRead(std::uint16_t addr, std::uint16_t len,
     if (motor == nullptr) return {kCommRxTimeout, dxl::kErrNone};
     motor->touch();
     const dxl::IoResult r = motor->read(addr, &out[i * len], len);
+    timing.last_reply = Clock::now();
+    if (timing.replies++ == 0) timing.first_reply = timing.last_reply;
     if (result.error == dxl::kErrNone) result.error = r.error;
   }
   return result;

@@ -408,6 +408,7 @@ CraneX7::StampedFeedback CraneX7::waitFeedbackStamped(
       feedback_seq_ <= last_seen) {
     return {};
   }
+  stampControllerWake();
   if (cmds != nullptr) {
     cmds->applied = applied_rec_;
     cmds->last_attempt = attempt_rec_;
@@ -459,6 +460,7 @@ bool CraneX7::writePositions(const std::vector<double>& rad,
     clamped[i] = std::clamp(rad[i], limit_lo_[i], limit_hi_[i]);
     if (clamped[i] != rad[i]) flags[i] |= arm::kCmdClamped;
   }
+  if (out != nullptr) out->bus_write_start = std::chrono::steady_clock::now();
   if (!group_.writeGoalPositions(clamped).ok()) return false;
   last_command_ = now_();
   return true;
@@ -500,6 +502,7 @@ bool CraneX7::writeVelocitiesWithFeedback(
     }
     limited[i] = v;
   }
+  if (out != nullptr) out->bus_write_start = std::chrono::steady_clock::now();
   if (!group_.writeGoalVelocities(limited).ok()) return false;
   last_command_ = now_();
   return true;
@@ -527,6 +530,7 @@ bool CraneX7::writeCurrentsWithFeedback(
   auto* limited = out != nullptr ? &out->values : &local_values;
   auto* flags = out != nullptr ? &out->flags : &local_flags;
   limitCurrents(amps, fb, limited, flags);
+  if (out != nullptr) out->bus_write_start = std::chrono::steady_clock::now();
   if (!group_.writeGoalCurrents(*limited).ok()) return false;
   last_command_ = now_();
   return true;
@@ -568,6 +572,7 @@ bool CraneX7::writeCurrentBasedPositionsWithFeedback(
   limitCurrentMagnitudes(current_limit_amps, &currents, &current_flags);
   for (std::size_t i = 0; i < flags.size(); ++i) flags[i] |= current_flags[i];
   const std::vector<double> zeros(rad.size(), 0.0);
+  if (out != nullptr) out->bus_write_start = std::chrono::steady_clock::now();
   if (!group_.writeGoals(currents, zeros, positions).ok()) return false;
   last_command_ = now_();
   return true;
@@ -638,6 +643,7 @@ bool CraneX7::setTargets(const std::vector<double>& values,
   // applied causality stays unambiguous.
   ++target_seq_;
   target_submit_time_ = last_submission_;
+  target_submit_ns_ = timingNs(std::chrono::steady_clock::now());
   target_source_feedback_seq_ = tagged ? source_feedback_seq : 0;
   target_source_feedback_time_ = tagged ? source_feedback_time : 0.0;
   if (seq != nullptr) *seq = target_seq_;
@@ -750,6 +756,10 @@ bool CraneX7::startThread(bool synchronize_commands) {
       have_targets_ = true;
     }
   }
+  if (options_.timing_ring_capacity > 0 && timing_ring_ == nullptr) {
+    timing_ring_ = std::make_unique<util::SpscRing<CycleRecord>>(
+        options_.timing_ring_capacity);
+  }
   thread_run_.store(true);
   thread_ = std::thread(&CraneX7::threadLoop, this);
   return true;
@@ -802,7 +812,23 @@ std::uint64_t CraneX7::waitFeedback(std::uint64_t last_seen) {
     return (feedback_seq_ > last_seen && window_ready) ||
            !thread_run_.load() || quiesced_.load();
   });
-  return !quiesced_.load() && feedback_seq_ > last_seen ? feedback_seq_ : 0;
+  if (quiesced_.load() || feedback_seq_ <= last_seen) return 0;
+  stampControllerWake();
+  return feedback_seq_;
+}
+
+void CraneX7::stampControllerWake() {
+  // Caller holds state_mutex_. Only the first controller return for an
+  // open window counts: arm::run's step() and readState() both wait on
+  // the same window, and the second return is not a handoff.
+  if (synchronize_commands_ && command_window_open_ &&
+      window_controller_wake_ns_ < 0) {
+    window_controller_wake_ns_ = timingNs(std::chrono::steady_clock::now());
+  }
+}
+
+bool CraneX7::popCycleRecord(CycleRecord* out) {
+  return timing_ring_ != nullptr && timing_ring_->pop(out);
 }
 
 void CraneX7::requestQuiesce() {
@@ -834,9 +860,18 @@ void CraneX7::threadLoop() {
   int failed_writes_row = 0;
   std::uint64_t cycle_number = 0;
   auto cycle_started = std::chrono::steady_clock::now();
+  using Clock = std::chrono::steady_clock;
+  // This cycle's timing record, completed and published by end_cycle.
+  // Fixed-size, so recording never allocates on this thread.
+  CycleRecord cycle_rec;
+  auto scheduled_wake = cycle_started;
+  std::int64_t prev_wake_ns = -1;
   const auto end_cycle = [&] {
     const auto finished = std::chrono::steady_clock::now();
     const auto advance = advanceCycleDeadline(next, finished, cycle);
+    cycle_rec.cycle_end_ns = timingNs(finished);
+    cycle_rec.skipped_periods =
+        static_cast<std::uint32_t>(advance.skipped_periods);
     const double cycle_time_s =
         std::chrono::duration<double>(finished - cycle_started).count();
     const double lateness_s =
@@ -850,14 +885,24 @@ void CraneX7::threadLoop() {
       stats_.max_cycle_time_s =
           std::max(stats_.max_cycle_time_s, cycle_time_s);
       stats_.max_lateness_s = std::max(stats_.max_lateness_s, lateness_s);
+      accumulateCycleTiming(cycle_rec, prev_wake_ns, &stats_.timing);
+      if (timing_ring_ != nullptr && !timing_ring_->push(cycle_rec)) {
+        ++stats_.timing_drops;
+      }
     }
     cycle_cv_.notify_all();
+    prev_wake_ns = cycle_rec.wake_ns;
+    scheduled_wake = advance.wake_time;
     std::this_thread::sleep_until(advance.wake_time);
     next = advance.wake_time + cycle;
     cycle_started = std::chrono::steady_clock::now();
   };
   while (thread_run_.load()) {
     ++cycle_number;
+    cycle_rec = CycleRecord{};
+    cycle_rec.cycle = cycle_number;
+    cycle_rec.scheduled_wake_ns = timingNs(scheduled_wake);
+    cycle_rec.wake_ns = timingNs(cycle_started);
     bool read_ok = false;
     // Quiesce gates: before the read and again before the write. Once
     // requested, no further instruction packet leaves this thread —
@@ -866,6 +911,7 @@ void CraneX7::threadLoop() {
     // bookkeeping stays alive so waitCycle()/stopThread() remain
     // responsive.
     if (!quiesced_.load()) {
+      cycle_rec.read_start_ns = timingNs(Clock::now());
       if (readAll(fb)) {
         read_ok = true;
         failed_reads_row = 0;
@@ -873,6 +919,16 @@ void CraneX7::threadLoop() {
         ++failed_reads_row;
         std::lock_guard<std::mutex> lock(cycle_mutex_);
         ++stats_.read_failures;
+      }
+      cycle_rec.read_end_ns = timingNs(Clock::now());
+      cycle_rec.read_ok = read_ok;
+      const dxl::SyncReadTiming io_timing = io_.lastSyncReadTiming();
+      if (io_timing.sent) {
+        cycle_rec.instr_return_ns = timingNs(io_timing.instruction_sent);
+      }
+      if (io_timing.replies > 0) {
+        cycle_rec.first_reply_ns = timingNs(io_timing.first_reply);
+        cycle_rec.last_reply_ns = timingNs(io_timing.last_reply);
       }
     }
     if (quiesced_.load()) {
@@ -888,7 +944,9 @@ void CraneX7::threadLoop() {
       if (synchronize_commands_ && read_ok) {
         const auto target_before_window = target_seq_;
         command_window_feedback_seq_ = feedback_seq_;
+        window_controller_wake_ns_ = -1;
         command_window_open_ = true;
+        cycle_rec.window_open_ns = timingNs(Clock::now());
         feedback_cv_.notify_all();
         target_cv_.wait_until(
             lock, next - write_margin, [this, target_before_window] {
@@ -900,7 +958,19 @@ void CraneX7::threadLoop() {
         controller_deadline_missed =
             !received && submission_armed_ && thread_run_.load() &&
             !quiesced_.load();
+        cycle_rec.controller_wake_ns = window_controller_wake_ns_;
+        if (received) cycle_rec.submit_ns = target_submit_ns_;
+        cycle_rec.command_kind =
+            received ? CommandKind::kFresh
+            : controller_deadline_missed && mode == 1
+                ? CommandKind::kZeroVelocityFallback
+                : CommandKind::kFallback;
+      } else {
+        cycle_rec.command_kind = synchronize_commands_
+                                     ? CommandKind::kFallback
+                                     : CommandKind::kPeriodic;
       }
+      cycle_rec.feedback_seq = feedback_seq_;
       targets = targets_;
       auxiliary_targets = auxiliary_targets_;
       tseq = target_seq_;
@@ -919,10 +989,13 @@ void CraneX7::threadLoop() {
       std::fill(targets.begin(), targets.end(), 0.0);
     }
     if (quiesced_.load() || !thread_run_.load()) {
+      cycle_rec.command_kind = CommandKind::kNone;
       end_cycle();
       continue;
     }
     bool wrote_ok = false;
+    outcome.bus_write_start = {};
+    cycle_rec.limit_start_ns = timingNs(Clock::now());
     switch (mode) {
       case 3: wrote_ok = writePositions(targets, &outcome); break;
       case 1:
@@ -936,6 +1009,11 @@ void CraneX7::threadLoop() {
             targets, auxiliary_targets, fb, &outcome);
         break;
       default: break;
+    }
+    cycle_rec.write_return_ns = timingNs(Clock::now());
+    cycle_rec.write_ok = wrote_ok;
+    if (outcome.bus_write_start != Clock::time_point{}) {
+      cycle_rec.bus_write_start_ns = timingNs(outcome.bus_write_start);
     }
     const double write_time = now_();
     {
@@ -977,6 +1055,11 @@ void CraneX7::threadLoop() {
                   : 0.0;
           rec.flags[i] = outcome.flags[i];
         }
+      }
+      if (applied_rec_.valid) {
+        cycle_rec.applied_target_seq = applied_rec_.target_seq;
+        cycle_rec.applied_source_feedback_seq =
+            applied_rec_.source_feedback_seq;
       }
     }
     if (wrote_ok) {

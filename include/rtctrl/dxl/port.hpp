@@ -32,6 +32,9 @@ class Port : public PacketIO {
   IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
                      const std::vector<std::uint8_t>& ids,
                      const std::vector<std::uint8_t>& data) override;
+  SyncReadTiming lastSyncReadTiming() const override {
+    return last_sync_read_timing_;
+  }
 
   // Stop all bus traffic: the loss-of-comms escalation path — after
   // this the servo-side Bus Watchdogs necessarily fire.
@@ -42,6 +45,7 @@ class Port : public PacketIO {
   dynamixel::PortHandler* port_;
   dynamixel::PacketHandler* packet_;
   std::vector<std::uint8_t> sync_write_param_;
+  SyncReadTiming last_sync_read_timing_;
   bool open_ = false;
 };
 
