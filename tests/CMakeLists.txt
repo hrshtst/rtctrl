@@ -263,6 +263,16 @@ add_test(NAME ident_analysis_merge_guards
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(ident_analysis_merge_guards PROPERTIES LABELS unit)
 
+# Timing-summary reductions and criteria on synthetic probe and app logs.
+add_test(NAME timing_summary_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_timing_summary.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(timing_summary_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "timing summary regressions OK"
+  LABELS unit)
+
 # SI profile flags: strict nonnegative doubles; raw and SI forms of
 # one register are mutually exclusive. Both reject before any bus
 # contact.
