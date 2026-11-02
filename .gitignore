@@ -16,6 +16,10 @@ site/
 /*.zvs
 /dump*.txt
 
+# Local reference material (papers, datasheets) for the operator's
+# reading; it never enters the shared history.
+/resource/
+
 # Locally installed skills are personal tooling, not shared with the
 # team: the payload (.agents/), the .claude/skills symlink, and the
 # install lock all stay out of the shared history. Only the
