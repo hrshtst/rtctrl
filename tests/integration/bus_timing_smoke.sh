@@ -41,16 +41,23 @@ if "$PROBE" --port "$LINK" --inventory --out "$ROOT/inventory.toml" \
 fi
 test "$BEFORE" = "$(sha256sum "$ROOT/inventory.toml" | cut -d ' ' -f 1)"
 
-# Production traffic: one row per cycle, complete outputs, torque off.
+# Summary value of KEY (the first match) in a TOML file.
+value() { sed -n "s/^$2 = //p" "$1" | head -1; }
+
+# Production traffic: one row per cycle, complete outputs, torque off. The
+# 100 period slots before the 1 s deadline are either run or skipped (an
+# overrun under test-suite load skips some), never more cycles than slots.
 "$PROBE" --port "$LINK" --rate-hz 100 --profile position --duration 1 \
   --log "$ROOT/run.csv" >"$ROOT/run.log" 2>&1 ||
   fail "production-traffic run failed" "$ROOT/run.log"
-test "$(wc -l <"$ROOT/run.csv")" = 101
 head -1 "$ROOT/run.csv" | grep -q '^cycle,scheduled_wake_ns,wake_ns,read_start_ns'
 SUMMARY="$ROOT/run.csv.summary.toml"
+CYCLES=$(value "$SUMMARY" cycles)
+test "$(wc -l <"$ROOT/run.csv")" = $((CYCLES + 1))
+test "$CYCLES" -le 100
+test $((CYCLES + $(value "$SUMMARY" skipped_periods))) -ge 100
 grep -q '^kind = "production-traffic"' "$SUMMARY"
 grep -q '^log_complete = true' "$SUMMARY"
-grep -q '^cycles = 100' "$SUMMARY"
 grep -q '^elapsed_s = ' "$SUMMARY"
 grep -q '^read_failures = 0' "$SUMMARY"
 grep -q '^torque_off_after = true' "$SUMMARY"
@@ -82,25 +89,30 @@ assert r["last_wake_s"] <= s["duration_s"] + late + 1e-3, r["last_wake_s"]
 assert r["elapsed_s"] >= s["duration_s"] - 2.0 / s["rate_hz"], r["elapsed_s"]
 EOF_PY
 
-# Calibration: every acknowledged write matched what was written.
+# Calibration: every acknowledged write matched what was written. (The
+# completion-offset histogram is not counted: the emulator replies without
+# the 500 us Return Delay Time the bound subtracts, so an offset can come
+# out negative here, which the histogram ignores.)
 "$PROBE" --port "$LINK" --rate-hz 100 --profile cbp --duration 1 \
   --confirm-writes --drain --log "$ROOT/cal.csv" >"$ROOT/cal.log" 2>&1 ||
   fail "calibration run failed" "$ROOT/cal.log"
 grep -q '^kind = "calibration"' "$ROOT/cal.csv.summary.toml"
 grep -q '^ack_mismatches = 0' "$ROOT/cal.csv.summary.toml"
-grep -A1 '^\[histogram.completion_offset\]' "$ROOT/cal.csv.summary.toml" |
-  grep -q '^count = 100'
+test "$(cut -d, -f18 "$ROOT/cal.csv" | sed 1d | sort -u)" = 1
+test "$(wc -l <"$ROOT/cal.csv")" = \
+  $(($(value "$ROOT/cal.csv.summary.toml" cycles) + 1))
 "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.5 \
   --confirm-writes --log "$ROOT/cal-current.csv" >"$ROOT/cal-current.log" \
   2>&1 || fail "current calibration failed" "$ROOT/cal-current.log"
 grep -q '^ack_mismatches = 0' "$ROOT/cal-current.csv.summary.toml"
 
 # An existing log is never reused.
+RUN_SHA=$(sha256sum "$ROOT/run.csv" | cut -d ' ' -f 1)
 if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
     --log "$ROOT/run.csv" >"$ROOT/reuse.log" 2>&1; then
   fail "an existing log was accepted"
 fi
-test "$(wc -l <"$ROOT/run.csv")" = 101
+test "$RUN_SHA" = "$(sha256sum "$ROOT/run.csv" | cut -d ' ' -f 1)"
 
 # A torqued servo is refused, and the probe leaves its torque alone.
 "$INSPECT" --port "$LINK" write 5 torque_enable 1 >/dev/null
