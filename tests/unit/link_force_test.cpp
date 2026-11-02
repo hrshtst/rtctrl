@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <unistd.h>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -70,8 +71,12 @@ fall_s = 0.1
 class SpecFile {
  public:
   explicit SpecFile(const std::string& content) {
+    // Per process: ctest runs each test case as its own process, often in
+    // parallel, and a shared spec file was rewritten or removed under a
+    // concurrent case.
     fs::create_directories("build/link_force_test");
-    path_ = "build/link_force_test/spec.toml";
+    path_ = "build/link_force_test/spec_" + std::to_string(::getpid()) +
+            ".toml";
     std::ofstream output(path_);
     output << content;
   }
