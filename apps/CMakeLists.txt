@@ -113,3 +113,8 @@ target_compile_definitions(x7_efl_study PRIVATE
   RTCTRL_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 target_link_libraries(x7_efl_study PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_efl_study PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(x7_controller_bench study/x7_controller_bench.cpp)
+target_link_libraries(x7_controller_bench PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_controller_bench PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR})

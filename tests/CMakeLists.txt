@@ -594,6 +594,15 @@ set_tests_properties(x7_follow_posture_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "follow posture references OK"
   LABELS integration)
 
+# Functional only: the benchmark runs and reports every controller. Its
+# timings describe the CI host and are never asserted.
+add_test(NAME x7_controller_bench_runs
+  COMMAND x7_controller_bench --iterations 200)
+set_tests_properties(x7_controller_bench_runs PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "computed_torque +n=200"
+  LABELS integration)
+
 # x7_ct_mass_error seed CLI contract: uint64 parsed exactly — bad
 # seeds rejected, the maximum accepted, 2^53 vs 2^53+1 distinct.
 add_test(NAME x7_ct_mass_error_cli
