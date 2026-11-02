@@ -3,11 +3,16 @@
 // (dxl_inspect, the bring-up apps, rt tools) can run without hardware.
 //
 // Usage: dxl_emu [--config config/crane_x7.toml] [--link /tmp/ttyDXL]
+//                [--firmware N]
+//
+// --firmware sets every motor's Firmware Version (default 44); 45 and
+// later enable Drive Mode's Torque On by Goal Update.
 
 #include <unistd.h>
 
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <toml++/toml.hpp>
@@ -24,9 +29,19 @@ void onSignal(int) { g_stop = 1; }
 int main(int argc, char* argv[]) {
   std::string config_path = "config/crane_x7.toml";
   std::string link_path;
+  int firmware = rtctrl::emu::MotorEmulator::Config{}.firmware_version;
   for (int i = 1; i < argc - 1; ++i) {
     if (std::strcmp(argv[i], "--config") == 0) config_path = argv[i + 1];
     if (std::strcmp(argv[i], "--link") == 0) link_path = argv[i + 1];
+    if (std::strcmp(argv[i], "--firmware") == 0) {
+      char* end = nullptr;
+      const long value = std::strtol(argv[i + 1], &end, 10);
+      if (end == argv[i + 1] || *end != '\0' || value < 0 || value > 255) {
+        std::fprintf(stderr, "--firmware: an integer in [0, 255]\n");
+        return 2;
+      }
+      firmware = static_cast<int>(value);
+    }
   }
 
   rtctrl::emu::MotorBus bus;
@@ -43,8 +58,10 @@ int main(int argc, char* argv[]) {
       config.model_number = (model == "XM540-W270")
                                 ? rtctrl::dxl::kModelXm540W270
                                 : rtctrl::dxl::kModelXm430W350;
+      config.firmware_version = static_cast<std::uint8_t>(firmware);
       bus.add(config);
-      std::printf("motor id %u (%s)\n", config.id, model.c_str());
+      std::printf("motor id %u (%s, firmware v%d)\n", config.id,
+                  model.c_str(), firmware);
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error reading %s: %s\n", config_path.c_str(),

@@ -74,11 +74,14 @@ With the arm at rest and supported, and every servo torque-off:
 ```
 
 The inventory records, per servo, the firmware, Baud Rate register, Return
-Delay Time, Status Return Level, operating mode, torque state, Bus Watchdog and
-hardware error status. It also records the tty's `latency_timer`, the USB
-adapter's vendor and product IDs and USB speed, the kernel and the CPU
-governors. The probe never writes Torque Enable. It refuses to run a timing
-measurement if any servo has torque on, and it leaves torque as it found it.
+Delay Time, Drive Mode, Status Return Level, operating mode, torque state, Bus
+Watchdog and hardware error status. It also records the tty's `latency_timer`,
+the USB adapter's vendor and product IDs and USB speed, the kernel and the CPU
+governors. The probe never writes Torque Enable or Drive Mode. It refuses to
+run a timing measurement if any servo has torque on, or has Drive Mode bit 3
+(Torque On by Goal Update, firmware v45 and later) set: with that bit, the
+probe's goal writes would switch torque on. The inventory prints a warning for
+such a servo; report it at checkpoint 1 before changing any servo setting.
 
 A Return Delay Time of 250 (500 us per reply, the factory value) adds about
 4 ms to every eight-servo sync read, which by itself rules out rates above

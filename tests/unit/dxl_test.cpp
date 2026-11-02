@@ -151,6 +151,82 @@ TEST_CASE("indirect data redirects to the mapped registers", "[emu]") {
   CHECK((motor->peek(reg::kGoalVelocity) & 0xFF) == 0x11);
 }
 
+TEST_CASE("Torque On by Goal Update enables torque on a goal write",
+          "[emu][safety]") {
+  const auto motorBus = [](std::uint8_t firmware) {
+    emu::MotorBus bus;
+    for (std::uint8_t id = 2; id <= 9; ++id) {
+      emu::MotorEmulator::Config config;
+      config.id = id;
+      config.firmware_version = firmware;
+      bus.add(config);
+    }
+    return bus;
+  };
+  const auto torque = [](emu::MotorBus& bus, std::uint8_t id) {
+    return bus.find(id)->peek(reg::kTorqueEnable);
+  };
+
+  SECTION("a direct goal write, keeping the written goal") {
+    emu::MotorBus bus = motorBus(45);
+    emu::FakePacketIO io(bus);
+    REQUIRE(io.write8(2, reg::kDriveMode.addr,
+                      dxl::kDriveModeTorqueOnByGoalUpdate)
+                .ok());
+    REQUIRE(torque(bus, 2) == 0);
+    REQUIRE(io.write32(2, reg::kGoalPosition.addr, 2100).ok());
+    CHECK(torque(bus, 2) == 1);
+    CHECK(bus.find(2)->peek(reg::kGoalPosition) == 2100);
+    // Now torqued, the EEPROM (Drive Mode included) is locked.
+    CHECK(io.write8(2, reg::kDriveMode.addr, 0).error == dxl::kErrAccess);
+  }
+
+  SECTION("every goal register, never a profile register") {
+    for (const dxl::Reg goal : {reg::kGoalPwm, reg::kGoalCurrent,
+                                reg::kGoalVelocity, reg::kGoalPosition}) {
+      emu::MotorBus bus = motorBus(45);
+      emu::FakePacketIO io(bus);
+      REQUIRE(io.write8(3, reg::kDriveMode.addr, 0x08).ok());
+      REQUIRE(io.write32(3, reg::kProfileVelocity.addr, 100).ok());
+      REQUIRE(io.write32(3, reg::kProfileAcceleration.addr, 10).ok());
+      CHECK(torque(bus, 3) == 0);
+      const std::uint8_t zeros[4] = {};
+      REQUIRE(io.write(3, goal.addr, zeros, goal.len).ok());
+      CAPTURE(goal.addr);
+      CHECK(torque(bus, 3) == 1);
+    }
+  }
+
+  SECTION("indirect goal writes through the grouped transaction") {
+    emu::MotorBus bus = motorBus(45);
+    emu::FakePacketIO io(bus);
+    dxl::SyncGroup group(io, {2, 3, 4, 5, 6, 7, 8, 9});
+    REQUIRE(group.setupIndirect().ok());
+    for (const auto id : group.ids()) {
+      REQUIRE(io.write8(id, reg::kDriveMode.addr, 0x08).ok());
+    }
+    std::vector<dxl::Feedback> feedback;
+    REQUIRE(group.readAll(feedback).ok());  // reads never enable torque
+    for (const auto id : group.ids()) CHECK(torque(bus, id) == 0);
+    REQUIRE(group.writeGoalCurrents(std::vector<double>(8, 0.0)).ok());
+    for (const auto id : group.ids()) CHECK(torque(bus, id) == 1);
+  }
+
+  SECTION("not below firmware v45, and not with the bit clear") {
+    emu::MotorBus old_firmware = motorBus(44);
+    emu::FakePacketIO old_io(old_firmware);
+    REQUIRE(old_io.write8(2, reg::kDriveMode.addr, 0x08).ok());
+    REQUIRE(old_io.write32(2, reg::kGoalPosition.addr, 2100).ok());
+    CHECK(torque(old_firmware, 2) == 0);
+
+    emu::MotorBus clear = motorBus(45);
+    emu::FakePacketIO io(clear);
+    REQUIRE(io.write8(2, reg::kDriveMode.addr, 0x05).ok());  // bits 0, 2
+    REQUIRE(io.write32(2, reg::kGoalPosition.addr, 2100).ok());
+    CHECK(torque(clear, 2) == 0);
+  }
+}
+
 TEST_CASE("bus watchdog triggers on silence and not on chatty reads",
           "[emu]") {
   emu::MotorBus bus = craneBus();

@@ -133,11 +133,20 @@ dxl::IoResult MotorEmulator::write(std::uint16_t addr,
   for (std::uint16_t i = 0; i < len; ++i) {
     if (!writable(redirect(addr + i), &result.error)) return result;
   }
+  bool goal_command = false;
   for (std::uint16_t i = 0; i < len; ++i) {
     table_[redirect(addr + i)] = data[i];
+    goal_command = goal_command || dxl::isGoalCommandAddr(redirect(addr + i));
   }
   for (std::uint16_t i = 0; i < len; ++i) {
     onWrite(redirect(addr + i));
+  }
+  // Torque On by Goal Update: the command is performed, so the goal just
+  // written stays (no snap to the present position as on a direct enable).
+  if (goal_command && table_[reg::kTorqueEnable.addr] == 0 &&
+      (table_[reg::kDriveMode.addr] & dxl::kDriveModeTorqueOnByGoalUpdate) &&
+      config_.firmware_version >= dxl::kMinFirmwareTorqueOnByGoalUpdate) {
+    table_[reg::kTorqueEnable.addr] = 1;
   }
   return result;
 }

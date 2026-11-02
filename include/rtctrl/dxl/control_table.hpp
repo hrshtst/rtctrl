@@ -50,6 +50,7 @@ inline constexpr Reg kPositionPGain{84, 2};
 inline constexpr Reg kFeedforward2ndGain{88, 2};
 inline constexpr Reg kFeedforward1stGain{90, 2};
 inline constexpr Reg kBusWatchdog{98, 1};
+inline constexpr Reg kGoalPwm{100, 2};
 inline constexpr Reg kGoalCurrent{102, 2};
 inline constexpr Reg kGoalVelocity{104, 4};
 inline constexpr Reg kProfileAcceleration{108, 4};
@@ -86,6 +87,16 @@ inline bool isIndirectAddressAddr(std::uint16_t addr) {
          addr < reg::kIndirectAddressBase + 2 * reg::kIndirectSlots;
 }
 
+// The goal (command) registers: Goal PWM, Goal Current, Goal Velocity and
+// Goal Position. The profile registers between them are not commands.
+inline bool isGoalCommandAddr(std::uint16_t addr) {
+  const auto in = [addr](const Reg& r) {
+    return addr >= r.addr && addr < r.addr + r.len;
+  };
+  return in(reg::kGoalPwm) || in(reg::kGoalCurrent) ||
+         in(reg::kGoalVelocity) || in(reg::kGoalPosition);
+}
+
 // Known model numbers.
 inline constexpr std::uint16_t kModelXm430W350 = 1020;
 inline constexpr std::uint16_t kModelXm540W270 = 1120;
@@ -96,5 +107,12 @@ inline constexpr std::uint16_t kModelXm540W270 = 1120;
 inline constexpr double kBusWatchdogUnitSeconds = 0.020;
 inline constexpr std::uint8_t kBusWatchdogTriggered = 0xFF;
 inline constexpr std::uint8_t kMinFirmwareBusWatchdog = 38;
+
+// Drive Mode (register 10) bit 3, Torque On by Goal Update (firmware
+// >= 45): with it set, a goal command written while Torque Enable is 0
+// switches torque on and is performed. Any write that is meant to leave
+// torque off must first verify the bit is clear.
+inline constexpr std::uint8_t kDriveModeTorqueOnByGoalUpdate = 0x08;
+inline constexpr std::uint8_t kMinFirmwareTorqueOnByGoalUpdate = 45;
 
 }  // namespace rtctrl::dxl

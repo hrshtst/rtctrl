@@ -1127,8 +1127,12 @@ or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
 ### Measuring bus and cycle timing
 
 `x7_bus_timing` measures the bus with every servo torque-off and never writes
-Torque Enable. `--inventory` reports each servo's bus-timing registers (Return
-Delay Time, Status Return Level, baud register, firmware) and the USB adapter.
+Torque Enable or Drive Mode. A timing run refuses, before any write, a servo
+with torque on or with Drive Mode bit 3 (Torque On by Goal Update, firmware
+v45 and later) set, since on such a servo a goal write switches torque on.
+`--inventory` reports each servo's bus-timing registers (Return Delay Time,
+Status Return Level, baud register, firmware), its Drive Mode and the USB
+adapter.
 A timing run replays one mode's exact per-cycle traffic at a fixed rate and
 writes one CSV row of host stamps per cycle plus a summary:
 

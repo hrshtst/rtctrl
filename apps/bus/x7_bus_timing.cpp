@@ -4,8 +4,10 @@
 // feedback read and the grouped goal write of the background thread) at a
 // fixed rate while every servo is torque-OFF, and records host-side timing
 // of each cycle. The arm never moves: the probe never writes Torque
-// Enable, refuses unless every servo reports torque off before the run,
-// and checks again afterwards. It programs the indirect-address slots
+// Enable or Drive Mode. Before any write it refuses unless every servo
+// reports torque off AND Drive Mode bit 3 (Torque On by Goal Update)
+// clear, since with that bit a goal write would switch torque on; it
+// checks both again afterwards. It programs the indirect-address slots
 // (the same layout activation programs, torque off) and writes only zero
 // goal current, zero goal velocity and the goal position just read.
 //
@@ -209,6 +211,7 @@ struct ServoInventory {
   int firmware = -1;
   int baud_register = -1;
   int return_delay_time = -1;  // 2 us units
+  int drive_mode = -1;
   int status_return_level = -1;
   int operating_mode = -1;
   int torque_enable = -1;
@@ -303,6 +306,7 @@ bool servoInventory(dxl::PacketIO& io, const hw::Config& config,
     if (!read(reg::kFirmwareVersion, &s.firmware) ||
         !read(reg::kBaudRate, &s.baud_register) ||
         !read(reg::kReturnDelayTime, &s.return_delay_time) ||
+        !read(reg::kDriveMode, &s.drive_mode) ||
         !read(reg::kStatusReturnLevel, &s.status_return_level) ||
         !read(reg::kOperatingMode, &s.operating_mode) ||
         !read(reg::kTorqueEnable, &s.torque_enable) ||
@@ -316,19 +320,39 @@ bool servoInventory(dxl::PacketIO& io, const hw::Config& config,
   return true;
 }
 
-// Every servo must report torque off; the probe never changes it.
-bool torqueAllOff(dxl::PacketIO& io, const hw::Config& config,
-                  std::string* error) {
+bool torqueOnByGoalUpdate(int drive_mode) {
+  return drive_mode >= 0 &&
+         (drive_mode & dxl::kDriveModeTorqueOnByGoalUpdate) != 0;
+}
+
+// The torque-off guarantee: every servo reports torque off, and none can
+// switch torque on by itself when the probe writes a goal (Drive Mode bit
+// 3 clear). The probe changes neither register.
+bool torqueStaysOff(dxl::PacketIO& io, const hw::Config& config,
+                    std::string* error) {
   for (const auto& joint : config.joints) {
+    const std::string id = "id " + std::to_string(joint.id);
     std::uint8_t torque = 1;
+    std::uint8_t drive_mode = 0xFF;
     if (!io.read8(joint.id, reg::kTorqueEnable.addr, &torque).ok()) {
-      *error = "cannot read Torque Enable of id " + std::to_string(joint.id);
+      *error = "cannot read Torque Enable of " + id;
       return false;
     }
     if (torque != 0) {
-      *error = "id " + std::to_string(joint.id) +
+      *error = id +
                " has torque enabled; the probe never changes torque "
                "(disable it with the arm supported, then rerun)";
+      return false;
+    }
+    if (!io.read8(joint.id, reg::kDriveMode.addr, &drive_mode).ok()) {
+      *error = "cannot read Drive Mode of " + id;
+      return false;
+    }
+    if (torqueOnByGoalUpdate(drive_mode)) {
+      *error = id + " has Drive Mode " + std::to_string(drive_mode) +
+               " with bit 3 (Torque On by Goal Update) set: a goal write "
+               "would enable torque. The probe never changes Drive Mode "
+               "(clear bit 3 with torque off, then rerun)";
       return false;
     }
   }
@@ -366,6 +390,9 @@ void writeInventoryToml(std::FILE* f, const std::vector<ServoInventory>& s,
     std::fprintf(f, "baud_register = %d\nreturn_delay_time = %d\n",
                  v.baud_register, v.return_delay_time);
     std::fprintf(f, "return_delay_us = %d\n", 2 * v.return_delay_time);
+    std::fprintf(f, "drive_mode = %d\ntorque_on_by_goal_update = %s\n",
+                 v.drive_mode,
+                 torqueOnByGoalUpdate(v.drive_mode) ? "true" : "false");
     std::fprintf(f, "status_return_level = %d\noperating_mode = %d\n",
                  v.status_return_level, v.operating_mode);
     std::fprintf(f, "torque_enable = %d\nbus_watchdog = %d\n",
@@ -387,13 +414,21 @@ void printInventory(const std::vector<ServoInventory>& s,
               h.cpu_governors.empty() ? "n/a" : h.cpu_governors.c_str());
   for (const auto& v : s) {
     std::printf("id %d: model %u fw v%d baud_reg %d return_delay %d "
-                "(%d us) status_return %d mode %d torque %d "
+                "(%d us) drive_mode %d status_return %d mode %d torque %d "
                 "bus_watchdog %d hw_error %d\n",
                 v.id, static_cast<unsigned>(v.model), v.firmware,
                 v.baud_register, v.return_delay_time,
-                2 * v.return_delay_time, v.status_return_level,
-                v.operating_mode, v.torque_enable, v.bus_watchdog,
-                v.hardware_error_status);
+                2 * v.return_delay_time, v.drive_mode,
+                v.status_return_level, v.operating_mode, v.torque_enable,
+                v.bus_watchdog, v.hardware_error_status);
+  }
+  for (const auto& v : s) {
+    if (torqueOnByGoalUpdate(v.drive_mode)) {
+      std::printf("warning: id %d has Torque On by Goal Update (Drive Mode "
+                  "bit 3): a goal write enables its torque; timing runs "
+                  "refuse it\n",
+                  v.id);
+    }
   }
 }
 
@@ -714,7 +749,7 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  if (!torqueAllOff(*port, config, &error)) {
+  if (!torqueStaysOff(*port, config, &error)) {
     std::fprintf(stderr, "refusing: %s\n", error.c_str());
     return 1;
   }
@@ -807,7 +842,8 @@ int main(int argc, char* argv[]) {
   const bool log_complete = log->close();
 
   std::string after_error;
-  const bool torque_off_after = torqueAllOff(*port, config, &after_error);
+  const bool torque_off_after =
+      torqueStaysOff(*port, config, &after_error);
   if (!torque_off_after) {
     std::fprintf(stderr, "TORQUE CHECK FAILED after the run: %s\n",
                  after_error.c_str());
@@ -849,6 +885,9 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "mean_frequency_hz = %.9g\n", mean_hz);
   std::fprintf(summary, "cpu_duty = %.6g\n",
                result.wall_s > 0.0 ? result.cpu_s / result.wall_s : 0.0);
+  std::fprintf(summary,
+               "# torque off and Drive Mode bit 3 (Torque On by Goal "
+               "Update) clear on every servo\n");
   std::fprintf(summary, "torque_off_before = true\ntorque_off_after = %s\n",
                torque_off_after ? "true" : "false");
   std::fprintf(summary, "\n[budget]\n");

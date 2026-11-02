@@ -22,6 +22,10 @@ namespace rtctrl::emu {
 //   registers.
 // - Goal registers clamp against Min/Max position, velocity, and
 //   current limits.
+// - Drive Mode bit 3, Torque On by Goal Update (firmware >= 45): a
+//   write touching a goal register (Goal PWM, Current, Velocity or
+//   Position; directly or through IndirectData) while torque is off
+//   switches Torque Enable to 1 and keeps the written goal.
 // - Bus Watchdog (98): armed value counts 20 ms; EVERY instruction
 //   packet addressed to this motor feeds it (touch()). On timeout the
 //   register reads 0xFF, motion stops, and goal writes are rejected
