@@ -102,11 +102,16 @@ def write(header, rows):
     return pathlib.Path(handle.name)
 
 
-def probe_run(cycles, log_complete=True, ring_drops=0):
+def probe_run(cycles, log_complete=True, ring_drops=0, late_wake_s=None):
+    """late_wake_s: the lateness of a wake past the deadline that ended
+    the run (no row), or None when the schedule ended it."""
     return {"format": "rtctrl-bus-timing", "kind": "production-traffic",
             "log_complete": log_complete,
             "result": {"started": True, "error": "", "cycles": cycles,
-                       "ring_drops": ring_drops, "elapsed_s": 2e-3 * cycles}}
+                       "ring_drops": ring_drops, "elapsed_s": 2e-3 * cycles,
+                       "late_wake_stop": late_wake_s is not None,
+                       "late_wake_s": 0.0 if late_wake_s is None else 2.0,
+                       "late_wake_lateness_s": late_wake_s or 0.0}}
 
 
 def app_run(cycles, end=None, misses=0, stale=0, status="success",
@@ -178,6 +183,15 @@ for run in (probe_run(1000, log_complete=False), probe_run(1000, ring_drops=3),
             probe_run(999)):
     s = ts.summarize(kind, data, 500.0, None, None, run=run)
     assert verdicts(ts.check(s, False, defaults()))["T3"][1] == "FAIL", run
+# A wake past the deadline ends the run with no row, but its lateness is
+# still judged: 0.17 s late fails T5; a punctual one changes nothing.
+s = ts.summarize(kind, data, 500.0, None, None,
+                 run=probe_run(1000, late_wake_s=0.17))
+assert s["late_wake_lateness_s"] == 0.17
+assert verdicts(ts.check(s, False, defaults()))["T5"] == ("measured", "FAIL")
+s = ts.summarize(kind, data, 500.0, None, None,
+                 run=probe_run(1000, late_wake_s=20e-6))
+assert verdicts(ts.check(s, False, defaults()))["T5"] == ("measured", "PASS")
 path.unlink()
 
 # Failures: a skip, a read failure, late wakes and a tight envelope.

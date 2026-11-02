@@ -17,7 +17,13 @@ rm -rf "$ROOT"
 mkdir -p "$ROOT"
 "$EMU" --link "$LINK" --firmware 45 >"$ROOT/emu.log" 2>&1 &
 EMU_PID=$!
-trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
+PROBE_PID=
+# A probe left stopped by an interrupted stall check is resumed and ended.
+trap 'kill "$EMU_PID" 2>/dev/null || true
+  if [ -n "$PROBE_PID" ]; then
+    kill -CONT "$PROBE_PID" 2>/dev/null || true
+    kill "$PROBE_PID" 2>/dev/null || true
+  fi' EXIT
 for _ in $(seq 1 50); do
   [ -e "$LINK" ] && break
   sleep 0.1
@@ -88,6 +94,48 @@ assert r["elapsed_s"] <= bound, (r["elapsed_s"], bound)
 assert r["last_wake_s"] <= s["duration_s"] + late + 1e-3, r["last_wake_s"]
 assert r["elapsed_s"] >= s["duration_s"] - 2.0 / s["rate_hz"], r["elapsed_s"]
 EOF_PY
+
+# The deadline also holds against the clock after a wake: a probe stopped
+# in its sleep until past the deadline starts no further transaction. The
+# stop lands mid-run (rows are being logged) and lasts past the deadline;
+# at 20 Hz it almost always lands in the sleep. Either way no cycle wakes
+# at or after the deadline, and the stall is on record: the late wake in
+# the summary, or a cycle that ended past the deadline.
+"$PROBE" --port "$LINK" --rate-hz 20 --profile position --duration 2 \
+  --log "$ROOT/stall.csv" >"$ROOT/stall.log" 2>&1 &
+PROBE_PID=$!
+for _ in $(seq 1 200); do
+  [ -e "$ROOT/stall.csv" ] && [ "$(wc -l <"$ROOT/stall.csv")" -ge 4 ] && break
+  sleep 0.02
+done
+kill -STOP "$PROBE_PID"
+sleep 2.5
+kill -CONT "$PROBE_PID"
+wait "$PROBE_PID" || fail "stalled run failed" "$ROOT/stall.log"
+PROBE_PID=
+python3 - "$ROOT/stall.csv.summary.toml" "$ROOT/stall.csv" <<'EOF_PY'
+import csv
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    s = tomllib.load(stream)
+r = s["result"]
+with open(sys.argv[2], newline="") as stream:
+    rows = list(csv.DictReader(stream))
+deadline_ns = s["duration_s"] * 1e9
+assert len(rows) == r["cycles"] >= 3, (len(rows), r["cycles"])
+late = [row["cycle"] for row in rows if int(row["wake_ns"]) >= deadline_ns]
+assert not late, f"cycles {late} started after the deadline"
+assert r["last_wake_s"] < s["duration_s"], r["last_wake_s"]
+in_sleep = r["late_wake_stop"] and r["late_wake_lateness_s"] > 0.5
+in_cycle = int(rows[-1]["cycle_end_ns"]) >= deadline_ns
+assert in_sleep or in_cycle, "the stall left no record"
+print("stopped in its sleep" if in_sleep else "stopped mid-cycle")
+EOF_PY
+if grep -q '^late_wake_stop = true' "$ROOT/stall.csv.summary.toml"; then
+  grep -q 'past the deadline: no further cycle started' "$ROOT/stall.log"
+fi
 
 # Calibration: every acknowledged write matched what was written. (The
 # completion-offset histogram is not counted: the emulator replies without

@@ -35,8 +35,12 @@
 //
 // --duration is a deadline on the monotonic clock, not a cycle count: no
 // cycle starts once S seconds have passed since the first, so a rate the
-// bus cannot sustain runs fewer cycles, never longer. The summary records
-// the elapsed time (elapsed_s, through the last cycle's end).
+// bus cannot sustain runs fewer cycles, never longer. The check is made on
+// the scheduled next wake and again on the clock after each wake, so a
+// probe preempted or stopped in its sleep past the deadline starts no
+// further transaction; that wake's lateness goes to the summary
+// (late_wake_*), since it has no CSV row. The summary records the elapsed
+// time (elapsed_s, through the last cycle's end).
 //
 // Outputs are created exclusively (an existing file is refused). Exit 0
 // means the measurement completed with complete outputs and torque off
@@ -478,6 +482,10 @@ struct RunResult {
   double first_wake_s = 0.0;
   double last_wake_s = 0.0;
   double elapsed_s = 0.0;  // run start to the last cycle's end
+  // The run ended at a wake at or after the deadline (no cycle started).
+  bool late_wake_stop = false;
+  double late_wake_s = 0.0;
+  double late_wake_lateness_s = 0.0;
   double cpu_s = 0.0;
   double wall_s = 0.0;
   hw::CycleTimingStats timing;
@@ -553,12 +561,21 @@ class Probe {
     std::int64_t prev_wake = -1;
     const double cpu0 = threadCpuSeconds();
     for (std::uint64_t k = 1;; ++k) {
+      // The stop rule on the actual clock: a wake past the deadline (the
+      // probe was preempted or stopped in its sleep) begins nothing.
+      const auto woke = Clock::now();
+      if (woke >= deadline) {
+        result->late_wake_stop = true;
+        result->late_wake_s = ns(woke) * 1e-9;
+        result->late_wake_lateness_s = (ns(woke) - ns(scheduled)) * 1e-9;
+        break;
+      }
       ProbeRecord r;
       hw::CycleRecord& c = r.cycle;
       c.cycle = k;
       c.command_kind = hw::CommandKind::kPeriodic;
       c.scheduled_wake_ns = ns(scheduled);
-      c.wake_ns = ns(Clock::now());
+      c.wake_ns = ns(woke);
       if (k == 1) result->first_wake_s = c.wake_ns * 1e-9;
       result->last_wake_s = c.wake_ns * 1e-9;
 
@@ -892,6 +909,15 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "elapsed_s = %.9g\n", result.elapsed_s);
   std::fprintf(summary, "first_wake_s = %.9g\nlast_wake_s = %.9g\n",
                result.first_wake_s, result.last_wake_s);
+  std::fprintf(summary,
+               "# a wake at or after the deadline ends the run before any "
+               "transaction;\n# it has no CSV row, so its lateness is "
+               "recorded here\n");
+  std::fprintf(summary,
+               "late_wake_stop = %s\nlate_wake_s = %.9g\n"
+               "late_wake_lateness_s = %.9g\n",
+               result.late_wake_stop ? "true" : "false", result.late_wake_s,
+               result.late_wake_lateness_s);
   std::fprintf(summary, "overruns = %llu\nskipped_periods = %llu\n",
                static_cast<unsigned long long>(result.overruns),
                static_cast<unsigned long long>(result.skipped_periods));
@@ -955,6 +981,11 @@ int main(int argc, char* argv[]) {
                 static_cast<unsigned long long>(result.ack_mismatches));
   }
   std::printf("\n");
+  if (result.late_wake_stop) {
+    std::printf("woke %.3f ms late at %.3f s, past the deadline: no further "
+                "cycle started\n",
+                1e3 * result.late_wake_lateness_s, result.late_wake_s);
+  }
   printHistogram("wake_lateness", t.wake_lateness);
   printHistogram("period", t.period);
   printHistogram("host_transaction", t.host_transaction);

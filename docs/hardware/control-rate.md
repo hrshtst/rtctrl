@@ -106,8 +106,12 @@ done
 
 `--duration` is a deadline on the monotonic clock, not a cycle count: no cycle
 starts after it, so a rate the bus cannot sustain runs fewer cycles rather
-than longer, and a 60 s run stays inside the 75 s load window. The summary
-records the elapsed time (`elapsed_s`).
+than longer, and a 60 s run stays inside the 75 s load window. The probe
+checks the clock again after every wake, so a probe preempted or stopped in
+its sleep past the deadline begins no further transaction. That wake has no
+CSV row; the summary records it (`late_wake_stop`, `late_wake_lateness_s`)
+and T5 counts its lateness. The summary also records the elapsed time
+(`elapsed_s`).
 
 Repeat the matrix under load, and with a real-time policy on a dedicated CPU
 (`--rt-priority 80 --rt-cpu 3`, with an isolated core chosen for the machine).

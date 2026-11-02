@@ -191,6 +191,12 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
     s["measured"] = {name: describe(v) for name, v in measured.items()}
 
     to_write = interval(data, "read_start_ns", "bus_write_start_ns")
+    if kind == "probe" and run is not None and \
+            run["result"].get("late_wake_stop", False):
+        # The wake that ended the run past its deadline has no row; its
+        # lateness still counts.
+        s["late_wake_lateness_s"] = float(
+            run["result"]["late_wake_lateness_s"])
     if kind == "probe":
         ok = data["ack_ok"] == 1
         if np.any(ok):
@@ -290,11 +296,15 @@ def check(s: dict, loaded: bool, args: argparse.Namespace) -> list[tuple]:
     else:
         verdict("T4", "measured", None, "probe log has no controller")
     lateness = s["measured"]["wake_lateness"]
+    late_max = max(lateness["max"], s.get("late_wake_lateness_s", -math.inf))
+    detail = (f"p99.9 {1e3 * lateness['p999']:.3f} ms, "
+              f"max {1e3 * late_max:.3f} ms")
+    if "late_wake_lateness_s" in s:
+        detail += (f" (the wake that ended the run past its deadline: "
+                   f"{1e3 * s['late_wake_lateness_s']:.3f} ms)")
     verdict("T5", "measured",
             lateness["p999"] <= args.lateness_p999 * period and
-            lateness["max"] <= args.lateness_max * period,
-            f"p99.9 {1e3 * lateness['p999']:.3f} ms, "
-            f"max {1e3 * lateness['max']:.3f} ms")
+            late_max <= args.lateness_max * period, detail)
     work = s["measured"]["host_work"]
     verdict("T6a", "measured",
             work["p999"] <= args.host_work_p999 * period and
@@ -341,6 +351,9 @@ def print_summary(s: dict) -> None:
         print(f"  run summary: {run['kind']}, log complete "
               f"{run['log_complete']}, elapsed "
               f"{run['result'].get('elapsed_s', math.nan):.3f} s")
+        if "late_wake_lateness_s" in s:
+            print(f"  ended at a wake {1e3 * s['late_wake_lateness_s']:.3f} "
+                  "ms late, past the deadline (no row)")
     print("  measured (host clock; ms):")
     for name, d in s["measured"].items():
         if d:
