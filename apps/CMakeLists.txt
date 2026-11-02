@@ -16,6 +16,10 @@ add_executable(dxl_load_params bus/dxl_load_params.cpp)
 target_link_libraries(dxl_load_params PRIVATE rtctrl::rtctrl)
 target_include_directories(dxl_load_params PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_executable(x7_bus_timing bus/x7_bus_timing.cpp)
+target_link_libraries(x7_bus_timing PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_bus_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 set(PTP_GIT_REV_SRC ${CMAKE_BINARY_DIR}/generated/ptp_git_rev.cpp)
 add_custom_target(ptp_git_rev
   COMMAND ${CMAKE_COMMAND} -DOUT=${PTP_GIT_REV_SRC}

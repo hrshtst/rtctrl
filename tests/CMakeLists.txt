@@ -23,6 +23,7 @@ add_executable(unit_tests
   unit/track_config_test.cpp
   unit/ik_test.cpp
   unit/dxl_test.cpp
+  unit/wire_budget_test.cpp
   unit/cycle_timing_test.cpp
   unit/cycle_record_test.cpp
   unit/hw_test.cpp
@@ -559,6 +560,16 @@ add_test(NAME x7_teach_smoke
 set_tests_properties(x7_teach_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "x7_teach emulator workflow OK"
+  LABELS integration)
+
+add_test(NAME x7_bus_timing_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/bus_timing_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
+          $<TARGET_FILE:dxl_inspect>
+          ${CMAKE_BINARY_DIR}/bus_timing_smoke)
+set_tests_properties(x7_bus_timing_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "bus timing probe OK"
   LABELS integration)
 
 # x7_ct_mass_error seed CLI contract: uint64 parsed exactly — bad

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -83,10 +84,10 @@ class LatencyHistogram {
     return kFloorS * std::exp2(static_cast<double>(bin) / kBinsPerOctave);
   }
 
-  // Upper edge of the bin holding the q-quantile of the recorded values
-  // (the overflow bin reports the recorded maximum). It is never below
-  // that empirical quantile; it carries no statistical claim beyond the
-  // recorded sample. 0 when empty.
+  // Upper edge of the bin holding the q-quantile of the recorded values,
+  // capped at the recorded maximum (which no quantile exceeds). It is
+  // never below that empirical quantile; it carries no statistical claim
+  // beyond the recorded sample. 0 when empty.
   double quantileUpperEdge(double q) const {
     if (count_ == 0) return 0.0;
     const double rank = std::ceil(q * static_cast<double>(count_));
@@ -96,7 +97,7 @@ class LatencyHistogram {
     for (int b = 0; b < kBins; ++b) {
       seen += bins_[b];
       if (seen >= target) {
-        return b == kBins - 1 ? max_s_ : binUpperEdge(b);
+        return b == kBins - 1 ? max_s_ : std::min(binUpperEdge(b), max_s_);
       }
     }
     return max_s_;
