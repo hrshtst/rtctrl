@@ -33,6 +33,11 @@
 //       [--rt-priority N --rt-cpu C] [--rt-lock-memory]
 //       [--fine-timer-slack]
 //
+// --duration is a deadline on the monotonic clock, not a cycle count: no
+// cycle starts once S seconds have passed since the first, so a rate the
+// bus cannot sustain runs fewer cycles, never longer. The summary records
+// the elapsed time (elapsed_s, through the last cycle's end).
+//
 // Outputs are created exclusively (an existing file is refused). Exit 0
 // means the measurement completed with complete outputs and torque off
 // throughout; failures it measured (read failures, overruns) are data,
@@ -472,6 +477,7 @@ struct RunResult {
   std::uint64_t ring_drops = 0;
   double first_wake_s = 0.0;
   double last_wake_s = 0.0;
+  double elapsed_s = 0.0;  // run start to the last cycle's end
   double cpu_s = 0.0;
   double wall_s = 0.0;
   hw::CycleTimingStats timing;
@@ -522,8 +528,6 @@ class Probe {
     std::vector<double> currents(n, 0.0);
     const auto period = std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(1.0 / args_.rate_hz));
-    const auto cycles = static_cast<std::uint64_t>(
-        std::ceil(args_.duration_s * args_.rate_hz));
     const std::uint8_t last_id = group_.ids().back();
     const double byte_s = wire::byteTimeS(baudrate_);
     const int ack_len = args_.profile == Profile::kCurrent ? 2 : 4;
@@ -536,6 +540,10 @@ class Probe {
         last_return_delay_us_ * 1e3));
 
     const auto epoch = Clock::now();
+    // The stop rule: a cycle starts only before this point.
+    const auto deadline =
+        epoch + std::chrono::duration_cast<Clock::duration>(
+                    std::chrono::duration<double>(args_.duration_s));
     const auto ns = [&](Clock::time_point t) {
       return std::chrono::duration_cast<std::chrono::nanoseconds>(t - epoch)
           .count();
@@ -544,7 +552,7 @@ class Probe {
     auto scheduled = epoch;
     std::int64_t prev_wake = -1;
     const double cpu0 = threadCpuSeconds();
-    for (std::uint64_t k = 1; k <= cycles; ++k) {
+    for (std::uint64_t k = 1;; ++k) {
       ProbeRecord r;
       hw::CycleRecord& c = r.cycle;
       c.cycle = k;
@@ -629,6 +637,10 @@ class Probe {
       prev_wake = c.wake_ns;
       if (!ring_.push(r)) ++result->ring_drops;
       ++result->cycles;
+      result->elapsed_s = c.cycle_end_ns * 1e-9;
+      // The next wake is never before this cycle's end, so an overrun
+      // past the deadline ends the run here too.
+      if (advance.wake_time >= deadline) break;
       scheduled = advance.wake_time;
       std::this_thread::sleep_until(advance.wake_time);
     }
@@ -858,6 +870,9 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "profile = \"%s\"\n", profileName(args.profile));
   std::fprintf(summary, "rate_hz = %.9g\nduration_s = %.9g\n", args.rate_hz,
                args.duration_s);
+  std::fprintf(summary,
+               "# duration_s is a monotonic-clock deadline: no cycle starts "
+               "after it\n");
   std::fprintf(summary, "confirm_writes = %s\ndrain = %s\n",
                args.confirm_writes ? "true" : "false",
                args.drain ? "true" : "false");
@@ -873,6 +888,10 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "error = %s\n", tomlString(result.error).c_str());
   std::fprintf(summary, "cycles = %llu\n",
                static_cast<unsigned long long>(result.cycles));
+  std::fprintf(summary, "# run start to the last cycle's end, monotonic\n");
+  std::fprintf(summary, "elapsed_s = %.9g\n", result.elapsed_s);
+  std::fprintf(summary, "first_wake_s = %.9g\nlast_wake_s = %.9g\n",
+               result.first_wake_s, result.last_wake_s);
   std::fprintf(summary, "overruns = %llu\nskipped_periods = %llu\n",
                static_cast<unsigned long long>(result.overruns),
                static_cast<unsigned long long>(result.skipped_periods));
@@ -922,8 +941,10 @@ int main(int argc, char* argv[]) {
   const bool summary_closed = std::fclose(summary) == 0;
 
   std::printf("scheduler: %s\n", result.scheduler.c_str());
-  std::printf("cycles %llu, mean %.3f Hz, overruns %llu, skipped %llu, "
-              "read failures %llu, write failures %llu",
+  std::printf("ran %.3f s (deadline %.3f s); cycles %llu, mean %.3f Hz, "
+              "overruns %llu, skipped %llu, read failures %llu, write "
+              "failures %llu",
+              result.elapsed_s, args.duration_s,
               static_cast<unsigned long long>(result.cycles), mean_hz,
               static_cast<unsigned long long>(result.overruns),
               static_cast<unsigned long long>(result.skipped_periods),

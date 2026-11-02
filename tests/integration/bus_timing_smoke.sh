@@ -51,10 +51,36 @@ SUMMARY="$ROOT/run.csv.summary.toml"
 grep -q '^kind = "production-traffic"' "$SUMMARY"
 grep -q '^log_complete = true' "$SUMMARY"
 grep -q '^cycles = 100' "$SUMMARY"
+grep -q '^elapsed_s = ' "$SUMMARY"
 grep -q '^read_failures = 0' "$SUMMARY"
 grep -q '^torque_off_after = true' "$SUMMARY"
 grep -q '^\[budget\]' "$SUMMARY"
 grep -q '^\[histogram.host_transaction\]' "$SUMMARY"
+
+# --duration is a monotonic deadline, not a cycle count: at a rate the pty
+# may not sustain, the run ends once the deadline passes, never later than
+# one late wake plus one cycle's work after it. The bound comes from the
+# run's own measurements, not from a wall-clock threshold.
+"$PROBE" --port "$LINK" --rate-hz 1000 --profile cbp --duration 0.3 \
+  --log "$ROOT/fast.csv" >"$ROOT/fast.log" 2>&1 ||
+  fail "1 kHz production-traffic run failed" "$ROOT/fast.log"
+grep -q '^ran [0-9.]* s (deadline 0.300 s)' "$ROOT/fast.log"
+python3 - "$ROOT/fast.csv.summary.toml" "$ROOT/fast.csv" <<'EOF_PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    s = tomllib.load(stream)
+r, h = s["result"], s["histogram"]
+with open(sys.argv[2]) as stream:
+    rows = sum(1 for _ in stream) - 1
+assert rows == r["cycles"], (rows, r["cycles"])
+late, work = h["wake_lateness"]["max_s"], h["host_work"]["max_s"]
+bound = s["duration_s"] + late + work + 1e-3
+assert r["elapsed_s"] <= bound, (r["elapsed_s"], bound)
+assert r["last_wake_s"] <= s["duration_s"] + late + 1e-3, r["last_wake_s"]
+assert r["elapsed_s"] >= s["duration_s"] - 2.0 / s["rate_hz"], r["elapsed_s"]
+EOF_PY
 
 # Calibration: every acknowledged write matched what was written.
 "$PROBE" --port "$LINK" --rate-hz 100 --profile cbp --duration 1 \

@@ -103,6 +103,11 @@ for rate in 100 200 500 1000; do
 done
 ```
 
+`--duration` is a deadline on the monotonic clock, not a cycle count: no cycle
+starts after it, so a rate the bus cannot sustain runs fewer cycles rather
+than longer, and a 60 s run stays inside the 75 s load window. The summary
+records the elapsed time (`elapsed_s`).
+
 Repeat the matrix under load, and with a real-time policy on a dedicated CPU
 (`--rt-priority 80 --rt-cpu 3`, with an isolated core chosen for the machine).
 The probe refuses a policy it cannot be granted. Stop a profile at its first
