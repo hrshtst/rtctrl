@@ -116,6 +116,52 @@ TEST_CASE("shared follow run completes every phase in supported servo modes",
   std::remove(path.c_str());
 }
 
+TEST_CASE("a posture-matched run refuses before any motion if the arm "
+          "is away from the reference start",
+          "[follow][run][posture]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto path = referenceFile();  // starts 0.1 rad away on joint 0
+  model::ZvsTrajectory reference(path, map);
+  IdealArm robot(arm::ControlMode::Position);
+  REQUIRE(robot.activate());
+  auto config = baseConfig(arm::ControlMode::Position);
+  config.home.max_distance_rad = 0.005;
+  follow::FollowRun run(robot, reference, config, true);
+  const auto result = run.run();
+  CHECK(result.status == follow::RunStatus::HomeRefused);
+  CHECK(result.worst_home_error_rad == 0.1);
+  // Only the hold at the arm's own position was ever commanded.
+  arm::JointState state;
+  REQUIRE(robot.readState(state));
+  for (int i = 0; i < model::kCanonicalDof; ++i) CHECK(state.q[i] == 0.0);
+  std::remove(path.c_str());
+}
+
+TEST_CASE("a posture-matched run proceeds without homing when the arm is "
+          "at the reference start",
+          "[follow][run][posture]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const std::string path = "build/follow_run_matched.zvs";
+  {
+    std::ofstream out(path);
+    out << "0.02 8 (0 0 0 0 0 0 0 0 )\n"
+        << "0.02 8 (0.002 0 0 0 0 0 0 0 )\n"
+        << "0.02 8 (0.004 0 0 0 0 0 0 0 )\n";
+  }
+  model::ZvsTrajectory reference(path, map);
+  IdealArm robot(arm::ControlMode::Position);
+  REQUIRE(robot.activate());
+  auto config = baseConfig(arm::ControlMode::Position);
+  config.home.max_distance_rad = 0.005;
+  follow::FollowRun run(robot, reference, config, true);
+  const auto result = run.run();
+  CHECK(result.status == follow::RunStatus::Success);
+  CHECK(result.worst_home_error_rad <= 0.005);
+  std::remove(path.c_str());
+}
+
 TEST_CASE("strict home gate refuses a nonmoving arm", "[follow][run]") {
   class StuckArm : public IdealArm {
    public:

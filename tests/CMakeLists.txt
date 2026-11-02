@@ -19,6 +19,7 @@ add_executable(unit_tests
   unit/ptp_config_test.cpp
   unit/follow_config_test.cpp
   unit/follow_run_test.cpp
+  unit/posture_reference_test.cpp
   unit/track_run_test.cpp
   unit/track_config_test.cpp
   unit/ik_test.cpp
@@ -581,6 +582,16 @@ add_test(NAME x7_follow_timing_log_smoke
 set_tests_properties(x7_follow_timing_log_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "follow timing log OK"
+  LABELS integration)
+
+add_test(NAME x7_follow_posture_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_posture_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_follow>
+          $<TARGET_FILE:x7_plan_ptp> ${CMAKE_SOURCE_DIR}
+          ${CMAKE_BINARY_DIR}/follow_posture_smoke)
+set_tests_properties(x7_follow_posture_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "follow posture references OK"
   LABELS integration)
 
 # x7_ct_mass_error seed CLI contract: uint64 parsed exactly — bad

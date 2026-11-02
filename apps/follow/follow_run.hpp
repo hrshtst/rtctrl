@@ -35,7 +35,8 @@ enum class RunStatus {
   IoFailure,
   HomeNotConverged,
   TrackingError,
-  OperatorTimeout
+  OperatorTimeout,
+  HomeRefused
 };
 
 inline const char* statusName(RunStatus status) {
@@ -45,6 +46,7 @@ inline const char* statusName(RunStatus status) {
     case RunStatus::HomeNotConverged: return "home_not_converged";
     case RunStatus::TrackingError: return "tracking_error";
     case RunStatus::OperatorTimeout: return "operator_timeout";
+    case RunStatus::HomeRefused: return "home_refused";
   }
   return "unknown";
 }
@@ -187,6 +189,20 @@ class FollowRun {
 
     model::ZVector home(model::kCanonicalDof);
     reference_.sample(0.0, home.get());
+    if (config_.home.max_distance_rad) {
+      double distance = 0.0;
+      for (int i = 0; i < model::kCanonicalDof; ++i) {
+        distance = std::max(distance, std::fabs(initial.q[i] - home[i]));
+      }
+      result.worst_home_error_rad = distance;
+      if (!(distance <= *config_.home.max_distance_rad)) {
+        // Hold where the arm is: no homing motion is ever commanded.
+        result.status = RunStatus::HomeRefused;
+        finalize(Phase::AbortHold, initial.q.get(), &result);
+        result.cycles = cycles_;
+        return result;
+      }
+    }
     if (!moveHome(initial.q.get(), home.get(), &result)) {
       result.status = result.status == RunStatus::IoFailure
                           ? RunStatus::IoFailure

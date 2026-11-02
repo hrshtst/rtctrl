@@ -34,6 +34,11 @@ struct HomeConfig {
   double tolerance_rad = 0.01;
   int correction_retries = 5;
   double settle_time_s = 0.3;
+  // Set at run time (never from TOML) for references built from the
+  // measured posture: the run refuses, before any motion command, when
+  // the arm's start is farther than this from the reference's first
+  // frame on any joint, so such a run can never home.
+  std::optional<double> max_distance_rad;
 };
 
 struct SimulationConfig {
@@ -91,6 +96,9 @@ struct Cli {
   std::optional<fs::path> motor_parameters_path;
   std::optional<fs::path> log_path;
   std::optional<fs::path> timing_log_path;
+  // References built from the measured posture (follow/posture_reference.hpp).
+  std::optional<std::string> hold_current;
+  std::optional<std::string> sweep_current;
   std::optional<fs::path> motion_path;
   std::optional<fs::path> bundle_path;
   std::optional<std::string> port;
@@ -513,7 +521,8 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
                arg == "--effort-limit-nm" || arg == "--filter" ||
                arg == "--interpolation" || arg == "--log" ||
                arg == "--timing-log" || arg == "--bundle" ||
-               arg == "--port" || arg == "--motion") {
+               arg == "--port" || arg == "--motion" ||
+               arg == "--hold-current" || arg == "--sweep-current") {
       if (i + 1 >= argc || argv[i + 1][0] == '-') {
         throw std::runtime_error(arg + " requires a value");
       }
@@ -530,6 +539,8 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
         cli.interpolation = parseInterpolation(value.string());
       else if (arg == "--log") cli.log_path = value;
       else if (arg == "--timing-log") cli.timing_log_path = value;
+      else if (arg == "--hold-current") cli.hold_current = value.string();
+      else if (arg == "--sweep-current") cli.sweep_current = value.string();
       else if (arg == "--bundle") cli.bundle_path = value;
       else if (arg == "--port") cli.port = value.string();
       else cli.motion_path = value;
@@ -548,6 +559,21 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
   }
   if (cli.bundle_path && cli.timing_log_path) {
     throw std::runtime_error("--timing-log cannot be used with --bundle");
+  }
+  if (cli.hold_current || cli.sweep_current) {
+    if (simulation) {
+      throw std::runtime_error(
+          "--hold-current and --sweep-current are hardware-only");
+    }
+    if (cli.hold_current && cli.sweep_current) {
+      throw std::runtime_error(
+          "--hold-current and --sweep-current are mutually exclusive");
+    }
+    if (cli.reference_path || cli.check || cli.bundle_path) {
+      throw std::runtime_error(
+          "a reference built from the measured posture cannot be combined "
+          "with --reference, --check, or --bundle");
+    }
   }
   if (cli.check && cli.bundle_path) {
     throw std::runtime_error("--check and --bundle cannot be used together");

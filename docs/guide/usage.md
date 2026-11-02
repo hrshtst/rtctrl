@@ -710,6 +710,21 @@ observations: `read_start_ns` is when the host began the feedback transaction,
 not when the servos sampled, and `write_return_ns` is when the host's write
 returned, not when the bytes left the adapter.
 
+`--hold-current SECONDS` and `--sweep-current JOINT:AMPLITUDE:DURATION`
+(hardware only; not with `--reference`, `--check`, or `--bundle`) replace the
+configured reference with one built from the posture the arm is resting in.
+The posture is read torque-off before activation. The hold keeps it; the sweep
+moves one canonical arm joint (0 to 6) out by AMPLITUDE radians and back along
+two minimum-jerk halves of DURATION/2 seconds each. Both references start
+exactly at the measured posture, so the run needs no homing: it refuses before
+any motion command if the arm has moved more than 0.005 rad from that posture
+by the time tracking would begin (status `home_refused`). The generated
+reference is written to `<log>.reference.zvs` (an existing file is refused) and
+validated like any reference before torque-on. It requires `filter = none`,
+since a filtered reference would no longer start at the posture. These modes
+let a new control rate be exercised without a multi-joint homing motion: hold
+first, then a wrist-only sweep (`--sweep-current 6:0.3:6`).
+
 #### Portable follow bundles
 
 Create a new immutable simulation archive:

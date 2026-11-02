@@ -1,6 +1,7 @@
 // Hardware frontend for servo-side trajectory following.
 // Usage: x7_follow --config run.toml [input/control overrides]
 //                  [--port DEV] [--log out.csv] [--timing-log cycles.csv]
+//                  [--hold-current S | --sweep-current J:A:D]
 //                  [--bundle DIR] [--check]
 
 #include <fcntl.h>
@@ -21,6 +22,7 @@
 #include "follow/follow_hardware.hpp"
 #include "follow/follow_preflight.hpp"
 #include "follow/follow_run.hpp"
+#include "follow/posture_reference.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/port.hpp"
 #include "rtctrl/hw/config.hpp"
@@ -55,6 +57,9 @@ void usage() {
       "  --port DEV\n"
       "  --log FILE\n"
       "  --timing-log FILE    per-cycle host timing (hardware only)\n"
+      "  --hold-current SECONDS   hold the measured posture (no homing)\n"
+      "  --sweep-current J:A:D    sweep joint J by A rad and back over D s\n"
+      "                           from the measured posture (no homing)\n"
       "  --bundle NEW_DIRECTORY\n"
       "  --check\n");
 }
@@ -121,12 +126,31 @@ int main(int argc, char* argv[]) {
       config.output.hardware_log = prepared.hardware_log;
     }
 
+    std::optional<follow::PostureReference> posture;
+    if (cli.hold_current) {
+      posture = follow::parseHoldCurrent(*cli.hold_current);
+    } else if (cli.sweep_current) {
+      posture = follow::parseSweepCurrent(*cli.sweep_current);
+    }
+    if (posture && config.reference.filter != model::ReferenceFilter::None) {
+      throw std::runtime_error(
+          "a reference built from the measured posture must start exactly "
+          "there: use reference_processing.filter = none (--filter none)");
+    }
+
     model::ChainModel chain(config.model_path.string());
     model::JointMap map(chain);
-    model::ZvsTrajectory reference(config.reference_path.string(), map,
-                                   config.reference);
+    // A posture reference is built and validated after the posture is
+    // read, still before torque-on.
+    std::unique_ptr<model::ZvsTrajectory> reference;
+    if (!posture) {
+      reference = std::make_unique<model::ZvsTrajectory>(
+          config.reference_path.string(), map, config.reference);
+    }
     auto hardware = hw::Config::load(config.hardware_config_path.string());
-    follow::validateReference(config, chain, map, reference, hardware);
+    if (reference) {
+      follow::validateReference(config, chain, map, *reference, hardware);
+    }
 
     std::optional<parameters::ParameterDump> parameter_dump;
     if (config.motor_parameters_path) {
@@ -149,6 +173,9 @@ int main(int argc, char* argv[]) {
     if (cli.timing_log_path) {
       follow::requireNewOutput(*cli.timing_log_path, "timing log");
     }
+    const std::filesystem::path posture_path =
+        config.output.hardware_log.string() + ".reference.zvs";
+    if (posture) follow::requireNewOutput(posture_path, "posture reference");
     follow::RunResult result;
     hw::CraneX7::CycleStats stats;
     bool released = false;
@@ -182,6 +209,29 @@ int main(int argc, char* argv[]) {
       if (!cbp_limits.empty()) {
         crane.setActivationCurrentBasedPositionLimits(cbp_limits);
       }
+      if (posture) {
+        // Torque-off read of the posture the arm is resting in.
+        std::vector<rtctrl::dxl::Feedback> fb;
+        if (!crane.preparePassiveFeedback() ||
+            !crane.readPassiveFeedback(fb) ||
+            fb.size() != static_cast<std::size_t>(model::kCanonicalDof)) {
+          throw std::runtime_error("posture read failed: " +
+                                   crane.lastError());
+        }
+        follow::CanonicalPosture q0{};
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          q0[i] = fb[i].position;
+        }
+        follow::writePostureReferenceZvs(
+            posture_path, follow::postureReferenceFrames(*posture, q0));
+        reference = std::make_unique<model::ZvsTrajectory>(
+            posture_path.string(), map, config.reference);
+        follow::validateReference(config, chain, map, *reference, hardware);
+        config.home.max_distance_rad = follow::kPostureMatchToleranceRad;
+        std::printf("posture reference: %s (%s)\n",
+                    follow::describePostureReference(*posture).c_str(),
+                    posture_path.c_str());
+      }
 
       arm::RealArm robot(crane);
       if (!robot.setMode(config.mode)) {
@@ -197,7 +247,7 @@ int main(int argc, char* argv[]) {
       }
       x7::ShutdownGuard shutdown(crane);
       if (timing_log) timing_log->start();
-      follow::FollowRun run(robot, reference, config, false, &log,
+      follow::FollowRun run(robot, *reference, config, false, &log,
                             [&enter] { return enter.pressed(); });
       result = run.run();
       stats = crane.cycleStats();

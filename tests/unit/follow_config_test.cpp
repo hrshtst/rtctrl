@@ -134,6 +134,37 @@ TEST_CASE("follow CLI accepts a timing log on hardware only",
   CHECK_THROWS(follow::parseCli(4, missing, false));
 }
 
+TEST_CASE("follow CLI keeps posture references hardware-only and alone",
+          "[follow][config][posture]") {
+  char app[] = "x7_follow";
+  char config[] = "--config";
+  char path[] = "run.toml";
+  char hold[] = "--hold-current";
+  char seconds[] = "60";
+  char sweep[] = "--sweep-current";
+  char spec[] = "6:-0.3:6";
+  char* hold_argv[] = {app, config, path, hold, seconds};
+  CHECK(follow::parseCli(5, hold_argv, false).hold_current ==
+        std::string("60"));
+  CHECK_THROWS(follow::parseCli(5, hold_argv, true));
+  char* sweep_argv[] = {app, config, path, sweep, spec};
+  CHECK(follow::parseCli(5, sweep_argv, false).sweep_current ==
+        std::string("6:-0.3:6"));
+  char* both[] = {app, config, path, hold, seconds, sweep, spec};
+  CHECK_THROWS(follow::parseCli(7, both, false));
+  char reference[] = "--reference";
+  char zvs[] = "ref.zvs";
+  char* with_reference[] = {app, config, path, hold, seconds, reference, zvs};
+  CHECK_THROWS(follow::parseCli(7, with_reference, false));
+  char check[] = "--check";
+  char* with_check[] = {app, config, path, hold, seconds, check};
+  CHECK_THROWS(follow::parseCli(6, with_check, false));
+  char bundle[] = "--bundle";
+  char archive[] = "archive";
+  char* with_bundle[] = {app, config, path, sweep, spec, bundle, archive};
+  CHECK_THROWS(follow::parseCli(7, with_bundle, false));
+}
+
 TEST_CASE("follow CLI overrides comparison inputs and control policy",
           "[follow][config]") {
   char app[] = "x7_follow_sim";
