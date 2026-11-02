@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <unistd.h>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -68,7 +69,10 @@ class Scratch {
   std::string log() const { return dir_ + "/disturbance.csv"; }
 
  private:
-  std::string dir_ = "build/link_force_run_test";
+  // Per process: ctest runs each test case as its own process, often in
+  // parallel, and a shared directory made their exclusive logs collide.
+  std::string dir_ =
+      "build/link_force_run_test_" + std::to_string(::getpid());
 };
 
 std::vector<Row> readRows(const std::string& path) {
