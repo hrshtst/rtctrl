@@ -65,7 +65,9 @@ class CraneX7 {
     // Optional torque-off customization after Operating Mode and the default
     // active P gain are written, but before effective limits are read and
     // torque is enabled. Intended for the transactional parameter loader.
-    // The callback must leave torque disabled on every servo.
+    // The callback must leave torque disabled on every servo. Drive Mode
+    // is checked again after it (bit 3 refused); until then no cleanup,
+    // after a failure or an exception, writes a goal.
     std::function<bool(dxl::PacketIO&, std::string*)>
         activation_configurator;
     // Per-cycle CycleRecords kept for popCycleRecord(), rounded up to a
@@ -122,7 +124,9 @@ class CraneX7 {
   bool activate();
 
   // Direct release: zero goal currents, torque off, watchdogs disarmed.
-  // Best-effort: continues through failures without changing gains.
+  // Best-effort: continues through failures without changing gains. The
+  // zero goal is written only once this activation has verified Drive
+  // Mode bit 3 clear (a goal write could otherwise enable torque).
   bool deactivate();
 
   bool activated() const { return activated_; }
@@ -410,8 +414,9 @@ class CraneX7 {
   dxl::SyncGroup group_;
   bool activated_ = false;
   bool passive_feedback_ready_ = false;
-  // This activation read Drive Mode bit 3 clear on every servo, so a goal
-  // write cannot enable torque (EEPROM, locked while torque is on).
+  // This activation read Drive Mode bit 3 clear on every servo, after the
+  // activation configurator if any, so a goal write cannot enable torque
+  // (EEPROM, locked while torque is on). Cleared by deactivate().
   bool drive_modes_verified_ = false;
   std::atomic<bool> escalated_{false};
   std::atomic<bool> quiesced_{false};

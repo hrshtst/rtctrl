@@ -223,12 +223,17 @@ bool CraneX7::activateSteps() {
   // write.
   if (!writePositionPGain(options_.active_p_gain)) return false;
   if (options_.activation_configurator) {
+    // The callback may rewrite Drive Mode (the parameter loader can), so
+    // the check above no longer holds: no cleanup writes a goal until it
+    // is repeated, whether the callback succeeds, fails or throws.
+    drive_modes_verified_ = false;
     std::string error;
     if (!options_.activation_configurator(io_, &error)) {
       last_error_ = error.empty() ? "activation parameter setup failed"
                                   : error;
       return false;
     }
+    if (!verifyDriveModes()) return false;
   }
 
   for (const auto& joint : config_.joints) {
@@ -358,9 +363,13 @@ bool CraneX7::deactivate() {
   // transactions so a quiesce landing mid-sequence suppresses the
   // remainder; the quiesced cleanup only marks the session inactive.
   bool ok = true;
-  // zero goal currents (relevant in current mode; harmless otherwise)
-  std::vector<bool> zeroed(config_.joints.size(), false);
-  for (std::size_t i = 0; i < config_.joints.size(); ++i) {
+  // zero goal currents (relevant in current mode; harmless otherwise),
+  // but only once this activation read Drive Mode bit 3 clear: before
+  // that, a goal write could itself switch a torque-off servo on, and
+  // torque-off alone is the stop
+  const bool zero_goals = drive_modes_verified_;
+  std::vector<bool> zeroed(config_.joints.size(), !zero_goals);
+  for (std::size_t i = 0; zero_goals && i < config_.joints.size(); ++i) {
     if (quiesced_.load()) break;
     zeroed[i] =
         io_.write16(config_.joints[i].id, reg::kGoalCurrent.addr, 0).ok();
@@ -371,10 +380,10 @@ bool CraneX7::deactivate() {
     const bool off =
         io_.write8(config_.joints[i].id, reg::kTorqueEnable.addr, 0).ok();
     // The firmware Bus Watchdog is a servo's LAST protection: disarm
-    // it only after a CONFIRMED zero + torque-off. A joint whose stop
-    // writes failed must keep its watchdog armed, so the caller's
-    // escalation (bus silence) still stops it — disarming first could
-    // leave a torqued servo with no watchdog (review finding).
+    // it only after a CONFIRMED zero (when one is written) + torque-off.
+    // A joint whose stop writes failed must keep its watchdog armed, so
+    // the caller's escalation (bus silence) still stops it — disarming
+    // first could leave a torqued servo with no watchdog (review finding).
     if (!(zeroed[i] && off)) {
       ok = false;
       continue;
@@ -383,6 +392,7 @@ bool CraneX7::deactivate() {
     ok &= io_.write8(config_.joints[i].id, reg::kBusWatchdog.addr, 0).ok();
   }
   activated_ = false;
+  drive_modes_verified_ = false;  // the session's check ends with it
   return ok && !quiesced_.load();
 }
 

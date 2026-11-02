@@ -217,9 +217,12 @@ firmware, clears previously tripped watchdogs, snaps goals to the
 present posture, and applies soft-start gains. Before any write it
 refuses a servo whose Drive Mode has bit 3 (Torque On by Goal Update,
 firmware v45 and later) set, since the goal snap would switch that
-servo's torque on ahead of the sequence; until that check passes, a
-failure releases with torque-off alone, never a goal write. It never
-changes Drive Mode. Command writers clamp
+servo's torque on ahead of the sequence. An activation configurator
+(the motor parameter loader can write Drive Mode) voids that check, so
+Drive Mode is checked again after it. Until the check holds, cleanup
+after a failure or an exception (activation's own release, or
+`deactivate()`) writes torque-off alone, never a goal. Activation's own
+steps never change Drive Mode. Command writers clamp
 against position/velocity/effort limits and reject mode-mismatched or
 feedback-less commands. All of it is asserted in tests whose
 acceptance criterion is the *emulated motor's end state*, and was

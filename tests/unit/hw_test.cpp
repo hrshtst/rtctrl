@@ -6,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 
 #include "rtctrl/arm/real_arm.hpp"
@@ -268,6 +269,90 @@ TEST_CASE("activation configurator failure releases every servo",
   for (const auto& joint : config.joints) {
     CHECK(bus.find(joint.id)->peek(reg::kTorqueEnable) == 0);
   }
+}
+
+namespace {
+
+// Checks every servo's torque after each write, so a torque-on that a
+// later torque-off hides is still seen.
+class TorqueWatchIO : public emu::FakePacketIO {
+ public:
+  explicit TorqueWatchIO(emu::MotorBus& bus)
+      : emu::FakePacketIO(bus), bus_(bus) {}
+  dxl::IoResult write(std::uint8_t id, std::uint16_t addr,
+                      const std::uint8_t* data, std::uint16_t len) override {
+    const auto r = emu::FakePacketIO::write(id, addr, data, len);
+    observe();
+    return r;
+  }
+  dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
+                          const std::vector<std::uint8_t>& ids,
+                          const std::vector<std::uint8_t>& data) override {
+    const auto r = emu::FakePacketIO::syncWrite(addr, len, ids, data);
+    observe();
+    return r;
+  }
+  bool torque_seen = false;
+
+ private:
+  void observe() {
+    for (std::uint8_t id = 2; id <= 9; ++id) {
+      if (bus_.find(id)->peek(reg::kTorqueEnable) != 0) torque_seen = true;
+    }
+  }
+  emu::MotorBus& bus_;
+};
+
+}  // namespace
+
+TEST_CASE("an activation configurator that sets Torque On by Goal Update "
+          "never gets torque enabled",
+          "[hw][parameters][safety]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config, 45);
+  TorqueWatchIO io(bus);
+  hw::CraneX7::Options options;
+  // The parameter loader may write Drive Mode; this one sets bit 3 on id
+  // 2 after the activation's own check, then ends in each way it can.
+  enum class Ending { kSuccess, kFailure, kException };
+  Ending ending = Ending::kSuccess;
+  options.activation_configurator = [&ending](dxl::PacketIO& packet,
+                                              std::string* error) {
+    if (!packet.write8(2, reg::kDriveMode.addr,
+                       dxl::kDriveModeTorqueOnByGoalUpdate)
+             .ok()) {
+      return false;
+    }
+    if (ending == Ending::kException) {
+      throw std::runtime_error("configurator exception");
+    }
+    if (ending == Ending::kFailure) {
+      *error = "configurator failed after the Drive Mode write";
+      return false;
+    }
+    return true;
+  };
+  hw::CraneX7 arm(io, config, options);
+
+  SECTION("success: the recheck refuses before the goal snap") {
+    CHECK_FALSE(arm.activate());
+    CHECK(arm.lastError().find("id 2 has Drive Mode 8") != std::string::npos);
+  }
+  SECTION("failure: the release writes no goal") {
+    ending = Ending::kFailure;
+    CHECK_FALSE(arm.activate());
+    CHECK(arm.lastError() == "configurator failed after the Drive Mode write");
+  }
+  SECTION("exception: RealArm's deactivate writes no goal") {
+    ending = Ending::kException;
+    rtctrl::arm::RealArm real(arm);
+    CHECK_FALSE(real.activate());
+  }
+  CHECK_FALSE(arm.activated());
+  CHECK_FALSE(io.torque_seen);
+  // Refused, never changed.
+  CHECK(bus.find(2)->peek(reg::kDriveMode) ==
+        dxl::kDriveModeTorqueOnByGoalUpdate);
 }
 
 TEST_CASE("activation fails on firmware without Bus Watchdog", "[hw]") {

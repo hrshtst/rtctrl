@@ -679,7 +679,9 @@ An optional `motor_parameters` input accepts the versioned TOML produced by
 remove `operating_mode`: `control.mode` owns that register. Unknown motor IDs
 are refused before bus contact. During activation the batch is applied and
 read back transactionally while every servo is torque-off; incomplete rollback
-aborts activation. The bundle copies this exact parameter input.
+aborts activation. Activation then checks Drive Mode again and refuses a
+`drive_mode` with bit 3 (Torque On by Goal Update) set, since its goal snap
+would switch torque on early. The bundle copies this exact parameter input.
 
 After completing the hardware bring-up checklist and reviewing the simulation
 log, use position mode for the first hardware trial:
