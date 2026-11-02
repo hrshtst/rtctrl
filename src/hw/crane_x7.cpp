@@ -69,9 +69,33 @@ bool CraneX7::verifyServos() {
   return true;
 }
 
+// Torque On by Goal Update (Drive Mode bit 3, firmware v45+) switches a
+// torque-off servo on at any goal write, which would move torque-on from
+// the end of activation to its goal snap. Refused, never changed.
+bool CraneX7::verifyDriveModes() {
+  for (const auto& joint : config_.joints) {
+    std::uint8_t drive_mode = 0;
+    if (!io_.read8(joint.id, reg::kDriveMode.addr, &drive_mode).ok()) {
+      last_error_ = "cannot read Drive Mode of id " + std::to_string(joint.id);
+      return false;
+    }
+    if ((drive_mode & dxl::kDriveModeTorqueOnByGoalUpdate) != 0) {
+      last_error_ = "id " + std::to_string(joint.id) + " has Drive Mode " +
+                    std::to_string(drive_mode) +
+                    " with bit 3 (Torque On by Goal Update) set: a goal "
+                    "write would enable torque before activation does. "
+                    "Clear bit 3 with torque off, then retry";
+      return false;
+    }
+  }
+  drive_modes_verified_ = true;
+  return true;
+}
+
 bool CraneX7::activate() {
   if (activated_) return true;
   passive_feedback_ready_ = false;
+  drive_modes_verified_ = false;
   const bool current_based_position = std::all_of(
       config_.joints.begin(), config_.joints.end(),
       [](const auto& joint) { return joint.operating_mode == 5; });
@@ -149,14 +173,18 @@ bool CraneX7::readPassiveFeedback(std::vector<dxl::Feedback>& out) {
 
 void CraneX7::bestEffortRelease() {
   for (const auto& joint : config_.joints) {
-    io_.write16(joint.id, reg::kGoalCurrent.addr, 0);
+    // Until Drive Mode is verified, a goal write could itself enable
+    // torque: torque off alone releases the servo.
+    if (drive_modes_verified_) {
+      io_.write16(joint.id, reg::kGoalCurrent.addr, 0);
+    }
     io_.write8(joint.id, reg::kTorqueEnable.addr, 0);
     io_.write8(joint.id, reg::kBusWatchdog.addr, 0);
   }
 }
 
 bool CraneX7::activateSteps() {
-  if (!verifyServos()) return false;
+  if (!verifyServos() || !verifyDriveModes()) return false;
 
   // EEPROM-side setup requires torque off; a previously triggered Bus
   // Watchdog (reads 0xFF, rejects goal writes) must be cleared before

@@ -214,7 +214,12 @@ Two independent watchdog layers, because each alone has a blind spot:
 
 The activation sequence additionally verifies servo models and
 firmware, clears previously tripped watchdogs, snaps goals to the
-present posture, and applies soft-start gains. Command writers clamp
+present posture, and applies soft-start gains. Before any write it
+refuses a servo whose Drive Mode has bit 3 (Torque On by Goal Update,
+firmware v45 and later) set, since the goal snap would switch that
+servo's torque on ahead of the sequence; until that check passes, a
+failure releases with torque-off alone, never a goal write. It never
+changes Drive Mode. Command writers clamp
 against position/velocity/effort limits and reject mode-mismatched or
 feedback-less commands. All of it is asserted in tests whose
 acceptance criterion is the *emulated motor's end state*, and was

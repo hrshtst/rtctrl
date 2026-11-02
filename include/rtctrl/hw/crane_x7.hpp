@@ -116,7 +116,9 @@ class CraneX7 {
   // a gravity current. Returns false (with lastError()) on any
   // mismatch — and a mid-sequence failure best-effort releases every
   // servo the sequence may already have touched (no partially torqued
-  // arm).
+  // arm). It refuses, before any write, a servo whose Drive Mode has
+  // bit 3 (Torque On by Goal Update) set: its goal snap would enable
+  // torque ahead of the sequence. It never changes Drive Mode.
   bool activate();
 
   // Direct release: zero goal currents, torque off, watchdogs disarmed.
@@ -361,6 +363,7 @@ class CraneX7 {
 
  private:
   bool verifyServos();
+  bool verifyDriveModes();
   bool activateSteps();
   void bestEffortRelease();
   bool requireMode(std::uint8_t mode, const char* what);
@@ -407,6 +410,9 @@ class CraneX7 {
   dxl::SyncGroup group_;
   bool activated_ = false;
   bool passive_feedback_ready_ = false;
+  // This activation read Drive Mode bit 3 clear on every servo, so a goal
+  // write cannot enable torque (EEPROM, locked while torque is on).
+  bool drive_modes_verified_ = false;
   std::atomic<bool> escalated_{false};
   std::atomic<bool> quiesced_{false};
   std::function<double()> now_;

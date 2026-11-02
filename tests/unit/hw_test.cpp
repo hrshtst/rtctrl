@@ -121,6 +121,81 @@ TEST_CASE("passive feedback disables torque without activation side effects",
   }
 }
 
+TEST_CASE("activation refuses Torque On by Goal Update before any goal "
+          "write",
+          "[hw][safety]") {
+  const auto config = craneConfig();
+  // Goal sentinels: a goal write of any kind, which bit 3 would turn into
+  // a torque-on, overwrites one of them.
+  const auto mark = [](emu::MotorBus& bus) {
+    for (std::uint8_t id = 2; id <= 9; ++id) {
+      bus.find(id)->poke(reg::kGoalCurrent, 77);
+      bus.find(id)->poke(reg::kGoalPosition, 1000 + id);
+    }
+  };
+  const auto untouched = [](emu::MotorBus& bus) {
+    for (std::uint8_t id = 2; id <= 9; ++id) {
+      CAPTURE(id);
+      CHECK(bus.find(id)->peek(reg::kTorqueEnable) == 0);
+      CHECK(bus.find(id)->peek(reg::kGoalCurrent) == 77);
+      CHECK(bus.find(id)->peek(reg::kGoalPosition) == 1000u + id);
+    }
+  };
+
+  SECTION("bit 3 on one servo refuses with no goal write anywhere") {
+    auto bus = busFor(config, 45);
+    mark(bus);
+    bus.find(7)->poke(reg::kDriveMode, dxl::kDriveModeTorqueOnByGoalUpdate);
+    emu::FakePacketIO io(bus);
+    hw::CraneX7 arm(io, config);
+    CHECK_FALSE(arm.activate());
+    CHECK_FALSE(arm.activated());
+    CHECK(arm.lastError().find("id 7 has Drive Mode 8") != std::string::npos);
+    CHECK(arm.lastError().find("Torque On by Goal Update") !=
+          std::string::npos);
+    untouched(bus);
+    // Refused, never changed.
+    CHECK(bus.find(7)->peek(reg::kDriveMode) ==
+          dxl::kDriveModeTorqueOnByGoalUpdate);
+  }
+
+  SECTION("a failure before the check releases without a goal write") {
+    // id 9 is missing, so verification stops before Drive Mode is read;
+    // the release must not write a goal to id 2, which has bit 3 set.
+    emu::MotorBus bus;
+    for (const auto& joint : config.joints) {
+      if (joint.id == 9) continue;
+      emu::MotorEmulator::Config c;
+      c.id = joint.id;
+      c.model_number = joint.model_number;
+      c.firmware_version = 45;
+      bus.add(c);
+    }
+    for (std::uint8_t id = 2; id <= 8; ++id) {
+      bus.find(id)->poke(reg::kGoalCurrent, 77);
+    }
+    bus.find(2)->poke(reg::kDriveMode, dxl::kDriveModeTorqueOnByGoalUpdate);
+    emu::FakePacketIO io(bus);
+    hw::CraneX7 arm(io, config);
+    CHECK_FALSE(arm.activate());
+    CHECK(arm.lastError().find("no response from id 9") != std::string::npos);
+    for (std::uint8_t id = 2; id <= 8; ++id) {
+      CAPTURE(id);
+      CHECK(bus.find(id)->peek(reg::kTorqueEnable) == 0);
+      CHECK(bus.find(id)->peek(reg::kGoalCurrent) == 77);
+    }
+  }
+
+  SECTION("bit 3 clear on firmware v45 activates as before") {
+    auto bus = busFor(config, 45);
+    bus.find(7)->poke(reg::kDriveMode, 0x04);  // another bit only
+    emu::FakePacketIO io(bus);
+    hw::CraneX7 arm(io, config);
+    REQUIRE(arm.activate());
+    REQUIRE(arm.deactivate());
+  }
+}
+
 TEST_CASE("passive feedback refuses an active arm", "[hw][safety]") {
   const auto config = craneConfig();
   auto bus = busFor(config);
