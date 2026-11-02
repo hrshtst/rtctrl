@@ -34,11 +34,20 @@ struct HomeConfig {
   double tolerance_rad = 0.01;
   int correction_retries = 5;
   double settle_time_s = 0.3;
-  // Set at run time (never from TOML) for references built from the
-  // measured posture: the run refuses, before any motion command, when
-  // the arm's start is farther than this from the reference's first
-  // frame on any joint, so such a run can never home.
-  std::optional<double> max_distance_rad;
+};
+
+// Set at run time (never from TOML) for references built from the
+// measured posture (follow/posture_reference.hpp). Such a run never homes
+// or corrects: it has no Home or HomeCorrection phase, and every command
+// is the reference itself, or after a refusal or abort the measured
+// posture.
+struct PostureRunConfig {
+  // Refused before any command when the arm's start is farther than this
+  // from the reference's first frame on any joint.
+  double start_tolerance_rad = 0.0;
+  // Tracking aborts, holding where the arm is, once any joint is this far
+  // from the reference.
+  double abort_error_rad = 0.0;
 };
 
 struct SimulationConfig {
@@ -83,6 +92,7 @@ struct Config {
   std::array<double, model::kCanonicalDof> effort_limit_nm{};
   bool effort_limit_set = false;
   HomeConfig home;
+  std::optional<PostureRunConfig> posture;
   model::ZvsTrajectoryOptions reference;
   SimulationConfig simulation;
   SafetyConfig safety;

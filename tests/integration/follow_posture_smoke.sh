@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Hardware x7_follow over dxl_emu with references built from the measured
-# posture: a hold and a wrist sweep complete without homing, the generated
+# posture: a hold and a wrist sweep complete with no homing or correction
+# cycle at all, the generated
 # reference is archived next to the log, and the refusals happen before
 # the bus is touched.
 set -eu
@@ -42,6 +43,13 @@ run() {
   fi
   grep -q '^follow hardware: success' "$ROOT/$name.log"
   test -f "$ROOT/$name.csv.reference.zvs"
+  # Never homed: the first command is a tracking one, and no row is a
+  # homing or home-correction cycle.
+  test "$(sed -n 2p "$ROOT/$name.csv" | cut -d, -f3)" = tracking
+  if cut -d, -f3 "$ROOT/$name.csv" | grep -qx 'home\|home_correction'; then
+    echo "x7_follow $name homed"
+    exit 1
+  fi
 }
 
 run hold --hold-current 1

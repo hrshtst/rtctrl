@@ -36,7 +36,8 @@ enum class RunStatus {
   HomeNotConverged,
   TrackingError,
   OperatorTimeout,
-  HomeRefused
+  HomeRefused,
+  PostureDeparture
 };
 
 inline const char* statusName(RunStatus status) {
@@ -47,6 +48,7 @@ inline const char* statusName(RunStatus status) {
     case RunStatus::TrackingError: return "tracking_error";
     case RunStatus::OperatorTimeout: return "operator_timeout";
     case RunStatus::HomeRefused: return "home_refused";
+    case RunStatus::PostureDeparture: return "posture_departure";
   }
   return "unknown";
 }
@@ -189,21 +191,21 @@ class FollowRun {
 
     model::ZVector home(model::kCanonicalDof);
     reference_.sample(0.0, home.get());
-    if (config_.home.max_distance_rad) {
+    if (config_.posture) {
       double distance = 0.0;
       for (int i = 0; i < model::kCanonicalDof; ++i) {
         distance = std::max(distance, std::fabs(initial.q[i] - home[i]));
       }
       result.worst_home_error_rad = distance;
-      if (!(distance <= *config_.home.max_distance_rad)) {
+      if (!(distance <= config_.posture->start_tolerance_rad)) {
         // Hold where the arm is: no homing motion is ever commanded.
         result.status = RunStatus::HomeRefused;
         finalize(Phase::AbortHold, initial.q.get(), &result);
         result.cycles = cycles_;
         return result;
       }
-    }
-    if (!moveHome(initial.q.get(), home.get(), &result)) {
+      // No homing and no correction: tracking starts at the arm's posture.
+    } else if (!moveHome(initial.q.get(), home.get(), &result)) {
       result.status = result.status == RunStatus::IoFailure
                           ? RunStatus::IoFailure
                           : RunStatus::HomeNotConverged;
@@ -213,7 +215,8 @@ class FollowRun {
     }
 
     if (!trackReference(&result)) {
-      if (result.status == RunStatus::TrackingError) {
+      if (result.status == RunStatus::TrackingError ||
+          result.status == RunStatus::PostureDeparture) {
         finalize(Phase::AbortHold, last_state_.q.get(), &result);
       }
       result.cycles = cycles_;
@@ -408,6 +411,14 @@ class FollowRun {
       if (worst > result->worst_tracking_error_rad) {
         result->worst_tracking_error_rad = worst;
         result->worst_joint = worst_joint;
+      }
+      if (config_.posture && worst >= config_.posture->abort_error_rad) {
+        std::fprintf(stderr,
+                     "posture departure: joint %d is %.4f rad from the "
+                     "reference; holding where the arm is\n",
+                     worst_joint, worst);
+        result->status = RunStatus::PostureDeparture;
+        return false;
       }
       if (worst >= config_.safety.warning_error_rad &&
           !result->tracking_warning) {

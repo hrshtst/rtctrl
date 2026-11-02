@@ -716,9 +716,13 @@ configured reference with one built from the posture the arm is resting in.
 The posture is read torque-off before activation. The hold keeps it; the sweep
 moves one canonical arm joint (0 to 6) out by AMPLITUDE radians and back along
 two minimum-jerk halves of DURATION/2 seconds each. Both references start
-exactly at the measured posture, so the run needs no homing: it refuses before
-any motion command if the arm has moved more than 0.005 rad from that posture
-by the time tracking would begin (status `home_refused`). The generated
+exactly at the measured posture, so the run never homes or corrects: there is
+no homing or home-correction cycle, and every command is the reference itself.
+It refuses before any motion command if the arm has moved more than 0.005 rad
+from that posture by the time tracking would begin (status `home_refused`),
+and it aborts tracking, holding where the arm is, once any joint is 0.05 rad
+from the reference (status `posture_departure`; a provisional bound, tighter
+than the general `[safety]` gates). The generated
 reference is written to `<log>.reference.zvs` (an existing file is refused) and
 validated like any reference before torque-on. It requires `filter = none`,
 since a filtered reference would no longer start at the posture. These modes

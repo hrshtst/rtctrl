@@ -1,10 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -126,7 +128,7 @@ TEST_CASE("a posture-matched run refuses before any motion if the arm "
   IdealArm robot(arm::ControlMode::Position);
   REQUIRE(robot.activate());
   auto config = baseConfig(arm::ControlMode::Position);
-  config.home.max_distance_rad = 0.005;
+  config.posture = follow::PostureRunConfig{0.005, 0.05};
   follow::FollowRun run(robot, reference, config, true);
   const auto result = run.run();
   CHECK(result.status == follow::RunStatus::HomeRefused);
@@ -154,11 +156,135 @@ TEST_CASE("a posture-matched run proceeds without homing when the arm is "
   IdealArm robot(arm::ControlMode::Position);
   REQUIRE(robot.activate());
   auto config = baseConfig(arm::ControlMode::Position);
-  config.home.max_distance_rad = 0.005;
+  config.posture = follow::PostureRunConfig{0.005, 0.05};
   follow::FollowRun run(robot, reference, config, true);
   const auto result = run.run();
   CHECK(result.status == follow::RunStatus::Success);
   CHECK(result.worst_home_error_rad <= 0.005);
+  std::remove(path.c_str());
+}
+
+namespace {
+
+std::string matchedReferenceFile(const std::string& path) {
+  std::ofstream out(path);
+  for (int frame = 0; frame < 20; ++frame) {
+    out << "0.02 8 (0 0 0 0 0 0 0 0 )\n";
+  }
+  return path;
+}
+
+// Reports the commanded posture plus a displacement on joint 0 from the
+// given step on: something moved the arm after the start check passed.
+class DisplacedArm : public IdealArm {
+ public:
+  DisplacedArm(int from_step, double displacement)
+      : IdealArm(arm::ControlMode::Position),
+        from_step_(from_step),
+        displacement_(displacement) {}
+  bool readState(arm::JointState& state,
+                 arm::CommandSnapshot* snapshot = nullptr) override {
+    if (!IdealArm::readState(state, snapshot)) return false;
+    if (steps_ >= from_step_) state.q[0] += displacement_;
+    return true;
+  }
+  bool step() override {
+    ++steps_;
+    return IdealArm::step();
+  }
+
+ private:
+  int from_step_;
+  double displacement_;
+  int steps_ = 0;
+};
+
+struct CommandRecorder : follow::CycleSink {
+  bool record(const follow::CycleRecord& cycle) override {
+    phases.push_back(cycle.phase);
+    std::array<double, model::kCanonicalDof> c{}, r{}, q{};
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      c[i] = cycle.command->q[i];
+      r[i] = (*cycle.reference_q)[i];
+      q[i] = cycle.state->q[i];
+    }
+    commands.push_back(c);
+    references.push_back(r);
+    measured.push_back(q);
+    return true;
+  }
+  std::vector<follow::Phase> phases;
+  std::vector<std::array<double, model::kCanonicalDof>> commands,
+      references, measured;
+};
+
+}  // namespace
+
+TEST_CASE("a posture run commands only the reference, never a homing "
+          "correction",
+          "[follow][run][posture][safety]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto path = matchedReferenceFile("build/follow_run_posture.zvs");
+  model::ZvsTrajectory reference(path, map);
+  // Matched exactly at the start, then displaced 0.02 rad: a homing pass
+  // would correct for it with a 0.02 rad command offset.
+  DisplacedArm robot(2, 0.02);
+  REQUIRE(robot.activate());
+  auto config = baseConfig(arm::ControlMode::Position);
+  config.posture = follow::PostureRunConfig{0.005, 0.05};
+  CommandRecorder sink;
+  follow::FollowRun run(robot, reference, config, true, &sink);
+  const auto result = run.run();
+  CHECK(result.status == follow::RunStatus::Success);
+  CHECK(result.worst_tracking_error_rad == 0.02);
+  REQUIRE_FALSE(sink.phases.empty());
+  CHECK(sink.phases.front() == follow::Phase::Tracking);
+  for (std::size_t k = 0; k < sink.phases.size(); ++k) {
+    CAPTURE(k);
+    CHECK(sink.phases[k] != follow::Phase::Home);
+    CHECK(sink.phases[k] != follow::Phase::HomeCorrection);
+    // The command is the reference itself: no offset of any size.
+    CHECK(sink.commands[k] == sink.references[k]);
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("a posture run aborts and holds where the arm is once it departs "
+          "from the reference",
+          "[follow][run][posture][safety]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto path = matchedReferenceFile("build/follow_run_departure.zvs");
+  model::ZvsTrajectory reference(path, map);
+  DisplacedArm robot(3, 0.06);
+  REQUIRE(robot.activate());
+  auto config = baseConfig(arm::ControlMode::Position);
+  config.posture = follow::PostureRunConfig{0.005, 0.05};
+  CommandRecorder sink;
+  follow::FollowRun run(robot, reference, config, true, &sink);
+  const auto result = run.run();
+  CHECK(result.status == follow::RunStatus::PostureDeparture);
+  CHECK(std::string(follow::statusName(result.status)) ==
+        "posture_departure");
+  CHECK(result.worst_tracking_error_rad == 0.06);
+  REQUIRE_FALSE(sink.phases.empty());
+  CHECK(sink.phases.back() == follow::Phase::AbortHold);
+  bool held = false;
+  for (std::size_t k = 0; k < sink.phases.size(); ++k) {
+    CAPTURE(k);
+    CHECK(sink.phases[k] != follow::Phase::Home);
+    CHECK(sink.phases[k] != follow::Phase::HomeCorrection);
+    if (sink.phases[k] == follow::Phase::Tracking) {
+      CHECK(sink.commands[k] == sink.references[k]);
+    } else {
+      // The abort holds the measured, displaced posture.
+      REQUIRE(sink.phases[k] == follow::Phase::AbortHold);
+      CHECK(sink.commands[k][0] == 0.06);
+      held = true;
+    }
+  }
+  CHECK(held);
   std::remove(path.c_str());
 }
 

@@ -3,12 +3,14 @@
 // A hold (--hold-current SECONDS) keeps the posture read before
 // activation; a sweep (--sweep-current JOINT:AMPLITUDE:DURATION) moves one
 // canonical arm joint out by AMPLITUDE and back along two minimum-jerk
-// halves. Both start exactly at the measured posture, so following them
-// needs no homing: the run sets HomeConfig::max_distance_rad to
-// kPostureMatchToleranceRad and refuses, before any motion command, if the
-// arm has moved away from that posture in the meantime. The generated
-// reference is written as a .zvs next to the run log, so it is archived
-// with the run like any other reference.
+// halves. Both start exactly at the measured posture, so the run never
+// homes or corrects (Config::posture): every command is the reference
+// itself. It refuses, before any motion command, if the arm has moved more
+// than kPostureMatchToleranceRad from that posture in the meantime, and
+// aborts tracking, holding where the arm is, once any joint is
+// kPostureDepartureAbortRad from the reference. The generated reference
+// is written as a .zvs next to the run log, so it is archived with the run
+// like any other reference.
 #pragma once
 
 #include <array>
@@ -26,6 +28,11 @@ namespace x7::follow {
 
 // About three encoder ticks (1.53 mrad each).
 inline constexpr double kPostureMatchToleranceRad = 0.005;
+// Provisional, pending review: an arm that holds or sweeps from its own
+// posture has no reason to be 0.05 rad (about 2.9 degrees) off the
+// reference; the general follow gates (0.2 rad warning, 1.0 rad immediate
+// abort) are sized for homing and long trajectories.
+inline constexpr double kPostureDepartureAbortRad = 0.05;
 inline constexpr double kPostureFrameS = 0.01;
 
 struct PostureReference {

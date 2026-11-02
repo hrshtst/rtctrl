@@ -227,7 +227,9 @@ int main(int argc, char* argv[]) {
         reference = std::make_unique<model::ZvsTrajectory>(
             posture_path.string(), map, config.reference);
         follow::validateReference(config, chain, map, *reference, hardware);
-        config.home.max_distance_rad = follow::kPostureMatchToleranceRad;
+        config.posture = follow::PostureRunConfig{
+            follow::kPostureMatchToleranceRad,
+            follow::kPostureDepartureAbortRad};
         std::printf("posture reference: %s (%s)\n",
                     follow::describePostureReference(*posture).c_str(),
                     posture_path.c_str());
