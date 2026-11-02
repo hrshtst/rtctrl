@@ -56,7 +56,8 @@ completion comes from a calibration run's acknowledged read (below).
 - Never position the arm at a rate that has not qualified. Powered steps at a
   new rate start from the measured posture (`--hold-current`,
   `--sweep-current`): such a run never homes or corrects, and aborts once a
-  joint is 0.05 rad from the reference (`posture_departure`, provisional).
+  joint's fresh feedback is 0.05 rad from the reference it would be commanded
+  (`posture_departure`, provisional), holding that sample's posture.
 - **Stop rule.** Stop on any escalation or `DEADMAN`, any abort, oscillation,
   chatter, unexpected motion, or a failed criterion. Record it, do not retry
   that rate in the session, and change no limit before the analysis.

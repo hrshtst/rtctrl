@@ -215,9 +215,13 @@ class FollowRun {
     }
 
     if (!trackReference(&result)) {
-      if (result.status == RunStatus::TrackingError ||
-          result.status == RunStatus::PostureDeparture) {
+      if (result.status == RunStatus::TrackingError) {
         finalize(Phase::AbortHold, last_state_.q.get(), &result);
+      } else if (result.status == RunStatus::PostureDeparture) {
+        // The hold starts in the cycle whose feedback departed, at that
+        // feedback's posture: no reference is commanded from it.
+        finalize(Phase::AbortHold, feedback_.state.q.get(), &result,
+                 &feedback_);
       }
       result.cycles = cycles_;
       return result;
@@ -235,6 +239,12 @@ class FollowRun {
   }
 
  private:
+  // One cycle's feedback, read before that cycle's command is written.
+  struct Feedback {
+    arm::JointState state;
+    arm::CommandSnapshot snapshot;
+  };
+
   void storeState(const arm::JointState& source) {
     zVecCopyNC(source.q.get(), last_state_.q.get());
     zVecCopyNC(source.dq.get(), last_state_.dq.get());
@@ -269,29 +279,67 @@ class FollowRun {
     }
   }
 
-  bool submit(Phase phase, double phase_time, const model::ZVector& qref,
-              const model::ZVector& dqref, const model::ZVector& ddqref,
-              const model::ZVector* command_q = nullptr) {
-    arm::JointState state;
-    arm::CommandSnapshot snapshot;
-    if (!robot_.readState(state, &snapshot)) return false;
-    storeState(state);
+  bool acquire(Phase phase, Feedback* feedback) {
+    if (!robot_.readState(feedback->state, &feedback->snapshot)) return false;
+    storeState(feedback->state);
     if (phase == Phase::Tracking && !tracking_started_) {
       tracking_started_ = true;
-      if (tracking_start_hook_) tracking_start_hook_(state);
+      if (tracking_start_hook_) tracking_start_hook_(feedback->state);
     }
+    return true;
+  }
+
+  // Writes, records and steps the command of the cycle `feedback` opened.
+  bool send(Phase phase, double phase_time, const Feedback& feedback,
+            const model::ZVector& qref, const model::ZVector& dqref,
+            const model::ZVector& ddqref, const model::ZVector& command_q) {
     arm::JointCommand command;
-    fillCommand(command_q != nullptr ? *command_q : qref, &command);
+    fillCommand(command_q, &command);
     arm::CommandReceipt receipt;
     if (!robot_.writeCommand(command, &receipt)) return false;
     ++cycles_;
     if (sink_ != nullptr &&
-        !sink_->record({phase, state.t - global_origin_, phase_time, &state,
-                        &command, &qref, &dqref, &ddqref, &snapshot,
-                        &receipt})) {
+        !sink_->record({phase, feedback.state.t - global_origin_, phase_time,
+                        &feedback.state, &command, &qref, &dqref, &ddqref,
+                        &feedback.snapshot, &receipt})) {
       return false;
     }
     return robot_.step();
+  }
+
+  bool submit(Phase phase, double phase_time, const model::ZVector& qref,
+              const model::ZVector& dqref, const model::ZVector& ddqref,
+              const model::ZVector* command_q = nullptr) {
+    Feedback feedback;
+    if (!acquire(phase, &feedback)) return false;
+    return send(phase, phase_time, feedback, qref, dqref, ddqref,
+                command_q != nullptr ? *command_q : qref);
+  }
+
+  // A posture run's gate, on the feedback just read and before the
+  // reference q is commanded from it.
+  bool postureDeparted(const arm::JointState& state, const model::ZVector& q,
+                       RunResult* result) const {
+    double worst = 0.0;
+    int worst_joint = -1;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      const double error = std::fabs(state.q[i] - q[i]);
+      if (error > worst) {
+        worst = error;
+        worst_joint = i;
+      }
+    }
+    if (worst < config_.posture->abort_error_rad) return false;
+    if (worst > result->worst_tracking_error_rad) {
+      result->worst_tracking_error_rad = worst;
+      result->worst_joint = worst_joint;
+    }
+    std::fprintf(stderr,
+                 "posture departure: joint %d is %.4f rad from the "
+                 "reference; holding where the arm is\n",
+                 worst_joint, worst);
+    result->status = RunStatus::PostureDeparture;
+    return true;
   }
 
   bool runPtp(Phase phase, const zVec start, const zVec goal) {
@@ -412,14 +460,6 @@ class FollowRun {
         result->worst_tracking_error_rad = worst;
         result->worst_joint = worst_joint;
       }
-      if (config_.posture && worst >= config_.posture->abort_error_rad) {
-        std::fprintf(stderr,
-                     "posture departure: joint %d is %.4f rad from the "
-                     "reference; holding where the arm is\n",
-                     worst_joint, worst);
-        result->status = RunStatus::PostureDeparture;
-        return false;
-      }
       if (worst >= config_.safety.warning_error_rad &&
           !result->tracking_warning) {
         result->tracking_warning = true;
@@ -435,21 +475,36 @@ class FollowRun {
         result->status = RunStatus::TrackingError;
         return false;
       }
-      if (!submit(Phase::Tracking, t, q, dq, ddq)) return false;
+      if (config_.posture) {
+        if (!acquire(Phase::Tracking, &feedback_)) return false;
+        if (postureDeparted(feedback_.state, q, result)) return false;
+        if (!send(Phase::Tracking, t, feedback_, q, dq, ddq, q)) return false;
+      } else if (!submit(Phase::Tracking, t, q, dq, ddq)) {
+        return false;
+      }
     }
     return true;
   }
 
-  bool finalize(Phase phase, const zVec hold, RunResult* result) {
+  // `first`, when given, is the feedback of the hold's first cycle,
+  // already read: that cycle is answered with the hold before anything
+  // else, operator input included.
+  bool finalize(Phase phase, const zVec hold, RunResult* result,
+                const Feedback* first = nullptr) {
     model::ZVector q(model::kCanonicalDof), zero(model::kCanonicalDof),
         ddq(model::kCanonicalDof);
     zVecCopyNC(hold, q.get());
+    long start = 0;
+    if (first != nullptr) {
+      if (!send(phase, 0.0, *first, q, zero, ddq, q)) return false;
+      start = 1;
+    }
     if (simulation_) {
       const double duration = config_.finalization.wait_time_s > 0.0
                                   ? config_.finalization.wait_time_s
                                   : config_.finalization.simulation_hold_time_s;
       const long cycles = static_cast<long>(std::ceil(duration / robot_.dt()));
-      for (long i = 0; i < cycles; ++i) {
+      for (long i = start; i < cycles; ++i) {
         if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q)) {
           return false;
         }
@@ -469,7 +524,7 @@ class FollowRun {
                                               : "run aborted",
                    deadline);
     }
-    for (long i = 0; i < cycles; ++i) {
+    for (long i = start; i < cycles; ++i) {
       if (interactive && enter_pressed_ && enter_pressed_()) return true;
       if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q)) {
         return false;
@@ -491,6 +546,7 @@ class FollowRun {
   std::function<void(const arm::JointState&)> tracking_start_hook_;
   bool tracking_started_ = false;
   arm::JointState last_state_;
+  Feedback feedback_;  // a posture run's current cycle
   double global_origin_ = 0.0;
   std::uint64_t cycles_ = 0;
 };

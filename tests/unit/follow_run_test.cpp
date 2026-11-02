@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -285,6 +286,55 @@ TEST_CASE("a posture run aborts and holds where the arm is once it departs "
     }
   }
   CHECK(held);
+  std::remove(path.c_str());
+}
+
+TEST_CASE("a posture run commands no reference from feedback already beyond "
+          "the abort bound",
+          "[follow][run][posture][safety]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto path = matchedReferenceFile("build/follow_run_fresh_gate.zvs");
+  model::ZvsTrajectory reference(path, map);
+  // The fourth tracking read is the first displaced one; a sample at the
+  // bound itself is beyond it.
+  for (const double displacement : {0.06, 0.05}) {
+    CAPTURE(displacement);
+    DisplacedArm robot(3, displacement);
+    REQUIRE(robot.activate());
+    auto config = baseConfig(arm::ControlMode::Position);
+    config.posture = follow::PostureRunConfig{0.005, 0.05};
+    config.finalization.wait_time_s = 0.05;  // five hold cycles in all
+    CommandRecorder sink;
+    follow::FollowRun run(robot, reference, config, true, &sink);
+    const auto result = run.run();
+    CHECK(result.status == follow::RunStatus::PostureDeparture);
+    CHECK(result.worst_tracking_error_rad == displacement);
+    std::size_t first_hold = sink.phases.size();
+    for (std::size_t k = 0; k < sink.phases.size(); ++k) {
+      CAPTURE(k);
+      if (sink.phases[k] == follow::Phase::Tracking) {
+        // Every reference command answered feedback inside the bound.
+        REQUIRE(first_hold == sink.phases.size());
+        double error = 0.0;
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          error = std::max(error, std::fabs(sink.measured[k][i] -
+                                            sink.references[k][i]));
+        }
+        CHECK(error < 0.05);
+        CHECK(sink.commands[k] == sink.references[k]);
+        continue;
+      }
+      REQUIRE(sink.phases[k] == follow::Phase::AbortHold);
+      if (first_hold == sink.phases.size()) first_hold = k;
+      // The hold is the posture of the sample that triggered it.
+      CHECK(sink.commands[k] == sink.measured[first_hold]);
+    }
+    // The departed sample's own cycle is answered with the hold.
+    REQUIRE(first_hold == 3);
+    CHECK(sink.measured[3][0] == displacement);
+    CHECK(sink.phases.size() == 3 + 5);
+  }
   std::remove(path.c_str());
 }
 

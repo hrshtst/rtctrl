@@ -28,10 +28,11 @@ namespace x7::follow {
 
 // About three encoder ticks (1.53 mrad each).
 inline constexpr double kPostureMatchToleranceRad = 0.005;
-// Provisional, pending review: an arm that holds or sweeps from its own
-// posture has no reason to be 0.05 rad (about 2.9 degrees) off the
-// reference; the general follow gates (0.2 rad warning, 1.0 rad immediate
-// abort) are sized for homing and long trajectories.
+// Provisional (accepted as such at review, 2026-11-02): an arm that holds
+// or sweeps from its own posture has no reason to be 0.05 rad (about 2.9
+// degrees) off the reference; the general follow gates (0.2 rad warning,
+// 1.0 rad immediate abort) are sized for homing and long trajectories.
+// Checked on each feedback sample before a command is made from it.
 inline constexpr double kPostureDepartureAbortRad = 0.05;
 inline constexpr double kPostureFrameS = 0.01;
 

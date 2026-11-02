@@ -728,9 +728,11 @@ exactly at the measured posture, so the run never homes or corrects: there is
 no homing or home-correction cycle, and every command is the reference itself.
 It refuses before any motion command if the arm has moved more than 0.005 rad
 from that posture by the time tracking would begin (status `home_refused`),
-and it aborts tracking, holding where the arm is, once any joint is 0.05 rad
-from the reference (status `posture_departure`; a provisional bound, tighter
-than the general `[safety]` gates). The generated
+and it aborts tracking once any joint is 0.05 rad from the reference (status
+`posture_departure`; a provisional bound, tighter than the general `[safety]`
+gates). That check runs on each feedback sample before the reference is
+commanded from it: the cycle whose feedback departed is answered with a hold at
+that sample's posture, never with the reference. The generated
 reference is written to `<log>.reference.zvs` (an existing file is refused) and
 validated like any reference before torque-on. It requires `filter = none`,
 since a filtered reference would no longer start at the posture. These modes
