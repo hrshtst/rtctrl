@@ -59,4 +59,27 @@ switch = segments.index(2)
 assert switch > 10 and len(rows) - switch > 10, switch
 PY
 
+# The run summary: the verdict, and controller counters that agree
+# exactly with the per-cycle flags of the cycles they cover.
+python3 - "$ROOT/timing.csv" "$ROOT/timing.csv.summary.toml" <<'PY'
+import csv
+import sys
+import tomllib
+
+with open(sys.argv[1], newline="") as stream:
+    rows = list(csv.DictReader(stream))
+with open(sys.argv[2], "rb") as stream:
+    run = tomllib.load(stream)
+assert run["format"] == "rtctrl-cycle-timing-run", run
+assert run["app"] == "x7_track" and run["status"] == "success", run
+assert run["successful"] and run["log_complete"] and not run["escalated"]
+end, final = run["controller_end"], run["final"]
+assert final["cycles"] == len(rows), (final["cycles"], len(rows))
+assert 0 < end["cycles"] <= final["cycles"], end
+flags = [int(r["deadline_miss"]) for r in rows]
+assert sum(flags[:end["cycles"]]) == end["controller_deadline_misses"], end
+assert sum(flags) == final["controller_deadline_misses"], final
+assert end["stale_submissions"] == 0, end
+PY
+
 echo "track timing log OK"

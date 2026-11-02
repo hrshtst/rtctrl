@@ -4,7 +4,9 @@
 Synthetic probe and app timing logs with known stamps: the measured
 intervals, the calibration distribution, the envelope and estimate
 checks, and every criterion's pass and fail are pinned, including the
-classes the report attaches to them.
+classes the report attaches to them. T3 and T4 also need the run summary:
+without it, or when it cannot support a verdict, they are INDETERMINATE,
+never PASS.
 """
 
 import argparse
@@ -35,7 +37,7 @@ APP_HEADER = (
     "controller_wake_ns,submit_ns,limit_start_ns,bus_write_start_ns,"
     "write_return_ns,cycle_end_ns,feedback_seq,applied_target_seq,"
     "applied_source_feedback_seq,skipped_periods,read_ok,write_ok,"
-    "command_kind")
+    "deadline_miss,command_kind")
 
 
 def probe_rows(n, lateness_ns=20_000, skip_at=None, read_fail_at=None):
@@ -59,9 +61,13 @@ def probe_rows(n, lateness_ns=20_000, skip_at=None, read_fail_at=None):
     return PROBE_HEADER, rows
 
 
-def app_rows(n, fallback_at=None, restart_at=None, restart_gap_ns=0):
-    """restart_at: the first cycle of a second thread run (segment 2),
-    which wakes restart_gap_ns later than the period grid."""
+def app_rows(n, fallback_at=(), restart_at=None, restart_gap_ns=0,
+             all_fallbacks=False):
+    """fallback_at: cycles whose window closed unanswered while the
+    controller was armed (deadline misses). Cycle 1 is a fallback before
+    the controller's first submission, which is no miss. restart_at: the
+    first cycle of a second thread run (segment 2), which wakes
+    restart_gap_ns later than the period grid."""
     rows = []
     for k in range(1, n + 1):
         second = restart_at is not None and k >= restart_at
@@ -71,18 +77,19 @@ def app_rows(n, fallback_at=None, restart_at=None, restart_gap_ns=0):
         read_end = read_start + 600_000
         window = read_end + 1_000
         ctrl = window + 50_000
-        fallback = k == fallback_at
+        fallback = k in fallback_at or all_fallbacks
         submit = -1 if fallback else ctrl + 10_000
         limit = window + 1_400_000 if fallback else submit + 20_000
         bus = limit + 2_000
         ret = bus + 30_000
         end = ret + 5_000
         kind = "fallback" if fallback or k == 1 else "fresh"
+        miss = 1 if k in fallback_at else 0
         rows.append([k, 2 if second else 1, sched, wake, read_start,
                      read_start + 20_000,
                      read_start + 400_000, read_end - 3_000, read_end, window,
                      ctrl, submit, limit, bus, ret, end, k + 1, k, k + 1, 0, 1,
-                     1, kind])
+                     1, miss, kind])
     return APP_HEADER, rows
 
 
@@ -93,6 +100,30 @@ def write(header, rows):
         for row in rows:
             handle.write(",".join(str(v) for v in row) + "\n")
     return pathlib.Path(handle.name)
+
+
+def probe_run(cycles, log_complete=True, ring_drops=0):
+    return {"format": "rtctrl-bus-timing", "kind": "production-traffic",
+            "log_complete": log_complete,
+            "result": {"started": True, "error": "", "cycles": cycles,
+                       "ring_drops": ring_drops, "elapsed_s": 2e-3 * cycles}}
+
+
+def app_run(cycles, end=None, misses=0, stale=0, status="success",
+            log_complete=True, timing_drops=0):
+    """end: the cycle count when the controller finished (default: all)."""
+    def counters(n, deadline_misses):
+        return {"cycles": n, "overruns": 0, "skipped_periods": 0,
+                "read_failures": 0, "write_failures": 0,
+                "stale_submissions": stale,
+                "controller_deadline_misses": deadline_misses,
+                "timing_drops": timing_drops}
+    return {"format": "rtctrl-cycle-timing-run", "app": "x7_follow",
+            "status": status, "successful": status == "success",
+            "log_complete": log_complete, "escalated": False,
+            "rate_hz": 500.0,
+            "controller_end": counters(cycles if end is None else end, misses),
+            "final": counters(cycles, misses)}
 
 
 def defaults(**overrides):
@@ -112,7 +143,8 @@ def verdicts(results):
 path = write(*probe_rows(1000))
 kind, data = ts.load(path)
 assert kind == "probe"
-s = ts.summarize(kind, data, 500.0, delta_env_s=0.4e-3, delta_q_s=0.3e-3)
+s = ts.summarize(kind, data, 500.0, delta_env_s=0.4e-3, delta_q_s=0.3e-3,
+                 run=probe_run(1000))
 assert s["cycles"] == 1000 and s["record_gaps"] == 0
 assert abs(s["mean_period_s"] - 2e-3) < 1e-12
 m = s["measured"]
@@ -136,6 +168,16 @@ assert v["T5"] == ("measured", "PASS")
 assert v["T6a"] == ("measured", "PASS")
 assert v["T6b"] == ("envelope", "PASS")
 assert v["T7"] == ("estimated", "PASS")
+assert ts.exit_status(ts.check(s, False, defaults())) == 0
+# Completeness needs the probe's summary: absent, T3 cannot pass.
+s = ts.summarize(kind, data, 500.0, None, None)
+results = ts.check(s, False, defaults())
+assert verdicts(results)["T3"] == ("measured", "INDETERMINATE")
+assert ts.exit_status(results) == 1
+for run in (probe_run(1000, log_complete=False), probe_run(1000, ring_drops=3),
+            probe_run(999)):
+    s = ts.summarize(kind, data, 500.0, None, None, run=run)
+    assert verdicts(ts.check(s, False, defaults()))["T3"][1] == "FAIL", run
 path.unlink()
 
 # Failures: a skip, a read failure, late wakes and a tight envelope.
@@ -145,7 +187,7 @@ kind, data = ts.load(path)
 s = ts.summarize(kind, data, 500.0, delta_env_s=1.5e-3, delta_q_s=None)
 v = verdicts(ts.check(s, False, defaults()))
 assert v["T2"][1] == "FAIL"  # idle allows no skip
-assert v["T3"][1] == "FAIL"
+assert v["T3"][1] == "FAIL"  # an observed failure fails, summary or not
 assert v["T5"][1] == "FAIL"  # 0.6 ms > 0.1 T and > 0.5 T
 assert v["T6b"][1] == "FAIL"
 assert v["T7"] == ("estimated", "n/a")
@@ -154,22 +196,57 @@ assert v["T7"] == ("estimated", "n/a")
 assert ts.check(s, True, defaults())[1][2] == "FAIL"
 path.unlink()
 
-# App logs: fresh commands, the start-of-run fallback, and an in-run miss.
-path = write(*app_rows(200))
-kind, data = ts.load(path)
-assert kind == "app"
-s = ts.summarize(kind, data, 500.0, None, None)
-assert s["fresh"] == 199 and s["in_run_fallbacks"] == 0
+
+def app_t4(rows, run):
+    path = write(*rows)
+    kind, data = ts.load(path)
+    path.unlink()
+    s = ts.summarize(kind, data, 500.0, None, None, run=run)
+    return s, verdicts(ts.check(s, False, defaults()))
+
+
+# App logs: fresh commands and the start-of-run fallback (no miss).
+s, v = app_t4(app_rows(200), app_run(200))
+assert s["fresh"] == 199 and s["fallbacks"] == 1
 assert abs(s["measured"]["controller_time"]["max"] - 10e-6) < 1e-12
 assert abs(s["measured"]["write_handoff"]["max"] - 20e-6) < 1e-12
-assert verdicts(ts.check(s, False, defaults()))["T4"][1] == "PASS"
-path.unlink()
-path = write(*app_rows(200, fallback_at=100))
-kind, data = ts.load(path)
-s = ts.summarize(kind, data, 500.0, None, None)
-assert s["in_run_fallbacks"] == 1
-assert verdicts(ts.check(s, False, defaults()))["T4"][1] == "FAIL"
-path.unlink()
+assert v["T3"][1] == "PASS" and v["T4"] == ("measured", "PASS")
+# An in-run miss, counted and flagged, fails.
+s, v = app_t4(app_rows(200, fallback_at=(100,)), app_run(200, misses=1))
+assert v["T4"][1] == "FAIL"
+# A stale rejection fails.
+s, v = app_t4(app_rows(200), app_run(200, stale=1))
+assert v["T4"][1] == "FAIL"
+# Ending with a fallback: a miss before the controller finished fails...
+s, v = app_t4(app_rows(200, fallback_at=(200,)), app_run(200, misses=1))
+assert v["T4"][1] == "FAIL"
+# ...while the shutdown windows after it are reported, not counted.
+s, v = app_t4(app_rows(200, fallback_at=(199, 200)),
+              app_run(200, end=198, misses=0))
+assert v["T4"][1] == "PASS" and s["misses_after_end"] == 2
+# Only fallbacks: no evidence of a controller, never PASS.
+s, v = app_t4(app_rows(200, all_fallbacks=True), app_run(200))
+assert v["T4"][1] == "INDETERMINATE"
+# No run summary: T3 and T4 cannot be decided.
+s, v = app_t4(app_rows(200), None)
+assert v["T3"][1] == "INDETERMINATE" and v["T4"][1] == "INDETERMINATE"
+# An unsuccessful run, an incomplete log, or counters the flags
+# contradict: T4 is undecidable (T3 fails for the incomplete log).
+s, v = app_t4(app_rows(200), app_run(200, status="tracking_error"))
+assert v["T4"][1] == "INDETERMINATE"
+s, v = app_t4(app_rows(200), app_run(200, log_complete=False))
+assert v["T3"][1] == "FAIL"
+s, v = app_t4(app_rows(150), app_run(200))
+assert v["T3"][1] == "FAIL" and v["T4"][1] == "INDETERMINATE"
+s, v = app_t4(app_rows(200, fallback_at=(100,)), app_run(200, misses=0))
+assert v["T4"][1] == "INDETERMINATE"
+# A log without the deadline_miss column cannot support T4.
+header, rows = app_rows(200)
+columns = header.split(",")
+drop = columns.index("deadline_miss")
+s, v = app_t4((",".join(columns[:drop] + columns[drop + 1:]),
+               [row[:drop] + row[drop + 1:] for row in rows]), app_run(200))
+assert v["T4"][1] == "INDETERMINATE"
 
 # Two thread runs (x7_track's mode switch): one numbering, two segments.
 # The 0.5 s restart gap is not a period, and nothing is missing.

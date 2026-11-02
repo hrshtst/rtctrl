@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -115,5 +116,54 @@ TEST_CASE("a timing log that lost records reports itself incomplete",
   { std::ofstream(path) << "keep\n"; }
   CHECK_THROWS(x7::CycleTimingLog(crane, path));
   CHECK(readLines(path) == std::vector<std::string>{"keep"});
+  std::filesystem::remove(path);
+}
+
+TEST_CASE("the timing run summary records the verdict and both counter "
+          "snapshots, exclusively",
+          "[hw][timing]") {
+  const std::string path = "build/timing_log_summary_test.toml";
+  std::filesystem::remove(path);
+  x7::TimingRunSummary summary;
+  summary.app = "x7_follow";
+  summary.status = "success";
+  summary.successful = true;
+  summary.log_complete = true;
+  summary.rate_hz = 500.0;
+  summary.at_controller_end.cycles = 40;
+  summary.at_controller_end.stale_submissions = 1;
+  summary.at_controller_end.controller_deadline_misses = 2;
+  summary.final_stats.cycles = 43;
+  summary.final_stats.controller_deadline_misses = 4;
+  REQUIRE(x7::writeTimingRunSummary(path, summary));
+  const auto lines = readLines(path);
+  const auto has = [&lines](const std::string& line) {
+    return std::find(lines.begin(), lines.end(), line) != lines.end();
+  };
+  CHECK(lines.front() == "format = \"rtctrl-cycle-timing-run\"");
+  CHECK(has("status = \"success\""));
+  CHECK(has("successful = true"));
+  CHECK(has("log_complete = true"));
+  CHECK(has("escalated = false"));
+  const auto at = [&lines](const std::string& table) {
+    return std::find(lines.begin(), lines.end(), "[" + table + "]");
+  };
+  REQUIRE(at("controller_end") < at("final"));
+  REQUIRE(at("final") != lines.end());
+  const std::vector<std::string> end(at("controller_end"), at("final"));
+  const std::vector<std::string> final_lines(at("final"), lines.end());
+  const auto in = [](const std::vector<std::string>& block,
+                     const std::string& line) {
+    return std::find(block.begin(), block.end(), line) != block.end();
+  };
+  CHECK(in(end, "cycles = 40"));
+  CHECK(in(end, "stale_submissions = 1"));
+  CHECK(in(end, "controller_deadline_misses = 2"));
+  CHECK(in(final_lines, "cycles = 43"));
+  CHECK(in(final_lines, "controller_deadline_misses = 4"));
+  // Never overwrites.
+  CHECK_FALSE(x7::writeTimingRunSummary(path, summary));
+  CHECK(readLines(path) == lines);
+  CHECK(x7::timingSummaryPath("a/run.csv") == "a/run.csv.summary.toml");
   std::filesystem::remove(path);
 }

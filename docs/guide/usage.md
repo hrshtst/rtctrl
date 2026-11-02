@@ -707,7 +707,12 @@ FILE` (hardware only, not with `--bundle`; `x7_track` accepts it too) also
 writes one CSV row of host stamps per background cycle, drained off the control
 threads; an incomplete timing log fails the run. The `cycle` column numbers the
 rows 1, 2, ... over the whole run, and `segment` counts background-thread runs:
-`x7_track` restarts its thread at the mode switch, so its log has two. The
+`x7_track` restarts its thread at the mode switch, so its log has two.
+`deadline_miss` marks a window that closed with no submission while a
+controller was armed. After the arm is released the app also writes
+`FILE.summary.toml`, which holds the run status, whether the log is complete,
+and the cycle counters both when the controller finished and after the thread
+stopped (an existing file is refused before the bus is touched). The
 stamps are host
 observations: `read_start_ns` is when the host began the feedback transaction,
 not when the servos sampled, and `write_return_ns` is when the host's write

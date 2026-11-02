@@ -172,12 +172,17 @@ int main(int argc, char* argv[]) {
     follow::requireNewOutput(config.output.hardware_log, "hardware log");
     if (cli.timing_log_path) {
       follow::requireNewOutput(*cli.timing_log_path, "timing log");
+      follow::requireNewOutput(
+          x7::timingSummaryPath(cli.timing_log_path->string()),
+          "timing summary");
     }
     const std::filesystem::path posture_path =
         config.output.hardware_log.string() + ".reference.zvs";
     if (posture) follow::requireNewOutput(posture_path, "posture reference");
     follow::RunResult result;
     hw::CraneX7::CycleStats stats;
+    hw::CraneX7::CycleStats final_stats;
+    bool escalated = false;
     bool released = false;
     bool log_ok = false;
     bool timing_ok = true;
@@ -257,6 +262,23 @@ int main(int argc, char* argv[]) {
       // Drains the queued rows: file I/O only after the arm is released.
       log_ok = log.close();
       if (timing_log) timing_ok = timing_log->stop();
+      final_stats = crane.cycleStats();
+      escalated = crane.escalated();
+    }
+    bool timing_summary_ok = true;
+    if (cli.timing_log_path) {
+      x7::TimingRunSummary summary;
+      summary.app = "x7_follow";
+      summary.status = follow::statusName(result.status);
+      summary.successful =
+          result.status == follow::RunStatus::Success && released;
+      summary.log_complete = timing_ok;
+      summary.escalated = escalated;
+      summary.rate_hz = config.control_rate_hz;
+      summary.at_controller_end = stats;
+      summary.final_stats = final_stats;
+      timing_summary_ok = x7::writeTimingRunSummary(
+          x7::timingSummaryPath(cli.timing_log_path->string()), summary);
     }
     std::string display_log = config.output.hardware_log.string();
     if (bundle) {
@@ -293,9 +315,14 @@ int main(int argc, char* argv[]) {
                      "dropped, or a write failed)\n",
                      cli.timing_log_path->c_str());
       }
+      if (!timing_summary_ok) {
+        std::fprintf(stderr, "timing log: cannot write %s\n",
+                     x7::timingSummaryPath(cli.timing_log_path->string())
+                         .c_str());
+      }
     }
     return result.status == follow::RunStatus::Success && released &&
-                   log_ok && timing_ok
+                   log_ok && timing_ok && timing_summary_ok
                ? 0
                : 1;
   } catch (const std::exception& error) {

@@ -268,6 +268,16 @@ TEST_CASE("timing records separate fresh commands from tagged fallbacks",
     // The deliberately skipped window guarantees at least one.
     CHECK(fallbacks_after_fresh >= 1);
     CHECK(o.stats.controller_deadline_misses >= 1);
+    // The per-cycle flags are exactly what the counter counted, and only
+    // windows that sent no fresh command carry one.
+    std::uint64_t flagged = 0;
+    for (const CycleRecord& r : o.records) {
+      if (!r.deadline_miss) continue;
+      ++flagged;
+      CHECK(r.command_kind != CommandKind::kFresh);
+      CHECK(r.submit_ns == -1);
+    }
+    CHECK(flagged == o.stats.controller_deadline_misses);
     CHECK(o.stats.timing.host_transaction.count() == o.stats.cycles);
     CHECK(o.stats.timing.reply_span.count() == o.stats.cycles);
     CHECK(o.stats.timing.controller_time.count() == timed_submissions);

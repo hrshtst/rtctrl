@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Hardware x7_follow over dxl_emu with --timing-log: the run completes,
-# the timing log has one complete row per background cycle, and the
+# the timing log has one complete row per background cycle, its run
+# summary's counters agree with the per-cycle flags, and the
 # end-of-run statistics include the fault counts. Functional only: a pty
 # answers instantly, so the timing values themselves mean nothing here.
 set -eu
@@ -69,7 +70,31 @@ for row in fresh:
     assert stamps == sorted(stamps), row
 PY
 
-# An existing timing log is refused before the bus is touched.
+# The run summary: the verdict, and controller counters that agree
+# exactly with the per-cycle flags of the cycles they cover.
+python3 - "$ROOT/timing.csv" "$ROOT/timing.csv.summary.toml" <<'PY'
+import csv
+import sys
+import tomllib
+
+with open(sys.argv[1], newline="") as stream:
+    rows = list(csv.DictReader(stream))
+with open(sys.argv[2], "rb") as stream:
+    run = tomllib.load(stream)
+assert run["format"] == "rtctrl-cycle-timing-run", run
+assert run["app"] == "x7_follow" and run["status"] == "success", run
+assert run["successful"] and run["log_complete"] and not run["escalated"]
+end, final = run["controller_end"], run["final"]
+assert final["cycles"] == len(rows), (final["cycles"], len(rows))
+assert 0 < end["cycles"] <= final["cycles"], end
+flags = [int(r["deadline_miss"]) for r in rows]
+assert sum(flags[:end["cycles"]]) == end["controller_deadline_misses"], end
+assert sum(flags) == final["controller_deadline_misses"], final
+assert end["stale_submissions"] == 0, end
+PY
+
+# An existing timing log, or its summary, is refused before the bus is
+# touched.
 if "$FOLLOW" --config "$ROOT/follow.toml" --port "$LINK" \
     --log "$ROOT/second.csv" --timing-log "$ROOT/timing.csv" \
     </dev/null >"$ROOT/refuse.log" 2>&1; then
@@ -77,5 +102,15 @@ if "$FOLLOW" --config "$ROOT/follow.toml" --port "$LINK" \
   exit 1
 fi
 test ! -e "$ROOT/second.csv"
+printf 'keep\n' >"$ROOT/third.csv.summary.toml"
+if "$FOLLOW" --config "$ROOT/follow.toml" --port "$LINK" \
+    --log "$ROOT/third-hw.csv" --timing-log "$ROOT/third.csv" \
+    </dev/null >"$ROOT/refuse-summary.log" 2>&1; then
+  echo "an existing timing summary was accepted"
+  exit 1
+fi
+grep -q 'timing summary already exists' "$ROOT/refuse-summary.log"
+test ! -e "$ROOT/third.csv"
+test "$(cat "$ROOT/third.csv.summary.toml")" = keep
 
 echo "follow timing log OK"

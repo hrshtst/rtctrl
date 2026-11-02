@@ -142,7 +142,15 @@ uv run --project tools tools/timing_summary.py rate-e1-prod-current-500hz-<date>
 
 `timing_summary.py` reads probe logs and app `--timing-log` files, prints
 every quantity with its class, and with `--check` evaluates the criteria
-below. Calibration logs also print the completion-offset distribution and an
+below. Completeness (T3) and the controller criterion (T4) also read the run
+summary written next to the log (`<log>.summary.toml`): whether every record
+reached the file, the run's own verdict, and the controller counters at the
+moment the controller finished, cross-checked against the per-cycle
+`deadline_miss` flags. The shutdown windows after the controller finished are
+reported, not counted. A criterion whose evidence is missing or inconsistent
+(no summary, an unsuccessful run, no fresh command, counters the flags
+contradict) is `INDETERMINATE`, never a pass, and `--check` exits 1 unless
+every applicable criterion passes. Calibration logs also print the completion-offset distribution and an
 envelope candidate (1.25 times its maximum). `x7_controller_bench` measures
 the controller's own computation off-hardware for comparison.
 

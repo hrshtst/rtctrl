@@ -5,12 +5,14 @@
 // touching a control thread: a drain thread pops the CraneX7 timing ring
 // and queues rows through util::AsyncWriter. The log is complete only if
 // every cycle's record reached the file: no record dropped by a full ring
-// and no row dropped or failed in the writer.
+// and no row dropped or failed in the writer. The app then writes the
+// run's summary next to it (TimingRunSummary, below).
 #pragma once
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -49,13 +51,13 @@ inline constexpr const char* kCycleRecordCsvHeader =
     "controller_wake_ns,submit_ns,limit_start_ns,bus_write_start_ns,"
     "write_return_ns,cycle_end_ns,feedback_seq,applied_target_seq,"
     "applied_source_feedback_seq,skipped_periods,read_ok,write_ok,"
-    "command_kind";
+    "deadline_miss,command_kind";
 
 inline void appendCycleRecordCsv(rtctrl::util::AsyncWriter& log,
                                  const rtctrl::hw::CycleRecord& r) {
   log.appendf(
       "%llu,%u,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
-      "%lld,%lld,%llu,%llu,%llu,%u,%d,%d,%s\n",
+      "%lld,%lld,%llu,%llu,%llu,%u,%d,%d,%d,%s\n",
       static_cast<unsigned long long>(r.cycle),
       static_cast<unsigned>(r.segment),
       static_cast<long long>(r.scheduled_wake_ns),
@@ -76,7 +78,8 @@ inline void appendCycleRecordCsv(rtctrl::util::AsyncWriter& log,
       static_cast<unsigned long long>(r.applied_target_seq),
       static_cast<unsigned long long>(r.applied_source_feedback_seq),
       static_cast<unsigned>(r.skipped_periods), r.read_ok ? 1 : 0,
-      r.write_ok ? 1 : 0, commandKindName(r.command_kind));
+      r.write_ok ? 1 : 0, r.deadline_miss ? 1 : 0,
+      commandKindName(r.command_kind));
 }
 
 class CycleTimingLog {
@@ -143,6 +146,65 @@ class CycleTimingLog {
   bool stopped_ = false;
   bool complete_ = false;
 };
+
+// The evidence a timing log needs beyond its rows, written next to it as
+// <log>.summary.toml once the arm is released: the run's own verdict,
+// whether every record reached the file, and the CraneX7 counters when
+// the controller finished (before shutdown, whose windows close with no
+// submission by design) and after the thread stopped. timing_summary.py
+// reports the completeness and controller criteria as indeterminate
+// without it.
+struct TimingRunSummary {
+  std::string app;
+  std::string status;       // the app's run status name
+  bool successful = false;  // that status was success and release verified
+  bool log_complete = false;
+  bool escalated = false;
+  double rate_hz = 0.0;
+  rtctrl::hw::CraneX7::CycleStats at_controller_end;
+  rtctrl::hw::CraneX7::CycleStats final_stats;
+};
+
+inline std::string timingSummaryPath(const std::string& log_path) {
+  return log_path + ".summary.toml";
+}
+
+// Creates path exclusively. False if it exists or a write fails.
+inline bool writeTimingRunSummary(const std::string& path,
+                                  const TimingRunSummary& s) {
+  std::FILE* f = std::fopen(path.c_str(), "wx");
+  if (f == nullptr) return false;
+  const auto counters = [f](const char* table, const char* comment,
+                            const rtctrl::hw::CraneX7::CycleStats& c) {
+    const auto u = [](std::uint64_t v) {
+      return static_cast<unsigned long long>(v);
+    };
+    std::fprintf(f, "\n# %s\n[%s]\n", comment, table);
+    std::fprintf(f, "cycles = %llu\noverruns = %llu\nskipped_periods = %llu\n",
+                 u(c.cycles), u(c.overruns), u(c.skipped_periods));
+    std::fprintf(f, "read_failures = %llu\nwrite_failures = %llu\n",
+                 u(c.read_failures), u(c.write_failures));
+    std::fprintf(f, "stale_submissions = %llu\n", u(c.stale_submissions));
+    std::fprintf(f, "controller_deadline_misses = %llu\n",
+                 u(c.controller_deadline_misses));
+    std::fprintf(f, "timing_drops = %llu\n", u(c.timing_drops));
+  };
+  std::fprintf(f, "format = \"rtctrl-cycle-timing-run\"\nversion = 1\n");
+  std::fprintf(f, "app = \"%s\"\nstatus = \"%s\"\n", s.app.c_str(),
+               s.status.c_str());
+  std::fprintf(f, "successful = %s\nlog_complete = %s\nescalated = %s\n",
+               s.successful ? "true" : "false",
+               s.log_complete ? "true" : "false",
+               s.escalated ? "true" : "false");
+  std::fprintf(f, "rate_hz = %.9g\n", s.rate_hz);
+  counters("controller_end",
+           "CycleStats when the controller finished, before shutdown",
+           s.at_controller_end);
+  counters("final", "CycleStats after the background thread stopped",
+           s.final_stats);
+  const bool ok = std::fflush(f) == 0 && std::ferror(f) == 0;
+  return std::fclose(f) == 0 && ok;
+}
 
 inline void printLatencyLine(const char* name,
                              const rtctrl::hw::LatencyHistogram& h) {

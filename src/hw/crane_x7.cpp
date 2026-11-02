@@ -885,6 +885,7 @@ void CraneX7::threadLoop() {
       ++cycle_seq_;
       ++stats_.cycles;
       cycle_rec.cycle = stats_.cycles;
+      if (cycle_rec.deadline_miss) ++stats_.controller_deadline_misses;
       if (advance.skipped_periods > 0) ++stats_.overruns;
       stats_.skipped_periods += advance.skipped_periods;
       stats_.max_cycle_time_s =
@@ -963,6 +964,7 @@ void CraneX7::threadLoop() {
         controller_deadline_missed =
             !received && submission_armed_ && thread_run_.load() &&
             !quiesced_.load();
+        cycle_rec.deadline_miss = controller_deadline_missed;
         cycle_rec.controller_wake_ns = window_controller_wake_ns_;
         if (received) cycle_rec.submit_ns = target_submit_ns_;
         cycle_rec.command_kind =
@@ -981,10 +983,6 @@ void CraneX7::threadLoop() {
       tseq = target_seq_;
       source_feedback_seq = target_source_feedback_seq_;
       source_feedback_time = target_source_feedback_time_;
-    }
-    if (controller_deadline_missed) {
-      std::lock_guard<std::mutex> lock(cycle_mutex_);
-      ++stats_.controller_deadline_misses;
     }
     // A missed velocity update must not keep driving indefinitely. Position
     // mode naturally holds the preceding goal; current mode retains one

@@ -50,6 +50,11 @@ struct CycleRecord {
   std::uint32_t skipped_periods = 0;  // boundaries skipped after this cycle
   bool read_ok = false;
   bool write_ok = false;
+  // The window closed with no submission while a controller was armed:
+  // exactly the cycles CycleStats::controller_deadline_misses counts, and
+  // counted in the same update as CycleStats::cycles, so a snapshot with
+  // cycles == N counts the misses of records 1..N.
+  bool deadline_miss = false;
   CommandKind command_kind = CommandKind::kNone;
 };
 

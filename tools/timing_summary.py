@@ -4,7 +4,8 @@
 Reads either an x7_bus_timing probe log or an x7_follow / x7_track
 --timing-log file (detected from the header), reduces it to the
 quantities the control-rate qualification uses, and with --check
-evaluates the timing criteria T1..T7, exiting 1 if any fails.
+evaluates the timing criteria T1..T7, exiting 1 unless every criterion
+that applies passes.
 
 Every quantity is labelled with its class:
   measured   host-clock intervals taken from the log itself;
@@ -22,12 +23,24 @@ background-thread run with a segment (x7_track restarts its thread at the
 mode switch). Periods and consecutive skips are taken within a segment;
 the restart gap between two segments is not a period.
 
+Completeness (T3) and the controller criterion (T4) need evidence the
+rows cannot carry, so they also read the summary written next to the log
+(<log>.summary.toml, or --run-summary): whether every record reached the
+file, the run's own verdict, and the controller counters at the moment
+the controller finished. T4 takes its stale-rejection and deadline-miss
+counts from those counters, cross-checked against the per-cycle
+deadline_miss flags; the windows after the controller finished (shutdown)
+are reported, not counted. A criterion whose evidence is absent or
+inconsistent is INDETERMINATE, never PASS, and --check counts it as not
+passed. "n/a" marks a criterion that does not apply or was not requested.
+
 Percentiles are exact nearest-rank values over the recorded cycles.
 Threshold defaults are the plan's PROPOSED values; the frozen values are
 whatever the qualification record's command line states.
 
   uv run --project tools tools/timing_summary.py run.csv --rate-hz 500 \\
       [--loaded] [--delta-env-s 1.2e-3] [--delta-q-s 0.9e-3] [--check]
+      [--run-summary run.csv.summary.toml]
 """
 
 from __future__ import annotations
@@ -36,8 +49,14 @@ import argparse
 import csv
 import math
 import pathlib
+import sys
 
 import numpy as np
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # the run summary then cannot be read
+    tomllib = None
 
 PROBE_COLUMNS = {"ack_return_ns", "completion_upper_ns"}
 APP_COLUMNS = {"controller_wake_ns", "command_kind"}
@@ -68,6 +87,23 @@ def load(path: pathlib.Path) -> tuple[str, dict[str, np.ndarray]]:
     return kind, data
 
 
+SUMMARY_FORMATS = {"probe": "rtctrl-bus-timing",
+                   "app": "rtctrl-cycle-timing-run"}
+
+
+def load_run_summary(path: pathlib.Path, kind: str) -> dict | None:
+    """The summary written next to a timing log, or None when absent."""
+    if not path.exists():
+        return None
+    if tomllib is None:
+        raise SystemExit(f"{path}: reading a run summary needs Python 3.11+")
+    with open(path, "rb") as stream:
+        run = tomllib.load(stream)
+    if run.get("format") != SUMMARY_FORMATS[kind]:
+        raise SystemExit(f"{path}: not the run summary of a {kind} log")
+    return run
+
+
 def nearest_rank(values: np.ndarray, q: float) -> float:
     ordered = np.sort(values)
     index = max(0, min(len(ordered) - 1,
@@ -93,8 +129,8 @@ def describe(values: np.ndarray) -> dict[str, float]:
 
 
 def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
-              delta_env_s: float | None,
-              delta_q_s: float | None) -> dict:
+              delta_env_s: float | None, delta_q_s: float | None,
+              run: dict | None = None) -> dict:
     period = 1.0 / rate_hz
     cycles = data["cycle"]
     wake = data["wake_ns"]
@@ -102,7 +138,7 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
     # Probe logs are one segment and carry no column.
     segment = data.get("segment", np.ones(len(cycles), dtype=np.int64))
     s: dict = {"kind": kind, "rate_hz": rate_hz, "period_s": period,
-               "cycles": int(len(cycles))}
+               "cycles": int(len(cycles)), "run": run}
     # A complete log numbers its cycles 1, 2, ... without gaps over the
     # whole file, and its segments 1, 2, ... in order.
     expected = np.arange(1, len(cycles) + 1)
@@ -138,14 +174,20 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
         measured["write_handoff"] = interval(data, "submit_ns",
                                              "limit_start_ns")
         kinds = data["command_kind"]
-        fresh = np.flatnonzero(kinds == "fresh")
-        s["fresh"] = int(len(fresh))
-        if len(fresh):
-            inside = kinds[fresh[0]:fresh[-1] + 1]
-            s["in_run_fallbacks"] = int(np.count_nonzero(
-                (inside == "fallback") | (inside == "zero-velocity-fallback")))
-        else:
-            s["in_run_fallbacks"] = 0
+        s["fresh"] = int(np.count_nonzero(kinds == "fresh"))
+        s["fallbacks"] = int(np.count_nonzero(
+            (kinds == "fallback") | (kinds == "zero-velocity-fallback")))
+        if run is not None and "deadline_miss" in data:
+            # The controller's span: records 1..end (the counters were read
+            # when it finished; later windows are shutdown).
+            end = int(run["controller_end"]["cycles"])
+            during = cycles <= end
+            misses = data["deadline_miss"] == 1
+            s["controller_end_cycle"] = end
+            s["fresh_by_end"] = int(np.count_nonzero(during &
+                                                     (kinds == "fresh")))
+            s["log_misses_by_end"] = int(np.count_nonzero(during & misses))
+            s["misses_after_end"] = int(np.count_nonzero(~during & misses))
     s["measured"] = {name: describe(v) for name, v in measured.items()}
 
     to_write = interval(data, "read_start_ns", "bus_write_start_ns")
@@ -163,6 +205,58 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
         s["estimated_completion_p999_s"] = nearest_rank(
             to_write + delta_q_s, 0.999)
     return s
+
+
+def completeness(s: dict) -> tuple[bool | None, str]:
+    """Whether every cycle reached the log, from the run summary."""
+    run = s["run"]
+    if run is None:
+        return None, "no run summary: completeness unknown"
+    if s["kind"] == "probe":
+        result = run["result"]
+        if not result["started"]:
+            return False, f"the run did not start: {result['error']}"
+        if int(result["cycles"]) != s["cycles"]:
+            return False, (f"{s['cycles']} rows for {result['cycles']} "
+                           "cycles")
+        return (bool(run["log_complete"]) and int(result["ring_drops"]) == 0,
+                f"log_complete {run['log_complete']}, "
+                f"{result['ring_drops']} ring drops")
+    final = run["final"]
+    if int(final["cycles"]) != s["cycles"]:
+        return False, f"{s['cycles']} rows for {final['cycles']} cycles"
+    return (bool(run["log_complete"]) and int(final["timing_drops"]) == 0
+            and not run["escalated"],
+            f"log_complete {run['log_complete']}, {final['timing_drops']} "
+            f"timing drops, escalated {run['escalated']}")
+
+
+def controller_verdict(s: dict) -> tuple[str, str]:
+    """T4 from the controller counters, or INDETERMINATE with the reason."""
+    run = s["run"]
+    if run is None:
+        return "INDETERMINATE", "no run summary: controller counters unknown"
+    if "controller_end_cycle" not in s:
+        return "INDETERMINATE", "the log has no deadline_miss column"
+    if not run["successful"]:
+        return "INDETERMINATE", (f"run status {run['status']}: T4 applies "
+                                 "to a successful run")
+    end = s["controller_end_cycle"]
+    if s["record_gaps"] or end > s["cycles"]:
+        return "INDETERMINATE", (f"the log does not hold the controller's "
+                                 f"{end} cycles")
+    if s["fresh_by_end"] == 0:
+        return "INDETERMINATE", "no fresh command: no evidence of a controller"
+    counters = run["controller_end"]
+    misses = int(counters["controller_deadline_misses"])
+    stale = int(counters["stale_submissions"])
+    if s["log_misses_by_end"] != misses:
+        return "INDETERMINATE", (f"{misses} counted deadline misses but "
+                                 f"{s['log_misses_by_end']} flagged cycles")
+    detail = (f"{stale} stale rejections, {misses} deadline misses in "
+              f"{end} cycles; {s['misses_after_end']} shutdown windows "
+              "after the controller finished, not counted")
+    return ("PASS" if stale == 0 and misses == 0 else "FAIL"), detail
 
 
 def check(s: dict, loaded: bool, args: argparse.Namespace) -> list[tuple]:
@@ -183,13 +277,16 @@ def check(s: dict, loaded: bool, args: argparse.Namespace) -> list[tuple]:
             f"{s['skipped_periods']} skipped (allowed {allowed:g}), "
             f"{s['consecutive_skips']} consecutive")
     faults = s["read_failures"] + s["write_failures"] + s["record_gaps"]
-    verdict("T3", "measured", faults == 0,
-            f"{s['read_failures']} read / {s['write_failures']} write "
-            f"failures, {s['record_gaps']} record gaps")
+    complete, why = completeness(s)
+    detail = (f"{s['read_failures']} read / {s['write_failures']} write "
+              f"failures, {s['record_gaps']} record gaps; {why}")
+    if faults or complete is not None:
+        verdict("T3", "measured", faults == 0 and bool(complete), detail)
+    else:
+        out.append(("T3", "measured", "INDETERMINATE", detail))
     if s["kind"] == "app":
-        verdict("T4", "measured", s["in_run_fallbacks"] == 0,
-                f"{s['in_run_fallbacks']} in-run fallbacks (stale rejections:"
-                " read the app's hardware timing line)")
+        t4, detail = controller_verdict(s)
+        out.append(("T4", "measured", t4, detail))
     else:
         verdict("T4", "measured", None, "probe log has no controller")
     lateness = s["measured"]["wake_lateness"]
@@ -229,8 +326,21 @@ def print_summary(s: dict) -> None:
           f"{s['write_failures']} write failures, "
           f"{s['record_gaps']} record gaps")
     if s["kind"] == "app":
-        print(f"  {s['fresh']} fresh commands, "
-              f"{s['in_run_fallbacks']} in-run fallbacks")
+        print(f"  {s['fresh']} fresh commands, {s['fallbacks']} fallbacks")
+    run = s["run"]
+    if run is None:
+        print("  run summary: none (T3 and T4 cannot be decided)")
+    elif s["kind"] == "app":
+        end = run["controller_end"]
+        print(f"  run summary: {run['app']} {run['status']}, log complete "
+              f"{run['log_complete']}; controller finished at cycle "
+              f"{end['cycles']} with {end['stale_submissions']} stale "
+              f"rejections, {end['controller_deadline_misses']} deadline "
+              "misses")
+    else:
+        print(f"  run summary: {run['kind']}, log complete "
+              f"{run['log_complete']}, elapsed "
+              f"{run['result'].get('elapsed_s', math.nan):.3f} s")
     print("  measured (host clock; ms):")
     for name, d in s["measured"].items():
         if d:
@@ -261,7 +371,11 @@ def main() -> int:
     parser.add_argument("--delta-q-s", type=float,
                         help="calibration completion-offset quantile (T7)")
     parser.add_argument("--check", action="store_true",
-                        help="evaluate T1..T7; exit 1 on a failure")
+                        help="evaluate T1..T7; exit 1 unless every "
+                        "applicable criterion passes")
+    parser.add_argument("--run-summary", type=pathlib.Path,
+                        help="the log's run summary (default: "
+                        "<csv>.summary.toml)")
     parser.add_argument("--period-tolerance", type=float, default=0.001)
     parser.add_argument("--loaded-skips-per-10k", type=float, default=1.0)
     parser.add_argument("--lateness-p999", type=float, default=0.10)
@@ -272,7 +386,11 @@ def main() -> int:
     if not args.rate_hz > 0:
         raise SystemExit("--rate-hz must be positive")
     kind, data = load(args.csv)
-    s = summarize(kind, data, args.rate_hz, args.delta_env_s, args.delta_q_s)
+    run = load_run_summary(
+        args.run_summary or args.csv.with_name(args.csv.name + ".summary.toml"),
+        kind)
+    s = summarize(kind, data, args.rate_hz, args.delta_env_s, args.delta_q_s,
+                  run)
     print_summary(s)
     if not args.check:
         return 0
@@ -283,8 +401,14 @@ def main() -> int:
           f"T6a {args.host_work_p999:g} T, T7 {args.estimate_p999:g} T")
     results = check(s, args.loaded, args)
     for name, cls, verdict, detail in results:
-        print(f"  {name:<4} {cls:<9} {verdict:<4} {detail}")
-    return 1 if any(v == "FAIL" for _, _, v, _ in results) else 0
+        print(f"  {name:<4} {cls:<9} {verdict:<13} {detail}")
+    return exit_status(results)
+
+
+def exit_status(results: list[tuple]) -> int:
+    """0 only if no criterion failed or lacked the evidence for a verdict."""
+    return 1 if any(v in ("FAIL", "INDETERMINATE")
+                    for _, _, v, _ in results) else 0
 
 
 if __name__ == "__main__":
