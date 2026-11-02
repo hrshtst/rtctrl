@@ -46,7 +46,8 @@ add_library(rtctrl
   src/hw/config.cpp
   src/hw/crane_x7.cpp
   src/arm/real_arm.cpp
-  src/util/async_writer.cpp)
+  src/util/async_writer.cpp
+  src/util/realtime.cpp)
 add_library(rtctrl::rtctrl ALIAS rtctrl)
 target_compile_features(rtctrl PUBLIC cxx_std_17)
 target_compile_definitions(rtctrl PRIVATE RTCTRL_VERSION="${PROJECT_VERSION}")
