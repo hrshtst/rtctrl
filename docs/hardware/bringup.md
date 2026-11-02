@@ -120,6 +120,10 @@ described in the
 [computed-torque theory notes](../theory/computed-torque.md#what-the-hardware-taught-us).
 Feature coverage is mapped in [parity.md](../records/parity.md).
 
+Hardware loops run at 100 Hz, the only validated rate. Measuring and
+qualifying higher rates follows [control-rate qualification](control-rate.md),
+starting with the torque-off `x7_bus_timing` probe.
+
 `x7_follow_sim` and `x7_follow` are the servo-side trajectory-following route.
 They do not unpark `x7_track`: feedback remains inside the Dynamixel servo.
 Before the first hardware trial, generate and inspect the complete simulation

@@ -77,6 +77,7 @@ nav:
       - Flexible-mode identification: theory/identification.md
   - Hardware:
       - Bring-up checklist: hardware/bringup.md
+      - Control-rate qualification: hardware/control-rate.md
       - Gravity demo (x7_gravity_demo): hardware/gravity-demo.md
   - Project records:
       - Project history: records/history.md

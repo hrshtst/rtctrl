@@ -1124,6 +1124,34 @@ The `dxl_inspect` app is this API as a CLI. In tests, substitute
 `emu::FakePacketIO` for `Port` behind the same `PacketIO` interface,
 or run against `dxl_emu`'s pseudo-terminal with `Port` itself.
 
+### Measuring bus and cycle timing
+
+`x7_bus_timing` measures the bus with every servo torque-off and never writes
+Torque Enable. `--inventory` reports each servo's bus-timing registers (Return
+Delay Time, Status Return Level, baud register, firmware) and the USB adapter.
+A timing run replays one mode's exact per-cycle traffic at a fixed rate and
+writes one CSV row of host stamps per cycle plus a summary:
+
+```sh
+./build/apps/x7_bus_timing --inventory --out inventory.toml
+./build/apps/x7_bus_timing --rate-hz 500 --profile current --duration 60 \
+  --log bus-current-500hz.csv
+```
+
+`--confirm-writes` and `--drain` turn it into a calibration run that observes
+transport timing. `dxl/wire_budget.hpp` gives the analytic wire bytes of each
+cycle, and `x7_controller_bench` measures controller computation without a bus.
+`tools/timing_summary.py` reduces probe logs and app `--timing-log` files to
+measured, estimated and envelope quantities. The procedure that uses them is
+[control-rate qualification](../hardware/control-rate.md).
+
+On the library side, `hw::CraneX7::Options::timing_ring_capacity` enables the
+per-cycle `hw::CycleRecord` ring that `popCycleRecord()` drains, and
+`CycleStats::timing` always holds host-measured histograms of every phase of
+the background cycle. `util::RealtimePolicy` applies a SCHED_FIFO priority,
+CPU affinity, memory lock or fine timer slack to the calling thread, all or
+nothing.
+
 ### Backing up and restoring motor parameters
 
 `dxl_inspect dump-params` captures the configuration and tuning
