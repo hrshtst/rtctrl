@@ -111,6 +111,26 @@ TEST_CASE("track config and CLI reject unsupported or unsafe controls",
   CHECK_THROWS(track::parseCli(5, unsupported, false));
 }
 
+TEST_CASE("track CLI accepts a timing log on hardware only",
+          "[track][config]") {
+  char app[] = "x7_track";
+  char config_flag[] = "--config";
+  char config_path[] = "run.toml";
+  char timing[] = "--timing-log";
+  char csv[] = "cycles.csv";
+  char* argv[] = {app, config_flag, config_path, timing, csv};
+  const auto cli = track::parseCli(5, argv, false);
+  REQUIRE(cli.timing_log_path);
+  CHECK(*cli.timing_log_path == std::filesystem::path("cycles.csv"));
+  CHECK_THROWS(track::parseCli(5, argv, true));
+
+  char bundle[] = "--bundle";
+  char archive[] = "archive";
+  char* bundled[] = {app, config_flag, config_path, timing, csv, bundle,
+                     archive};
+  CHECK_THROWS(track::parseCli(7, bundled, false));
+}
+
 TEST_CASE("playback trajectory scales time derivatives exactly",
           "[track][trajectory]") {
   model::ZVector q0(model::kCanonicalDof), qf(model::kCanonicalDof);

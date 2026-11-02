@@ -230,8 +230,10 @@ final Enter confirms that the arm is supported before shutdown. See the
   servos halted themselves. The message is printed for every escalation,
   so it does not name the cause by itself. Causes: the host command loop
   stalled (investigate latency_timer, CPU load), the feedback reads died
-  (e.g. servo power was cut mid-run), which apps report as a nonzero
-  `read failures` count, or the command writes kept failing. Run logs are
+  (e.g. servo power was cut mid-run), or the command writes kept failing.
+  `x7_follow` and `x7_track` print the `read failures` and `write
+  failures` counts on their `hardware faults:` line; the other apps do not
+  print them yet. Run logs are
   written by a separate thread, so a slow disk no longer stalls the loop.
   Before 2026-10-16 a log write that blocked for 250 ms or more caused this
   abort, and one that blocked for 25 ms or more ended `x7_float` and
@@ -246,10 +248,12 @@ final Enter confirms that the arm is supported before shutdown. See the
   `x7_track` abort the run once the failure is detected; the other apps
   finish the session first, so that a released arm is not de-torqued, and
   exit 1 afterwards.
-- A nonzero `command-window misses` count means controller computation or
-  host scheduling did not leave the configured end-of-cycle write margin.
-  Stop the run and inspect CPU load, USB latency, maximum cycle time, and
-  maximum lateness. The scheduler skips missed period boundaries; it never
-  sends catch-up bursts.
+- A nonzero `deadline misses` count (`x7_follow`, `x7_track`) means
+  controller computation or host scheduling did not leave the configured
+  end-of-cycle write margin. Stop the run and inspect CPU load, USB
+  latency, maximum cycle time, and maximum lateness; the `host-measured
+  phases:` lines show where the cycle's time went, and `--timing-log` keeps
+  every cycle's host stamps for analysis. The scheduler skips missed period
+  boundaries; it never sends catch-up bursts.
 - Offline rehearsal of every step: `./build/apps/dxl_emu --link
   /tmp/ttyDXL &` then add `--port /tmp/ttyDXL` to any app.

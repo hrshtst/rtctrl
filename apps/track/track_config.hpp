@@ -59,6 +59,7 @@ struct Cli {
   fs::path config_path;
   std::optional<fs::path> reference_path;
   std::optional<fs::path> log_path;
+  std::optional<fs::path> timing_log_path;
   std::optional<fs::path> motion_path;
   std::optional<fs::path> bundle_path;
   std::optional<std::string> port;
@@ -335,7 +336,8 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
              arg == "--kd" || arg == "--playback-rate" ||
              arg == "--effort-limit-nm" || arg == "--filter" ||
              arg == "--interpolation" || arg == "--log" ||
-             arg == "--bundle" || arg == "--port" || arg == "--motion") {
+             arg == "--timing-log" || arg == "--bundle" ||
+             arg == "--port" || arg == "--motion") {
       if (i + 1 >= argc || argv[i + 1][0] == '-') {
         throw std::runtime_error(arg + " requires a value");
       }
@@ -354,6 +356,7 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
       else if (arg == "--interpolation")
         cli.interpolation = x7::follow::parseInterpolation(value);
       else if (arg == "--log") cli.log_path = value;
+      else if (arg == "--timing-log") cli.timing_log_path = value;
       else if (arg == "--bundle") cli.bundle_path = value;
       else if (arg == "--port") cli.port = value;
       else cli.motion_path = value;
@@ -366,6 +369,12 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
   }
   if (!simulation && cli.motion_path) {
     throw std::runtime_error("--motion is simulation-only");
+  }
+  if (simulation && cli.timing_log_path) {
+    throw std::runtime_error("--timing-log is hardware-only");
+  }
+  if (cli.bundle_path && cli.timing_log_path) {
+    throw std::runtime_error("--timing-log cannot be used with --bundle");
   }
   if (cli.check && cli.bundle_path) {
     throw std::runtime_error("--check and --bundle cannot be used together");

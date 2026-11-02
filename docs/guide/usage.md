@@ -699,6 +699,17 @@ reach. At completion, support the arm from below before Enter; torque-off makes
 the arm fall limp. Any home refusal, tracking abort, I/O failure, operator
 timeout, stale submission, or unclean shutdown is a failed run.
 
+The run ends with the background thread's cycle statistics: the cycle,
+overrun, stale and deadline-miss counts, a `hardware faults:` line (read and
+write failures, maximum lateness, maximum feedback age at submission), and
+`host-measured phases:` quantiles of each phase of the cycle. `--timing-log
+FILE` (hardware only, not with `--bundle`; `x7_track` accepts it too) also
+writes one CSV row of host stamps per background cycle, drained off the control
+threads; an incomplete timing log fails the run. The stamps are host
+observations: `read_start_ns` is when the host began the feedback transaction,
+not when the servos sampled, and `write_return_ns` is when the host's write
+returned, not when the bytes left the adapter.
+
 #### Portable follow bundles
 
 Create a new immutable simulation archive:

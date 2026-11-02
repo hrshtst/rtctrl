@@ -113,6 +113,27 @@ TEST_CASE("follow CLI requires explicit config and separates frontends",
   CHECK_THROWS(follow::parseCli(7, owned, true));
 }
 
+TEST_CASE("follow CLI accepts a timing log on hardware only",
+          "[follow][config]") {
+  char app[] = "x7_follow";
+  char config[] = "--config";
+  char path[] = "run.toml";
+  char timing[] = "--timing-log";
+  char csv[] = "cycles.csv";
+  char* argv[] = {app, config, path, timing, csv};
+  const auto cli = follow::parseCli(5, argv, false);
+  REQUIRE(cli.timing_log_path);
+  CHECK(*cli.timing_log_path == std::filesystem::path("cycles.csv"));
+  CHECK_THROWS(follow::parseCli(5, argv, true));  // simulation has no ring
+
+  char bundle[] = "--bundle";
+  char archive[] = "archive";
+  char* bundled[] = {app, config, path, timing, csv, bundle, archive};
+  CHECK_THROWS(follow::parseCli(7, bundled, false));
+  char* missing[] = {app, config, path, timing};
+  CHECK_THROWS(follow::parseCli(4, missing, false));
+}
+
 TEST_CASE("follow CLI overrides comparison inputs and control policy",
           "[follow][config]") {
   char app[] = "x7_follow_sim";

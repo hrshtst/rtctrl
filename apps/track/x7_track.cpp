@@ -12,6 +12,7 @@
 #include <stdexcept>
 
 #include "common/link_force_bundle.hpp"
+#include "common/timing_log.hpp"
 #include "common/x7_common.hpp"
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/port.hpp"
@@ -50,6 +51,7 @@ void usage() {
       "  --interpolation linear|shape-preserving-cubic\n"
       "  --port DEV\n"
       "  --log FILE\n"
+      "  --timing-log FILE    per-cycle host timing\n"
       "  --bundle NEW_DIRECTORY\n"
       "  --check\n");
 }
@@ -131,11 +133,15 @@ int main(int argc, char* argv[]) {
       return 0;
     }
     track::requireNewOutput(config.output.hardware_log, "hardware log");
+    if (cli.timing_log_path) {
+      track::requireNewOutput(*cli.timing_log_path, "timing log");
+    }
 
     track::RunResult result;
     hw::CraneX7::CycleStats stats;
     bool released = false;
     bool log_ok = false;
+    bool timing_ok = true;
     {
       EnterReader enter;
       if (config.finalization.wait_time_s == 0.0 && !enter.ready()) {
@@ -146,13 +152,23 @@ int main(int argc, char* argv[]) {
       std::printf("bus: %s @ %d baud, %zu joints\n", hardware.port.c_str(),
                   hardware.baudrate, hardware.joints.size());
       rtctrl::dxl::Port port(hardware.port, hardware.baudrate);
-      hw::CraneX7 crane(port, hardware, track::hardwareOptions(config));
+      auto options = track::hardwareOptions(config);
+      if (cli.timing_log_path) {
+        options.timing_ring_capacity =
+            x7::timingRingCapacity(config.control_rate_hz);
+      }
+      hw::CraneX7 crane(port, hardware, options);
       crane.onEscalate([&port] {
         std::fprintf(stderr,
                      "DEADMAN: command stream stale; closing the bus so "
                      "servo watchdogs halt the arm\n");
         port.close();
       });
+      std::unique_ptr<x7::CycleTimingLog> timing_log;
+      if (cli.timing_log_path) {
+        timing_log = std::make_unique<x7::CycleTimingLog>(
+            crane, cli.timing_log_path->string());
+      }
       x7::ShutdownGuard shutdown(crane);
 
       arm::RealArm position_arm(crane);
@@ -161,6 +177,7 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("position activation failed: " +
                                  crane.lastError());
       }
+      if (timing_log) timing_log->start();
       const auto home =
           track::runPositionHome(position_arm, reference, config, &log);
       if (home.status != track::RunStatus::Success) {
@@ -207,6 +224,7 @@ int main(int argc, char* argv[]) {
       released = shutdown.run();
       // Drains the queued rows: file I/O only after the arm is released.
       log_ok = log.close();
+      if (timing_log) timing_ok = timing_log->stop();
     }
 
     std::string display_log = config.output.hardware_log.string();
@@ -228,21 +246,23 @@ int main(int argc, char* argv[]) {
         track::statusName(result.status), result.tracking_pass ? "PASS" : "FAIL",
         result.aggregate_rms_error_rad, result.worst_joint_rms_error_rad,
         result.peak_error_rad);
-    std::printf("hardware timing: %llu cycles, %llu overruns, %llu skipped, "
-                "%llu stale, %llu deadline misses, max %.3f ms\n",
-                static_cast<unsigned long long>(stats.cycles),
-                static_cast<unsigned long long>(stats.overruns),
-                static_cast<unsigned long long>(stats.skipped_periods),
-                static_cast<unsigned long long>(stats.stale_submissions),
-                static_cast<unsigned long long>(
-                    stats.controller_deadline_misses),
-                1000.0 * stats.max_cycle_time_s);
+    x7::printCycleStats(stats);
     std::printf("log: %s\n", display_log.c_str());
     if (!log_ok) {
       std::fprintf(stderr, "log: writing %s failed; the log is incomplete\n",
                    display_log.c_str());
     }
-    return result.status == track::RunStatus::Success && released && log_ok
+    if (cli.timing_log_path) {
+      std::printf("timing log: %s\n", cli.timing_log_path->c_str());
+      if (!timing_ok) {
+        std::fprintf(stderr,
+                     "timing log: %s is incomplete (a record or row was "
+                     "dropped, or a write failed)\n",
+                     cli.timing_log_path->c_str());
+      }
+    }
+    return result.status == track::RunStatus::Success && released &&
+                   log_ok && timing_ok
                ? 0
                : 1;
   } catch (const std::exception& error) {
