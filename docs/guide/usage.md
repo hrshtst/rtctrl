@@ -1158,8 +1158,9 @@ writes one CSV row of host stamps per cycle plus a summary:
   --log bus-current-500hz.csv
 ```
 
-`--confirm-writes` and `--drain` turn it into a calibration run that observes
-transport timing. `dxl/wire_budget.hpp` gives the analytic wire bytes of each
+`--confirm-writes` (each unchanged production write followed by a read of the
+last servo's Model Number) and `--drain` turn it into a calibration run that
+observes transport timing. `dxl/wire_budget.hpp` gives the analytic wire bytes of each
 cycle, and `x7_controller_bench` measures controller computation without a bus.
 `tools/timing_summary.py` reduces probe logs and app `--timing-log` files to
 measured, estimated and envelope quantities. The procedure that uses them is

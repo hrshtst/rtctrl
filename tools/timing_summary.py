@@ -104,6 +104,19 @@ def load_run_summary(path: pathlib.Path, kind: str) -> dict | None:
     return run
 
 
+def model_number_acks(run: dict | None) -> bool:
+    """Whether a probe run acknowledged its writes by reading Model Number.
+
+    Version 1 probes compared a goal read-back with an alternated written
+    value. Torque-off servos overwrite goal writes, so that selected only
+    the cycles whose value happened to match: each kept row still bounds
+    its own write, but together they are no completion distribution and
+    give no envelope candidate.
+    """
+    return (run is not None and int(run.get("version", 1)) >= 2
+            and run.get("ack_register") == "model_number")
+
+
 def nearest_rank(values: np.ndarray, q: float) -> float:
     ordered = np.sort(values)
     index = max(0, min(len(ordered) - 1,
@@ -203,8 +216,9 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
             delta = (data["completion_upper_ns"][ok] -
                      data["bus_write_start_ns"][ok]).astype(np.float64) * 1e-9
             s["calibration"] = describe(delta)
-            s["calibration"]["delta_env_candidate"] = float(
-                1.25 * delta.max())
+            if model_number_acks(run):
+                s["calibration"]["delta_env_candidate"] = float(
+                    1.25 * delta.max())
     if delta_env_s is not None and len(to_write):
         s["envelope_completion_max_s"] = float(to_write.max() + delta_env_s)
     if delta_q_s is not None and len(to_write):
@@ -363,10 +377,17 @@ def print_summary(s: dict) -> None:
     if "calibration" in s:
         c = s["calibration"]
         print("  calibration, completion offset C+ - bus_write_start (ms):")
-        print(f"    n={int(c['n'])} p50 {1e3 * c['p50']:.3f} p99 "
-              f"{1e3 * c['p99']:.3f} p99.9 {1e3 * c['p999']:.3f} max "
-              f"{1e3 * c['max']:.3f}; envelope candidate (1.25 x max) "
-              f"{1e3 * c['delta_env_candidate']:.3f}")
+        stats = (f"    n={int(c['n'])} p50 {1e3 * c['p50']:.3f} p99 "
+                 f"{1e3 * c['p99']:.3f} p99.9 {1e3 * c['p999']:.3f} max "
+                 f"{1e3 * c['max']:.3f}")
+        if "delta_env_candidate" in c:
+            print(f"{stats}; envelope candidate (1.25 x max) "
+                  f"{1e3 * c['delta_env_candidate']:.3f}")
+        else:
+            print(f"{stats}; no envelope candidate: these acknowledgements "
+                  "compared goal values (summary version 1, or no summary), "
+                  "so the rows are a selected subset, each a valid bound but "
+                  "not a distribution")
     print("  read_start is a host transaction stamp; servo measurement age "
           "is unknown")
 

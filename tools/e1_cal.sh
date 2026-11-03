@@ -12,10 +12,14 @@
 # After each run timing_summary.py prints the completion-offset distribution
 # and the envelope candidate.
 #
+# Each write is the unchanged production write; the probe acknowledges it
+# by reading the last servo's Model Number, so a valid response bounds the
+# write's completion whatever the servo does with the goal.
+#
 # Stops: a probe that exits nonzero (a refusal, torque found on, incomplete
 # outputs) or an analysis error stops the session, per the stop rule. A run
-# with acknowledgement mismatches (a read-back goal that differs from the
-# write) is shown, and the script asks whether to go on.
+# with invalid acknowledgements (a failed read, or a wrong model number) is
+# shown, and the script asks whether to go on.
 #
 # Each run leaves three gitignored files in the output directory:
 #   <log>.csv               per-cycle log (probe)
@@ -243,18 +247,18 @@ for entry in "${plan[@]}"; do
     print_table
     exit 1
   fi
-  mismatches=$(sed -n 's/^ack_mismatches = //p' "$csv.summary.toml" | head -1)
+  invalid=$(sed -n 's/^ack_invalid = //p' "$csv.summary.toml" | head -1)
   candidate=$(sed -n 's/.*envelope candidate (1.25 x max) *//p' "$note" | tail -1)
-  if [ "${mismatches:-0}" != 0 ]; then
-    echo "verdict: done, $mismatches ack mismatches" >>"$note"
-    add_result "$profile" "$rate" "done, $mismatches ACK MISMATCHES; envelope candidate ${candidate:-?} ms"
+  if [ "${invalid:-0}" != 0 ]; then
+    echo "verdict: done, $invalid invalid acknowledgements" >>"$note"
+    add_result "$profile" "$rate" "done, $invalid INVALID ACKNOWLEDGEMENTS; envelope candidate ${candidate:-?} ms"
     if ! { : </dev/tty; } 2>/dev/null; then
-      echo "e1_cal: ack mismatches and no terminal to ask: session stopped"
+      echo "e1_cal: invalid acknowledgements and no terminal to ask: session stopped"
       print_table
       exit 1
     fi
     echo
-    echo ">>> $profile at $rate Hz: $mismatches read-back goals differed from the write."
+    echo ">>> $profile at $rate Hz: $invalid acknowledging reads failed or returned the wrong model number."
     while :; do
       printf '>>> c = continue with the next run; q = quit: '
       read -r answer </dev/tty || answer=q

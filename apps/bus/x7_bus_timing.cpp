@@ -14,16 +14,24 @@
 // Two kinds of run:
 //  * production traffic (default): exactly the production read and write,
 //    for sustained frequency, jitter, host read/write times and failures;
-//  * calibration (--confirm-writes and/or --drain): adds an acknowledged
-//    read of the last servo's goal after each write, and/or tcdrain(), to
-//    study transport timing. Calibration traffic is not production
-//    traffic: its cycle feasibility means nothing.
+//  * calibration (--confirm-writes and/or --drain): keeps the production
+//    write unchanged and adds an acknowledging read of the last servo's
+//    read-only Model Number after each write, and/or tcdrain(), to study
+//    transport timing. Calibration traffic is not production traffic: its
+//    cycle feasibility means nothing.
 //
-// Every stamp is a host observation (see rtctrl/hw/cycle_record.hpp). The
-// acknowledged read gives a per-write upper bound on when the write
-// finished on the wire: the acknowledging read cannot be sent before the
-// write, and its reply cannot arrive before its own serialization, so
+// Every stamp is a host observation (see rtctrl/hw/cycle_record.hpp). A
+// valid acknowledging response gives a per-write upper bound on when the
+// write finished on the wire. With one writer on the line, the order is
+// goal write, then read request, then status response (the SDK flushes
+// received input, never pending output), and the response cannot arrive
+// before its own serialization, so
 //   completion <= ack_return - ack_wire - return_delay(last servo).
+// The bound needs a valid response, not a retained goal: with torque off,
+// firmware v47 in operating mode 0 overwrites goal writes with present
+// values (observed 2026-11-03), so the acknowledgement reads a register
+// whose value never changes. A response is valid when the read succeeds
+// with no status error and returns the model number the inventory found.
 //
 // Usage:
 //   x7_bus_timing [--config F] [--port P] --inventory [--out F.toml]
@@ -458,6 +466,8 @@ struct ProbeRecord {
   std::int64_t drain_return_ns = -1;
   std::int64_t ack_return_ns = -1;
   std::int64_t completion_upper_ns = -1;  // C+: bound on wire completion
+  // The write was sent and its acknowledging read returned a valid
+  // response (no goal value is compared).
   bool ack_ok = false;
 };
 
@@ -477,7 +487,8 @@ struct RunResult {
   std::uint64_t overruns = 0;
   std::uint64_t read_failures = 0;
   std::uint64_t write_failures = 0;
-  std::uint64_t ack_mismatches = 0;
+  // Acknowledging reads that failed or returned the wrong model number.
+  std::uint64_t ack_invalid = 0;
   std::uint64_t ring_drops = 0;
   double first_wake_s = 0.0;
   double last_wake_s = 0.0;
@@ -504,12 +515,14 @@ double threadCpuSeconds() {
 class Probe {
  public:
   Probe(dxl::PacketIO& io, const hw::Config& config, const Args& args,
-        int baudrate, int last_servo_return_delay, int drain_fd)
+        int baudrate, int last_servo_return_delay,
+        std::uint16_t last_servo_model, int drain_fd)
       : io_(io),
         group_(io, ids(config)),
         args_(args),
         baudrate_(baudrate),
         last_return_delay_us_(2 * last_servo_return_delay),
+        last_model_(last_servo_model),
         drain_fd_(drain_fd),
         ring_(std::max<std::size_t>(
             4096, static_cast<std::size_t>(args.rate_hz * 4.0))) {}
@@ -538,10 +551,10 @@ class Probe {
         std::chrono::duration<double>(1.0 / args_.rate_hz));
     const std::uint8_t last_id = group_.ids().back();
     const double byte_s = wire::byteTimeS(baudrate_);
-    const int ack_len = args_.profile == Profile::kCurrent ? 2 : 4;
-    const std::uint16_t ack_addr = args_.profile == Profile::kCurrent
-                                       ? reg::kGoalCurrent.addr
-                                       : reg::kGoalPosition.addr;
+    // The acknowledgement reads a register whose value never changes, so
+    // its value checks the response, not the write.
+    const int ack_len = reg::kModelNumber.len;
+    const std::uint16_t ack_addr = reg::kModelNumber.addr;
     const auto ack_wire_ns = static_cast<std::int64_t>(std::llround(
         (wire::readInstructionBytes() + wire::readReplyBytes(ack_len)) *
             byte_s * 1e9 +
@@ -590,13 +603,10 @@ class Probe {
       }
       if (!c.read_ok) ++result->read_failures;
 
-      // Calibration writes alternate a harmless one-unit offset (torque is
-      // off) so the acknowledging read can tell this write from the last.
-      const bool odd = args_.confirm_writes && (k % 2 == 1);
+      // The production write, unchanged in calibration runs too.
       for (std::size_t i = 0; i < n; ++i) {
-        positions[i] = fb[i].position +
-                       (odd ? 2.0 * M_PI / dxl::kPulsesPerRevolution : 0.0);
-        currents[i] = odd ? dxl::kCurrentUnitAmps : 0.0;
+        positions[i] = fb[i].position;
+        currents[i] = 0.0;
       }
       c.limit_start_ns = ns(Clock::now());
       c.bus_write_start_ns = ns(Clock::now());
@@ -621,26 +631,21 @@ class Probe {
                                  1e-9);
       }
       if (args_.confirm_writes) {
-        std::uint8_t buf[4] = {};
+        std::uint8_t buf[2] = {};
         const bool read_ok = io_.read(last_id, ack_addr, buf, ack_len).ok();
         r.ack_return_ns = ns(Clock::now());
-        std::uint32_t got = buf[0] | (buf[1] << 8);
-        std::uint32_t want =
-            static_cast<std::uint16_t>(dxl::ampsToCurrent(currents.back()));
-        if (ack_len == 4) {
-          got |= (static_cast<std::uint32_t>(buf[2]) << 16) |
-                 (static_cast<std::uint32_t>(buf[3]) << 24);
-          want = static_cast<std::uint32_t>(dxl::radToPulse(positions.back()));
-        }
-        r.ack_ok = read_ok && c.write_ok && got == want;
+        const auto model = static_cast<std::uint16_t>(buf[0] | (buf[1] << 8));
+        const bool response_valid = read_ok && model == last_model_;
+        if (!response_valid) ++result->ack_invalid;
+        // A bound needs a write that was sent and a valid response to the
+        // read that followed it.
+        r.ack_ok = response_valid && c.write_ok;
         if (r.ack_ok) {
           r.completion_upper_ns = r.ack_return_ns - ack_wire_ns;
           result->completion_offset.add(
               (r.completion_upper_ns - c.bus_write_start_ns) * 1e-9);
           result->ack_round_trip.add(
               (r.ack_return_ns - c.write_return_ns) * 1e-9);
-        } else {
-          ++result->ack_mismatches;
         }
       }
 
@@ -679,6 +684,7 @@ class Probe {
   const Args& args_;
   int baudrate_;
   int last_return_delay_us_;
+  std::uint16_t last_model_;
   int drain_fd_;
   util::SpscRing<ProbeRecord> ring_;
 };
@@ -847,7 +853,7 @@ int main(int argc, char* argv[]) {
               1e3 * wire_s, 100.0 * wire_s * args.rate_hz);
 
   Probe probe(*port, config, args, config.baudrate,
-              servos.back().return_delay_time, drain_fd);
+              servos.back().return_delay_time, servos.back().model, drain_fd);
   RunResult result;
   std::atomic<bool> done{false};
   std::thread worker([&] { probe.run(initial, &result, &done); });
@@ -881,7 +887,10 @@ int main(int argc, char* argv[]) {
   const double span = result.last_wake_s - result.first_wake_s;
   const double mean_hz =
       result.cycles > 1 && span > 0.0 ? (result.cycles - 1) / span : 0.0;
-  std::fprintf(summary, "format = \"rtctrl-bus-timing\"\nversion = 1\n");
+  // Version 2: the acknowledgement reads Model Number after an unchanged
+  // production write. Version 1 compared a goal read-back with an
+  // alternated written value, which torque-off servos defeat.
+  std::fprintf(summary, "format = \"rtctrl-bus-timing\"\nversion = 2\n");
   std::fprintf(summary, "kind = \"%s\"\n",
                calibration ? "calibration" : "production-traffic");
   std::fprintf(summary, "profile = \"%s\"\n", profileName(args.profile));
@@ -893,6 +902,9 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "confirm_writes = %s\ndrain = %s\n",
                args.confirm_writes ? "true" : "false",
                args.drain ? "true" : "false");
+  if (args.confirm_writes) {
+    std::fprintf(summary, "ack_register = \"model_number\"\n");
+  }
   std::fprintf(summary, "port = %s\nbaudrate = %d\n",
                tomlString(port_path).c_str(), config.baudrate);
   std::fprintf(summary, "log = %s\nlog_complete = %s\n",
@@ -924,8 +936,8 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "read_failures = %llu\nwrite_failures = %llu\n",
                static_cast<unsigned long long>(result.read_failures),
                static_cast<unsigned long long>(result.write_failures));
-  std::fprintf(summary, "ack_mismatches = %llu\nring_drops = %llu\n",
-               static_cast<unsigned long long>(result.ack_mismatches),
+  std::fprintf(summary, "ack_invalid = %llu\nring_drops = %llu\n",
+               static_cast<unsigned long long>(result.ack_invalid),
                static_cast<unsigned long long>(result.ring_drops));
   std::fprintf(summary, "mean_frequency_hz = %.9g\n", mean_hz);
   std::fprintf(summary, "cpu_duty = %.6g\n",
@@ -977,8 +989,8 @@ int main(int argc, char* argv[]) {
               static_cast<unsigned long long>(result.read_failures),
               static_cast<unsigned long long>(result.write_failures));
   if (args.confirm_writes) {
-    std::printf(", ack mismatches %llu",
-                static_cast<unsigned long long>(result.ack_mismatches));
+    std::printf(", invalid acknowledgements %llu",
+                static_cast<unsigned long long>(result.ack_invalid));
   }
   std::printf("\n");
   if (result.late_wake_stop) {

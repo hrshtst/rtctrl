@@ -102,11 +102,15 @@ def write(header, rows):
     return pathlib.Path(handle.name)
 
 
-def probe_run(cycles, log_complete=True, ring_drops=0, late_wake_s=None):
+def probe_run(cycles, log_complete=True, ring_drops=0, late_wake_s=None,
+              version=2):
     """late_wake_s: the lateness of a wake past the deadline that ended
-    the run (no row), or None when the schedule ended it."""
-    return {"format": "rtctrl-bus-timing", "kind": "production-traffic",
-            "log_complete": log_complete,
+    the run (no row), or None when the schedule ended it. version 1 is the
+    probe whose acknowledgement compared goal values; version 2 reads
+    Model Number."""
+    acks = {"ack_register": "model_number"} if version >= 2 else {}
+    return {"format": "rtctrl-bus-timing", "version": version, **acks,
+            "kind": "production-traffic", "log_complete": log_complete,
             "result": {"started": True, "error": "", "cycles": cycles,
                        "ring_drops": ring_drops, "elapsed_s": 2e-3 * cycles,
                        "late_wake_stop": late_wake_s is not None,
@@ -178,6 +182,12 @@ assert ts.exit_status(ts.check(s, False, defaults())) == 0
 s = ts.summarize(kind, data, 500.0, None, None)
 results = ts.check(s, False, defaults())
 assert verdicts(results)["T3"] == ("measured", "INDETERMINATE")
+# Goal-comparing acknowledgements (version 1), or none known: each kept
+# row is still described, but no envelope candidate is offered.
+for run in (probe_run(1000, version=1), None):
+    s = ts.summarize(kind, data, 500.0, None, None, run=run)
+    assert abs(s["calibration"]["max"] - 230e-6) < 1e-12
+    assert "delta_env_candidate" not in s["calibration"]
 assert ts.exit_status(results) == 1
 for run in (probe_run(1000, log_complete=False), probe_run(1000, ring_drops=3),
             probe_run(999)):

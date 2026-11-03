@@ -130,13 +130,20 @@ their cycle feasibility is never judged:
   --confirm-writes --drain --log "rate-e1-cal-current-200hz-$(date +%Y%m%d)-1.csv"
 ```
 
-`--confirm-writes` reads back the last servo's goal after every write,
-alternating a harmless one-unit offset (torque is off) so each write is
-distinguishable. The acknowledging read cannot be sent before the write, and
-its reply cannot arrive before its own serialization and the servo's Return
-Delay Time. That gives each write an upper bound on its wire completion,
-`C+ = ack_return - ack_wire - return_delay`. `--drain` stamps `tcdrain()`,
-whose meaning is adapter-specific; it is reported beside `C+`.
+`--confirm-writes` keeps the production write unchanged and follows every
+write with a read of the last servo's Model Number, a read-only register.
+With one writer on the line, the read request cannot go out before the write
+(the SDK flushes received input, never pending output), and its response
+cannot arrive before its own serialization and the servo's Return Delay
+Time. A valid response (no error, the model number the inventory found)
+therefore gives that write an upper bound on its wire completion,
+`C+ = ack_return - ack_wire - return_delay`, whatever the servo did with the
+goal. That matters: with torque off, firmware v47 in operating mode 0
+overwrites goal writes with present values (observed 2026-11-03), which
+defeated the earlier goal read-back. The summary counts invalid responses
+(`ack_invalid`) and names the register read (`ack_register`). `--drain`
+stamps `tcdrain()`, whose meaning is adapter-specific; it is reported beside
+`C+`.
 
 Each run writes a per-cycle CSV and a summary TOML (`<log>.summary.toml`) with
 the run kind, the analytic wire budget, failure counts, the achieved frequency
@@ -181,9 +188,13 @@ moment the controller finished, cross-checked against the per-cycle
 reported, not counted. A criterion whose evidence is missing or inconsistent
 (no summary, an unsuccessful run, no fresh command, counters the flags
 contradict) is `INDETERMINATE`, never a pass, and `--check` exits 1 unless
-every applicable criterion passes. Calibration logs also print the completion-offset distribution and an
-envelope candidate (1.25 times its maximum). `x7_controller_bench` measures
-the controller's own computation off-hardware for comparison.
+every applicable criterion passes. Calibration logs also print the
+completion-offset distribution and an envelope candidate (1.25 times its
+maximum). Logs from the earlier probe (summary version 1, which compared goal
+read-backs) get no candidate: each matched row still bounds its own write,
+but the matches are a selected subset, not a distribution.
+`x7_controller_bench` measures the controller's own computation off-hardware
+for comparison.
 
 ### Checkpoint 1
 

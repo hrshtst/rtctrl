@@ -3,8 +3,10 @@
 # calibration runs, exclusive outputs, and the torque-off contract (it
 # refuses a torqued servo or one whose Drive Mode would switch torque on
 # at a goal write, and never changes either). The emulated servos run
-# firmware v45, where Torque On by Goal Update exists. Functional only: a
-# pty answers instantly, so no timing value here means anything.
+# firmware v45, where Torque On by Goal Update exists; a second bus on
+# firmware v47 in operating mode 0 checks calibration against the goal
+# overwrite observed there. Functional only: a pty answers instantly, so
+# no timing value here means anything.
 set -eu
 
 EMU="$1"
@@ -18,8 +20,10 @@ mkdir -p "$ROOT"
 "$EMU" --link "$LINK" --firmware 45 >"$ROOT/emu.log" 2>&1 &
 EMU_PID=$!
 PROBE_PID=
+EMU47_PID=
 # A probe left stopped by an interrupted stall check is resumed and ended.
 trap 'kill "$EMU_PID" 2>/dev/null || true
+  if [ -n "$EMU47_PID" ]; then kill "$EMU47_PID" 2>/dev/null || true; fi
   if [ -n "$PROBE_PID" ]; then
     kill -CONT "$PROBE_PID" 2>/dev/null || true
     kill "$PROBE_PID" 2>/dev/null || true
@@ -137,22 +141,28 @@ if grep -q '^late_wake_stop = true' "$ROOT/stall.csv.summary.toml"; then
   grep -q 'past the deadline: no further cycle started' "$ROOT/stall.log"
 fi
 
-# Calibration: every acknowledged write matched what was written. (The
-# completion-offset histogram is not counted: the emulator replies without
-# the 500 us Return Delay Time the bound subtracts, so an offset can come
-# out negative here, which the histogram ignores.)
+# Calibration: every write is acknowledged by a valid Model Number read.
+# (The completion-offset histogram is not counted: the emulator replies
+# without the 500 us Return Delay Time the bound subtracts, so an offset
+# can come out negative here, which the histogram ignores.)
 "$PROBE" --port "$LINK" --rate-hz 100 --profile cbp --duration 1 \
   --confirm-writes --drain --log "$ROOT/cal.csv" >"$ROOT/cal.log" 2>&1 ||
   fail "calibration run failed" "$ROOT/cal.log"
 grep -q '^kind = "calibration"' "$ROOT/cal.csv.summary.toml"
-grep -q '^ack_mismatches = 0' "$ROOT/cal.csv.summary.toml"
+grep -q '^version = 2' "$ROOT/cal.csv.summary.toml"
+grep -q '^ack_register = "model_number"' "$ROOT/cal.csv.summary.toml"
+grep -q '^ack_invalid = 0' "$ROOT/cal.csv.summary.toml"
 test "$(cut -d, -f18 "$ROOT/cal.csv" | sed 1d | sort -u)" = 1
 test "$(wc -l <"$ROOT/cal.csv")" = \
   $(($(value "$ROOT/cal.csv.summary.toml" cycles) + 1))
 "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.5 \
   --confirm-writes --log "$ROOT/cal-current.csv" >"$ROOT/cal-current.log" \
   2>&1 || fail "current calibration failed" "$ROOT/cal-current.log"
-grep -q '^ack_mismatches = 0' "$ROOT/cal-current.csv.summary.toml"
+grep -q '^ack_invalid = 0' "$ROOT/cal-current.csv.summary.toml"
+# A production-traffic run makes no acknowledging read and names none.
+if grep -q '^ack_register' "$ROOT/run.csv.summary.toml"; then
+  fail "a production-traffic run named an acknowledgement register"
+fi
 
 # An existing log is never reused.
 RUN_SHA=$(sha256sum "$ROOT/run.csv" | cut -d ' ' -f 1)
@@ -207,5 +217,33 @@ if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
   fail "a priority without a cpu was accepted"
 fi
 grep -q 'dedicated cpu' "$ROOT/rt.log"
+
+# Firmware v47 in operating mode 0 overwrites a torque-off goal write with
+# present values (observed on the arm), so a goal read-back cannot
+# acknowledge a write. The Model Number read still does, for every write.
+LINK47="$ROOT/tty47"
+"$EMU" --link "$LINK47" --firmware 47 >"$ROOT/emu47.log" 2>&1 &
+EMU47_PID=$!
+for _ in $(seq 1 50); do
+  [ -e "$LINK47" ] && break
+  sleep 0.1
+done
+[ -e "$LINK47" ] || { echo "v47 emulator link never appeared"; exit 1; }
+for id in 2 3 4 5 6 7 8 9; do
+  "$INSPECT" --port "$LINK47" write "$id" operating_mode 0 >/dev/null
+done
+PRESENT=$("$INSPECT" --port "$LINK47" read 9 present_position)
+"$INSPECT" --port "$LINK47" write 9 goal_position $((PRESENT + 20)) >/dev/null
+test "$("$INSPECT" --port "$LINK47" read 9 goal_position)" = "$PRESENT"
+"$INSPECT" --port "$LINK47" write 9 goal_current 1 >/dev/null
+test "$("$INSPECT" --port "$LINK47" read 9 goal_current)" = "0"
+for profile in current position; do
+  "$PROBE" --port "$LINK47" --rate-hz 100 --profile "$profile" \
+    --duration 0.5 --confirm-writes --log "$ROOT/cal47-$profile.csv" \
+    >"$ROOT/cal47-$profile.log" 2>&1 ||
+    fail "v47 $profile calibration failed" "$ROOT/cal47-$profile.log"
+  grep -q '^ack_invalid = 0' "$ROOT/cal47-$profile.csv.summary.toml"
+  test "$(cut -d, -f18 "$ROOT/cal47-$profile.csv" | sed 1d | sort -u)" = 1
+done
 
 echo "bus timing probe OK"
