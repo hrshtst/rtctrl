@@ -40,6 +40,7 @@ add_library(rtctrl
   src/arm/sim_arm.cpp
   src/dxl/sync_group.cpp
   src/dxl/port.cpp
+  src/dxl/status_parser.cpp
   src/emu/motor_emulator.cpp
   src/emu/fake_packet_io.cpp
   src/emu/pty_bus.cpp

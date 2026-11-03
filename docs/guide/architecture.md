@@ -46,6 +46,12 @@ flowchart TB
   temperature for the whole group and one sync-write sets the goals.
   `control_table.hpp`/`conversions.hpp` fix the XM register map and
   raw-unit conversions (incl. per-model torque constants).
+  `StatusReplyParser` checks the status replies to one grouped read
+  strictly (header, ID and order, length, byte stuffing, CRC, nothing
+  after the last reply) and reports a fault as soon as the bytes received
+  rule out a valid reply. It is the foundation of the bounded read path
+  for rates above 100 Hz (control-rate Phase R); the 100 Hz path still
+  reads through the SDK.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`

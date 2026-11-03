@@ -25,6 +25,7 @@ add_executable(unit_tests
   unit/ik_test.cpp
   unit/dxl_test.cpp
   unit/wire_budget_test.cpp
+  unit/status_parser_test.cpp
   unit/cycle_timing_test.cpp
   unit/cycle_record_test.cpp
   unit/timing_log_test.cpp
