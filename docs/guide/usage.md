@@ -1063,6 +1063,14 @@ return ok && clean ? 0 : 1;
 including the `apps/` header the same relative way, runnable against
 `dxl_emu` or the robot.)
 
+`arm::run` returns false for several distinct reasons. Pass an
+`arm::RunReport` as its last argument to learn which: it names the end
+(`arm::describe(report.end)`: a failed read, a feedback gap or over-long
+interval, a rejected command, an observer veto, a failed step, and so on),
+the cycle, and the sequence numbers and timestamps of the last accepted and
+the final sample. The report is filled during the run and read at its end,
+so nothing is printed per cycle; `x7_wave` prints it on an abort.
+
 `readState` gives positions, velocities, and torque estimates
 ($\hat\tau = k_t\,i$). On hardware it returns a fresh sample while that
 sample's bounded command window is open; `step()` blocks until the next
@@ -1118,6 +1126,12 @@ and `x7_track` abort once a failure is known, as they always did on a failed
 write. `x7_float`, `x7_gravity_demo`, and `x7_teach` finish the session,
 because an abort would de-torque an arm the operator may already have
 released, and then void it.
+
+A per-cycle `.zvs` export (the joint sequence `rk_anim` replays) follows the
+same rule: `model::AsyncZvsWriter` writes `model::ZvsWriter`'s format byte for
+byte, with the file I/O on a writer thread, and `x7_wave --zvs` uses it.
+`ZvsWriter` itself writes on the calling thread, so it is for offline tools
+only.
 
 ## Talking to servos directly
 

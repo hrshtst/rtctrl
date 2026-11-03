@@ -7,6 +7,8 @@
 // 9-coordinate joint-displacement sequence — so the identical motion
 // the hardware was told to make replays in the roki viewer:
 //   rk_anim models/crane_x7/crane_x7.ztk file.zvs
+// The export is written by a writer thread (model::AsyncZvsWriter): the
+// control loop only formats each frame into memory.
 
 #include <cmath>
 #include <cstdio>
@@ -21,7 +23,7 @@
 #include "rtctrl/model/chain_model.hpp"
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
-#include "rtctrl/model/zvs_writer.hpp"
+#include "rtctrl/model/async_zvs_writer.hpp"
 #include "../apps/common/timing_log.hpp"
 #include "../apps/common/x7_common.hpp"
 
@@ -52,7 +54,7 @@ struct WaveController : arm::Controller {
 // Taps the runner's per-cycle hook to export the commanded reference:
 // exactly what was submitted to the arm, ramp included.
 struct ZvsObserver : arm::CycleObserver {
-  ZvsObserver(const model::JointMap& map, model::ZvsWriter& writer,
+  ZvsObserver(const model::JointMap& map, model::AsyncZvsWriter& writer,
               double dt)
       : map_(map), writer_(writer), dt_(dt) {}
   bool observe(double, const arm::JointState&, const arm::CommandSnapshot&,
@@ -63,7 +65,7 @@ struct ZvsObserver : arm::CycleObserver {
     return true;
   }
   const model::JointMap& map_;
-  model::ZvsWriter& writer_;
+  model::AsyncZvsWriter& writer_;
   double dt_;
   model::ZVector q9_{model::kModelDof};
 };
@@ -119,13 +121,13 @@ int main(int argc, char* argv[]) {
 
     std::unique_ptr<model::ChainModel> chain;
     std::unique_ptr<model::JointMap> map;
-    std::unique_ptr<model::ZvsWriter> zvs;
+    std::unique_ptr<model::AsyncZvsWriter> zvs;
     std::unique_ptr<ZvsObserver> observer;
     if (!zvs_path.empty()) {
       chain = std::make_unique<model::ChainModel>(
           "models/crane_x7/crane_x7.ztk");
       map = std::make_unique<model::JointMap>(*chain);
-      zvs = std::make_unique<model::ZvsWriter>(zvs_path);
+      zvs = std::make_unique<model::AsyncZvsWriter>(zvs_path);
       observer = std::make_unique<ZvsObserver>(*map, *zvs, robot.dt());
     }
 

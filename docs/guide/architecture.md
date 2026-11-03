@@ -97,7 +97,8 @@ flowchart TB
   deadman), consumed by `RealArm`.
 - **`util/`: support.** `AsyncWriter` keeps row-oriented file logging
   off control threads: rows go into a bounded in-memory queue that its
-  own writer thread drains. Every app run log goes through it.
+  own writer thread drains. Every app run log goes through it, and
+  `x7_wave`'s `.zvs` export through `model::AsyncZvsWriter`, built on it.
 - **`emu/`: the test double.** One control-table state machine, two
   transports. Everything ships in the single `rtctrl` library for
   build simplicity, so the emulator is *linked* everywhere, but no
