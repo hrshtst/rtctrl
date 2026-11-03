@@ -26,6 +26,12 @@ namespace rtctrl::emu {
 //   write touching a goal register (Goal PWM, Current, Velocity or
 //   Position; directly or through IndirectData) while torque is off
 //   switches Torque Enable to 1 and keeps the written goal.
+// - Torque-off goal overwrite, as observed on hardware (2026-11-03): an
+//   XM430-W350 on firmware v47 in operating mode 0 acknowledges a goal
+//   write while torque is off but keeps present values, Goal Position
+//   reading back the present position and Goal Current 0. Modeled for
+//   that firmware, model and mode only; elsewhere it is unobserved, and
+//   the written goal stays.
 // - Bus Watchdog (98): armed value counts 20 ms; EVERY instruction
 //   packet addressed to this motor feeds it (touch()). On timeout the
 //   register reads 0xFF, motion stops, and goal writes are rejected
@@ -77,6 +83,7 @@ class MotorEmulator {
   std::uint16_t redirect(std::uint16_t addr) const;
   void onWrite(std::uint16_t addr);
   void resetGoals();
+  bool overwritesTorqueOffGoals() const;
 
   Config config_;
   std::array<std::uint8_t, 256> table_{};

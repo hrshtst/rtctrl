@@ -18,6 +18,9 @@ bool inGoalArea(std::uint16_t addr) {
           addr < reg::kGoalPosition.addr + reg::kGoalPosition.len);
 }
 
+// The one firmware on which the torque-off goal overwrite was observed.
+constexpr std::uint8_t kGoalOverwriteFirmware = 47;
+
 }  // namespace
 
 MotorEmulator::MotorEmulator(const Config& config) : config_(config) {
@@ -148,7 +151,21 @@ dxl::IoResult MotorEmulator::write(std::uint16_t addr,
       config_.firmware_version >= dxl::kMinFirmwareTorqueOnByGoalUpdate) {
     table_[reg::kTorqueEnable.addr] = 1;
   }
+  // Still torque-off: the observed firmware acknowledges the write but
+  // keeps present values instead of the written goal.
+  if (goal_command && table_[reg::kTorqueEnable.addr] == 0 &&
+      overwritesTorqueOffGoals()) {
+    poke(reg::kGoalPosition, peek(reg::kPresentPosition));
+    poke(reg::kGoalCurrent, 0);
+  }
   return result;
+}
+
+bool MotorEmulator::overwritesTorqueOffGoals() const {
+  return config_.firmware_version == kGoalOverwriteFirmware &&
+         config_.model_number == dxl::kModelXm430W350 &&
+         table_[reg::kOperatingMode.addr] ==
+             static_cast<std::uint8_t>(dxl::OperatingMode::kCurrent);
 }
 
 void MotorEmulator::resetGoals() {

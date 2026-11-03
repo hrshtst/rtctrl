@@ -227,6 +227,83 @@ TEST_CASE("Torque On by Goal Update enables torque on a goal write",
   }
 }
 
+TEST_CASE("firmware v47 in current mode keeps present values for "
+          "torque-off goal writes",
+          "[emu]") {
+  // Observed on the arm (2026-11-03, id 9, XM430-W350, firmware v47,
+  // operating mode 0): the write is acknowledged, the goal is not kept.
+  const auto motorBus = [](std::uint8_t firmware, std::uint16_t model) {
+    emu::MotorBus bus;
+    emu::MotorEmulator::Config config;
+    config.id = 9;
+    config.firmware_version = firmware;
+    config.model_number = model;
+    bus.add(config);
+    return bus;
+  };
+  const auto setMode = [](emu::FakePacketIO& io, dxl::OperatingMode mode) {
+    REQUIRE(io.write8(9, reg::kOperatingMode.addr,
+                      static_cast<std::uint8_t>(mode))
+                .ok());
+  };
+
+  SECTION("the observed combination, directly and through the group") {
+    emu::MotorBus bus = motorBus(47, dxl::kModelXm430W350);
+    emu::FakePacketIO io(bus);
+    emu::MotorEmulator* motor = bus.find(9);
+    setMode(io, dxl::OperatingMode::kCurrent);
+    motor->poke(reg::kPresentPosition, 2028);
+
+    const dxl::IoResult position = io.write32(9, reg::kGoalPosition.addr, 2048);
+    CHECK(position.ok());
+    CHECK(motor->peek(reg::kGoalPosition) == 2028);
+    const dxl::IoResult current = io.write16(9, reg::kGoalCurrent.addr, 1);
+    CHECK(current.ok());
+    CHECK(motor->peek(reg::kGoalCurrent) == 0);
+
+    dxl::SyncGroup group(io, {9});
+    REQUIRE(group.setupIndirect().ok());
+    REQUIRE(group.writeGoalCurrents({dxl::kCurrentUnitAmps}).ok());
+    CHECK(motor->peek(reg::kGoalCurrent) == 0);
+    REQUIRE(group.writeGoalPositions({dxl::pulseToRad(2100)}).ok());
+    CHECK(motor->peek(reg::kGoalPosition) == 2028);
+    CHECK(motor->peek(reg::kTorqueEnable) == 0);
+  }
+
+  SECTION("unobserved combinations keep the written goal") {
+    struct Case {
+      std::uint8_t firmware;
+      std::uint16_t model;
+      dxl::OperatingMode mode;
+    };
+    for (const Case c :
+         {Case{45, dxl::kModelXm430W350, dxl::OperatingMode::kCurrent},
+          Case{47, dxl::kModelXm430W350, dxl::OperatingMode::kPosition},
+          Case{47, dxl::kModelXm540W270, dxl::OperatingMode::kCurrent}}) {
+      CAPTURE(static_cast<int>(c.firmware), c.model, static_cast<int>(c.mode));
+      emu::MotorBus bus = motorBus(c.firmware, c.model);
+      emu::FakePacketIO io(bus);
+      setMode(io, c.mode);
+      REQUIRE(io.write32(9, reg::kGoalPosition.addr, 2100).ok());
+      CHECK(bus.find(9)->peek(reg::kGoalPosition) == 2100);
+      REQUIRE(io.write16(9, reg::kGoalCurrent.addr, 1).ok());
+      CHECK(bus.find(9)->peek(reg::kGoalCurrent) == 1);
+    }
+  }
+
+  SECTION("Torque On by Goal Update still performs the written goal") {
+    emu::MotorBus bus = motorBus(47, dxl::kModelXm430W350);
+    emu::FakePacketIO io(bus);
+    setMode(io, dxl::OperatingMode::kCurrent);
+    REQUIRE(io.write8(9, reg::kDriveMode.addr,
+                      dxl::kDriveModeTorqueOnByGoalUpdate)
+                .ok());
+    REQUIRE(io.write16(9, reg::kGoalCurrent.addr, 1).ok());
+    CHECK(bus.find(9)->peek(reg::kTorqueEnable) == 1);
+    CHECK(bus.find(9)->peek(reg::kGoalCurrent) == 1);
+  }
+}
+
 TEST_CASE("bus watchdog triggers on silence and not on chatty reads",
           "[emu]") {
   emu::MotorBus bus = craneBus();
