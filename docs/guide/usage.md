@@ -1163,7 +1163,8 @@ transport timing. `dxl/wire_budget.hpp` gives the analytic wire bytes of each
 cycle, and `x7_controller_bench` measures controller computation without a bus.
 `tools/timing_summary.py` reduces probe logs and app `--timing-log` files to
 measured, estimated and envelope quantities. The procedure that uses them is
-[control-rate qualification](../hardware/control-rate.md).
+[control-rate qualification](../hardware/control-rate.md);
+`tools/e1_prod.sh` and `tools/e1_cal.sh` run its torque-off E1 step.
 
 On the library side, `hw::CraneX7::Options::timing_ring_capacity` enables the
 per-cycle `hw::CycleRecord` ring that `popCycleRecord()` drains, and

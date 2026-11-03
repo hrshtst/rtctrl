@@ -584,6 +584,20 @@ set_tests_properties(x7_bus_timing_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "bus timing probe OK"
   LABELS integration)
 
+# The E1 session scripts (tools/e1_prod.sh, tools/e1_cal.sh) over the
+# emulator; they call timing_summary.py through uv, so the build-local uv
+# cache keeps the test hermetic.
+add_test(NAME e1_session_scripts_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/e1_scripts_smoke.sh
+      $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
+      ${CMAKE_BINARY_DIR}/e1_scripts_smoke)
+set_tests_properties(e1_session_scripts_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "e1 session scripts OK"
+  LABELS integration)
+
 add_test(NAME x7_follow_timing_log_smoke
   COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_timing_smoke.sh
           $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_follow>

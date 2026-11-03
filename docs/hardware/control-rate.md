@@ -49,8 +49,10 @@ completion comes from a calibration run's acknowledged read (below).
   [data archive](../records/data-archive.md); they are never committed.
   Outcomes go to the [project history](../records/history.md).
 - "Loaded" means `stress-ng --cpu $(nproc) --hdd 1 --timeout 75s` running
-  alongside, or, if stress-ng is unavailable, a parallel clean rebuild of
-  rtctrl. Record the exact command.
+  alongside, with `--temp-path` on a disk (on tmpfs the `--hdd` worker loads
+  memory, not a disk), or, if stress-ng is unavailable, a parallel clean
+  rebuild of rtctrl in a separate build directory (never the `build/` the
+  probe runs from). Record the exact command.
 - Go 200, then 500, then 1000 Hz per mode, and attempt a rate only after
   every criterion passed at the previous one.
 - Never position the arm at a rate that has not qualified. Powered steps at a
@@ -139,6 +141,28 @@ whose meaning is adapter-specific; it is reported beside `C+`.
 Each run writes a per-cycle CSV and a summary TOML (`<log>.summary.toml`) with
 the run kind, the analytic wire budget, failure counts, the achieved frequency
 and the phase histograms (bin upper edges, never below the recorded quantile).
+
+`tools/e1_prod.sh` and `tools/e1_cal.sh` run E1 from the repo root, so no
+command is typed by hand; `--dry-run` checks the prerequisites and prints the
+plan. Before anything reaches the bus, each asks the operator to confirm that
+every servo is torque-off, the arm is at rest and supported, and the power
+cutoff is within reach. Before each run it waits for a quiet machine.
+`e1_prod.sh` takes each condition (idle, loaded, rt-idle, rt-loaded), then
+each profile, and climbs the rates, running `timing_summary.py --check` after
+every run. When a check fails it asks whether that rate clearly failed: yes
+ends that climb. A loaded run starts its own stress-ng window, which ends 15 s
+after the run. With a real-time condition selected, the script refuses to
+start while the shell's real-time priority limit (`ulimit -r`) is below the
+priority; `sudo prlimit --pid $$ --rtprio=90:90` raises it for the shell that
+starts the script. `e1_cal.sh` makes the calibration runs (current and
+position at 100, 200, 500 and 1000 Hz, cbp at 100, 200 and 500 Hz) and prints
+each envelope candidate. In both scripts, a probe that exits nonzero or an
+analysis that fails stops the session. Each run leaves
+`<log>.csv.run.txt` beside its log and summary: the command, commit, load
+command, scheduling, CPU governors, machine load, probe output and verdict.
+Started again, a script skips every run already attempted (an interrupted run
+counts) and keeps the climb decisions it recorded; `--attempt N` starts a new
+series.
 
 ### Summaries
 
