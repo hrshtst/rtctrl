@@ -8,12 +8,14 @@ on this page changes a controller gain or the `x7_track` scale cap.
 
 **Status.** The measurement tooling of Phase A exists: the torque-off bus
 probe, the per-cycle timing log, the posture references and the timing
-summary. E0 and E1 ran on 2026-11-03, and checkpoint 1 is decided (below).
-E1 calibration is to be repeated with the corrected acknowledgement. Next
-come the bounded bus transaction and the selected communication options
-(Fast Sync Read and a motion-only read), then the rate-derived safety
-options. No rate above 100 Hz is qualified, and every rate other than
-100 Hz prints an experimental warning.
+summary. E0 and E1 ran on 2026-11-03, and checkpoint 1 is decided (below);
+the E1 calibration was repeated with the corrected acknowledgement. Phase R
+has the strict status parser, the bounded read with its recovery, and the
+bus checks that activation makes before arming it, but nothing enables
+the bounded read yet. Next come the probe on the bounded path, the
+selected communication options (Fast Sync Read and a motion-only read),
+then the rate-derived safety options. No rate above 100 Hz is qualified,
+and every rate other than 100 Hz prints an experimental warning.
 
 ## What the numbers mean
 

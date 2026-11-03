@@ -6,6 +6,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -95,7 +97,8 @@ struct Port::Bounded {
 };
 
 Port::Port(const std::string& device, int baudrate)
-    : port_(checkedPortHandler(device)),
+    : device_(device),
+      port_(checkedPortHandler(device)),
       packet_(dynamixel::PacketHandler::getPacketHandler(2.0)) {
   if (!port_->openPort()) {
     throw std::runtime_error("Port: cannot open " + device);
@@ -144,7 +147,7 @@ IoResult Port::inhibitedResult() {
   return r;
 }
 
-void Port::armBoundedSyncRead(BoundedReadConfig config) {
+bool Port::armBoundedSyncRead(const BoundedReadConfig& config) {
   if (config.ids.empty() || config.len == 0 || config.len == 0xFFFF) {
     throw std::invalid_argument(
         "Port: a bounded read needs ids and 1 to 65534 data bytes");
@@ -156,10 +159,22 @@ void Port::armBoundedSyncRead(BoundedReadConfig config) {
         "least zero");
   }
   // A recovery still due stays due: only a clean recovery read ends it.
-  bounded_ = std::make_unique<Bounded>(std::move(config));
+  bounded_ = std::make_unique<Bounded>(config);
+  return true;
 }
 
 void Port::disarmBoundedSyncRead() { bounded_.reset(); }
+
+std::optional<int> Port::latencyTimerMs() const {
+  std::error_code ec;
+  const std::filesystem::path dev = std::filesystem::canonical(device_, ec);
+  const std::string tty =
+      (ec ? std::filesystem::path(device_) : dev).filename().string();
+  std::ifstream in("/sys/bus/usb-serial/devices/" + tty + "/latency_timer");
+  int ms = 0;
+  if (!(in >> ms)) return std::nullopt;
+  return ms;
+}
 
 IoResult Port::ping(std::uint8_t id, std::uint16_t* model_number) {
   if (!clearToTransmit()) return inhibitedResult();

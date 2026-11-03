@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "rtctrl/dxl/error.hpp"
@@ -17,6 +18,19 @@ struct SyncReadTiming {
   std::chrono::steady_clock::time_point last_reply{};
   int replies = 0;      // status packets received
   bool sent = false;    // the instruction was transmitted
+};
+
+// The bounded grouped read (control-rate plan, contract C-4): which read it
+// replaces, and its time limits. dxl::Port documents the transaction.
+struct BoundedReadConfig {
+  std::uint16_t addr = 0;
+  std::uint16_t len = 0;           // data bytes per servo
+  std::vector<std::uint8_t> ids;   // request order
+  // B_txn: from the instruction's write() return to the last reply byte.
+  std::chrono::nanoseconds budget{0};
+  // G: further quiet time after the budget of a failed read, before the
+  // next transmission of any kind.
+  std::chrono::nanoseconds guard{0};
 };
 
 // Abstract Dynamixel bus transactions — the mocking seam. Implemented
@@ -57,6 +71,19 @@ class PacketIO {
   virtual void setTransmitInhibit(const std::atomic<bool>* flag) {
     (void)flag;
   }
+
+  // The bounded grouped read for rates above 100 Hz. armBoundedSyncRead
+  // returns whether this transport armed it (the default cannot);
+  // disarming returns to the plain path.
+  virtual bool armBoundedSyncRead(const BoundedReadConfig& config) {
+    (void)config;
+    return false;
+  }
+  virtual void disarmBoundedSyncRead() {}
+
+  // The serial adapter's latency timer [ms], when the device exposes it
+  // (an FTDI adapter under Linux does); none otherwise, so unverified.
+  virtual std::optional<int> latencyTimerMs() const { return std::nullopt; }
 
   // Typed single-register conveniences.
   IoResult write8(std::uint8_t id, std::uint16_t addr, std::uint8_t value) {

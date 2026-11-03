@@ -16,19 +16,6 @@ class PacketHandler;
 
 namespace rtctrl::dxl {
 
-// The bounded grouped read (control-rate plan, contract C-4): which read it
-// replaces, and its time limits.
-struct BoundedReadConfig {
-  std::uint16_t addr = 0;
-  std::uint16_t len = 0;           // data bytes per servo
-  std::vector<std::uint8_t> ids;   // request order
-  // B_txn: from the instruction's write() return to the last reply byte.
-  std::chrono::nanoseconds budget{0};
-  // G: further quiet time after the budget of a failed read, before the
-  // next transmission of any kind.
-  std::chrono::nanoseconds guard{0};
-};
-
 // Counters of the bounded read, for diagnostics and the timing probe.
 struct BoundedReadStats {
   std::uint64_t reads = 0;          // bounded transactions started
@@ -74,7 +61,8 @@ struct BoundedReadStats {
 // setTransmitInhibit registers the owner's quiesce flag. Once it is set,
 // every transmission is refused with kCommTransmitInhibited, checked
 // immediately before sending, and a transmission waiting for the quiet
-// guard gives up within a millisecond without sending.
+// guard gives up without sending: the wait polls the flag every
+// millisecond, and the response also includes scheduling delay.
 class Port : public PacketIO {
  public:
   Port(const std::string& device, int baudrate);
@@ -106,15 +94,18 @@ class Port : public PacketIO {
   void close();
   bool isOpen() const { return open_; }
 
-  // Arms the bounded grouped read for exactly this window; any other
-  // syncRead keeps the SDK path. Allocates its buffers here, none per
-  // read. Throws std::invalid_argument for no ids, len 0, len 0xFFFF, a
-  // budget that is not positive, or a negative guard. Arming again (or
-  // disarming) ends neither a running quiet guard nor a recovery still
-  // due: only a clean recovery read ends recovery.
-  void armBoundedSyncRead(BoundedReadConfig config);
+  // Arms the bounded grouped read for exactly this window and returns
+  // true; any other syncRead keeps the SDK path. Allocates its buffers
+  // here, none per read. Throws std::invalid_argument for no ids, len 0,
+  // len 0xFFFF, a budget that is not positive, or a negative guard.
+  // Arming again (or disarming) ends neither a running quiet guard nor a
+  // recovery still due: only a clean recovery read ends recovery.
+  bool armBoundedSyncRead(const BoundedReadConfig& config) override;
   // Back to the SDK path.
-  void disarmBoundedSyncRead();
+  void disarmBoundedSyncRead() override;
+  // From /sys/bus/usb-serial/devices/<tty>/latency_timer; none for a
+  // device without one (a pseudo-terminal, for example).
+  std::optional<int> latencyTimerMs() const override;
   bool boundedSyncReadArmed() const { return bounded_ != nullptr; }
   const BoundedReadStats& boundedReadStats() const { return stats_; }
   // Whether the next bounded read is a recovery read.
@@ -142,6 +133,7 @@ class Port : public PacketIO {
   IoResult inhibitedResult();
   IoResult boundedSyncRead(std::vector<std::uint8_t>& out);
 
+  std::string device_;
   dynamixel::PortHandler* port_;
   dynamixel::PacketHandler* packet_;
   std::vector<std::uint8_t> sync_write_param_;

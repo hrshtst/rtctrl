@@ -469,3 +469,44 @@ TEST_CASE("a quiesce stops the shutdown writes waiting in the guard",
   CHECK(sentAfter(a.bus.pty().arrivals(), quiesce) == 0);
   CHECK(a.port.boundedReadStats().inhibited >= 1);
 }
+
+TEST_CASE("activation arms the port's bounded read only on a matching bus, "
+          "and the background thread reads through it",
+          "[pty][bounded]") {
+  FaultBus bus;
+  dxl::Port port(bus.path(), 3000000);
+  rtctrl::hw::CraneX7::Options options;
+  options.bounded_read.enabled = true;
+  options.bounded_read.budget = milliseconds(20);
+  options.bounded_read.guard = milliseconds(20);
+  options.bounded_read.scheduling_allowance = milliseconds(10);
+  options.bounded_read.transport_allowance = milliseconds(10);
+
+  SECTION("Return Delay Time 0, as on the arm") {
+    bus.withBus([](emu::MotorBus& b) {
+      for (auto& motor : b.motors()) motor.poke(reg::kReturnDelayTime, 0);
+    });
+    rtctrl::hw::CraneX7 arm(
+        port, rtctrl::hw::Config::load("config/crane_x7.toml"), options);
+    REQUIRE(arm.activate());
+    CHECK(port.boundedSyncReadArmed());
+    // A pseudo-terminal exposes no latency timer: reported, unverified.
+    CHECK_FALSE(arm.busDiscovery().latency_timer_ms.has_value());
+    REQUIRE(arm.startThread());
+    std::this_thread::sleep_for(milliseconds(100));
+    arm.stopThread();
+    CHECK(port.boundedReadStats().reads > 0);
+    CHECK(port.boundedReadStats().timeouts == 0);
+    CHECK(port.boundedReadStats().malformed == 0);
+    REQUIRE(arm.deactivate());
+    CHECK_FALSE(port.boundedSyncReadArmed());
+  }
+  SECTION("the factory Return Delay Time (the emulator's default)") {
+    rtctrl::hw::CraneX7 arm(
+        port, rtctrl::hw::Config::load("config/crane_x7.toml"), options);
+    REQUIRE_FALSE(arm.activate());
+    CHECK(arm.lastError().find("Return Delay Time 250") != std::string::npos);
+    CHECK_FALSE(port.boundedSyncReadArmed());
+    CHECK(port.boundedReadStats().reads == 0);
+  }
+}

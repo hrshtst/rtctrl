@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 namespace rtctrl::dxl {
 
@@ -114,5 +115,24 @@ inline constexpr std::uint8_t kMinFirmwareBusWatchdog = 38;
 // torque off must first verify the bit is clear.
 inline constexpr std::uint8_t kDriveModeTorqueOnByGoalUpdate = 0x08;
 inline constexpr std::uint8_t kMinFirmwareTorqueOnByGoalUpdate = 45;
+
+// Fast Sync Read (instruction 0x8A) needs firmware >= 45.
+inline constexpr std::uint8_t kMinFirmwareFastSyncRead = 45;
+
+// The Baud Rate register (8) value for a line speed, if the X series
+// offers it.
+inline std::optional<std::uint8_t> baudRegisterFor(int baudrate) {
+  switch (baudrate) {
+    case 9600: return 0;
+    case 57600: return 1;
+    case 115200: return 2;
+    case 1000000: return 3;
+    case 2000000: return 4;
+    case 3000000: return 5;
+    case 4000000: return 6;
+    case 4500000: return 7;
+    default: return std::nullopt;
+  }
+}
 
 }  // namespace rtctrl::dxl

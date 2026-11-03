@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -74,6 +75,62 @@ class CraneX7 {
     // power of two. 0 (the default) keeps no records and allocates
     // nothing; the CycleStats timing histograms are kept either way.
     std::size_t timing_ring_capacity = 0;
+
+    // The bounded grouped read for rates above 100 Hz (control-rate plan,
+    // contracts C-4 and C-4a). Disabled (the default), activation neither
+    // checks the bus profile nor arms anything: the 100 Hz session.
+    // Enabled, activation verifies every assumption below before its
+    // first torque write (reads only), again after the activation
+    // configurator (which can rewrite these EEPROM registers), reads the
+    // programmed Bus Watchdog back, and only then arms the transport's
+    // bounded read of the feedback window, just before torque-on. Any
+    // failure refuses activation and leaves the bounded read unarmed.
+    struct BoundedRead {
+      bool enabled = false;
+      // Every servo's Return Delay Time (register units, 2 us) at most
+      // this: the budget assumes it. Checkpoint 1 records the arm's 0.
+      int max_return_delay_time = 0;
+      // Every servo replies to reads at least at this level.
+      int min_status_return_level = 1;
+      // Fast Sync Read (Phase B) needs firmware >= v45 on every servo.
+      bool fast_sync_read = false;
+      // A latency timer the adapter exposes must read 1 ms; one it does
+      // not expose is reported unverified (busDiscovery()).
+      int required_latency_timer_ms = 1;
+      // The bounded read's limits (dxl::Port): budget positive, guard at
+      // least zero.
+      std::chrono::nanoseconds budget{0};
+      std::chrono::nanoseconds guard{0};
+      // After an ambiguous failure the bus is silent until the guard
+      // ends; the next instruction packet then leaves after host
+      // scheduling and transport delays. Both allowances must be
+      // positive, and budget + guard + both must stay below the
+      // programmed Bus Watchdog interval less one 20 ms unit (the
+      // servo's timing resolution), or the watchdog would fire.
+      std::chrono::nanoseconds scheduling_allowance{0};
+      std::chrono::nanoseconds transport_allowance{0};
+    };
+    BoundedRead bounded_read;
+  };
+
+  // What activation found while checking a bounded read's bus profile.
+  struct BusDiscovery {
+    struct Servo {
+      std::uint8_t id = 0;
+      int firmware = -1;
+      int return_delay_time = -1;
+      int status_return_level = -1;
+      int baud_register = -1;
+      int bus_watchdog = -1;  // read back after arming it
+    };
+    std::vector<Servo> servos;
+    // The adapter's latency timer; none when the device does not expose
+    // it, which leaves the requirement unverified.
+    std::optional<int> latency_timer_ms;
+    // budget + guard + both allowances, and the most it may be.
+    double max_instruction_gap_s = 0.0;
+    double watchdog_gap_limit_s = 0.0;
+    bool armed = false;
   };
 
   struct CycleStats {
@@ -314,6 +371,11 @@ class CraneX7 {
   void requestQuiesce();
   bool quiesced() const { return quiesced_.load(); }
 
+  // The last activation's bus-profile check (Options::bounded_read);
+  // empty when the bounded read is disabled.
+  const BusDiscovery& busDiscovery() const { return bus_discovery_; }
+  bool boundedReadArmed() const { return bounded_armed_; }
+
   // Optional CURRENT-mode activation preload: the per-joint currents
   // [A] are clamped and position-gated exactly like writeCurrents
   // (shared limiter) and written to the goal registers BEFORE torque
@@ -371,6 +433,13 @@ class CraneX7 {
  private:
   bool verifyServos();
   bool verifyDriveModes();
+  // Options::bounded_read: the bus profile and the watchdog timing
+  // (reads only), the programmed watchdog read back, and the arming.
+  bool verifyBusProfile();
+  bool verifyBoundedReadTiming();
+  bool armBoundedRead();
+  void disarmBoundedRead();
+  std::uint8_t watchdogUnits() const;
   bool activateSteps();
   void bestEffortRelease();
   bool requireMode(std::uint8_t mode, const char* what);
@@ -421,6 +490,8 @@ class CraneX7 {
   // activation configurator if any, so a goal write cannot enable torque
   // (EEPROM, locked while torque is on). Cleared by deactivate().
   bool drive_modes_verified_ = false;
+  BusDiscovery bus_discovery_;
+  bool bounded_armed_ = false;
   std::atomic<bool> escalated_{false};
   std::atomic<bool> quiesced_{false};
   std::function<double()> now_;

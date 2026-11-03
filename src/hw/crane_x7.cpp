@@ -38,6 +38,7 @@ CraneX7::CraneX7(dxl::PacketIO& io, Config config, Options options)
 
 CraneX7::~CraneX7() {
   stopThread();
+  disarmBoundedRead();
   io_.setTransmitInhibit(nullptr);
 }
 
@@ -99,8 +100,174 @@ bool CraneX7::verifyDriveModes() {
   return true;
 }
 
+std::uint8_t CraneX7::watchdogUnits() const {
+  return static_cast<std::uint8_t>(std::clamp(
+      std::lround(options_.bus_watchdog_timeout_s /
+                  dxl::kBusWatchdogUnitSeconds),
+      1L, 127L));
+}
+
+// The bounded read's limits against the Bus Watchdog activation programs.
+// After an ambiguous failure nothing is sent until budget + guard after the
+// failed read's instruction, and the next instruction then needs host
+// scheduling and transport time to reach the servos: that is the longest
+// silence the servos see. Their watchdog counts it in 20 ms units, so one
+// unit less than the programmed interval is the longest silence certain not
+// to trip it.
+bool CraneX7::verifyBoundedReadTiming() {
+  using std::chrono::nanoseconds;
+  const auto& b = options_.bounded_read;
+  if (b.budget <= nanoseconds::zero() || b.guard < nanoseconds::zero() ||
+      b.scheduling_allowance <= nanoseconds::zero() ||
+      b.transport_allowance <= nanoseconds::zero()) {
+    last_error_ = "bounded read: the budget and both allowances must be "
+                  "positive and the guard at least zero";
+    return false;
+  }
+  constexpr auto kWatchdogUnit = std::chrono::milliseconds(20);
+  const nanoseconds gap =
+      b.budget + b.guard + b.scheduling_allowance + b.transport_allowance;
+  const nanoseconds limit = kWatchdogUnit * (watchdogUnits() - 1);
+  const auto ms = [](nanoseconds d) {
+    return std::to_string(std::chrono::duration<double, std::milli>(d).count());
+  };
+  bus_discovery_.max_instruction_gap_s =
+      std::chrono::duration<double>(gap).count();
+  bus_discovery_.watchdog_gap_limit_s =
+      std::chrono::duration<double>(limit).count();
+  if (!(gap < limit)) {
+    last_error_ = "bounded read: the longest silence on the bus, " + ms(gap) +
+                  " ms (budget + guard + scheduling and transport "
+                  "allowances), is not below " + ms(limit) +
+                  " ms, the programmed Bus Watchdog interval of " +
+                  ms(kWatchdogUnit * watchdogUnits()) +
+                  " ms less one 20 ms unit";
+    return false;
+  }
+  return true;
+}
+
+// C-4a: the bus assumptions of a bounded read, read over the plain path
+// before any torque write. Any mismatch refuses activation.
+bool CraneX7::verifyBusProfile() {
+  const auto& b = options_.bounded_read;
+  bus_discovery_ = BusDiscovery{};
+  if (!verifyBoundedReadTiming()) return false;
+  const std::optional<std::uint8_t> baud =
+      dxl::baudRegisterFor(config_.baudrate);
+  if (!baud) {
+    last_error_ = "bounded read: no Baud Rate register value for " +
+                  std::to_string(config_.baudrate) + " bps";
+    return false;
+  }
+  for (const auto& joint : config_.joints) {
+    const std::string id = std::to_string(joint.id);
+    std::uint8_t firmware = 0;
+    std::uint8_t return_delay = 0;
+    std::uint8_t status_return = 0;
+    std::uint8_t baud_register = 0;
+    if (!io_.read8(joint.id, reg::kFirmwareVersion.addr, &firmware).ok() ||
+        !io_.read8(joint.id, reg::kReturnDelayTime.addr, &return_delay)
+             .ok() ||
+        !io_.read8(joint.id, reg::kStatusReturnLevel.addr, &status_return)
+             .ok() ||
+        !io_.read8(joint.id, reg::kBaudRate.addr, &baud_register).ok()) {
+      last_error_ = "bounded read: cannot read the bus profile of id " + id;
+      return false;
+    }
+    BusDiscovery::Servo servo;
+    servo.id = joint.id;
+    servo.firmware = firmware;
+    servo.return_delay_time = return_delay;
+    servo.status_return_level = status_return;
+    servo.baud_register = baud_register;
+    bus_discovery_.servos.push_back(servo);
+    if (return_delay > b.max_return_delay_time) {
+      last_error_ = "bounded read: id " + id + " has Return Delay Time " +
+                    std::to_string(return_delay) + " (" +
+                    std::to_string(2 * return_delay) +
+                    " us), above the " +
+                    std::to_string(b.max_return_delay_time) +
+                    " its budget assumes";
+      return false;
+    }
+    if (status_return < b.min_status_return_level) {
+      last_error_ = "bounded read: id " + id + " has Status Return Level " +
+                    std::to_string(status_return) + ", below " +
+                    std::to_string(b.min_status_return_level);
+      return false;
+    }
+    if (baud_register != *baud) {
+      last_error_ = "bounded read: id " + id + " has Baud Rate register " +
+                    std::to_string(baud_register) + ", not the " +
+                    std::to_string(*baud) + " of " +
+                    std::to_string(config_.baudrate) + " bps";
+      return false;
+    }
+    if (b.fast_sync_read && firmware < dxl::kMinFirmwareFastSyncRead) {
+      last_error_ = "bounded read: id " + id + " firmware v" +
+                    std::to_string(firmware) +
+                    " lacks Fast Sync Read (needs >= v45)";
+      return false;
+    }
+  }
+  bus_discovery_.latency_timer_ms = io_.latencyTimerMs();
+  if (bus_discovery_.latency_timer_ms &&
+      *bus_discovery_.latency_timer_ms != b.required_latency_timer_ms) {
+    last_error_ = "bounded read: the adapter's latency timer is " +
+                  std::to_string(*bus_discovery_.latency_timer_ms) +
+                  " ms, not " + std::to_string(b.required_latency_timer_ms);
+    return false;
+  }
+  return true;
+}
+
+// After the Bus Watchdog is programmed and before torque-on: every servo
+// must read back the interval the timing check assumed, and only then is
+// the transport's bounded read armed on the feedback window.
+bool CraneX7::armBoundedRead() {
+  const std::uint8_t units = watchdogUnits();
+  for (std::size_t i = 0; i < config_.joints.size(); ++i) {
+    const auto& joint = config_.joints[i];
+    std::uint8_t watchdog = 0;
+    if (!io_.read8(joint.id, reg::kBusWatchdog.addr, &watchdog).ok()) {
+      last_error_ = "bounded read: cannot read back the Bus Watchdog of id " +
+                    std::to_string(joint.id);
+      return false;
+    }
+    bus_discovery_.servos.at(i).bus_watchdog = watchdog;
+    if (watchdog != units) {
+      last_error_ = "bounded read: id " + std::to_string(joint.id) +
+                    " Bus Watchdog reads " + std::to_string(watchdog) +
+                    ", not the programmed " + std::to_string(units);
+      return false;
+    }
+  }
+  dxl::BoundedReadConfig config;
+  config.addr = dxl::SyncGroup::kFeedbackAddr;
+  config.len = dxl::SyncGroup::kFeedbackSlots;
+  config.ids = group_.ids();
+  config.budget = options_.bounded_read.budget;
+  config.guard = options_.bounded_read.guard;
+  if (!io_.armBoundedSyncRead(config)) {
+    last_error_ = "bounded read: the transport cannot bound its grouped read";
+    return false;
+  }
+  bounded_armed_ = true;
+  bus_discovery_.armed = true;
+  return true;
+}
+
+void CraneX7::disarmBoundedRead() {
+  if (!bounded_armed_) return;
+  io_.disarmBoundedSyncRead();
+  bounded_armed_ = false;
+  bus_discovery_.armed = false;
+}
+
 bool CraneX7::activate() {
   if (activated_) return true;
+  bus_discovery_ = BusDiscovery{};
   passive_feedback_ready_ = false;
   drive_modes_verified_ = false;
   const bool current_based_position = std::all_of(
@@ -127,6 +294,7 @@ bool CraneX7::activate() {
     // best-effort release of everything the sequence may have touched
     // (preserves last_error_ from the failing step).
     bestEffortRelease();
+    disarmBoundedRead();
     return false;
   }
   last_command_ = now_();
@@ -192,6 +360,9 @@ void CraneX7::bestEffortRelease() {
 
 bool CraneX7::activateSteps() {
   if (!verifyServos() || !verifyDriveModes()) return false;
+  const bool bounded = options_.bounded_read.enabled;
+  // Before any torque write: the bounded read's bus profile, reads only.
+  if (bounded && !verifyBusProfile()) return false;
 
   // EEPROM-side setup requires torque off; a previously triggered Bus
   // Watchdog (reads 0xFF, rejects goal writes) must be cleared before
@@ -241,6 +412,8 @@ bool CraneX7::activateSteps() {
       return false;
     }
     if (!verifyDriveModes()) return false;
+    // The configurator can rewrite these EEPROM registers too.
+    if (bounded && !verifyBusProfile()) return false;
   }
 
   for (const auto& joint : config_.joints) {
@@ -305,10 +478,7 @@ bool CraneX7::activateSteps() {
     return false;
   }
 
-  const auto watchdog_units = static_cast<std::uint8_t>(std::clamp(
-      std::lround(options_.bus_watchdog_timeout_s /
-                  dxl::kBusWatchdogUnitSeconds),
-      1L, 127L));
+  const std::uint8_t watchdog_units = watchdogUnits();
   for (const auto& joint : config_.joints) {
     if (!io_.write8(joint.id, reg::kBusWatchdog.addr, watchdog_units).ok()) {
       last_error_ = "bus-watchdog arm failed on id " +
@@ -316,6 +486,8 @@ bool CraneX7::activateSteps() {
       return false;
     }
   }
+  // The watchdog read back, then the bounded read armed, before torque-on.
+  if (bounded && !armBoundedRead()) return false;
 
   // Current-mode activation preload: written while torque is still off
   // (the register accepts it and it takes effect at the enable
@@ -400,6 +572,7 @@ bool CraneX7::deactivate() {
   }
   activated_ = false;
   drive_modes_verified_ = false;  // the session's check ends with it
+  disarmBoundedRead();  // no transmission: safe even when quiesced
   return ok && !quiesced_.load();
 }
 

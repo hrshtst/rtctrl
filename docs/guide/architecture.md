@@ -67,6 +67,18 @@ flowchart TB
   waiting in the guard gives up instead of going out after it. `emu::PtyBus` can delay,
   truncate, garble or drop sync-read replies and records when each
   instruction arrived, for the fault tests.
+  `CraneX7::Options::bounded_read` arms it for a session. Activation then
+  checks, before its first torque write and again after the activation
+  configurator, every servo's Return Delay Time, Status Return Level,
+  baud register and (for Fast Sync Read) firmware, plus the adapter's
+  latency timer where the device exposes one. It also checks that the
+  longest silence on the bus (`budget + guard` and the scheduling and
+  transport allowances) stays below the programmed Bus Watchdog interval
+  less one 20 ms unit. After programming the watchdog it reads it back,
+  and only then arms the feedback window, just before torque-on. Any
+  mismatch refuses activation with nothing armed; `busDiscovery()`
+  reports what was found. Deactivation, a failed activation and the
+  destructor disarm.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`

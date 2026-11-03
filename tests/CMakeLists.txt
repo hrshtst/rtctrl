@@ -30,6 +30,7 @@ add_executable(unit_tests
   unit/cycle_record_test.cpp
   unit/timing_log_test.cpp
   unit/hw_test.cpp
+  unit/hw_bounded_read_test.cpp
   unit/hw_modes_test.cpp
   unit/gravity_test.cpp
   unit/runner_test.cpp

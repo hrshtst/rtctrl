@@ -54,16 +54,18 @@ class SyncGroup {
   IoResult writeGoalVelocities(const std::vector<double>& rad_s);
   IoResult writeGoalPositions(const std::vector<double>& rad);
 
- private:
   // Feedback window layout (13 bytes per servo, slots 0..12):
   //   [0..1]  PresentCurrent   [2..5] PresentVelocity
   //   [6..9]  PresentPosition  [10..11] PresentInputVoltage
   //   [12]    PresentTemperature
+  // readAll() is one syncRead of this window, which a bounded read arms.
+  static constexpr int kFeedbackSlots = 13;
+  static constexpr std::uint16_t kFeedbackAddr = reg::kIndirectDataBase;
+
+ private:
   // Goal window layout (10 bytes per servo, slots 13..22):
   //   [0..1]  GoalCurrent  [2..5] GoalVelocity  [6..9] GoalPosition
-  static constexpr int kFeedbackSlots = 13;
   static constexpr int kGoalSlots = 10;
-  static constexpr std::uint16_t kFeedbackAddr = reg::kIndirectDataBase;
   static constexpr std::uint16_t kGoalAddr =
       reg::kIndirectDataBase + kFeedbackSlots;
   static constexpr std::uint16_t kGoalVelocityAddr = kGoalAddr + 2;
