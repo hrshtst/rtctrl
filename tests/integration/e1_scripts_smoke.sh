@@ -139,5 +139,21 @@ if setsid tools/e1_cal.sh "${COMMON[@]}" --dry-run --runs current:100 \
   fail "a priority without a cpu was accepted" "$ROOT/cal-rt-half.log"
 fi
 grep -q -- '--rt-priority and --rt-cpu go together' "$ROOT/cal-rt-half.log"
+# A SCHED_FIFO priority is 1 to 99: the probe reads 0 as ordinary
+# scheduling, which a run labelled rt-idle must never get.
+for priority in 0 100; do
+  if setsid tools/e1_cal.sh "${COMMON[@]}" --dry-run --runs current:100 \
+      --rt-priority "$priority" --rt-cpu 0 </dev/null \
+      >"$ROOT/cal-rt-$priority.log" 2>&1; then
+    fail "calibration accepted priority $priority" "$ROOT/cal-rt-$priority.log"
+  fi
+  grep -q -- '--rt-priority must be 1 to 99' "$ROOT/cal-rt-$priority.log"
+  if setsid tools/e1_prod.sh "${COMMON[@]}" --dry-run --conditions rt-idle \
+      --rt-priority "$priority" --rt-cpu 0 </dev/null \
+      >"$ROOT/prod-rt-$priority.log" 2>&1; then
+    fail "the matrix accepted priority $priority" "$ROOT/prod-rt-$priority.log"
+  fi
+  grep -q -- '--rt-priority must be 1 to 99' "$ROOT/prod-rt-$priority.log"
+done
 
 echo "e1 session scripts OK"

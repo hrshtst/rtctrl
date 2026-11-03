@@ -65,7 +65,7 @@ usage: $0 [options]
   --outdir DIR          where the logs go (default the repo root)
   --max-runnable N      quiet-machine threshold, mean runnable tasks
                         including this script (default $max_runnable)
-  --rt-priority N       SCHED_FIFO priority (with --rt-cpu; default: none,
+  --rt-priority N       SCHED_FIFO priority 1 to 99 (with --rt-cpu; default: none,
                         default scheduling)
   --rt-cpu C            the CPU the probe is pinned to (with --rt-priority)
   --dry-run             check the prerequisites and print the plan only
@@ -123,6 +123,10 @@ if [ -n "$rt_priority" ] || [ -n "$rt_cpu" ]; then
     die "--rt-priority and --rt-cpu go together"
   if ! is_uint "$rt_priority" || ! is_uint "$rt_cpu"; then
     die "--rt-priority and --rt-cpu must be integers"
+  fi
+  # The probe reads priority 0 as ordinary scheduling, never SCHED_FIFO.
+  if [ "$rt_priority" -lt 1 ] || [ "$rt_priority" -gt 99 ]; then
+    die "--rt-priority must be 1 to 99 (0 would mean ordinary scheduling)"
   fi
   condition=rt-idle
   requested="SCHED_FIFO $rt_priority pinned to CPU $rt_cpu"

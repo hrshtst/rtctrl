@@ -57,7 +57,7 @@ usage: $0 [options]
   --profiles LIST     from current,position,cbp (default $profiles)
   --rates LIST        Hz, ascending (default $rates)
   --duration S        seconds per run (default $duration)
-  --rt-priority N     SCHED_FIFO priority for rt-* (default $rt_priority)
+  --rt-priority N     SCHED_FIFO priority 1 to 99 for rt-* (default $rt_priority)
   --rt-cpu C          CPU for rt-* (default $rt_cpu)
   --probe PATH        x7_bus_timing binary (default $PROBE)
   --port P            serial port (default: the probe's configuration)
@@ -125,6 +125,10 @@ done
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 if ! is_uint "$rt_priority" || ! is_uint "$rt_cpu"; then
   die "--rt-priority and --rt-cpu must be integers"
+fi
+# The probe reads priority 0 as ordinary scheduling, never SCHED_FIFO.
+if [ "$rt_priority" -lt 1 ] || [ "$rt_priority" -gt 99 ]; then
+  die "--rt-priority must be 1 to 99 (0 would mean ordinary scheduling)"
 fi
 is_uint "$max_runnable" || die "--max-runnable must be an integer"
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
