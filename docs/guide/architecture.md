@@ -54,13 +54,17 @@ flowchart TB
   `Port::armBoundedSyncRead` replaces the SDK's receive for one grouped
   read with its own: a deadline (`budget`) on the monotonic clock after
   the instruction leaves, and `StatusReplyParser` on the bytes as they
-  arrive. A timeout or a malformed reply is ambiguous, since late bytes
-  may still come. The read fails, and a quiet guard holds every
+  arrive. Nothing is accepted at or after the deadline, even bytes that a
+  receiver paused across it then holds complete. A timeout or a malformed
+  reply is ambiguous, since late bytes may still come. The read fails, and a quiet guard holds every
   transmission (fallback writes included) until `budget + guard` after
   the instruction. Input received meanwhile is discarded, and the next
   read asks for one byte more, so a late reply of the normal length
   fails on its length field. Unarmed, every transaction takes the SDK
-  path unchanged, and no guard is ever set. `emu::PtyBus` can delay,
+  path unchanged, and no guard is ever set. `CraneX7` registers its
+  quiesce flag with the port (`PacketIO::setTransmitInhibit`): once it
+  is set, every transmission is refused just before sending, and one
+  waiting in the guard gives up instead of going out after it. `emu::PtyBus` can delay,
   truncate, garble or drop sync-read replies and records when each
   instruction arrived, for the fault tests.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's

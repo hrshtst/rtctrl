@@ -19,133 +19,13 @@
 #include "rtctrl/dxl/sync_group.hpp"
 #include "rtctrl/emu/motor_emulator.hpp"
 #include "rtctrl/emu/pty_bus.hpp"
+#include "rtctrl/hw/config.hpp"
+#include "rtctrl/hw/crane_x7.hpp"
 
-namespace dxl = rtctrl::dxl;
-namespace emu = rtctrl::emu;
-namespace reg = rtctrl::dxl::reg;
-using Clock = std::chrono::steady_clock;
-using std::chrono::milliseconds;
+#include "fault_bus.hpp"
 
-namespace {
-
-constexpr std::uint8_t kSyncRead = 0x82;
-constexpr std::uint8_t kSyncWrite = 0x83;
-constexpr std::uint8_t kRead = 0x02;
-constexpr std::uint8_t kWrite = 0x03;
-constexpr std::uint8_t kPing = 0x01;
-
-// A CRANE-X7-shaped bus served on a background thread. The poll loop and
-// withBus() share a mutex, so a test can change the emulated servos
-// between transactions.
-class FaultBus {
- public:
-  FaultBus() {
-    for (std::uint8_t id = 2; id <= 9; ++id) {
-      emu::MotorEmulator::Config config;
-      config.id = id;
-      config.model_number =
-          (id == 3) ? dxl::kModelXm540W270 : dxl::kModelXm430W350;
-      bus_.add(config);
-    }
-    pty_ = std::make_unique<emu::PtyBus>(bus_);
-    thread_ = std::thread([this] {
-      while (!stop_.load()) {
-        {
-          const std::lock_guard<std::mutex> lock(mutex_);
-          pty_->poll(0.0001);
-        }
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-      }
-    });
-  }
-
-  ~FaultBus() {
-    stop_.store(true);
-    thread_.join();
-  }
-
-  const std::string& path() const { return pty_->slavePath(); }
-  emu::PtyBus& pty() { return *pty_; }
-
-  template <class F>
-  void withBus(F f) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    f(bus_);
-  }
-
-  void setPositions(std::uint32_t base) {
-    withBus([base](emu::MotorBus& bus) {
-      for (auto& motor : bus.motors()) {
-        motor.poke(reg::kPresentPosition, base + motor.id());
-      }
-    });
-  }
-
-  // Waits until the emulator has received n instructions.
-  std::vector<emu::Arrival> waitArrivals(std::size_t n) {
-    const auto give_up = Clock::now() + milliseconds(500);
-    std::vector<emu::Arrival> a = pty_->arrivals();
-    while (a.size() < n && Clock::now() < give_up) {
-      std::this_thread::sleep_for(std::chrono::microseconds(200));
-      a = pty_->arrivals();
-    }
-    return a;
-  }
-
- private:
-  emu::MotorBus bus_;
-  std::unique_ptr<emu::PtyBus> pty_;
-  std::thread thread_;
-  std::mutex mutex_;
-  std::atomic<bool> stop_{false};
-};
-
-const std::vector<std::uint8_t> kIds{2, 3, 4, 5, 6, 7, 8, 9};
-constexpr auto kBudget = milliseconds(30);
-constexpr auto kGuard = milliseconds(30);
-
-dxl::BoundedReadConfig positionRead() {
-  dxl::BoundedReadConfig config;
-  config.addr = reg::kPresentPosition.addr;
-  config.len = reg::kPresentPosition.len;
-  config.ids = kIds;
-  config.budget = kBudget;
-  config.guard = kGuard;
-  return config;
-}
-
-std::vector<std::uint32_t> positions(const std::vector<std::uint8_t>& out) {
-  std::vector<std::uint32_t> p;
-  for (std::size_t i = 0; i + 3 < out.size(); i += 4) {
-    p.push_back(static_cast<std::uint32_t>(out[i]) |
-                (static_cast<std::uint32_t>(out[i + 1]) << 8) |
-                (static_cast<std::uint32_t>(out[i + 2]) << 16) |
-                (static_cast<std::uint32_t>(out[i + 3]) << 24));
-  }
-  return p;
-}
-
-std::vector<std::uint32_t> expected(std::uint32_t base) {
-  std::vector<std::uint32_t> p;
-  for (const std::uint8_t id : kIds) p.push_back(base + id);
-  return p;
-}
-
-dxl::IoResult readPositions(dxl::Port& port, std::vector<std::uint8_t>& out) {
-  return port.syncRead(reg::kPresentPosition.addr, reg::kPresentPosition.len,
-                       kIds, out);
-}
-
-std::vector<std::uint16_t> syncReadLengths(
-    const std::vector<emu::Arrival>& arrivals) {
-  std::vector<std::uint16_t> lengths;
-  for (const auto& a : arrivals) {
-    if (a.instruction == kSyncRead) lengths.push_back(a.data_length);
-  }
-  return lengths;
-}
-
-}  // namespace
+// The fixture (FaultBus) and its helpers, with the dxl/emu/reg aliases.
+using namespace fault_bus;  // NOLINT(build/namespaces)
 
 TEST_CASE("an armed grouped read returns what the SDK path returns",
           "[pty][bounded]") {
@@ -258,13 +138,13 @@ TEST_CASE("a late reply fails at the deadline, and nothing is sent before "
   CHECK(port.lastGuardRelease() >= quiet_until);
   CHECK_FALSE(port.quietGuardPending());
   // On the wire: the emulator received nothing in the guard. It notes an
-  // instruction when it polls (every 0.1 ms here), at or after the
-  // transmission, so allow one millisecond against a 60 ms guard.
+  // instruction when it polls, at or after the reception, which is after
+  // the transmission, so no allowance is due.
   const auto arrivals = bus.waitArrivals(before + 1);
   REQUIRE(arrivals.size() > before);
   for (std::size_t i = before; i < arrivals.size(); ++i) {
     CAPTURE(i, static_cast<int>(arrivals[i].instruction));
-    CHECK(arrivals[i].at >= quiet_until - milliseconds(1));
+    CHECK(arrivals[i].at >= quiet_until);
   }
   const std::uint8_t first = arrivals[before].instruction;
   CHECK((first == kSyncWrite || first == kWrite || first == kRead ||
@@ -436,4 +316,156 @@ TEST_CASE("a bounded read is armed only with a usable window and limits",
   CHECK(port.boundedSyncReadArmed());
   port.disarmBoundedSyncRead();
   CHECK_FALSE(port.boundedSyncReadArmed());
+}
+
+namespace {
+
+std::size_t sentAfter(const std::vector<emu::Arrival>& arrivals,
+                      Clock::time_point t) {
+  std::size_t n = 0;
+  for (const auto& a : arrivals) {
+    if (a.at > t) ++n;
+  }
+  return n;
+}
+
+// The arm on the emulated bus, with the bounded read armed on its feedback
+// window and a long guard, so a transmission waits in the guard for
+// hundreds of milliseconds.
+struct BoundedArm {
+  FaultBus bus;
+  dxl::Port port{bus.path(), 3000000};
+  rtctrl::hw::CraneX7 arm{port,
+                          rtctrl::hw::Config::load("config/crane_x7.toml")};
+
+  explicit BoundedArm(std::chrono::nanoseconds guard) {
+    REQUIRE(arm.activate());
+    // SyncGroup's feedback window: 13 bytes at the start of Indirect Data.
+    dxl::BoundedReadConfig config = positionRead();
+    config.addr = reg::kIndirectDataBase;
+    config.len = 13;
+    config.guard = guard;
+    port.armBoundedSyncRead(config);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("an inhibit cancels a transmission waiting in the guard and "
+          "refuses every later one",
+          "[pty][bounded]") {
+  FaultBus bus;
+  bus.setPositions(2000);
+  dxl::Port port(bus.path(), 3000000);
+  std::atomic<bool> inhibit{false};
+  port.setTransmitInhibit(&inhibit);
+  dxl::BoundedReadConfig config = positionRead();
+  config.guard = milliseconds(300);
+  port.armBoundedSyncRead(config);
+  bus.pty().scriptSyncReadFaults({{emu::ReplyFault::Kind::kDrop, {}, 0, {}}});
+  std::vector<std::uint8_t> out;
+  REQUIRE_FALSE(readPositions(port, out).ok());
+  REQUIRE(port.quietGuardPending());
+  const auto guard_end = port.quietUntil();
+  const std::size_t before = bus.waitArrivals(1).size();
+
+  // A fallback goal write waits in the guard; the inhibit lands 20 ms in.
+  std::thread setter([&inhibit] {
+    std::this_thread::sleep_for(milliseconds(20));
+    inhibit.store(true);
+  });
+  const std::vector<std::uint8_t> goals(kIds.size() * 4, 0);
+  const auto start = Clock::now();
+  const dxl::IoResult cancelled =
+      port.syncWrite(reg::kGoalPosition.addr, 4, kIds, goals);
+  const auto waited = Clock::now() - start;
+  setter.join();
+  CHECK(cancelled.comm == dxl::kCommTransmitInhibited);
+  CHECK(waited < milliseconds(100));  // the guard alone runs 330 ms
+  CHECK(port.quietGuardPending());
+
+  // Every other kind of transmission is refused as well.
+  CHECK(port.write32(5, reg::kGoalPosition.addr, 2048).comm ==
+        dxl::kCommTransmitInhibited);
+  std::uint8_t model[2] = {};
+  CHECK(port.read(5, reg::kModelNumber.addr, model, 2).comm ==
+        dxl::kCommTransmitInhibited);
+  CHECK(port.ping(5, nullptr).comm == dxl::kCommTransmitInhibited);
+  CHECK(readPositions(port, out).comm == dxl::kCommTransmitInhibited);
+  CHECK(port.boundedReadStats().inhibited == 5);
+
+  // Past the guard's end, nothing was sent.
+  std::this_thread::sleep_until(guard_end + milliseconds(20));
+  CHECK(bus.pty().arrivals().size() == before);
+  port.setTransmitInhibit(nullptr);
+}
+
+TEST_CASE("an inhibit refuses transmissions with no guard pending",
+          "[pty][bounded]") {
+  FaultBus bus;
+  dxl::Port port(bus.path(), 3000000);
+  std::atomic<bool> inhibit{false};
+  port.setTransmitInhibit(&inhibit);
+  REQUIRE(port.ping(5, nullptr).ok());
+  const std::size_t before = bus.waitArrivals(1).size();
+  inhibit.store(true);
+  REQUIRE_FALSE(port.quietGuardPending());
+  CHECK(port.write32(5, reg::kGoalPosition.addr, 2048).comm ==
+        dxl::kCommTransmitInhibited);
+  const std::vector<std::uint8_t> goals(kIds.size() * 4, 0);
+  CHECK(port.syncWrite(reg::kGoalPosition.addr, 4, kIds, goals).comm ==
+        dxl::kCommTransmitInhibited);
+  std::vector<std::uint8_t> out;
+  CHECK(readPositions(port, out).comm == dxl::kCommTransmitInhibited);
+  std::this_thread::sleep_for(milliseconds(20));
+  CHECK(bus.pty().arrivals().size() == before);
+  port.setTransmitInhibit(nullptr);
+  // Unregistered, the port sends again.
+  CHECK(port.ping(5, nullptr).ok());
+}
+
+TEST_CASE("a quiesce stops the background fallback write waiting in the "
+          "guard",
+          "[pty][bounded]") {
+  BoundedArm a(milliseconds(300));
+  a.bus.pty().scriptSyncReadFaults(
+      {{emu::ReplyFault::Kind::kDrop, {}, 0, {}}});
+  const std::size_t before = a.bus.pty().arrivals().size();
+  REQUIRE(a.arm.startThread());
+  // The thread's first read gets no reply and times out after 30 ms; its
+  // fallback goal write then waits in the guard until about 330 ms.
+  a.bus.waitArrivals(before + 1);
+  std::this_thread::sleep_for(milliseconds(60));
+  const auto quiesce = Clock::now();
+  a.arm.requestQuiesce();
+  std::this_thread::sleep_for(milliseconds(350));
+  a.arm.stopThread();
+  CHECK(sentAfter(a.bus.pty().arrivals(), quiesce) == 0);
+  CHECK(a.port.boundedReadStats().inhibited >= 1);
+}
+
+TEST_CASE("a quiesce stops the shutdown writes waiting in the guard",
+          "[pty][bounded]") {
+  BoundedArm a(milliseconds(300));
+  a.bus.pty().scriptSyncReadFaults(
+      {{emu::ReplyFault::Kind::kDrop, {}, 0, {}}});
+  std::vector<dxl::Feedback> fb;
+  REQUIRE_FALSE(a.arm.readAll(fb));
+  REQUIRE(a.port.quietGuardPending());
+  const auto guard_end = a.port.quietUntil();
+
+  // deactivate()'s first stop write waits in the guard; a session
+  // watchdog's quiesce lands 20 ms in, from another thread.
+  Clock::time_point quiesce{};
+  std::thread watchdog([&a, &quiesce] {
+    std::this_thread::sleep_for(milliseconds(20));
+    quiesce = Clock::now();
+    a.arm.requestQuiesce();
+  });
+  const bool stopped = a.arm.deactivate();
+  watchdog.join();
+  CHECK_FALSE(stopped);
+  std::this_thread::sleep_until(guard_end + milliseconds(20));
+  CHECK(sentAfter(a.bus.pty().arrivals(), quiesce) == 0);
+  CHECK(a.port.boundedReadStats().inhibited >= 1);
 }

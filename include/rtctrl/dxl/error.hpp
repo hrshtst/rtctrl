@@ -14,6 +14,11 @@ inline constexpr std::uint8_t kErrDataLength = 0x05;
 inline constexpr std::uint8_t kErrDataLimit = 0x06;
 inline constexpr std::uint8_t kErrAccess = 0x07;
 
+// rtctrl's own `comm` code, outside the SDK's COMM_* range: the
+// transaction was refused before anything was sent, because its owner
+// inhibited transmissions (CraneX7::requestQuiesce).
+inline constexpr int kCommTransmitInhibited = -9001;
+
 // Outcome of one bus transaction: `comm` is the SDK COMM_* code (0 =
 // COMM_SUCCESS) and `error` the status-packet error field.
 struct IoResult {

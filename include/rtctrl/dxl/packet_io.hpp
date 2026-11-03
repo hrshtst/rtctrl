@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <vector>
@@ -46,6 +47,16 @@ class PacketIO {
   // Stamps of the most recent syncRead, read back by the thread that made
   // it; an implementation without stamps reports none (sent == false).
   virtual SyncReadTiming lastSyncReadTiming() const { return {}; }
+
+  // While *flag is true, an implementation that supports it refuses every
+  // transmission (kCommTransmitInhibited) and abandons any wait before
+  // one. The owner of the flag sets it once and keeps it alive while
+  // registered; nullptr unregisters. The default ignores the flag (the
+  // in-process emulator: the arm's own quiesce gates are what its tests
+  // check).
+  virtual void setTransmitInhibit(const std::atomic<bool>* flag) {
+    (void)flag;
+  }
 
   // Typed single-register conveniences.
   IoResult write8(std::uint8_t id, std::uint16_t addr, std::uint8_t value) {

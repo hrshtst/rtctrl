@@ -254,6 +254,17 @@ catch_discover_tests(integration_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS integration)
 
+# The bounded read's deadline with a receiver paused across it. This
+# executable defines read() (one armed call pauses), so it stays apart from
+# the other integration tests.
+add_executable(bounded_read_deadline_test
+  integration/bounded_read_deadline_test.cpp)
+target_link_libraries(bounded_read_deadline_test PRIVATE rtctrl::rtctrl
+  Catch2::Catch2WithMain ${CMAKE_DL_LIBS})
+catch_discover_tests(bounded_read_deadline_test
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PROPERTIES LABELS integration)
+
 # Dataset-integrity regressions for the offline analysis (frozen vs
 # live-integrator merge refusal, frozen-bias record validity). The
 # build-local uv cache keeps the test hermetic — restricted

@@ -117,18 +117,31 @@ void Port::close() {
   }
 }
 
-void Port::holdForQuietGuard() {
-  if (!quiet_pending_) return;  // the SDK path never sets a guard
-  if (Clock::now() < quiet_until_) {
-    ++stats_.guard_waits;
-    while (Clock::now() < quiet_until_) {
-      std::this_thread::sleep_until(quiet_until_);
+bool Port::clearToTransmit() {
+  if (quiet_pending_) {  // the SDK path never sets a guard
+    if (Clock::now() < quiet_until_) ++stats_.guard_waits;
+    // Wait in slices of at most 1 ms, so an inhibit cancels the wait.
+    for (Clock::time_point now = Clock::now(); now < quiet_until_;
+         now = Clock::now()) {
+      if (transmitInhibited()) return false;  // the guard stays pending
+      std::this_thread::sleep_until(
+          std::min(quiet_until_, now + std::chrono::milliseconds(1)));
     }
+    quiet_pending_ = false;
+    // Whatever arrived during the guard is a late reply: discard it.
+    port_->clearPort();
+    last_guard_release_ = Clock::now();
   }
-  quiet_pending_ = false;
-  // Whatever arrived during the guard is a late reply: discard it.
-  port_->clearPort();
-  last_guard_release_ = Clock::now();
+  // Immediately before sending: an inhibit set while this call waited, or
+  // at any time before, keeps the bus silent.
+  return !transmitInhibited();
+}
+
+IoResult Port::inhibitedResult() {
+  ++stats_.inhibited;
+  IoResult r;
+  r.comm = kCommTransmitInhibited;
+  return r;
 }
 
 void Port::armBoundedSyncRead(BoundedReadConfig config) {
@@ -149,7 +162,7 @@ void Port::armBoundedSyncRead(BoundedReadConfig config) {
 void Port::disarmBoundedSyncRead() { bounded_.reset(); }
 
 IoResult Port::ping(std::uint8_t id, std::uint16_t* model_number) {
-  holdForQuietGuard();
+  if (!clearToTransmit()) return inhibitedResult();
   IoResult r;
   std::uint16_t model = 0;
   r.comm = packet_->ping(port_, id, &model, &r.error);
@@ -159,7 +172,7 @@ IoResult Port::ping(std::uint8_t id, std::uint16_t* model_number) {
 
 IoResult Port::read(std::uint8_t id, std::uint16_t addr, std::uint8_t* data,
                     std::uint16_t len) {
-  holdForQuietGuard();
+  if (!clearToTransmit()) return inhibitedResult();
   IoResult r;
   r.comm = packet_->readTxRx(port_, id, addr, len, data, &r.error);
   return r;
@@ -167,7 +180,7 @@ IoResult Port::read(std::uint8_t id, std::uint16_t addr, std::uint8_t* data,
 
 IoResult Port::write(std::uint8_t id, std::uint16_t addr,
                      const std::uint8_t* data, std::uint16_t len) {
-  holdForQuietGuard();
+  if (!clearToTransmit()) return inhibitedResult();
   IoResult r;
   r.comm = packet_->writeTxRx(port_, id, addr, len,
                               const_cast<std::uint8_t*>(data), &r.error);
@@ -177,7 +190,7 @@ IoResult Port::write(std::uint8_t id, std::uint16_t addr,
 IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
                         const std::vector<std::uint8_t>& ids,
                         std::vector<std::uint8_t>& out) {
-  holdForQuietGuard();
+  if (!clearToTransmit()) return inhibitedResult();
   if (bounded_ != nullptr && addr == bounded_->config.addr &&
       len == bounded_->config.len && ids == bounded_->config.ids) {
     out.resize(ids.size() * len);
@@ -208,7 +221,7 @@ IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
 IoResult Port::syncWrite(std::uint16_t addr, std::uint16_t len,
                          const std::vector<std::uint8_t>& ids,
                          const std::vector<std::uint8_t>& data) {
-  holdForQuietGuard();
+  if (!clearToTransmit()) return inhibitedResult();
   IoResult r;
   sync_write_param_.resize(ids.size() * (1 + len));
   for (std::size_t i = 0; i < ids.size(); ++i) {
@@ -250,10 +263,18 @@ IoResult Port::boundedSyncRead(std::vector<std::uint8_t>& out) {
   Status status = Status::kIncomplete;
   std::size_t received = 0;
   std::size_t packets = 0;
+  bool expired = false;
   while (status == Status::kIncomplete) {
     const int got = port_->readPort(b.rx.data() + received,
                                     static_cast<int>(b.rx.size() - received));
+    // The clock after the receive: bytes held only at or after the
+    // deadline (a receiver paused across it) are not accepted, even if
+    // they would complete the reply.
     const Clock::time_point now = Clock::now();
+    if (now >= deadline) {
+      expired = true;
+      break;
+    }
     if (got > 0) {
       received += static_cast<std::size_t>(got);
       status = parser.parse(b.rx.data(), received);
@@ -265,12 +286,11 @@ IoResult Port::boundedSyncRead(std::vector<std::uint8_t>& out) {
       }
       if (status != Status::kIncomplete) break;
     }
-    if (now >= deadline) break;
   }
   // The SDK marks the port busy until its own receive returns.
   port_->is_using_ = false;
 
-  if (status == Status::kComplete) {
+  if (!expired && status == Status::kComplete) {
     const std::vector<std::uint8_t>& params = parser.params();
     for (std::size_t i = 0; i < b.config.ids.size(); ++i) {
       std::copy_n(params.begin() + static_cast<std::ptrdiff_t>(i * requested),
@@ -294,7 +314,7 @@ IoResult Port::boundedSyncRead(std::vector<std::uint8_t>& out) {
 
   // Ambiguous: late bytes may still arrive. Nothing leaves before the
   // budget and the guard have passed, and the next read is a recovery read.
-  if (status == Status::kMalformed) {
+  if (!expired && status == Status::kMalformed) {
     ++stats_.malformed;
     stats_.last_fault = parser.fault();
     r.comm = COMM_RX_CORRUPT;

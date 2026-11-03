@@ -307,7 +307,10 @@ class CraneX7 {
   // thread and marks the session inactive. The resulting bus silence
   // makes the armed servo Bus Watchdog stop every servo within its
   // 0.1 s interval regardless of host state. One-way for the lifetime
-  // of this object.
+  // of this object. The flag is also registered with the transport
+  // (PacketIO::setTransmitInhibit), so a transmission already waiting in
+  // it, such as a write held by the bounded read's quiet guard, is
+  // abandoned rather than sent.
   void requestQuiesce();
   bool quiesced() const { return quiesced_.load(); }
 

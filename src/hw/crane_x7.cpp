@@ -30,9 +30,16 @@ CraneX7::CraneX7(dxl::PacketIO& io, Config config, Options options)
       }),
       last_command_(now_()) {
   config_.validate();  // Config is plain data — re-check the invariant
+  // The transport refuses every transmission once quiesced, including one
+  // already waiting inside it (the bounded read's quiet guard) when the
+  // quiesce lands: this object's own gates cannot reach that one.
+  io_.setTransmitInhibit(&quiesced_);
 }
 
-CraneX7::~CraneX7() { stopThread(); }
+CraneX7::~CraneX7() {
+  stopThread();
+  io_.setTransmitInhibit(nullptr);
+}
 
 std::vector<std::uint8_t> CraneX7::ids() const {
   std::vector<std::uint8_t> out;

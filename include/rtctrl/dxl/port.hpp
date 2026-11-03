@@ -37,6 +37,7 @@ struct BoundedReadStats {
   std::uint64_t servo_errors = 0;   // well formed, a nonzero error byte
   std::uint64_t recoveries = 0;     // clean recovery reads
   std::uint64_t guard_waits = 0;    // transmissions held by the quiet guard
+  std::uint64_t inhibited = 0;      // transmissions refused by the inhibit
   StatusReplyParser::Fault last_fault = StatusReplyParser::Fault::kNone;
 };
 
@@ -64,6 +65,16 @@ struct BoundedReadStats {
 // A servo's nonzero error byte in a well-formed reply fails the read like
 // the SDK path (IoResult::error) and is not ambiguous. The unarmed path
 // is the SDK's, unchanged; no guard is ever set on it.
+//
+// Nothing is accepted at or after the deadline: the clock is read after
+// every receive, so a receiver paused across the deadline (preempted, or
+// stopped) fails the read, even if the bytes it then holds would
+// complete it.
+//
+// setTransmitInhibit registers the owner's quiesce flag. Once it is set,
+// every transmission is refused with kCommTransmitInhibited, checked
+// immediately before sending, and a transmission waiting for the quiet
+// guard gives up within a millisecond without sending.
 class Port : public PacketIO {
  public:
   Port(const std::string& device, int baudrate);
@@ -85,6 +96,9 @@ class Port : public PacketIO {
                      const std::vector<std::uint8_t>& data) override;
   SyncReadTiming lastSyncReadTiming() const override {
     return last_sync_read_timing_;
+  }
+  void setTransmitInhibit(const std::atomic<bool>* flag) override {
+    inhibit_ = flag;
   }
 
   // Stop all bus traffic: the loss-of-comms escalation path — after
@@ -119,8 +133,13 @@ class Port : public PacketIO {
  private:
   struct Bounded;
 
-  // Waits out a pending quiet guard, then discards received input.
-  void holdForQuietGuard();
+  // Before every transmission: waits out a pending quiet guard (then
+  // discards received input) and checks the inhibit. False: send nothing.
+  bool clearToTransmit();
+  bool transmitInhibited() const {
+    return inhibit_ != nullptr && inhibit_->load();
+  }
+  IoResult inhibitedResult();
   IoResult boundedSyncRead(std::vector<std::uint8_t>& out);
 
   dynamixel::PortHandler* port_;
@@ -134,6 +153,7 @@ class Port : public PacketIO {
   bool quiet_pending_ = false;
   std::chrono::steady_clock::time_point quiet_until_{};
   std::chrono::steady_clock::time_point last_guard_release_{};
+  const std::atomic<bool>* inhibit_ = nullptr;
 };
 
 }  // namespace rtctrl::dxl
