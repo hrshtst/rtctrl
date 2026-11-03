@@ -244,8 +244,9 @@ envelope, and the mismatched rows cannot be recovered, because those runs
 recorded transport success and value mismatch as one flag. The bound may
 still be too loose for 1 kHz. External RS-485 capture is preferred where
 available; otherwise separate diagnostic runs with USB tracing (`usbmon`) can
-locate the batching delay. The archive manifests for E0 and E1 are added
-before the next checkpoint.
+locate the batching delay. No receive-only RS-485 tap is available (owner,
+2026-11-03), so D7 is closed and the diagnostics use USB tracing. The archive
+manifests for E0 and E1 are added before the next checkpoint.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

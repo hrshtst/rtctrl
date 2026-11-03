@@ -31,7 +31,7 @@ append-only in spirit — the decisions below are closed.
 | 08-18 | Project cleanup: records consolidated here; the closed `x7_ident` hardware app removed |
 | 08-19 | `x7_gravity_demo` added (simplified gravity-compensation demonstration with customizable torque constants) and reviewed — the `--experimental-calibration` opt-in gate and the operator page followed; `apps/` sources reorganized into domain subdirectories (binaries stay flat in `build/apps/`) |
 | 08-20 | Docs renamed lowercase and nested by nav section (published URLs changed; no redirects, by owner decision); Apache-2.0 license adopted; MITOU Target Program (IPA, FY2026) acknowledgment added; docs em-dash convention recorded with `docs/records/` exempt |
-| 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate any profile sustains (no rate qualified for powered control); E1 calibration stopped because torque-off goal read-back does not work on the servos; checkpoint 1 decided the same day |
+| 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate that passes every criterion, while some 500 Hz runs kept their frequency but failed the headroom criterion (no rate qualified for powered control); E1 calibration stopped because torque-off goal read-back does not work on the servos; checkpoint 1 decided the same day |
 
 ## Decision ledger
 
