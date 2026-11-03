@@ -157,6 +157,30 @@ for priority in 0 100; do
   grep -q -- '--rt-priority must be 1 to 99' "$ROOT/prod-rt-$priority.log"
 done
 
+# --no-climb asks nothing and runs every listed rate, even after a failed
+# check: 1000 Hz fails on the pty (its replies alone exceed the period),
+# and 1001 Hz still runs.
+setsid tools/e1_prod.sh "${COMMON[@]}" --yes --no-climb --attempt 5 \
+  --conditions idle --profiles current --rates 1000,1001 </dev/null \
+  >"$ROOT/noclimb.log" 2>&1 || fail "the no-climb session failed" \
+  "$ROOT/noclimb.log"
+for rate in 1000 1001; do
+  note="$OUT/rate-e1-prod-current-${rate}hz-idle-$DATE-5.csv.run.txt"
+  grep -q '^verdict: fail' "$note" || fail "no failed verdict at $rate Hz" "$note"
+  grep -q '^operator: none asked (--no-climb)' "$note"
+  grep -qx 'climb: continue' "$note"
+  grep -q '^climb rule: none: every listed rate runs' "$note"
+done
+grep -q 'no climb' "$ROOT/noclimb.log"
+if grep -q 'not run\|Did this rate' "$ROOT/noclimb.log"; then
+  fail "a no-climb session ended a climb or asked" "$ROOT/noclimb.log"
+fi
+if setsid tools/e1_prod.sh "${COMMON[@]}" --dry-run --no-climb --auto-stop \
+    </dev/null >"$ROOT/noclimb-auto.log" 2>&1; then
+  fail "--no-climb was accepted with --auto-stop" "$ROOT/noclimb-auto.log"
+fi
+grep -q 'exclude each other' "$ROOT/noclimb-auto.log"
+
 # The bounded read path. On the emulator's factory Return Delay Time (250)
 # the probe refuses before its first write, and the refusal stops the
 # session (stop rule).

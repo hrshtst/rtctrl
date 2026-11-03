@@ -12,7 +12,8 @@
 #   rates       100, 200, 500, 1000 Hz
 # A failed criterion is data, not a stop: the script shows the verdicts and
 # asks whether that rate clearly failed. "Yes" ends the climb for that
-# profile under that condition. A probe that exits nonzero (a refusal,
+# profile under that condition. With --no-climb it asks nothing and runs
+# every listed rate, recording each verdict. A probe that exits nonzero (a refusal,
 # torque found on, incomplete outputs) or an analysis error stops the whole
 # session, per the stop rule.
 #
@@ -48,6 +49,7 @@ max_runnable=3
 stress_dir="$HOME/.cache/rtctrl-stress"
 read_path=legacy
 auto_stop=0
+no_climb=0
 dry_run=0
 assume_yes=0
 
@@ -74,6 +76,8 @@ usage: $0 [options]
   --stress-dir DIR    stress-ng --hdd directory, on a disk, not tmpfs
                       (default $stress_dir)
   --auto-stop         end a climb at its first failed check without asking
+  --no-climb          run every listed rate: a failed check is recorded,
+                      never asked about, and ends no climb
   --dry-run           check the prerequisites and print the plan only
   --yes               confirm the session in advance (no prompt)
 EOF
@@ -105,6 +109,7 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     --auto-stop) auto_stop=1; shift ;;
+    --no-climb) no_climb=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --yes) assume_yes=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -123,6 +128,8 @@ done
 for p in "${profile_list[@]}"; do
   case "$p" in current|position|cbp) ;; *) die "unknown profile '$p'" ;; esac
 done
+[ "$auto_stop" -eq 1 ] && [ "$no_climb" -eq 1 ] &&
+  die "--auto-stop and --no-climb exclude each other"
 prev=0
 for r in "${rate_list[@]}"; do
   is_uint "$r" && [ "$r" -gt "$prev" ] || die "rates must be ascending integers (got '$rates')"
@@ -185,6 +192,13 @@ if [ ${#problems[@]} -gt 0 ]; then
   [ "$dry_run" -eq 1 ] || exit 2
 fi
 
+climb_desc=
+climb_rule="ask after a failed check whether the rate clearly failed"
+[ "$auto_stop" -eq 1 ] && climb_rule="end at the first failed check (--auto-stop)"
+if [ "$no_climb" -eq 1 ]; then
+  climb_desc=", no climb"
+  climb_rule="none: every listed rate runs (--no-climb)"
+fi
 stress_cmd=(stress-ng --cpu "$(nproc)" --hdd 1 --timeout "${stress_timeout}s"
             --temp-path "$stress_dir")
 
@@ -238,7 +252,7 @@ results=()
 add_result() { results+=("$(printf '%-10s %-9s %5s Hz  %s' "$1" "$2" "$3" "$4")"); }
 print_table() {
   echo
-  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path):"
+  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path$climb_desc):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 stop_stress() {
@@ -334,6 +348,7 @@ run_one() {
     echo "probe binary: $(stat -c %y "$PROBE")"
     echo "condition: $cond"
     echo "read path: $read_desc"
+    echo "climb rule: $climb_rule"
     if [ "$loaded" -eq 1 ]; then echo "load: ${stress_cmd[*]}"; else echo "load: none"; fi
     case "$cond" in
       rt-*) echo "scheduling: --rt-priority $rt_priority --rt-cpu $rt_cpu (rtprio limit $(ulimit -r))" ;;
@@ -418,13 +433,25 @@ for cond in "${cond_list[@]}"; do
         pass) add_result "$cond" "$profile" "$rate" "PASS" ;;
         skip-continue) add_result "$cond" "$profile" "$rate" "skipped (attempted earlier; climb went on)" ;;
         skip-ended)
-          add_result "$cond" "$profile" "$rate" "skipped (attempted earlier; climb ended)"
-          ended_at=$rate ;;
+          if [ "$no_climb" -eq 1 ]; then
+            # No climb: the run is not retried, but the next rates run.
+            add_result "$cond" "$profile" "$rate" "skipped (attempted earlier)"
+          else
+            add_result "$cond" "$profile" "$rate" "skipped (attempted earlier; climb ended)"
+            ended_at=$rate
+          fi ;;
         stop)
           add_result "$cond" "$profile" "$rate" "STOPPED the session (see the .run.txt)"
           print_table
           exit 1 ;;
         fail)
+          if [ "$no_climb" -eq 1 ]; then
+            echo "operator: none asked (--no-climb)" >>"$note"
+            echo "climb: continue" >>"$note"
+            add_result "$cond" "$profile" "$rate" "FAIL $failed"
+            current=()
+            continue
+          fi
           if [ "$i" -eq $(( ${#rate_list[@]} - 1 )) ]; then
             echo "climb: ended (top rate)" >>"$note"
             add_result "$cond" "$profile" "$rate" "FAIL $failed (top rate)"

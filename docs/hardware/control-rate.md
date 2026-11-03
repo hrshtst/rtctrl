@@ -162,7 +162,9 @@ cutoff is within reach. Before each run it waits for a quiet machine.
 `e1_prod.sh` takes each condition (idle, loaded, rt-idle, rt-loaded), then
 each profile, and climbs the rates, running `timing_summary.py --check` after
 every run. When a check fails it asks whether that rate clearly failed: yes
-ends that climb. A loaded run starts its own stress-ng window, which ends 15 s
+ends that climb. With `--no-climb` it asks nothing and runs every listed rate,
+recording each verdict: more runs than stopping at the first clear failure,
+but no judgement during the session. A loaded run starts its own stress-ng window, which ends 15 s
 after the run. With a real-time condition selected, the script refuses to
 start while the shell's real-time priority limit (`ulimit -r`) is below the
 priority; `sudo prlimit --pid $$ --rtprio=90:90` raises it for the shell that
