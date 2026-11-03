@@ -31,6 +31,7 @@ append-only in spirit — the decisions below are closed.
 | 08-18 | Project cleanup: records consolidated here; the closed `x7_ident` hardware app removed |
 | 08-19 | `x7_gravity_demo` added (simplified gravity-compensation demonstration with customizable torque constants) and reviewed — the `--experimental-calibration` opt-in gate and the operator page followed; `apps/` sources reorganized into domain subdirectories (binaries stay flat in `build/apps/`) |
 | 08-20 | Docs renamed lowercase and nested by nav section (published URLs changed; no redirects, by owner decision); Apache-2.0 license adopted; MITOU Target Program (IPA, FY2026) acknowledgment added; docs em-dash convention recorded with `docs/records/` exempt |
+| 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate any profile sustains; E1 calibration stopped because torque-off goal read-back does not work on the servos |
 
 ## Decision ledger
 
@@ -590,6 +591,52 @@ bounds model-error sensitivity only; a sim pass is necessary, never
 sufficient. Evidence: `data/ct_mass_error_study/` (results, seeds,
 binary/model SHA provenance); reproduction:
 `tools/ct_mass_error_study.py` driving `examples/x7_ct_mass_error`.
+
+## Control-rate exploration: E0 and E1 (2026-11-03)
+
+The first hardware steps of the
+[control-rate qualification](../hardware/control-rate.md) ran torque-off on
+the legacy read path, driven by `tools/e1_prod.sh` and `tools/e1_cal.sh` at
+commit `dba323d`. They are exploration, never acceptance evidence; the
+results went to the reviewer for checkpoint 1.
+
+**E0 inventory.** All eight servos run firmware v47 with Drive Mode 0
+(Torque On by Goal Update clear), Status Return Level 2 and baud register 5.
+Return Delay Time was already 0 on every servo, not the factory 250 the plan
+assumed; who set it is unrecorded. The adapter is an FTDI FT232H
+(0403:6014) with `latency_timer` 1.
+
+**E1 production traffic.** 33 runs of 60 s covered the three profiles, with
+rates climbing from 100 Hz, idle and loaded, under default and SCHED_FIFO
+scheduling. The verdicts, the same for the three profiles except where
+noted:
+
+| Condition | 100 Hz | 200 Hz | 500 Hz |
+|---|---|---|---|
+| idle | pass | pass | fail (T1, T2, T6a) |
+| loaded, default scheduling | fail (T5) | fail (T5, T6a; T2 for two profiles) | not run |
+| SCHED_FIFO, idle | pass | pass | fail (T6a; T2 for current) |
+| SCHED_FIFO, loaded | pass | pass | fail (T1, T2, T6a) |
+
+Idle, the eight-servo sync read takes 1.37 to 1.48 ms at the median, about
+twice its 0.71 ms of wire bytes, which fills the 1.4 ms host-work budget at
+500 Hz; 1000 Hz was never feasible on this path. SCHED_FIFO on a dedicated
+core removed the load's effect on wakes (99.9th-percentile lateness 0.004 to
+0.009 ms, against 0.94 to 2.73 ms with default scheduling), but load still
+slowed the read to 1.59 to 1.95 ms.
+
+**E1 calibration stopped.** With torque off, the servos accept goal writes
+and then overwrite them with present values: Goal Position follows Present
+Position, and Goal Current stays 0. A direct `dxl_inspect` write and read on
+id 9 (operating mode 0) confirmed it. The `--confirm-writes` read-back
+therefore cannot bound write completion, and no completion offset was
+measured. `dxl_emu` keeps such writes, so the pty tests did not show the
+problem. How to measure write completion went to the reviewer.
+
+**Incident.** Before the session, a test of `e1_prod.sh` reached the arm:
+14 torque-off probe runs of 1 s and six `stress-ng` load windows, outside
+the procedure. No motion was possible, and the data was deleted. The scripts
+now require a typed confirmation before any bus contact.
 
 ## Consistency audit
 
