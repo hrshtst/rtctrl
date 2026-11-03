@@ -4,9 +4,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 namespace rtctrl::emu {
 
@@ -89,6 +91,7 @@ PtyBus::~PtyBus() {
 }
 
 bool PtyBus::poll(double dt) {
+  sendDueReplies();
   std::uint8_t buf[512];
   while (true) {
     const ssize_t n = ::read(master_fd_, buf, sizeof(buf));
@@ -102,8 +105,68 @@ bool PtyBus::poll(double dt) {
     if (n < 0) return false;
   }
   extractFrames();
+  sendDueReplies();
   bus_.tick(dt);
   return true;
+}
+
+void PtyBus::scriptSyncReadFaults(const std::vector<ReplyFault>& faults) {
+  const std::lock_guard<std::mutex> lock(script_mutex_);
+  faults_.insert(faults_.end(), faults.begin(), faults.end());
+}
+
+std::vector<Arrival> PtyBus::arrivals() const {
+  const std::lock_guard<std::mutex> lock(script_mutex_);
+  return arrivals_;
+}
+
+void PtyBus::sendDueReplies() {
+  const auto now = std::chrono::steady_clock::now();
+  // In order of arrival: an earlier delayed reply goes out first.
+  while (!pending_.empty() && pending_.front().due <= now) {
+    writeBytes(pending_.front().bytes);
+    pending_.erase(pending_.begin());
+  }
+}
+
+void PtyBus::sendSyncReadReplies(std::vector<std::uint8_t> replies) {
+  ReplyFault fault;
+  bool scripted = false;
+  {
+    const std::lock_guard<std::mutex> lock(script_mutex_);
+    if (!faults_.empty()) {
+      fault = faults_.front();
+      faults_.pop_front();
+      scripted = true;
+    }
+  }
+  if (!scripted) {
+    writeBytes(replies);
+    return;
+  }
+  switch (fault.kind) {
+    case ReplyFault::Kind::kDelay: {
+      Pending p{std::chrono::steady_clock::now() + fault.delay,
+                std::move(replies)};
+      const auto at = std::upper_bound(
+          pending_.begin(), pending_.end(), p.due,
+          [](const auto& due, const Pending& q) { return due < q.due; });
+      pending_.insert(at, std::move(p));
+      break;
+    }
+    case ReplyFault::Kind::kTruncate:
+      replies.resize(std::min(fault.keep, replies.size()));
+      writeBytes(replies);
+      break;
+    case ReplyFault::Kind::kGarbage: {
+      std::vector<std::uint8_t> bytes = fault.garbage;
+      bytes.insert(bytes.end(), replies.begin(), replies.end());
+      writeBytes(bytes);
+      break;
+    }
+    case ReplyFault::Kind::kDrop:
+      break;
+  }
 }
 
 void PtyBus::extractFrames() {
@@ -141,6 +204,18 @@ void PtyBus::extractFrames() {
       if (!body.empty()) {
         const std::uint8_t instruction = body.front();
         body.erase(body.begin());
+        Arrival arrival;
+        arrival.instruction = instruction;
+        arrival.id = id;
+        arrival.at = std::chrono::steady_clock::now();
+        if (instruction == kInstSyncRead && body.size() >= 4) {
+          arrival.data_length =
+              static_cast<std::uint16_t>(body[2] | (body[3] << 8));
+        }
+        {
+          const std::lock_guard<std::mutex> lock(script_mutex_);
+          arrivals_.push_back(arrival);
+        }
         handleFrame(id, instruction, body);
       }
     }
@@ -148,8 +223,9 @@ void PtyBus::extractFrames() {
   }
 }
 
-void PtyBus::sendStatus(std::uint8_t id, std::uint8_t error,
-                        const std::vector<std::uint8_t>& params) {
+std::vector<std::uint8_t> PtyBus::encodeStatus(
+    std::uint8_t id, std::uint8_t error,
+    const std::vector<std::uint8_t>& params) const {
   std::vector<std::uint8_t> body = {kInstStatus, error};
   body.insert(body.end(), params.begin(), params.end());
   dxlAddStuffing(body);
@@ -162,11 +238,19 @@ void PtyBus::sendStatus(std::uint8_t id, std::uint8_t error,
   const std::uint16_t crc = dxlCrc16(frame.data(), frame.size());
   frame.push_back(static_cast<std::uint8_t>(crc & 0xFF));
   frame.push_back(static_cast<std::uint8_t>(crc >> 8));
+  return frame;
+}
 
+void PtyBus::sendStatus(std::uint8_t id, std::uint8_t error,
+                        const std::vector<std::uint8_t>& params) {
+  writeBytes(encodeStatus(id, error, params));
+}
+
+void PtyBus::writeBytes(const std::vector<std::uint8_t>& bytes) {
   std::size_t off = 0;
-  while (off < frame.size()) {
-    const ssize_t n = ::write(master_fd_, frame.data() + off,
-                              frame.size() - off);
+  while (off < bytes.size()) {
+    const ssize_t n = ::write(master_fd_, bytes.data() + off,
+                              bytes.size() - off);
     if (n <= 0) return;
     off += static_cast<std::size_t>(n);
   }
@@ -222,15 +306,20 @@ void PtyBus::handleFrame(std::uint8_t id, std::uint8_t instruction,
           static_cast<std::uint16_t>(params[0] | (params[1] << 8));
       const std::uint16_t len =
           static_cast<std::uint16_t>(params[2] | (params[3] << 8));
-      // one status packet per listed id, in order
+      // one status packet per listed id, in order, sent together (or as
+      // a scripted fault says)
+      std::vector<std::uint8_t> replies;
       for (std::size_t i = 4; i < params.size(); ++i) {
         MotorEmulator* motor = bus_.find(params[i]);
         if (motor == nullptr) continue;
         motor->touch();
         std::vector<std::uint8_t> data(len, 0);
         const dxl::IoResult r = motor->read(addr, data.data(), len);
-        sendStatus(motor->id(), r.error, data);
+        const std::vector<std::uint8_t> status =
+            encodeStatus(motor->id(), r.error, data);
+        replies.insert(replies.end(), status.begin(), status.end());
       }
+      sendSyncReadReplies(std::move(replies));
       break;
     }
     case kInstSyncWrite: {

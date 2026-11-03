@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <thread>
+#include <utility>
 
 namespace rtctrl::dxl {
 
@@ -69,7 +71,28 @@ dynamixel::PortHandler* checkedPortHandler(const std::string& device) {
   return dynamixel::PortHandler::getPortHandler(device.c_str());
 }
 
+// The bounded read's deadlines and the quiet guard must not move with the
+// wall clock (the SDK's packet timeout uses CLOCK_REALTIME).
+using Clock = std::chrono::steady_clock;
+static_assert(Clock::is_steady, "the bounded read needs a monotonic clock");
+
 }  // namespace
+
+// What the armed bounded read needs, allocated once at arming.
+struct Port::Bounded {
+  explicit Bounded(BoundedReadConfig c)
+      : config(std::move(c)),
+        normal(config.ids, config.len),
+        recovery(config.ids, static_cast<std::uint16_t>(config.len + 1)),
+        // Every recovery reply at its longest, and one byte to show any
+        // excess (the parser reports extra bytes before the buffer fills).
+        rx(config.ids.size() * (7 + recovery.maxLengthField()) + 1) {}
+
+  BoundedReadConfig config;
+  StatusReplyParser normal;
+  StatusReplyParser recovery;
+  std::vector<std::uint8_t> rx;
+};
 
 Port::Port(const std::string& device, int baudrate)
     : port_(checkedPortHandler(device)),
@@ -94,7 +117,39 @@ void Port::close() {
   }
 }
 
+void Port::holdForQuietGuard() {
+  if (!quiet_pending_) return;  // the SDK path never sets a guard
+  if (Clock::now() < quiet_until_) {
+    ++stats_.guard_waits;
+    while (Clock::now() < quiet_until_) {
+      std::this_thread::sleep_until(quiet_until_);
+    }
+  }
+  quiet_pending_ = false;
+  // Whatever arrived during the guard is a late reply: discard it.
+  port_->clearPort();
+  last_guard_release_ = Clock::now();
+}
+
+void Port::armBoundedSyncRead(BoundedReadConfig config) {
+  if (config.ids.empty() || config.len == 0 || config.len == 0xFFFF) {
+    throw std::invalid_argument(
+        "Port: a bounded read needs ids and 1 to 65534 data bytes");
+  }
+  if (config.budget <= std::chrono::nanoseconds::zero() ||
+      config.guard < std::chrono::nanoseconds::zero()) {
+    throw std::invalid_argument(
+        "Port: a bounded read needs a positive budget and a guard of at "
+        "least zero");
+  }
+  // A recovery still due stays due: only a clean recovery read ends it.
+  bounded_ = std::make_unique<Bounded>(std::move(config));
+}
+
+void Port::disarmBoundedSyncRead() { bounded_.reset(); }
+
 IoResult Port::ping(std::uint8_t id, std::uint16_t* model_number) {
+  holdForQuietGuard();
   IoResult r;
   std::uint16_t model = 0;
   r.comm = packet_->ping(port_, id, &model, &r.error);
@@ -104,6 +159,7 @@ IoResult Port::ping(std::uint8_t id, std::uint16_t* model_number) {
 
 IoResult Port::read(std::uint8_t id, std::uint16_t addr, std::uint8_t* data,
                     std::uint16_t len) {
+  holdForQuietGuard();
   IoResult r;
   r.comm = packet_->readTxRx(port_, id, addr, len, data, &r.error);
   return r;
@@ -111,6 +167,7 @@ IoResult Port::read(std::uint8_t id, std::uint16_t addr, std::uint8_t* data,
 
 IoResult Port::write(std::uint8_t id, std::uint16_t addr,
                      const std::uint8_t* data, std::uint16_t len) {
+  holdForQuietGuard();
   IoResult r;
   r.comm = packet_->writeTxRx(port_, id, addr, len,
                               const_cast<std::uint8_t*>(data), &r.error);
@@ -120,7 +177,12 @@ IoResult Port::write(std::uint8_t id, std::uint16_t addr,
 IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
                         const std::vector<std::uint8_t>& ids,
                         std::vector<std::uint8_t>& out) {
-  using Clock = std::chrono::steady_clock;
+  holdForQuietGuard();
+  if (bounded_ != nullptr && addr == bounded_->config.addr &&
+      len == bounded_->config.len && ids == bounded_->config.ids) {
+    out.resize(ids.size() * len);
+    return boundedSyncRead(out);
+  }
   SyncReadTiming& timing = last_sync_read_timing_;
   timing = {};
   IoResult r;
@@ -146,6 +208,7 @@ IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
 IoResult Port::syncWrite(std::uint16_t addr, std::uint16_t len,
                          const std::vector<std::uint8_t>& ids,
                          const std::vector<std::uint8_t>& data) {
+  holdForQuietGuard();
   IoResult r;
   sync_write_param_.resize(ids.size() * (1 + len));
   for (std::size_t i = 0; i < ids.size(); ++i) {
@@ -156,6 +219,92 @@ IoResult Port::syncWrite(std::uint16_t addr, std::uint16_t len,
   r.comm = packet_->syncWriteTxOnly(
       port_, addr, len, sync_write_param_.data(),
       static_cast<std::uint16_t>(sync_write_param_.size()));
+  return r;
+}
+
+IoResult Port::boundedSyncRead(std::vector<std::uint8_t>& out) {
+  Bounded& b = *bounded_;
+  const bool recovering = recovery_;
+  const std::uint16_t len = b.config.len;
+  const std::uint16_t requested =
+      recovering ? static_cast<std::uint16_t>(len + 1) : len;
+  StatusReplyParser& parser = recovering ? b.recovery : b.normal;
+  SyncReadTiming& timing = last_sync_read_timing_;
+  timing = {};
+  ++stats_.reads;
+
+  IoResult r;
+  // The SDK sends the instruction, discarding received input first.
+  r.comm = packet_->syncReadTx(
+      port_, b.config.addr, requested, b.config.ids.data(),
+      static_cast<std::uint16_t>(b.config.ids.size()));
+  if (r.comm != COMM_SUCCESS) return r;
+  const Clock::time_point t0 = Clock::now();
+  timing.instruction_sent = t0;
+  timing.sent = true;
+  const Clock::time_point deadline = t0 + b.config.budget;
+
+  // Receive until the replies are complete, cannot be valid, or the
+  // budget runs out, parsing what has arrived after every read.
+  using Status = StatusReplyParser::Status;
+  Status status = Status::kIncomplete;
+  std::size_t received = 0;
+  std::size_t packets = 0;
+  while (status == Status::kIncomplete) {
+    const int got = port_->readPort(b.rx.data() + received,
+                                    static_cast<int>(b.rx.size() - received));
+    const Clock::time_point now = Clock::now();
+    if (got > 0) {
+      received += static_cast<std::size_t>(got);
+      status = parser.parse(b.rx.data(), received);
+      if (parser.packetsParsed() > packets) {
+        if (packets == 0) timing.first_reply = now;
+        timing.last_reply = now;
+        packets = parser.packetsParsed();
+        timing.replies = static_cast<int>(packets);
+      }
+      if (status != Status::kIncomplete) break;
+    }
+    if (now >= deadline) break;
+  }
+  // The SDK marks the port busy until its own receive returns.
+  port_->is_using_ = false;
+
+  if (status == Status::kComplete) {
+    const std::vector<std::uint8_t>& params = parser.params();
+    for (std::size_t i = 0; i < b.config.ids.size(); ++i) {
+      std::copy_n(params.begin() + static_cast<std::ptrdiff_t>(i * requested),
+                  len, out.begin() + static_cast<std::ptrdiff_t>(i * len));
+    }
+    if (parser.anyServoError()) {
+      ++stats_.servo_errors;
+      for (const std::uint8_t e : parser.errors()) {
+        if (e != 0) {
+          r.error = e;
+          break;
+        }
+      }
+    }
+    if (recovering) {
+      recovery_ = false;
+      ++stats_.recoveries;
+    }
+    return r;
+  }
+
+  // Ambiguous: late bytes may still arrive. Nothing leaves before the
+  // budget and the guard have passed, and the next read is a recovery read.
+  if (status == Status::kMalformed) {
+    ++stats_.malformed;
+    stats_.last_fault = parser.fault();
+    r.comm = COMM_RX_CORRUPT;
+  } else {
+    ++stats_.timeouts;
+    r.comm = COMM_RX_TIMEOUT;
+  }
+  quiet_until_ = t0 + b.config.budget + b.config.guard;
+  quiet_pending_ = true;
+  recovery_ = true;
   return r;
 }
 

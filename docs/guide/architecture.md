@@ -49,9 +49,20 @@ flowchart TB
   `StatusReplyParser` checks the status replies to one grouped read
   strictly (header, ID and order, length, byte stuffing, CRC, nothing
   after the last reply) and reports a fault as soon as the bytes received
-  rule out a valid reply. It is the foundation of the bounded read path
-  for rates above 100 Hz (control-rate Phase R); the 100 Hz path still
-  reads through the SDK.
+  rule out a valid reply.
+- **The bounded grouped read (control-rate Phase R).** Above 100 Hz,
+  `Port::armBoundedSyncRead` replaces the SDK's receive for one grouped
+  read with its own: a deadline (`budget`) on the monotonic clock after
+  the instruction leaves, and `StatusReplyParser` on the bytes as they
+  arrive. A timeout or a malformed reply is ambiguous, since late bytes
+  may still come. The read fails, and a quiet guard holds every
+  transmission (fallback writes included) until `budget + guard` after
+  the instruction. Input received meanwhile is discarded, and the next
+  read asks for one byte more, so a late reply of the normal length
+  fails on its length field. Unarmed, every transaction takes the SDK
+  path unchanged, and no guard is ever set. `emu::PtyBus` can delay,
+  truncate, garble or drop sync-read replies and records when each
+  instruction arrived, for the fault tests.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`
