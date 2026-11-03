@@ -22,6 +22,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/model/zvs_writer.hpp"
+#include "../apps/common/timing_log.hpp"
 #include "../apps/common/x7_common.hpp"
 
 namespace arm = rtctrl::arm;
@@ -130,7 +131,13 @@ int main(int argc, char* argv[]) {
 
     std::printf("waving for %.0f s (Ctrl-C safe: deadman + watchdogs)\n",
                 duration_s);
-    const bool ok = arm::run(robot, controller, duration_s, observer.get());
+    arm::RunReport report;
+    const bool ok =
+        arm::run(robot, controller, duration_s, observer.get(), &report);
+    // The arm's state when the run ended, before shutdown changes it.
+    const auto stats = session.arm->cycleStats();
+    const bool escalated = session.arm->escalated();
+    const std::string arm_error = session.arm->lastError();
     const bool clean = shutdown.run();
     const bool zvs_ok = zvs == nullptr || zvs->close();
     if (zvs != nullptr && zvs->frames() > 0) {
@@ -141,6 +148,23 @@ int main(int argc, char* argv[]) {
     if (!zvs_ok) {
       std::fprintf(stderr, "zvs: writing %s failed; it is incomplete\n",
                    zvs_path.c_str());
+    }
+    if (!ok) {
+      // Why the run ended, from the runner's report (nothing is printed
+      // during the run).
+      std::printf("run ended: %s in cycle %ld; last accepted sample seq "
+                  "%llu at %.6f s (run time %.3f s); final sample seq %llu "
+                  "at %.6f s; %llu duplicate samples\n",
+                  arm::describe(report.end), report.cycle,
+                  static_cast<unsigned long long>(report.accepted_seq),
+                  report.accepted_sample_t, report.run_t,
+                  static_cast<unsigned long long>(report.final_seq),
+                  report.final_sample_t,
+                  static_cast<unsigned long long>(report.duplicates));
+      std::printf("arm at the end: %s, last error: %s\n",
+                  escalated ? "escalated" : "not escalated",
+                  arm_error.empty() ? "(none)" : arm_error.c_str());
+      x7::printCycleStats(stats);
     }
     if (!clean) {
       std::printf("SHUTDOWN FAULT (run %s)\n", ok ? "done" : "ABORTED");

@@ -8,7 +8,7 @@ WAVE="$2"
 OUT="$3"
 mkdir -p "$OUT"
 LINK="$OUT/ttyDXL"
-rm -f "$LINK" "$OUT/wave.zvs"
+rm -f "$LINK" "$OUT/wave.zvs" "$OUT/wave.log"
 "$EMU" --link "$LINK" &
 EMU_PID=$!
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
@@ -28,7 +28,17 @@ if "$WAVE" --port "$LINK" 2 --zvs >/dev/null 2>&1; then
   exit 1
 fi
 
-"$WAVE" --port "$LINK" --zvs "$OUT/wave.zvs" 2 > /dev/null
+# x7_wave's output is kept: on an abort it says why the run ended (the
+# runner's report and the arm's cycle statistics).
+show_log() {
+  echo "x7_wave output ($OUT/wave.log):"
+  cat "$OUT/wave.log"
+}
+if ! "$WAVE" --port "$LINK" --zvs "$OUT/wave.zvs" 2 >"$OUT/wave.log" 2>&1; then
+  echo "x7_wave failed"
+  show_log
+  exit 1
+fi
 
 # ~200 frames for a 2 s run at the 10 ms cycle; a generous band keeps
 # parallel-suite load jitter from tipping the count (cf. the float
@@ -36,12 +46,14 @@ fi
 frames=$(wc -l < "$OUT/wave.zvs")
 if [ "$frames" -lt 150 ] || [ "$frames" -gt 260 ]; then
   echo "unexpected frame count: $frames"
+  show_log
   exit 1
 fi
 # Every frame is "<dt> 9 ( ... )" — the finger-mimic-expanded vector.
 if grep -vqE '^[0-9.eE+-]+ 9 \(' "$OUT/wave.zvs"; then
   echo "malformed zvs frame:"
   grep -vE '^[0-9.eE+-]+ 9 \(' "$OUT/wave.zvs" | head -2
+  show_log
   exit 1
 fi
 echo "wave zvs export holds ($frames frames)"
