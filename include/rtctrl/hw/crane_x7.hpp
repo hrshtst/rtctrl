@@ -15,6 +15,7 @@
 #include "rtctrl/dxl/packet_io.hpp"
 #include "rtctrl/dxl/sync_group.hpp"
 #include "rtctrl/arm/types.hpp"  // shared bridge DATA types only
+#include "rtctrl/hw/bus_profile.hpp"
 #include "rtctrl/hw/config.hpp"
 #include "rtctrl/hw/cycle_record.hpp"
 #include "rtctrl/util/spsc_ring.hpp"
@@ -90,16 +91,8 @@ class CraneX7 {
     // only where the stop is confirmed).
     struct BoundedRead {
       bool enabled = false;
-      // Every servo's Return Delay Time (register units, 2 us) at most
-      // this: the budget assumes it. Checkpoint 1 records the arm's 0.
-      int max_return_delay_time = 0;
-      // Every servo replies to reads at least at this level.
-      int min_status_return_level = 1;
-      // Fast Sync Read (Phase B) needs firmware >= v45 on every servo.
-      bool fast_sync_read = false;
-      // A latency timer the adapter exposes must read 1 ms; one it does
-      // not expose is reported unverified (busDiscovery()).
-      int required_latency_timer_ms = 1;
+      // The servos' and adapter's assumptions, checked read-only.
+      BusProfile profile;
       // The bounded read's limits (dxl::Port): budget positive, guard at
       // least zero.
       std::chrono::nanoseconds budget{0};
@@ -120,18 +113,11 @@ class CraneX7 {
 
   // What activation found while checking a bounded read's bus profile.
   struct BusDiscovery {
-    struct Servo {
-      std::uint8_t id = 0;
-      int firmware = -1;
-      int return_delay_time = -1;
-      int status_return_level = -1;
-      int baud_register = -1;
-      int bus_watchdog = -1;  // read back after arming it
-    };
-    std::vector<Servo> servos;
-    // The adapter's latency timer; none when the device does not expose
-    // it, which leaves the requirement unverified.
-    std::optional<int> latency_timer_ms;
+    // The read-only check (checkBusProfile). Its latency timer is none
+    // when the device does not expose one, which leaves it unverified.
+    BusProfileReport profile;
+    // Each joint's Bus Watchdog, read back after activation programs it.
+    std::vector<int> bus_watchdog;
     // budget + guard + both allowances, and the most it may be.
     double max_instruction_gap_s = 0.0;
     double watchdog_gap_limit_s = 0.0;

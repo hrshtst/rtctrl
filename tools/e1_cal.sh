@@ -28,7 +28,8 @@
 #   <log>.csv               per-cycle log (probe)
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, summary
-# with <log> = rate-e1-cal-<profile>-<rate>hz[-rt-idle]-<date>-<attempt>.
+# with <log> = rate-e1-cal-<profile>-<rate>hz[-rt-idle][-bounded]-<date>-
+# <attempt> (-bounded with --read-path bounded).
 # The record states the requested scheduling and the policy the probe was
 # actually granted. A run whose
 # .csv or .run.txt already exists was attempted: it is skipped, never
@@ -47,6 +48,7 @@ outdir=.
 max_runnable=3
 rt_priority=
 rt_cpu=
+read_path=legacy
 dry_run=0
 assume_yes=0
 
@@ -68,6 +70,9 @@ usage: $0 [options]
   --rt-priority N       SCHED_FIFO priority 1 to 99 (with --rt-cpu; default: none,
                         default scheduling)
   --rt-cpu C            the CPU the probe is pinned to (with --rt-priority)
+  --read-path P         legacy (default) or bounded: the probe's grouped read
+                        (bounded: the probe's conservative 35 ms budget and
+                        equal guard; log names gain "-bounded")
   --dry-run             check the prerequisites and print the plan only
   --yes                 confirm the session in advance (no prompt)
 EOF
@@ -78,7 +83,7 @@ die() { echo "e1_cal: $*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--duration|--probe|--port|--date|--attempt|--outdir|--max-runnable|\
-    --rt-priority|--rt-cpu)
+    --rt-priority|--rt-cpu|--read-path)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs+=("$2") ;;
@@ -91,6 +96,7 @@ while [ $# -gt 0 ]; do
         --max-runnable) max_runnable=$2 ;;
         --rt-priority) rt_priority=$2 ;;
         --rt-cpu) rt_cpu=$2 ;;
+        --read-path) read_path=$2 ;;
       esac
       shift 2 ;;
     --dry-run) dry_run=1; shift ;;
@@ -117,6 +123,12 @@ done
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -gt 0 ] || die "--duration must be a positive integer"
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 is_uint "$max_runnable" || die "--max-runnable must be an integer"
+case "$read_path" in
+  legacy) path_tag=; read_desc="legacy (the SDK's receive)" ;;
+  bounded) path_tag=-bounded
+    read_desc="bounded (the probe's defaults: 35 ms budget, equal guard)" ;;
+  *) die "--read-path must be legacy or bounded" ;;
+esac
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
 if [ -n "$rt_priority" ] || [ -n "$rt_cpu" ]; then
   [ -n "$rt_priority" ] && [ -n "$rt_cpu" ] ||
@@ -158,9 +170,9 @@ fi
 
 log_base() {  # the default-scheduling names stay as they were
   if [ "$condition" = rt-idle ]; then
-    echo "rate-e1-cal-$1-${2}hz-rt-idle-$date_tag-$attempt"
+    echo "rate-e1-cal-$1-${2}hz-rt-idle$path_tag-$date_tag-$attempt"
   else
-    echo "rate-e1-cal-$1-${2}hz-$date_tag-$attempt"
+    echo "rate-e1-cal-$1-${2}hz$path_tag-$date_tag-$attempt"
   fi
 }
 
@@ -172,6 +184,7 @@ probe_cmd() {  # profile rate -> the probe command in cmd[]
   if [ "$condition" = rt-idle ]; then
     cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu")
   fi
+  [ "$read_path" = bounded ] && cmd+=(--read-path bounded)
 }
 
 total=${#plan[@]}
@@ -207,7 +220,7 @@ results=()
 add_result() { results+=("$(printf '%-9s %5s Hz  %s' "$1" "$2" "$3")"); }
 print_table() {
   echo
-  echo "E1 calibration results (date $date_tag, attempt $attempt, scheduling $requested):"
+  echo "E1 calibration results (date $date_tag, attempt $attempt, scheduling $requested, read path $read_path):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 on_interrupt() {
@@ -268,6 +281,7 @@ for entry in "${plan[@]}"; do
     echo "commit: $commit"
     echo "probe binary: $(stat -c %y "$PROBE")"
     echo "condition: $condition"
+    echo "read path: $read_desc"
     echo "scheduling requested: $requested"
     echo "cpu governors: $governors"
     echo "runnable before start: $quiet (this script included)"

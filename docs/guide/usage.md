@@ -1160,7 +1160,10 @@ writes one CSV row of host stamps per cycle plus a summary:
 
 `--confirm-writes` (each unchanged production write followed by a read of the
 last servo's Model Number) and `--drain` turn it into a calibration run that
-observes transport timing. `dxl/wire_budget.hpp` gives the analytic wire bytes of each
+observes transport timing. `--read-path bounded` receives the grouped
+read through the bounded path of control-rate Phase R (35 ms budget and an
+equal guard by default, `--budget-ms` and `--guard-ms`), after a read-only
+check of the bus profile. `dxl/wire_budget.hpp` gives the analytic wire bytes of each
 cycle, and `x7_controller_bench` measures controller computation without a bus.
 `tools/timing_summary.py` reduces probe logs and app `--timing-log` files to
 measured, estimated and envelope quantities. The procedure that uses them is

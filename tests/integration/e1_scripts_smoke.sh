@@ -13,6 +13,7 @@ set -eu
 EMU="$1"
 PROBE="$2"
 ROOT="$3"
+INSPECT="$4"
 LINK="$ROOT/tty"
 OUT="$ROOT/out"
 DATE=20000101
@@ -154,6 +155,43 @@ for priority in 0 100; do
     fail "the matrix accepted priority $priority" "$ROOT/prod-rt-$priority.log"
   fi
   grep -q -- '--rt-priority must be 1 to 99' "$ROOT/prod-rt-$priority.log"
+done
+
+# The bounded read path. On the emulator's factory Return Delay Time (250)
+# the probe refuses before its first write, and the refusal stops the
+# session (stop rule).
+if setsid tools/e1_prod.sh "${COMMON[@]}" --yes --read-path bounded \
+    --conditions idle --profiles current --rates 100,200 </dev/null \
+    >"$ROOT/bounded-refused.log" 2>&1; then
+  fail "the bounded session ran on Return Delay Time 250" \
+    "$ROOT/bounded-refused.log"
+fi
+grep -q 'session stopped (stop rule)' "$ROOT/bounded-refused.log"
+grep -q 'refusing: bounded read: id 2 has Return Delay Time 250' \
+  "$ROOT/bounded-refused.log"
+BREF="$OUT/rate-e1-prod-current-100hz-idle-bounded-$DATE-1.csv"
+grep -q '^read path: bounded' "$BREF.run.txt"
+test ! -e "$BREF"
+test ! -e "$OUT/rate-e1-prod-current-200hz-idle-bounded-$DATE-1.csv.run.txt"
+# With Return Delay Time 0 (as on the arm), a new series runs bounded.
+for id in 2 3 4 5 6 7 8 9; do
+  "$INSPECT" --port "$LINK" write "$id" return_delay_time 0 >/dev/null
+done
+setsid tools/e1_prod.sh "${COMMON[@]}" --yes --read-path bounded \
+  --attempt 2 --conditions idle --profiles current --rates 100 </dev/null \
+  >"$ROOT/bounded-prod.log" 2>&1 ||
+  fail "the bounded production session failed" "$ROOT/bounded-prod.log"
+setsid tools/e1_cal.sh "${COMMON[@]}" --yes --read-path bounded \
+  --attempt 2 --runs cbp:200 </dev/null >"$ROOT/bounded-cal.log" 2>&1 ||
+  fail "the bounded calibration session failed" "$ROOT/bounded-cal.log"
+for base in "$OUT/rate-e1-prod-current-100hz-idle-bounded-$DATE-2.csv" \
+            "$OUT/rate-e1-cal-cbp-200hz-bounded-$DATE-2.csv"; do
+  grep -q '^read_path = "bounded"' "$base.summary.toml"
+  grep -q '^timeouts = 0' "$base.summary.toml"
+  grep -q '^read path: bounded' "$base.run.txt"
+  grep -q 'read path: bounded (budget 35.000 ms, guard 35.000 ms)' \
+    "$base.run.txt"
+  grep -q -- '--read-path bounded' "$base.run.txt"
 done
 
 echo "e1 session scripts OK"

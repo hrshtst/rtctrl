@@ -370,6 +370,17 @@ def check(s: dict, loaded: bool, args: argparse.Namespace) -> list[tuple]:
     return out
 
 
+def bounded_read_line(run: dict) -> str:
+    """The probe's read path and the bounded read's counters, if bounded."""
+    if run.get("read_path") != "bounded" or "bounded_read" not in run:
+        return ""
+    b = run["bounded_read"]
+    return (f"  read path: bounded (budget {1e3 * b['budget_s']:.3f} ms, "
+            f"guard {1e3 * b['guard_s']:.3f} ms): {b['reads']} reads, "
+            f"{b['timeouts']} timeouts, {b['malformed']} malformed, "
+            f"{b['recoveries']} recoveries, {b['guard_waits']} guard waits")
+
+
 def print_summary(s: dict) -> None:
     print(f"{s['kind']} log: {s['cycles']} cycles in {s['segments']} "
           f"segment(s) at {s['rate_hz']:g} Hz "
@@ -397,6 +408,9 @@ def print_summary(s: dict) -> None:
         if "late_wake_lateness_s" in s:
             print(f"  ended at a wake {1e3 * s['late_wake_lateness_s']:.3f} "
                   "ms late, past the deadline (no row)")
+        line = bounded_read_line(run)
+        if line:
+            print(line)
     print("  measured (host clock; ms):")
     for name, d in s["measured"].items():
         if d:

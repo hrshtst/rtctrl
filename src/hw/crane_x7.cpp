@@ -149,75 +149,16 @@ bool CraneX7::verifyBoundedReadTiming() {
 }
 
 // C-4a: the bus assumptions of a bounded read, read over the plain path
-// before any torque write. Any mismatch refuses activation.
+// before any torque write (checkBusProfile only reads). Any mismatch
+// refuses activation.
 bool CraneX7::verifyBusProfile() {
-  const auto& b = options_.bounded_read;
   bus_discovery_ = BusDiscovery{};
   if (!verifyBoundedReadTiming()) return false;
-  const std::optional<std::uint8_t> baud =
-      dxl::baudRegisterFor(config_.baudrate);
-  if (!baud) {
-    last_error_ = "bounded read: no Baud Rate register value for " +
-                  std::to_string(config_.baudrate) + " bps";
-    return false;
-  }
-  for (const auto& joint : config_.joints) {
-    const std::string id = std::to_string(joint.id);
-    std::uint8_t firmware = 0;
-    std::uint8_t return_delay = 0;
-    std::uint8_t status_return = 0;
-    std::uint8_t baud_register = 0;
-    if (!io_.read8(joint.id, reg::kFirmwareVersion.addr, &firmware).ok() ||
-        !io_.read8(joint.id, reg::kReturnDelayTime.addr, &return_delay)
-             .ok() ||
-        !io_.read8(joint.id, reg::kStatusReturnLevel.addr, &status_return)
-             .ok() ||
-        !io_.read8(joint.id, reg::kBaudRate.addr, &baud_register).ok()) {
-      last_error_ = "bounded read: cannot read the bus profile of id " + id;
-      return false;
-    }
-    BusDiscovery::Servo servo;
-    servo.id = joint.id;
-    servo.firmware = firmware;
-    servo.return_delay_time = return_delay;
-    servo.status_return_level = status_return;
-    servo.baud_register = baud_register;
-    bus_discovery_.servos.push_back(servo);
-    if (return_delay > b.max_return_delay_time) {
-      last_error_ = "bounded read: id " + id + " has Return Delay Time " +
-                    std::to_string(return_delay) + " (" +
-                    std::to_string(2 * return_delay) +
-                    " us), above the " +
-                    std::to_string(b.max_return_delay_time) +
-                    " its budget assumes";
-      return false;
-    }
-    if (status_return < b.min_status_return_level) {
-      last_error_ = "bounded read: id " + id + " has Status Return Level " +
-                    std::to_string(status_return) + ", below " +
-                    std::to_string(b.min_status_return_level);
-      return false;
-    }
-    if (baud_register != *baud) {
-      last_error_ = "bounded read: id " + id + " has Baud Rate register " +
-                    std::to_string(baud_register) + ", not the " +
-                    std::to_string(*baud) + " of " +
-                    std::to_string(config_.baudrate) + " bps";
-      return false;
-    }
-    if (b.fast_sync_read && firmware < dxl::kMinFirmwareFastSyncRead) {
-      last_error_ = "bounded read: id " + id + " firmware v" +
-                    std::to_string(firmware) +
-                    " lacks Fast Sync Read (needs >= v45)";
-      return false;
-    }
-  }
-  bus_discovery_.latency_timer_ms = io_.latencyTimerMs();
-  if (bus_discovery_.latency_timer_ms &&
-      *bus_discovery_.latency_timer_ms != b.required_latency_timer_ms) {
-    last_error_ = "bounded read: the adapter's latency timer is " +
-                  std::to_string(*bus_discovery_.latency_timer_ms) +
-                  " ms, not " + std::to_string(b.required_latency_timer_ms);
+  std::string error;
+  if (!checkBusProfile(io_, group_.ids(), config_.baudrate,
+                       options_.bounded_read.profile, &bus_discovery_.profile,
+                       &error)) {
+    last_error_ = "bounded read: " + error;
     return false;
   }
   return true;
@@ -228,15 +169,15 @@ bool CraneX7::verifyBusProfile() {
 // the transport's bounded read armed on the feedback window.
 bool CraneX7::armBoundedRead() {
   const std::uint8_t units = watchdogUnits();
-  for (std::size_t i = 0; i < config_.joints.size(); ++i) {
-    const auto& joint = config_.joints[i];
+  bus_discovery_.bus_watchdog.clear();
+  for (const auto& joint : config_.joints) {
     std::uint8_t watchdog = 0;
     if (!io_.read8(joint.id, reg::kBusWatchdog.addr, &watchdog).ok()) {
       last_error_ = "bounded read: cannot read back the Bus Watchdog of id " +
                     std::to_string(joint.id);
       return false;
     }
-    bus_discovery_.servos.at(i).bus_watchdog = watchdog;
+    bus_discovery_.bus_watchdog.push_back(watchdog);
     if (watchdog != units) {
       last_error_ = "bounded read: id " + std::to_string(joint.id) +
                     " Bus Watchdog reads " + std::to_string(watchdog) +

@@ -179,6 +179,28 @@ Started again, a script skips every run already attempted (an interrupted run
 counts) and keeps the climb decisions it recorded; `--attempt N` starts a new
 series.
 
+**The bounded read path (Phase R).** `x7_bus_timing --read-path bounded`
+measures the grouped read through `dxl::Port`'s bounded receive instead of
+the SDK's:
+- the replies are checked strictly against a deadline;
+- after a timeout or a malformed reply, a quiet guard holds every
+  transmission and the next read is a recovery read.
+
+Torque-off measurements keep the conservative limits that checkpoint 1
+chose: a 35 ms budget (the legacy scale of the SDK's timeout for this
+read) and an equal guard, the probe's defaults. Before its first write,
+the probe checks the bus profile read-only and refuses on a mismatch:
+- every servo's Return Delay Time at 0, Status Return Level at least 1,
+  and the baud register;
+- the adapter's latency timer at 1 ms, where the device exposes one.
+
+The summary's `[bounded_read]` table holds the read's counters (reads,
+timeouts, malformed replies, recoveries, guard waits), and
+`timing_summary.py` prints them. `e1_prod.sh` and `e1_cal.sh` take
+`--read-path bounded` and add `-bounded` to the log names. A powered
+session's Bus Watchdog rule does not apply: the probe runs torque-off
+and leaves the watchdog alone.
+
 ### Summaries
 
 ```sh

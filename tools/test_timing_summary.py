@@ -321,6 +321,19 @@ kind, data = ts.load(path)
 assert ts.summarize(kind, data, 500.0, None, None)["record_gaps"] > 0
 path.unlink()
 
+# A bounded probe run reports its read path and counters; a legacy one
+# reports none.
+bounded = probe_run(1000)
+bounded["read_path"] = "bounded"
+bounded["bounded_read"] = {"budget_s": 0.035, "guard_s": 0.035,
+                           "reads": 1000, "timeouts": 2, "malformed": 1,
+                           "servo_errors": 0, "recoveries": 3,
+                           "guard_waits": 3, "inhibited": 0}
+line = ts.bounded_read_line(bounded)
+assert "budget 35.000 ms" in line and "2 timeouts" in line, line
+assert "3 recoveries" in line and "3 guard waits" in line, line
+assert ts.bounded_read_line(probe_run(1000)) == ""
+
 # Nearest rank is exact on small samples.
 assert ts.nearest_rank(np.array([3.0, 1.0, 2.0]), 0.5) == 2.0
 assert ts.nearest_rank(np.array([3.0, 1.0, 2.0]), 1.0) == 3.0

@@ -45,6 +45,7 @@ add_library(rtctrl
   src/emu/fake_packet_io.cpp
   src/emu/pty_bus.cpp
   src/hw/config.cpp
+  src/hw/bus_profile.cpp
   src/hw/crane_x7.cpp
   src/arm/real_arm.cpp
   src/util/async_writer.cpp

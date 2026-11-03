@@ -15,6 +15,7 @@
 #include "rtctrl/dxl/sync_group.hpp"
 #include "rtctrl/emu/fake_packet_io.hpp"
 #include "rtctrl/emu/motor_emulator.hpp"
+#include "rtctrl/hw/bus_profile.hpp"
 #include "rtctrl/hw/config.hpp"
 #include "rtctrl/hw/crane_x7.hpp"
 
@@ -122,7 +123,7 @@ TEST_CASE("disabled, activation checks no bus profile and arms nothing",
   REQUIRE(arm.activate());
   CHECK_FALSE(io.has("arm"));
   CHECK_FALSE(arm.boundedReadArmed());
-  CHECK(arm.busDiscovery().servos.empty());
+  CHECK(arm.busDiscovery().profile.servos.empty());
   REQUIRE(arm.deactivate());
   CHECK_FALSE(io.has("disarm"));
 }
@@ -149,16 +150,17 @@ TEST_CASE("a matching bus arms the bounded read after the watchdog and "
   CHECK(arm.boundedReadArmed());
 
   const auto& d = arm.busDiscovery();
-  REQUIRE(d.servos.size() == 8);
-  for (const auto& servo : d.servos) {
+  REQUIRE(d.profile.servos.size() == 8);
+  for (const auto& servo : d.profile.servos) {
     CAPTURE(static_cast<int>(servo.id));
     CHECK(servo.return_delay_time == 0);
     CHECK(servo.status_return_level == 2);
     CHECK(servo.baud_register == 5);  // 3 Mbps
     CHECK(servo.firmware == 44);
-    CHECK(servo.bus_watchdog == 5);   // 100 ms in 20 ms units, read back
   }
-  CHECK_FALSE(d.latency_timer_ms.has_value());  // not exposed: unverified
+  // 100 ms in 20 ms units, read back from every joint.
+  CHECK(d.bus_watchdog == std::vector<int>(8, 5));
+  CHECK_FALSE(d.profile.latency_timer_ms.has_value());  // unverified
   CHECK(d.max_instruction_gap_s == 0.060);
   CHECK(d.watchdog_gap_limit_s == 0.080);
   CHECK(d.armed);
@@ -193,7 +195,7 @@ TEST_CASE("activation refuses a bus the bounded read cannot rely on, "
     expected_error = "id 7 has Status Return Level 0";
   }
   SECTION("Fast Sync Read on firmware older than v45") {
-    options.bounded_read.fast_sync_read = true;
+    options.bounded_read.profile.fast_sync_read = true;
     expected_error = "lacks Fast Sync Read";
   }
   SECTION("an adapter latency timer of 16 ms") {
@@ -231,12 +233,12 @@ TEST_CASE("Fast Sync Read is accepted from firmware v45", "[hw][bounded]") {
   setReturnDelay(bus, 0);
   BoundedIO io(bus);
   hw::CraneX7::Options options = boundedOptions();
-  options.bounded_read.fast_sync_read = true;
+  options.bounded_read.profile.fast_sync_read = true;
   io.latency = 1;  // exposed and right
   hw::CraneX7 arm(io, config, options);
   REQUIRE(arm.activate());
   CHECK(arm.boundedReadArmed());
-  CHECK(arm.busDiscovery().latency_timer_ms == 1);
+  CHECK(arm.busDiscovery().profile.latency_timer_ms == 1);
 }
 
 TEST_CASE("the longest bus silence must stay below the programmed watchdog "
@@ -268,7 +270,7 @@ TEST_CASE("the longest bus silence must stay below the programmed watchdog "
     hw::CraneX7 arm(io, config, options);
     REQUIRE(arm.activate());
     CHECK(arm.busDiscovery().watchdog_gap_limit_s == 0.180);
-    CHECK(arm.busDiscovery().servos.front().bus_watchdog == 10);
+    CHECK(arm.busDiscovery().bus_watchdog.front() == 10);
   }
   SECTION("an allowance left at zero is refused") {
     options.bounded_read.transport_allowance = nanoseconds(0);
@@ -353,4 +355,53 @@ TEST_CASE("a refused activation keeps the Bus Watchdog of a servo whose "
     CHECK(bus.find(id)->peek(reg::kTorqueEnable) == 0);
     CHECK(bus.find(id)->peek(reg::kBusWatchdog) == 0);
   }
+}
+
+namespace {
+
+// Counts every transaction that could change a servo.
+class WriteCountIO : public emu::FakePacketIO {
+ public:
+  explicit WriteCountIO(emu::MotorBus& bus) : emu::FakePacketIO(bus) {}
+  dxl::IoResult write(std::uint8_t id, std::uint16_t addr,
+                      const std::uint8_t* data, std::uint16_t len) override {
+    ++writes;
+    return emu::FakePacketIO::write(id, addr, data, len);
+  }
+  dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
+                          const std::vector<std::uint8_t>& ids,
+                          const std::vector<std::uint8_t>& data) override {
+    ++writes;
+    return emu::FakePacketIO::syncWrite(addr, len, ids, data);
+  }
+  int writes = 0;
+};
+
+}  // namespace
+
+TEST_CASE("the bus profile check only reads", "[hw][bounded]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  WriteCountIO io(bus);
+  const std::vector<std::uint8_t> ids{2, 3, 4, 5, 6, 7, 8, 9};
+  hw::BusProfileReport report;
+  std::string error;
+  SECTION("a matching bus") {
+    setReturnDelay(bus, 0);
+    CHECK(hw::checkBusProfile(io, ids, 3000000, hw::BusProfile{}, &report,
+                              &error));
+    CHECK(report.servos.size() == 8);
+  }
+  SECTION("a refused bus") {
+    CHECK_FALSE(hw::checkBusProfile(io, ids, 3000000, hw::BusProfile{},
+                                    &report, &error));
+    CHECK(contains(error, "id 2 has Return Delay Time 250"));
+    CHECK(report.servos.size() == 1);  // what was read until the refusal
+  }
+  SECTION("a line speed the servos cannot run") {
+    CHECK_FALSE(hw::checkBusProfile(io, ids, 250000, hw::BusProfile{},
+                                    &report, &error));
+    CHECK(contains(error, "no Baud Rate register value"));
+  }
+  CHECK(io.writes == 0);
 }

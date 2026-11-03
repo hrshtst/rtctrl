@@ -40,6 +40,21 @@
 //       [--summary F.toml] [--confirm-writes] [--drain]
 //       [--rt-priority N --rt-cpu C] [--rt-lock-memory]
 //       [--fine-timer-slack]
+//       [--read-path legacy|bounded [--budget-ms B] [--guard-ms G]]
+//
+// --read-path chooses how the grouped feedback read receives (control-rate
+// Phase R). legacy (the default) is the DynamixelSDK's receive, as at
+// 100 Hz. bounded is dxl::Port's bounded read: replies checked strictly
+// against a deadline of B ms on the monotonic clock (default 35, the
+// legacy scale of the SDK's timeout for this read), and after a timeout
+// or malformed reply a quiet guard of G ms (default B) on every
+// transmission, then a recovery read one byte longer. Before its first
+// write the probe then checks, read-only, every servo's Return Delay Time
+// (0 assumed), Status Return Level, baud register and the adapter's
+// latency timer (hw::checkBusProfile), and refuses on a mismatch. The
+// powered sessions' Bus Watchdog rule does not apply here: the probe runs
+// torque-off and leaves the watchdog alone. The bounded read's counters
+// go to the summary's [bounded_read] table.
 //
 // --duration is a deadline on the monotonic clock, not a cycle count: no
 // cycle starts once S seconds have passed since the first, so a rate the
@@ -83,6 +98,7 @@
 #include "rtctrl/dxl/port.hpp"
 #include "rtctrl/dxl/sync_group.hpp"
 #include "rtctrl/dxl/wire_budget.hpp"
+#include "rtctrl/hw/bus_profile.hpp"
 #include "rtctrl/hw/config.hpp"
 #include "rtctrl/hw/cycle_record.hpp"
 #include "rtctrl/hw/cycle_timing.hpp"
@@ -133,6 +149,10 @@ struct Args {
   bool confirm_writes = false;
   bool drain = false;
   util::RealtimePolicy realtime;
+  bool bounded = false;      // --read-path bounded
+  double budget_ms = 35.0;   // the SDK's legacy scale for this read
+  double guard_ms = -1.0;    // negative: equal to the budget
+  bool limits_given = false;
 };
 
 bool parseArgs(const std::vector<const char*>& rest, Args* a) {
@@ -161,6 +181,23 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
       if (!value(&v)) return false;
       (flag == "--out" ? a->out_path
                        : flag == "--log" ? a->log_path : a->summary_path) = v;
+    } else if (flag == "--read-path") {
+      if (!value(&v)) return false;
+      const std::string path = v;
+      if (path != "legacy" && path != "bounded") {
+        std::fprintf(stderr, "--read-path: legacy or bounded\n");
+        return false;
+      }
+      a->bounded = path == "bounded";
+    } else if (flag == "--budget-ms" || flag == "--guard-ms") {
+      if (!value(&v)) return false;
+      double d = 0.0;
+      if (!x7::parseStrictDouble(v, &d)) {
+        std::fprintf(stderr, "%s: not a number: %s\n", flag.c_str(), v);
+        return false;
+      }
+      (flag == "--budget-ms" ? a->budget_ms : a->guard_ms) = d;
+      a->limits_given = true;
     } else if (flag == "--rate-hz" || flag == "--duration") {
       if (!value(&v)) return false;
       double d = 0.0;
@@ -211,6 +248,18 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
     return false;
   }
   if (a->summary_path.empty()) a->summary_path = a->log_path + ".summary.toml";
+  if (a->limits_given && !a->bounded) {
+    std::fprintf(stderr, "--budget-ms and --guard-ms need --read-path "
+                         "bounded\n");
+    return false;
+  }
+  if (a->guard_ms < 0.0) a->guard_ms = a->budget_ms;
+  if (!(a->budget_ms > 0.0 && a->budget_ms <= 1000.0) ||
+      !(a->guard_ms >= 0.0 && a->guard_ms <= 1000.0)) {
+    std::fprintf(stderr, "--budget-ms must be within (0, 1000] and "
+                         "--guard-ms within [0, 1000]\n");
+    return false;
+  }
   const std::string why = util::validateRealtimePolicy(a->realtime);
   if (!why.empty()) {
     std::fprintf(stderr, "%s\n", why.c_str());
@@ -788,6 +837,28 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "refusing: %s\n", error.c_str());
     return 1;
   }
+  const std::vector<std::uint8_t> ids = [&] {
+    std::vector<std::uint8_t> out;
+    for (const auto& j : config.joints) out.push_back(j.id);
+    return out;
+  }();
+  // The bounded read's bus profile, read-only and before the probe's first
+  // write: a refusal leaves every servo as it was.
+  hw::BusProfileReport profile_report;
+  if (args.bounded) {
+    if (!hw::checkBusProfile(*port, ids, config.baudrate, hw::BusProfile{},
+                             &profile_report, &error)) {
+      std::fprintf(stderr, "refusing: bounded read: %s\n", error.c_str());
+      return 1;
+    }
+    if (profile_report.latency_timer_ms) {
+      std::printf("bounded read: bus profile checked, latency timer %d ms\n",
+                  *profile_report.latency_timer_ms);
+    } else {
+      std::printf("bounded read: bus profile checked; the device exposes "
+                  "no latency timer (not verified)\n");
+    }
+  }
   int drain_fd = -1;
   if (args.drain) {
     drain_fd = open(port_path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -802,11 +873,7 @@ int main(int argc, char* argv[]) {
     drain_fd = -1;
   };
 
-  dxl::SyncGroup group(*port, [&] {
-    std::vector<std::uint8_t> ids;
-    for (const auto& j : config.joints) ids.push_back(j.id);
-    return ids;
-  }());
+  dxl::SyncGroup group(*port, ids);
   if (!group.setupIndirect().ok()) {
     std::fprintf(stderr, "cannot program the indirect-address slots\n");
     close_drain();
@@ -817,6 +884,20 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "initial feedback read failed\n");
     close_drain();
     return 1;
+  }
+  // The run's grouped reads take the bounded path from here on; the
+  // initial read above took the legacy one.
+  const auto to_ns = [](double ms) {
+    return std::chrono::nanoseconds(std::llround(ms * 1e6));
+  };
+  if (args.bounded) {
+    dxl::BoundedReadConfig bounded;
+    bounded.addr = dxl::SyncGroup::kFeedbackAddr;
+    bounded.len = dxl::SyncGroup::kFeedbackSlots;
+    bounded.ids = ids;
+    bounded.budget = to_ns(args.budget_ms);
+    bounded.guard = to_ns(args.guard_ms);
+    port->armBoundedSyncRead(bounded);
   }
 
   std::unique_ptr<util::AsyncWriter> log;
@@ -905,6 +986,8 @@ int main(int argc, char* argv[]) {
   if (args.confirm_writes) {
     std::fprintf(summary, "ack_register = \"model_number\"\n");
   }
+  std::fprintf(summary, "read_path = \"%s\"\n",
+               args.bounded ? "bounded" : "legacy");
   std::fprintf(summary, "port = %s\nbaudrate = %d\n",
                tomlString(port_path).c_str(), config.baudrate);
   std::fprintf(summary, "log = %s\nlog_complete = %s\n",
@@ -947,6 +1030,30 @@ int main(int argc, char* argv[]) {
                "Update) clear on every servo\n");
   std::fprintf(summary, "torque_off_before = true\ntorque_off_after = %s\n",
                torque_off_after ? "true" : "false");
+  if (args.bounded) {
+    const dxl::BoundedReadStats& b = port->boundedReadStats();
+    std::fprintf(summary, "\n[bounded_read]\n");
+    std::fprintf(summary, "budget_s = %.9g\nguard_s = %.9g\n",
+                 1e-3 * args.budget_ms, 1e-3 * args.guard_ms);
+    std::fprintf(summary,
+                 "reads = %llu\ntimeouts = %llu\nmalformed = %llu\n"
+                 "servo_errors = %llu\nrecoveries = %llu\n"
+                 "guard_waits = %llu\ninhibited = %llu\n",
+                 static_cast<unsigned long long>(b.reads),
+                 static_cast<unsigned long long>(b.timeouts),
+                 static_cast<unsigned long long>(b.malformed),
+                 static_cast<unsigned long long>(b.servo_errors),
+                 static_cast<unsigned long long>(b.recoveries),
+                 static_cast<unsigned long long>(b.guard_waits),
+                 static_cast<unsigned long long>(b.inhibited));
+    if (profile_report.latency_timer_ms) {
+      std::fprintf(summary, "latency_timer_ms = %d\n",
+                   *profile_report.latency_timer_ms);
+    } else {
+      std::fprintf(summary, "# the device exposes no latency timer\n"
+                            "latency_timer_verified = false\n");
+    }
+  }
   std::fprintf(summary, "\n[budget]\n");
   std::fprintf(summary,
                "# Analytic wire bytes of the production cycle; excludes USB "
@@ -997,6 +1104,18 @@ int main(int argc, char* argv[]) {
     std::printf("woke %.3f ms late at %.3f s, past the deadline: no further "
                 "cycle started\n",
                 1e3 * result.late_wake_lateness_s, result.late_wake_s);
+  }
+  if (args.bounded) {
+    const dxl::BoundedReadStats& b = port->boundedReadStats();
+    std::printf("bounded read: budget %.3f ms, guard %.3f ms; %llu reads, "
+                "%llu timeouts, %llu malformed, %llu recoveries, %llu "
+                "guard waits\n",
+                args.budget_ms, args.guard_ms,
+                static_cast<unsigned long long>(b.reads),
+                static_cast<unsigned long long>(b.timeouts),
+                static_cast<unsigned long long>(b.malformed),
+                static_cast<unsigned long long>(b.recoveries),
+                static_cast<unsigned long long>(b.guard_waits));
   }
   printHistogram("wake_lateness", t.wake_lateness);
   printHistogram("period", t.period);

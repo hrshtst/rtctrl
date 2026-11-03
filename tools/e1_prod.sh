@@ -24,7 +24,8 @@
 #   <log>.csv               per-cycle log (probe)
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, verdicts
-# with <log> = rate-e1-prod-<profile>-<rate>hz-<condition>-<date>-<attempt>.
+# with <log> = rate-e1-prod-<profile>-<rate>hz-<condition>[-bounded]-<date>-
+# <attempt> (-bounded with --read-path bounded).
 # A run whose .csv or .run.txt already exists was attempted: it is skipped,
 # never retried, and its recorded climb decision is kept. Use --attempt N
 # for a new series.
@@ -45,6 +46,7 @@ attempt=1
 outdir=.
 max_runnable=3
 stress_dir="$HOME/.cache/rtctrl-stress"
+read_path=legacy
 auto_stop=0
 dry_run=0
 assume_yes=0
@@ -66,6 +68,9 @@ usage: $0 [options]
   --outdir DIR        where the logs go (default the repo root)
   --max-runnable N    quiet-machine threshold, mean runnable tasks
                       including this script (default $max_runnable)
+  --read-path P       legacy (default) or bounded: the probe's grouped read
+                      (bounded: the probe's conservative 35 ms budget and
+                      equal guard; log names gain "-bounded")
   --stress-dir DIR    stress-ng --hdd directory, on a disk, not tmpfs
                       (default $stress_dir)
   --auto-stop         end a climb at its first failed check without asking
@@ -79,7 +84,8 @@ die() { echo "e1_prod: $*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --conditions|--profiles|--rates|--duration|--rt-priority|--rt-cpu|\
-    --probe|--port|--date|--attempt|--outdir|--max-runnable|--stress-dir)
+    --probe|--port|--date|--attempt|--outdir|--max-runnable|--stress-dir|\
+    --read-path)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --conditions) conditions=$2 ;;
@@ -95,6 +101,7 @@ while [ $# -gt 0 ]; do
         --outdir) outdir=$2 ;;
         --max-runnable) max_runnable=$2 ;;
         --stress-dir) stress_dir=$2 ;;
+        --read-path) read_path=$2 ;;
       esac
       shift 2 ;;
     --auto-stop) auto_stop=1; shift ;;
@@ -131,6 +138,12 @@ if [ "$rt_priority" -lt 1 ] || [ "$rt_priority" -gt 99 ]; then
   die "--rt-priority must be 1 to 99 (0 would mean ordinary scheduling)"
 fi
 is_uint "$max_runnable" || die "--max-runnable must be an integer"
+case "$read_path" in
+  legacy) path_tag=; read_desc="legacy (the SDK's receive)" ;;
+  bounded) path_tag=-bounded
+    read_desc="bounded (the probe's defaults: 35 ms budget, equal guard)" ;;
+  *) die "--read-path must be legacy or bounded" ;;
+esac
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
 stress_timeout=$((duration + 15))
 
@@ -175,7 +188,7 @@ fi
 stress_cmd=(stress-ng --cpu "$(nproc)" --hdd 1 --timeout "${stress_timeout}s"
             --temp-path "$stress_dir")
 
-log_base() { echo "rate-e1-prod-$2-${3}hz-$1-$date_tag-$attempt"; }
+log_base() { echo "rate-e1-prod-$2-${3}hz-$1$path_tag-$date_tag-$attempt"; }
 
 probe_cmd() {  # condition profile rate -> the probe command in cmd[]
   local base; base=$(log_base "$1" "$2" "$3")
@@ -184,6 +197,7 @@ probe_cmd() {  # condition profile rate -> the probe command in cmd[]
   cmd+=(--rate-hz "$3" --profile "$2" --duration "$duration"
         --log "$outdir/$base.csv")
   case "$1" in rt-*) cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu") ;; esac
+  [ "$read_path" = bounded ] && cmd+=(--read-path bounded)
 }
 
 total=$(( ${#cond_list[@]} * ${#profile_list[@]} * ${#rate_list[@]} ))
@@ -224,7 +238,7 @@ results=()
 add_result() { results+=("$(printf '%-10s %-9s %5s Hz  %s' "$1" "$2" "$3" "$4")"); }
 print_table() {
   echo
-  echo "E1 production-traffic results (date $date_tag, attempt $attempt):"
+  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 stop_stress() {
@@ -319,6 +333,7 @@ run_one() {
     echo "commit: $commit"
     echo "probe binary: $(stat -c %y "$PROBE")"
     echo "condition: $cond"
+    echo "read path: $read_desc"
     if [ "$loaded" -eq 1 ]; then echo "load: ${stress_cmd[*]}"; else echo "load: none"; fi
     case "$cond" in
       rt-*) echo "scheduling: --rt-priority $rt_priority --rt-cpu $rt_cpu (rtprio limit $(ulimit -r))" ;;

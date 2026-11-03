@@ -606,7 +606,7 @@ add_test(NAME e1_session_scripts_smoke
     UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
     bash ${CMAKE_SOURCE_DIR}/tests/integration/e1_scripts_smoke.sh
       $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
-      ${CMAKE_BINARY_DIR}/e1_scripts_smoke)
+      ${CMAKE_BINARY_DIR}/e1_scripts_smoke $<TARGET_FILE:dxl_inspect>)
 set_tests_properties(e1_session_scripts_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "e1 session scripts OK"

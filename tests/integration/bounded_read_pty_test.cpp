@@ -491,7 +491,7 @@ TEST_CASE("activation arms the port's bounded read only on a matching bus, "
     REQUIRE(arm.activate());
     CHECK(port.boundedSyncReadArmed());
     // A pseudo-terminal exposes no latency timer: reported, unverified.
-    CHECK_FALSE(arm.busDiscovery().latency_timer_ms.has_value());
+    CHECK_FALSE(arm.busDiscovery().profile.latency_timer_ms.has_value());
     REQUIRE(arm.startThread());
     std::this_thread::sleep_for(milliseconds(100));
     arm.stopThread();

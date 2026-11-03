@@ -218,6 +218,51 @@ if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
 fi
 grep -q 'dedicated cpu' "$ROOT/rt.log"
 
+# The bounded read path (Phase R). Its limits need the path.
+if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
+    --budget-ms 10 --log "$ROOT/limits.csv" >"$ROOT/limits.log" 2>&1; then
+  fail "bounded-read limits were accepted on the legacy path"
+fi
+grep -q 'need --read-path bounded' "$ROOT/limits.log"
+# The emulated servos keep the factory Return Delay Time (250): the
+# read-only profile check refuses before the probe's first write.
+if "$PROBE" --port "$LINK" --read-path bounded --rate-hz 100 \
+    --profile current --duration 0.2 --log "$ROOT/bounded-rdt.csv" \
+    >"$ROOT/bounded-rdt.log" 2>&1; then
+  fail "the bounded read accepted Return Delay Time 250"
+fi
+grep -q 'refusing: bounded read: id 2 has Return Delay Time 250' \
+  "$ROOT/bounded-rdt.log"
+test ! -e "$ROOT/bounded-rdt.csv"
+for id in 2 3 4 5 6 7 8 9; do
+  test "$("$INSPECT" --port "$LINK" read "$id" torque_enable)" = "0"
+  "$INSPECT" --port "$LINK" write "$id" return_delay_time 0 >/dev/null
+done
+# With Return Delay Time 0 every cycle's grouped read is bounded (the
+# initial read before the run is not), with the conservative defaults.
+for kind in production calibration; do
+  extra=()
+  [ "$kind" = calibration ] && extra=(--confirm-writes)
+  "$PROBE" --port "$LINK" --read-path bounded --rate-hz 100 \
+    --profile position --duration 0.5 "${extra[@]}" \
+    --log "$ROOT/bounded-$kind.csv" >"$ROOT/bounded-$kind.log" 2>&1 ||
+    fail "bounded $kind run failed" "$ROOT/bounded-$kind.log"
+  S="$ROOT/bounded-$kind.csv.summary.toml"
+  grep -q '^read_path = "bounded"' "$S"
+  grep -q '^\[bounded_read\]' "$S"
+  grep -q '^budget_s = 0.035' "$S"
+  grep -q '^guard_s = 0.035' "$S"
+  test "$(value "$S" reads)" = "$(value "$S" cycles)"
+  grep -q '^timeouts = 0' "$S"
+  grep -q '^malformed = 0' "$S"
+  grep -q '^latency_timer_verified = false' "$S"  # a pty exposes none
+  grep -q '^read_failures = 0' "$S"
+  grep -q '^torque_off_after = true' "$S"
+  grep -q 'the device exposes no latency timer' "$ROOT/bounded-$kind.log"
+done
+grep -q '^ack_invalid = 0' "$ROOT/bounded-calibration.csv.summary.toml"
+grep -q '^read_path = "legacy"' "$ROOT/run.csv.summary.toml"
+
 # Firmware v47 in operating mode 0 overwrites a torque-off goal write with
 # present values (observed on the arm), so a goal read-back cannot
 # acknowledge a write. The Model Number read still does, for every write.
