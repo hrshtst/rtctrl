@@ -196,9 +196,12 @@ reported, not counted. A criterion whose evidence is missing or inconsistent
 contradict) is `INDETERMINATE`, never a pass, and `--check` exits 1 unless
 every applicable criterion passes. Calibration logs also print the
 completion-offset distribution and an envelope candidate (1.25 times its
-maximum). Logs from the earlier probe (summary version 1, which compared goal
-read-backs) get no candidate: each matched row still bounds its own write,
-but the matches are a selected subset, not a distribution.
+maximum). The candidate comes only from a complete run with no read, write or
+acknowledgement failure, since a failed cycle could have held the worst case;
+otherwise the reason is printed instead. Logs from the earlier probe (summary
+version 1, which compared goal read-backs) get no candidate either: each
+matched row still bounds its own write, but the matches are a selected
+subset, not a distribution.
 `x7_controller_bench` measures the controller's own computation off-hardware
 for comparison.
 

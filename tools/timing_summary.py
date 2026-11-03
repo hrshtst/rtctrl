@@ -117,6 +117,32 @@ def model_number_acks(run: dict | None) -> bool:
             and run.get("ack_register") == "model_number")
 
 
+def candidate_blocker(s: dict, data: dict[str, np.ndarray]) -> str | None:
+    """Why a calibration log offers no envelope candidate, or None.
+
+    An envelope is the worst case of a complete distribution, so it comes
+    only from a complete run whose every write was sent and acknowledged:
+    the rows a failure removes could hold the worst cases.
+    """
+    if not model_number_acks(s["run"]):
+        return ("these acknowledgements compared goal values (summary "
+                "version 1, or no summary), so the rows are a selected "
+                "subset, each a valid bound but not a distribution")
+    complete, why = completeness(s)
+    if not complete:
+        return f"the log is incomplete ({why})"
+    invalid = int(s["run"]["result"].get("ack_invalid", 0))
+    unacknowledged = int(np.count_nonzero(data["ack_ok"] == 0))
+    failures = (s["read_failures"] + s["write_failures"] + s["record_gaps"]
+                + invalid + unacknowledged)
+    if failures:
+        return (f"{s['read_failures']} read / {s['write_failures']} write "
+                f"failures, {s['record_gaps']} record gaps, {invalid} "
+                f"invalid acknowledgements, {unacknowledged} cycles without "
+                "a bound: the envelope needs a run with none")
+    return None
+
+
 def nearest_rank(values: np.ndarray, q: float) -> float:
     ordered = np.sort(values)
     index = max(0, min(len(ordered) - 1,
@@ -216,9 +242,12 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
             delta = (data["completion_upper_ns"][ok] -
                      data["bus_write_start_ns"][ok]).astype(np.float64) * 1e-9
             s["calibration"] = describe(delta)
-            if model_number_acks(run):
+            blocker = candidate_blocker(s, data)
+            if blocker is None:
                 s["calibration"]["delta_env_candidate"] = float(
                     1.25 * delta.max())
+            else:
+                s["calibration_no_candidate"] = blocker
     if delta_env_s is not None and len(to_write):
         s["envelope_completion_max_s"] = float(to_write.max() + delta_env_s)
     if delta_q_s is not None and len(to_write):
@@ -384,10 +413,8 @@ def print_summary(s: dict) -> None:
             print(f"{stats}; envelope candidate (1.25 x max) "
                   f"{1e3 * c['delta_env_candidate']:.3f}")
         else:
-            print(f"{stats}; no envelope candidate: these acknowledgements "
-                  "compared goal values (summary version 1, or no summary), "
-                  "so the rows are a selected subset, each a valid bound but "
-                  "not a distribution")
+            print(f"{stats}; no envelope candidate: "
+                  f"{s['calibration_no_candidate']}")
     print("  read_start is a host transaction stamp; servo measurement age "
           "is unknown")
 

@@ -40,7 +40,8 @@ APP_HEADER = (
     "deadline_miss,command_kind")
 
 
-def probe_rows(n, lateness_ns=20_000, skip_at=None, read_fail_at=None):
+def probe_rows(n, lateness_ns=20_000, skip_at=None, read_fail_at=None,
+               ack_fail_at=None):
     rows = []
     for k in range(1, n + 1):
         sched = (k - 1) * PERIOD_NS
@@ -51,12 +52,13 @@ def probe_rows(n, lateness_ns=20_000, skip_at=None, read_fail_at=None):
         bus = limit + 2_000
         ret = bus + 30_000
         ack = ret + 300_000
-        upper = ack - 100_000
+        upper = -1 if k == ack_fail_at else ack - 100_000
         end = ack + 5_000
         rows.append([k, sched, wake, read_start, read_start + 20_000,
                      read_start + 500_000, read_end - 3_000, read_end, limit,
                      bus, ret, -1, ack, upper, end,
-                     0 if k == read_fail_at else 1, 1, 1,
+                     0 if k == read_fail_at else 1, 1,
+                     0 if k == ack_fail_at else 1,
                      1 if k == skip_at else 0])
     return PROBE_HEADER, rows
 
@@ -103,7 +105,7 @@ def write(header, rows):
 
 
 def probe_run(cycles, log_complete=True, ring_drops=0, late_wake_s=None,
-              version=2):
+              version=2, ack_invalid=0):
     """late_wake_s: the lateness of a wake past the deadline that ended
     the run (no row), or None when the schedule ended it. version 1 is the
     probe whose acknowledgement compared goal values; version 2 reads
@@ -113,6 +115,7 @@ def probe_run(cycles, log_complete=True, ring_drops=0, late_wake_s=None,
             "kind": "production-traffic", "log_complete": log_complete,
             "result": {"started": True, "error": "", "cycles": cycles,
                        "ring_drops": ring_drops, "elapsed_s": 2e-3 * cycles,
+                       "ack_invalid": ack_invalid,
                        "late_wake_stop": late_wake_s is not None,
                        "late_wake_s": 0.0 if late_wake_s is None else 2.0,
                        "late_wake_lateness_s": late_wake_s or 0.0}}
@@ -188,6 +191,19 @@ for run in (probe_run(1000, version=1), None):
     s = ts.summarize(kind, data, 500.0, None, None, run=run)
     assert abs(s["calibration"]["max"] - 230e-6) < 1e-12
     assert "delta_env_candidate" not in s["calibration"]
+# An envelope comes only from a complete run with no read, write or
+# acknowledgement failure: a failure removes rows that could hold the worst
+# case. The surviving rows are still described.
+for rows, run, reason in (
+        (probe_rows(1000, ack_fail_at=500), probe_run(1000, ack_invalid=1),
+         "1 invalid acknowledgements"),
+        (probe_rows(1000, read_fail_at=500), probe_run(1000), "1 read"),
+        (probe_rows(1000), probe_run(1000, log_complete=False),
+         "incomplete")):
+    k2, d2 = ts.load(write(*rows))
+    s = ts.summarize(k2, d2, 500.0, None, None, run=run)
+    assert "delta_env_candidate" not in s["calibration"], reason
+    assert reason in s["calibration_no_candidate"], s
 assert ts.exit_status(results) == 1
 for run in (probe_run(1000, log_complete=False), probe_run(1000, ring_drops=3),
             probe_run(999)):
