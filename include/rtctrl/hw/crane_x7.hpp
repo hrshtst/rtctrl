@@ -79,12 +79,15 @@ class CraneX7 {
     // The bounded grouped read for rates above 100 Hz (control-rate plan,
     // contracts C-4 and C-4a). Disabled (the default), activation neither
     // checks the bus profile nor arms anything: the 100 Hz session.
-    // Enabled, activation verifies every assumption below before its
-    // first torque write (reads only), again after the activation
+    // Enabled, activation verifies every assumption below with read-only
+    // checks before its first torque write, again after the activation
     // configurator (which can rewrite these EEPROM registers), reads the
     // programmed Bus Watchdog back, and only then arms the transport's
     // bounded read of the feedback window, just before torque-on. Any
-    // failure refuses activation and leaves the bounded read unarmed.
+    // failure refuses activation and leaves the bounded read unarmed;
+    // the refusal's cleanup is the usual release (zero goal current
+    // once Drive Mode is verified, torque off, and the watchdog cleared
+    // only where the stop is confirmed).
     struct BoundedRead {
       bool enabled = false;
       // Every servo's Return Delay Time (register units, 2 us) at most
@@ -105,8 +108,10 @@ class CraneX7 {
       // ends; the next instruction packet then leaves after host
       // scheduling and transport delays. Both allowances must be
       // positive, and budget + guard + both must stay below the
-      // programmed Bus Watchdog interval less one 20 ms unit (the
-      // servo's timing resolution), or the watchdog would fire.
+      // programmed Bus Watchdog interval less one 20 ms unit, a
+      // conservative engineering reserve (the documented 20 ms register
+      // unit does not establish the timer's uncertainty), or the
+      // watchdog could fire.
       std::chrono::nanoseconds scheduling_allowance{0};
       std::chrono::nanoseconds transport_allowance{0};
     };

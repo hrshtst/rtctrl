@@ -74,10 +74,12 @@ flowchart TB
   latency timer where the device exposes one. It also checks that the
   longest silence on the bus (`budget + guard` and the scheduling and
   transport allowances) stays below the programmed Bus Watchdog interval
-  less one 20 ms unit. After programming the watchdog it reads it back,
-  and only then arms the feedback window, just before torque-on. Any
-  mismatch refuses activation with nothing armed; `busDiscovery()`
-  reports what was found. Deactivation, a failed activation and the
+  less one 20 ms unit, a conservative engineering reserve. After programming the watchdog it reads it back,
+  and only then arms the feedback window, just before torque-on. The
+  checks are read-only. Any mismatch refuses activation with nothing
+  armed, and the usual release cleans up: it clears a servo's Bus
+  Watchdog only after a confirmed torque-off. `busDiscovery()` reports
+  what was found. Deactivation, a failed activation and the
   destructor disarm.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse

@@ -111,9 +111,10 @@ std::uint8_t CraneX7::watchdogUnits() const {
 // After an ambiguous failure nothing is sent until budget + guard after the
 // failed read's instruction, and the next instruction then needs host
 // scheduling and transport time to reach the servos: that is the longest
-// silence the servos see. Their watchdog counts it in 20 ms units, so one
-// unit less than the programmed interval is the longest silence certain not
-// to trip it.
+// silence the servos see. It must stay below the programmed interval less
+// one 20 ms unit. ROBOTIS documents the register in 20 ms units, which
+// alone do not establish the timer's uncertainty: the unit held back is a
+// conservative engineering reserve.
 bool CraneX7::verifyBoundedReadTiming() {
   using std::chrono::nanoseconds;
   const auto& b = options_.bounded_read;
@@ -350,11 +351,15 @@ void CraneX7::bestEffortRelease() {
   for (const auto& joint : config_.joints) {
     // Until Drive Mode is verified, a goal write could itself enable
     // torque: torque off alone releases the servo.
-    if (drive_modes_verified_) {
-      io_.write16(joint.id, reg::kGoalCurrent.addr, 0);
-    }
-    io_.write8(joint.id, reg::kTorqueEnable.addr, 0);
-    io_.write8(joint.id, reg::kBusWatchdog.addr, 0);
+    const bool zeroed =
+        !drive_modes_verified_ ||
+        io_.write16(joint.id, reg::kGoalCurrent.addr, 0).ok();
+    const bool off = io_.write8(joint.id, reg::kTorqueEnable.addr, 0).ok();
+    // The Bus Watchdog is the servo's last protection, as in deactivate():
+    // clear it only after a confirmed torque-off (and zero goal current,
+    // when one is written). A servo whose stop is unconfirmed keeps its
+    // watchdog, so bus silence still stops it.
+    if (zeroed && off) io_.write8(joint.id, reg::kBusWatchdog.addr, 0);
   }
 }
 

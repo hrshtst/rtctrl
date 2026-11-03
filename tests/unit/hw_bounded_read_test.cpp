@@ -323,3 +323,34 @@ TEST_CASE("the destructor disarms a bounded read", "[hw][bounded]") {
   }
   CHECK(io.events.back() == "disarm");
 }
+
+TEST_CASE("a refused activation keeps the Bus Watchdog of a servo whose "
+          "stop is unconfirmed",
+          "[hw][bounded][safety]") {
+  // Every servo starts torque-on with an armed watchdog (a session that
+  // ended without its release), and activation is refused on the factory
+  // Return Delay Time after Drive Mode was verified, so the release writes
+  // zero goal current, torque off and the watchdog clear.
+  const auto config = craneConfig();
+  auto bus = busFor(config, 47);
+  for (auto& motor : bus.motors()) {
+    motor.poke(reg::kTorqueEnable, 1);
+    motor.poke(reg::kBusWatchdog, 5);
+  }
+  emu::FakePacketIO io(bus);
+  SECTION("its torque-off write fails") {
+    io.setWriteFailureOn(9, reg::kTorqueEnable.addr, 0, -3001);
+  }
+  SECTION("its zero goal current write fails") {
+    io.setWriteFailureOn(9, reg::kGoalCurrent.addr, 0, -3001);
+  }
+  hw::CraneX7 arm(io, config, boundedOptions());
+  REQUIRE_FALSE(arm.activate());
+  REQUIRE(contains(arm.lastError(), "Return Delay Time 250"));
+  CHECK(bus.find(9)->peek(reg::kBusWatchdog) == 5);  // still protected
+  for (std::uint8_t id = 2; id <= 8; ++id) {
+    CAPTURE(static_cast<int>(id));
+    CHECK(bus.find(id)->peek(reg::kTorqueEnable) == 0);
+    CHECK(bus.find(id)->peek(reg::kBusWatchdog) == 0);
+  }
+}
