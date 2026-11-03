@@ -8,10 +8,11 @@ on this page changes a controller gain or the `x7_track` scale cap.
 
 **Status.** The measurement tooling of Phase A exists: the torque-off bus
 probe, the per-cycle timing log, the posture references and the timing
-summary. The exploratory steps E0 and E1 below can run now. The bounded bus
-transaction, the communication options (Return Delay Time 0, Fast Sync Read,
-a motion-only read) and the rate-derived safety options come after
-checkpoint 1, so no rate above 100 Hz is qualified yet. Every rate other than
+summary. E0 and E1 ran on 2026-11-03, and checkpoint 1 is decided (below).
+E1 calibration is to be repeated with the corrected acknowledgement. Next
+come the bounded bus transaction and the selected communication options
+(Fast Sync Read and a motion-only read), then the rate-derived safety
+options. No rate above 100 Hz is qualified, and every rate other than
 100 Hz prints an experimental warning.
 
 ## What the numbers mean
@@ -22,7 +23,9 @@ apart:
 - **Measured**: host-clock intervals between stamps the host took (wake
   lateness, the host transaction interval, the reply span, controller time,
   limiter and host write times, host work per cycle). These are exact for the
-  recorded cycles.
+  recorded cycles. The reply span runs from the SDK's return of the first
+  status packet to its return of the last: it cannot tell servo delays, USB
+  buffering, driver delivery and SDK polling apart.
 - **Estimated**: a statistic of calibration data applied to a run, such as a
   completion-offset quantile. It estimates a quantile; it bounds no individual
   cycle.
@@ -202,6 +205,41 @@ The reviewer receives the E0 inventory and the E1 summaries. From them they
 select the communication changes (Phase B), set provisional envelopes, and
 decide whether current-based position at 1 kHz is wanted (it needs 4 Mbps at
 the 70% headroom rule).
+
+**Decided 2026-11-03.** The legacy receive path is the main bottleneck:
+SCHED_FIFO removes most of the scheduling jitter, but the read transaction
+stays too slow for higher rates. At 500 Hz some real-time idle runs kept
+their frequency but failed the headroom criterion, so 500 Hz is
+insufficiently robust and 1 kHz remains an optimization target. Torque-off
+measurements alone qualify neither 200 nor 500 Hz for powered control.
+
+| Item | Decision |
+|---|---|
+| B1, Return Delay Time 0 | Already 0 on the arm: verify and record it; no EEPROM change |
+| B2, motion-only read | Implement as a selectable profile with its auxiliary-read policy; budget the longest cycle |
+| B3, Fast Sync Read | Proceed, on the strict-parser foundation (firmware v47 supports it) |
+| B4, contiguous cbp goal | Conditional, until the first optimized measurements show its value |
+| D8, cbp at 1 kHz | Target cbp at 500 Hz first; reconsider 4 Mbps after measuring the optimized 3 Mbps path |
+| Scheduling | SCHED_FIFO with explicit CPU affinity is the comparison baseline. PREEMPT_RT is not the next priority. Affinity is pinning, not isolation |
+| Provisional envelopes | Real-time wake 0.25 ms and limiter 40 us (maximum observed times 1.25, rounded up). Write completion (delta) and the separate USB and servo terms stay unassigned |
+| Receive timeout | The new receive path starts with a conservative timeout on the legacy scale during torque-off validation, tightened from measurements of the implemented profile |
+| Thresholds | The acceptance criteria stay unchanged |
+
+Fast Sync Read with the 10-byte read saves about 0.24 ms of read
+serialization. If the unexplained overhead stays, a 1.4 ms read still takes
+about 1.16 ms, so the optimized path is measured before 1 kHz is promised.
+
+**Calibration.** A valid response to the read that follows a write bounds
+that write's completion even when the firmware overwrites the goal, so the
+acknowledgement now reads Model Number after the unchanged production write
+(see E1 above). The rows that matched in the first calibration runs are valid
+per-write bounds but a selected subset: they give no distribution and no
+envelope, and the mismatched rows cannot be recovered, because those runs
+recorded transport success and value mismatch as one flag. The bound may
+still be too loose for 1 kHz. External RS-485 capture is preferred where
+available; otherwise separate diagnostic runs with USB tracing (`usbmon`) can
+locate the batching delay. The archive manifests for E0 and E1 are added
+before the next checkpoint.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

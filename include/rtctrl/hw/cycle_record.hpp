@@ -34,8 +34,11 @@ struct CycleRecord {
   std::int64_t wake_ns = -1;
   std::int64_t read_start_ns = -1;
   std::int64_t instr_return_ns = -1;  // instruction write() returned
-  std::int64_t first_reply_ns = -1;   // first status packet received
-  std::int64_t last_reply_ns = -1;    // last status packet received
+  // When the SDK returned the first and the last status packet: host
+  // observations that include USB buffering, driver delivery and SDK
+  // polling, not the packets' arrival on the bus.
+  std::int64_t first_reply_ns = -1;
+  std::int64_t last_reply_ns = -1;
   std::int64_t read_end_ns = -1;
   std::int64_t window_open_ns = -1;
   std::int64_t controller_wake_ns = -1;  // first controller return

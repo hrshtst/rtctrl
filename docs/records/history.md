@@ -31,7 +31,7 @@ append-only in spirit — the decisions below are closed.
 | 08-18 | Project cleanup: records consolidated here; the closed `x7_ident` hardware app removed |
 | 08-19 | `x7_gravity_demo` added (simplified gravity-compensation demonstration with customizable torque constants) and reviewed — the `--experimental-calibration` opt-in gate and the operator page followed; `apps/` sources reorganized into domain subdirectories (binaries stay flat in `build/apps/`) |
 | 08-20 | Docs renamed lowercase and nested by nav section (published URLs changed; no redirects, by owner decision); Apache-2.0 license adopted; MITOU Target Program (IPA, FY2026) acknowledgment added; docs em-dash convention recorded with `docs/records/` exempt |
-| 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate any profile sustains; E1 calibration stopped because torque-off goal read-back does not work on the servos |
+| 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate any profile sustains (no rate qualified for powered control); E1 calibration stopped because torque-off goal read-back does not work on the servos; checkpoint 1 decided the same day |
 
 ## Decision ledger
 
@@ -45,6 +45,7 @@ append-only in spirit — the decisions below are closed.
 | 2026-07-31 | Default-scale adoption DECLINED — calibration stays per-application config | **FINAL** | [Vendor scales](#vendor-scale-hypothesis-and-evidence-honesty) |
 | 2026-08-18 | `x7_ident` hardware app removed (campaign closed; sim twin and analysis retained) | **REMOVED** | [Removed app](#removed-hardware-app-x7_ident) |
 | 2026-08-19 | `x7_gravity_demo` refuses non-vendor torque constants without the explicit `--experimental-calibration` opt-in (review directive: the config's [0.5, 1.0] scale bound is an electrical bound, not a validated float envelope) | **ENFORCED** | [Gravity demo](../hardware/gravity-demo.md#experimental-calibration-policy) |
+| 2026-11-03 | Control-rate checkpoint 1: Phase B takes Fast Sync Read and a selectable motion-only read, records the existing Return Delay Time 0, keeps the contiguous cbp goal conditional; cbp targets 500 Hz first; SCHED_FIFO with explicit affinity is the scheduling baseline; acceptance thresholds unchanged | **DECIDED** | [Checkpoint 1](../hardware/control-rate.md#checkpoint-1) |
 
 ## Origin and milestones M0 to M8
 
@@ -637,6 +638,20 @@ problem. How to measure write completion went to the reviewer.
 14 torque-off probe runs of 1 s and six `stress-ng` load windows, outside
 the procedure. No motion was possible, and the data was deleted. The scripts
 now require a typed confirmation before any bus contact.
+
+**Checkpoint 1 (2026-11-03).** The reviewer found the legacy receive path to
+be the main bottleneck: SCHED_FIFO removes most of the scheduling jitter, but
+the read stays too slow. Torque-off measurements qualify neither 200 nor
+500 Hz for powered control, and 500 Hz is insufficiently robust. The reviewer
+also revised the calibration conclusion above: a valid response to the read
+that follows a write bounds that write's completion even when the firmware
+overwrites the goal. The acknowledgement therefore now reads Model Number
+after the unchanged production write. The first runs' matched rows remain
+per-write bounds but give no distribution or envelope. Phase B takes Fast
+Sync Read and the motion-only read, records the existing Return Delay Time 0,
+and keeps the contiguous cbp goal conditional; cbp targets 500 Hz first. The
+decisions are recorded in the
+[control-rate qualification](../hardware/control-rate.md#checkpoint-1).
 
 ## Consistency audit
 
