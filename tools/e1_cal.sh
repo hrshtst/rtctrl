@@ -5,7 +5,10 @@
 # torque-off and the arm at rest and supported. x7_bus_timing refuses to
 # measure otherwise, and it never writes Torque Enable or Drive Mode.
 #
-# Each run adds --confirm-writes --drain, idle machine, default scheduling.
+# Each run adds --confirm-writes --drain on an idle machine, with default
+# scheduling, or with SCHED_FIFO pinned to one CPU when --rt-priority and
+# --rt-cpu are given (the checkpoint 1 comparison baseline; the log names
+# then carry "rt-idle").
 # Default runs: current and position at 100, 200, 500 and 1000 Hz, cbp at
 # 100, 200 and 500 Hz. Calibration traffic is not production traffic, so its
 # overruns are expected and never judged: there is no --check and no climb.
@@ -25,7 +28,9 @@
 #   <log>.csv               per-cycle log (probe)
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, summary
-# with <log> = rate-e1-cal-<profile>-<rate>hz-<date>-<attempt>. A run whose
+# with <log> = rate-e1-cal-<profile>-<rate>hz[-rt-idle]-<date>-<attempt>.
+# The record states the requested scheduling and the policy the probe was
+# actually granted. A run whose
 # .csv or .run.txt already exists was attempted: it is skipped, never
 # retried. Use --attempt N for a new series.
 set -u
@@ -40,6 +45,8 @@ date_tag=$(date +%Y%m%d)
 attempt=1
 outdir=.
 max_runnable=3
+rt_priority=
+rt_cpu=
 dry_run=0
 assume_yes=0
 
@@ -58,6 +65,9 @@ usage: $0 [options]
   --outdir DIR          where the logs go (default the repo root)
   --max-runnable N      quiet-machine threshold, mean runnable tasks
                         including this script (default $max_runnable)
+  --rt-priority N       SCHED_FIFO priority (with --rt-cpu; default: none,
+                        default scheduling)
+  --rt-cpu C            the CPU the probe is pinned to (with --rt-priority)
   --dry-run             check the prerequisites and print the plan only
   --yes                 confirm the session in advance (no prompt)
 EOF
@@ -67,7 +77,8 @@ die() { echo "e1_cal: $*" >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --runs|--duration|--probe|--port|--date|--attempt|--outdir|--max-runnable)
+    --runs|--duration|--probe|--port|--date|--attempt|--outdir|--max-runnable|\
+    --rt-priority|--rt-cpu)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs+=("$2") ;;
@@ -78,6 +89,8 @@ while [ $# -gt 0 ]; do
         --attempt) attempt=$2 ;;
         --outdir) outdir=$2 ;;
         --max-runnable) max_runnable=$2 ;;
+        --rt-priority) rt_priority=$2 ;;
+        --rt-cpu) rt_cpu=$2 ;;
       esac
       shift 2 ;;
     --dry-run) dry_run=1; shift ;;
@@ -105,6 +118,18 @@ done
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 is_uint "$max_runnable" || die "--max-runnable must be an integer"
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
+if [ -n "$rt_priority" ] || [ -n "$rt_cpu" ]; then
+  [ -n "$rt_priority" ] && [ -n "$rt_cpu" ] ||
+    die "--rt-priority and --rt-cpu go together"
+  if ! is_uint "$rt_priority" || ! is_uint "$rt_cpu"; then
+    die "--rt-priority and --rt-cpu must be integers"
+  fi
+  condition=rt-idle
+  requested="SCHED_FIFO $rt_priority pinned to CPU $rt_cpu"
+else
+  condition=idle
+  requested="default"
+fi
 
 problems=()
 [ -x "$PROBE" ] && [ -f "$SUMMARY_TOOL" ] ||
@@ -114,24 +139,41 @@ if [ -f "$SUMMARY_TOOL" ] &&
    ! uv run --project tools "$SUMMARY_TOOL" --help >/dev/null 2>&1; then
   problems+=("uv run --project tools $SUMMARY_TOOL --help failed")
 fi
+if [ "$condition" = rt-idle ]; then
+  lim=$(ulimit -r)
+  if [ "$lim" != unlimited ] && [ "$lim" -lt "$rt_priority" ]; then
+    problems+=("real-time priority limit is $lim, below $rt_priority: in the shell that starts this script run
+      sudo prlimit --pid \$\$ --rtprio=90:90")
+  fi
+  [ "$rt_cpu" -lt "$(nproc)" ] || problems+=("--rt-cpu $rt_cpu: this machine has $(nproc) CPUs")
+fi
 if [ ${#problems[@]} -gt 0 ]; then
   for p in "${problems[@]}"; do echo "e1_cal: $p" >&2; done
   [ "$dry_run" -eq 1 ] || exit 2
 fi
 
-log_base() { echo "rate-e1-cal-$1-${2}hz-$date_tag-$attempt"; }
+log_base() {  # the default-scheduling names stay as they were
+  if [ "$condition" = rt-idle ]; then
+    echo "rate-e1-cal-$1-${2}hz-rt-idle-$date_tag-$attempt"
+  else
+    echo "rate-e1-cal-$1-${2}hz-$date_tag-$attempt"
+  fi
+}
 
 probe_cmd() {  # profile rate -> the probe command in cmd[]
   cmd=("$PROBE")
   [ -n "$port" ] && cmd+=(--port "$port")
   cmd+=(--rate-hz "$2" --profile "$1" --duration "$duration"
         --confirm-writes --drain --log "$outdir/$(log_base "$1" "$2").csv")
+  if [ "$condition" = rt-idle ]; then
+    cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu")
+  fi
 }
 
 total=${#plan[@]}
 
 if [ "$dry_run" -eq 1 ]; then
-  echo "plan: $total runs, in this order (date $date_tag, attempt $attempt):"
+  echo "plan: $total runs, scheduling $requested, in this order (date $date_tag, attempt $attempt):"
   for entry in "${plan[@]}"; do
     read -r profile rate <<<"$entry"
     probe_cmd "$profile" "$rate"
@@ -161,7 +203,7 @@ results=()
 add_result() { results+=("$(printf '%-9s %5s Hz  %s' "$1" "$2" "$3")"); }
 print_table() {
   echo
-  echo "E1 calibration results (date $date_tag, attempt $attempt):"
+  echo "E1 calibration results (date $date_tag, attempt $attempt, scheduling $requested):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 on_interrupt() {
@@ -221,7 +263,8 @@ for entry in "${plan[@]}"; do
     echo "started: $(date -Is)"
     echo "commit: $commit"
     echo "probe binary: $(stat -c %y "$PROBE")"
-    echo "condition: idle, default scheduling"
+    echo "condition: $condition"
+    echo "scheduling requested: $requested"
     echo "cpu governors: $governors"
     echo "runnable before start: $quiet (this script included)"
     echo "uptime:$(uptime)"
@@ -230,6 +273,8 @@ for entry in "${plan[@]}"; do
   } >"$note"
   "${cmd[@]}" 2>&1 | tee -a "$note"
   probe_status=${PIPESTATUS[0]}
+  granted=$(sed -n 's/^scheduler: //p' "$note" | head -1)
+  echo "scheduling granted: ${granted:-unknown (the probe printed no scheduler)}" >>"$note"
   if [ "$probe_status" -ne 0 ]; then
     { echo; echo "verdict: probe exit $probe_status (session stopped)"; } >>"$note"
     echo "e1_cal: the probe exited $probe_status: session stopped (stop rule). See $note"

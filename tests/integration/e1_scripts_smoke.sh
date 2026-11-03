@@ -120,6 +120,24 @@ for run in "current 100" "cbp 200"; do
   if grep -q -- '--check' "$base.run.txt"; then
     fail "a calibration run was judged" "$base.run.txt"
   fi
+  # The record states what was asked for and what the probe was granted.
+  grep -q '^scheduling requested: default' "$base.run.txt"
+  grep -q '^scheduling granted: SCHED_OTHER' "$base.run.txt"
 done
+
+# Real-time calibration (planned only: CI cannot grant SCHED_FIFO): the
+# probe gets the policy and the CPU, and the names say rt-idle. Half of
+# the pair is refused.
+setsid tools/e1_cal.sh "${COMMON[@]}" --dry-run --runs current:100 \
+  --rt-priority 80 --rt-cpu 0 </dev/null >"$ROOT/cal-rt.log" 2>&1 ||
+  fail "the real-time calibration plan failed" "$ROOT/cal-rt.log"
+grep -q -- "--rt-priority 80 --rt-cpu 0" "$ROOT/cal-rt.log"
+grep -q "rate-e1-cal-current-100hz-rt-idle-$DATE-1.csv" "$ROOT/cal-rt.log"
+grep -q 'scheduling SCHED_FIFO 80 pinned to CPU 0' "$ROOT/cal-rt.log"
+if setsid tools/e1_cal.sh "${COMMON[@]}" --dry-run --runs current:100 \
+    --rt-priority 80 </dev/null >"$ROOT/cal-rt-half.log" 2>&1; then
+  fail "a priority without a cpu was accepted" "$ROOT/cal-rt-half.log"
+fi
+grep -q -- '--rt-priority and --rt-cpu go together' "$ROOT/cal-rt-half.log"
 
 echo "e1 session scripts OK"

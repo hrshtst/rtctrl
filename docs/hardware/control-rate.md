@@ -166,7 +166,10 @@ start while the shell's real-time priority limit (`ulimit -r`) is below the
 priority; `sudo prlimit --pid $$ --rtprio=90:90` raises it for the shell that
 starts the script. `e1_cal.sh` makes the calibration runs (current and
 position at 100, 200, 500 and 1000 Hz, cbp at 100, 200 and 500 Hz) and prints
-each envelope candidate. In both scripts, a probe that exits nonzero or an
+each envelope candidate. With `--rt-priority N --rt-cpu C` it runs them under
+SCHED_FIFO pinned to that CPU, the checkpoint 1 baseline, with `rt-idle` in
+the log names; each record states the scheduling requested and the policy
+the probe was granted. In both scripts, a probe that exits nonzero or an
 analysis that fails stops the session. Each run leaves
 `<log>.csv.run.txt` beside its log and summary: the command, commit, load
 command, scheduling, CPU governors, machine load, probe output and verdict.
