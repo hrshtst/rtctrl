@@ -155,9 +155,13 @@ bool CraneX7::verifyBusProfile() {
   bus_discovery_ = BusDiscovery{};
   if (!verifyBoundedReadTiming()) return false;
   std::string error;
-  if (!checkBusProfile(io_, group_.ids(), config_.baudrate,
-                       options_.bounded_read.profile, &bus_discovery_.profile,
-                       &error)) {
+  // Fast Sync Read needs its firmware whatever the profile assumes.
+  BusProfile profile = options_.bounded_read.profile;
+  profile.fast_sync_read = profile.fast_sync_read ||
+                           options_.feedback_read.instruction ==
+                               dxl::GroupedRead::kFastSync;
+  if (!checkBusProfile(io_, group_.ids(), config_.baudrate, profile,
+                       &bus_discovery_.profile, &error)) {
     last_error_ = "bounded read: " + error;
     return false;
   }
@@ -185,12 +189,13 @@ bool CraneX7::armBoundedRead() {
       return false;
     }
   }
+  const dxl::GroupedRead instruction = options_.feedback_read.instruction;
   dxl::BoundedReadConfig config;
   config.windows = {{dxl::SyncGroup::kFeedbackAddr,
-                     dxl::SyncGroup::kFeedbackSlots}};
+                     dxl::SyncGroup::kFeedbackSlots, instruction}};
   if (options_.feedback_read.motion_only) {
-    config.windows.push_back(
-        {dxl::SyncGroup::kFeedbackAddr, dxl::SyncGroup::kMotionSlots});
+    config.windows.push_back({dxl::SyncGroup::kFeedbackAddr,
+                              dxl::SyncGroup::kMotionSlots, instruction});
   }
   config.ids = group_.ids();
   config.budget = options_.bounded_read.budget;
@@ -201,11 +206,14 @@ bool CraneX7::armBoundedRead() {
   }
   bounded_armed_ = true;
   bus_discovery_.armed = true;
+  // From here on the feedback reads use the armed instruction.
+  group_.setReadInstruction(instruction);
   return true;
 }
 
 void CraneX7::disarmBoundedRead() {
   if (!bounded_armed_) return;
+  group_.setReadInstruction(dxl::GroupedRead::kSync);
   io_.disarmBoundedSyncRead();
   bounded_armed_ = false;
   bus_discovery_.armed = false;
@@ -312,6 +320,16 @@ void CraneX7::bestEffortRelease() {
 
 bool CraneX7::verifyFeedbackRead() {
   const auto& f = options_.feedback_read;
+  if (f.instruction != dxl::GroupedRead::kSync &&
+      f.instruction != dxl::GroupedRead::kFastSync) {
+    last_error_ = "the feedback read needs a grouped read instruction";
+    return false;
+  }
+  const bool fast = f.instruction == dxl::GroupedRead::kFastSync;
+  if (fast && !options_.bounded_read.enabled) {
+    last_error_ = "Fast Sync Read needs the bounded read";
+    return false;
+  }
   if (!f.motion_only) return true;
   if (!options_.bounded_read.enabled) {
     last_error_ = "the motion-only feedback read needs the bounded read";

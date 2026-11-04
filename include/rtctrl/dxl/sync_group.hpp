@@ -41,11 +41,19 @@ class SyncGroup {
   // indirect-address slots. Voltage and temperature remain zero.
   IoResult readMotion(std::vector<Feedback>& out);
 
-  // One syncRead of all feedback signals; `out` is resized to ids().
+  // Which instruction readAll and readMotionWindow use: Sync Read (the
+  // default), or Fast Sync Read (control-rate Phase B3), which the
+  // transport must be able to send (dxl::Port: an armed bounded window).
+  void setReadInstruction(GroupedRead instruction) {
+    read_instruction_ = instruction;
+  }
+  GroupedRead readInstruction() const { return read_instruction_; }
+
+  // One grouped read of all feedback signals; `out` is resized to ids().
   IoResult readAll(std::vector<Feedback>& out);
 
-  // One syncRead of the window's motion part only (current, velocity and
-  // position: kMotionSlots of its bytes, control-rate Phase B2). Voltage
+  // One grouped read of the window's motion part only (current, velocity
+  // and position: kMotionSlots of its bytes, control-rate Phase B2). Voltage
   // and temperature keep the values `out` holds (zero for an element it
   // gains). Needs setupIndirect(), like readAll().
   IoResult readMotionWindow(std::vector<Feedback>& out);
@@ -79,8 +87,12 @@ class SyncGroup {
   static constexpr std::uint16_t kGoalVelocityAddr = kGoalAddr + 2;
   static constexpr std::uint16_t kGoalPositionAddr = kGoalAddr + 6;
 
+  IoResult groupedRead(std::uint16_t addr, std::uint16_t len,
+                       std::vector<std::uint8_t>& out);
+
   PacketIO& io_;
   std::vector<std::uint8_t> ids_;
+  GroupedRead read_instruction_ = GroupedRead::kSync;
   std::vector<std::uint8_t> raw_motion_;
   std::vector<std::uint8_t> raw_feedback_;
   std::vector<std::uint8_t> goal_data_;

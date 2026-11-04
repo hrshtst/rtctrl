@@ -6,6 +6,7 @@
 #include <optional>
 #include <vector>
 
+#include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/error.hpp"
 
 namespace rtctrl::dxl {
@@ -20,11 +21,13 @@ struct SyncReadTiming {
   bool sent = false;    // the instruction was transmitted
 };
 
-// One grouped read the bounded path takes over: its first register and
-// its data bytes per servo.
+// One grouped read the bounded path takes over: its first register, its
+// data bytes per servo, and its instruction (Sync Read, or Fast Sync Read
+// from Phase B3).
 struct BoundedReadWindow {
   std::uint16_t addr = 0;
   std::uint16_t len = 0;
+  GroupedRead instruction = GroupedRead::kSync;
 };
 
 // The bounded grouped read (control-rate plan, contract C-4): which reads
@@ -67,8 +70,24 @@ class PacketIO {
                              const std::vector<std::uint8_t>& ids,
                              const std::vector<std::uint8_t>& data) = 0;
 
-  // Stamps of the most recent syncRead, read back by the thread that made
-  // it; an implementation without stamps reports none (sent == false).
+  // The same window as syncRead, by Fast Sync Read (0x8A, firmware v45 and
+  // later): one status packet answers for every servo. A transport that
+  // cannot send it returns kCommNotAvailable and sends nothing (the
+  // default; dxl::Port sends it only on an armed bounded window).
+  virtual IoResult fastSyncRead(std::uint16_t addr, std::uint16_t len,
+                                const std::vector<std::uint8_t>& ids,
+                                std::vector<std::uint8_t>& out) {
+    (void)addr;
+    (void)len;
+    (void)ids;
+    (void)out;
+    return {kCommNotAvailable, kErrNone};
+  }
+
+  // Stamps of the most recent syncRead or fastSyncRead, read back by the
+  // thread that made it; an implementation without stamps reports none
+  // (sent == false). A Fast Sync Read's replies are its servos' sections
+  // of the one packet.
   virtual SyncReadTiming lastSyncReadTiming() const { return {}; }
 
   // While *flag is true, an implementation that supports it refuses every

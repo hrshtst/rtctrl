@@ -22,6 +22,11 @@ class FakePacketIO : public dxl::PacketIO {
   dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
                          const std::vector<std::uint8_t>& ids,
                          std::vector<std::uint8_t>& out) override;
+  // Fast Sync Read as one reply: a listed servo that is absent or has
+  // firmware below v45 times the whole read out.
+  dxl::IoResult fastSyncRead(std::uint16_t addr, std::uint16_t len,
+                             const std::vector<std::uint8_t>& ids,
+                             std::vector<std::uint8_t>& out) override;
   dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
                           const std::vector<std::uint8_t>& ids,
                           const std::vector<std::uint8_t>& data) override;

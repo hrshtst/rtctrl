@@ -65,6 +65,39 @@ dxl::IoResult FakePacketIO::syncRead(std::uint16_t addr, std::uint16_t len,
   return result;
 }
 
+dxl::IoResult FakePacketIO::fastSyncRead(std::uint16_t addr,
+                                         std::uint16_t len,
+                                         const std::vector<std::uint8_t>& ids,
+                                         std::vector<std::uint8_t>& out) {
+  using Clock = std::chrono::steady_clock;
+  dxl::SyncReadTiming& timing = last_sync_read_timing_;
+  timing = {};
+  if (forced_comm_ != 0) return {forced_comm_, dxl::kErrNone};
+  if (forced_read_comm_ != 0) return {forced_read_comm_, dxl::kErrNone};
+  timing.instruction_sent = Clock::now();
+  timing.sent = true;
+  // One reply the servos build in turn: one absent, or predating the
+  // instruction (firmware below v45), breaks the chain and nothing comes.
+  for (const std::uint8_t id : ids) {
+    const MotorEmulator* motor = bus_.find(id);
+    if (motor == nullptr || motor->peek(dxl::reg::kFirmwareVersion) <
+                                dxl::kMinFirmwareFastSyncRead) {
+      return {kCommRxTimeout, dxl::kErrNone};
+    }
+  }
+  out.assign(ids.size() * len, 0);
+  dxl::IoResult result;
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    MotorEmulator* motor = bus_.find(ids[i]);
+    motor->touch();
+    const dxl::IoResult r = motor->read(addr, &out[i * len], len);
+    if (result.error == dxl::kErrNone) result.error = r.error;
+  }
+  timing.first_reply = timing.last_reply = Clock::now();
+  timing.replies = static_cast<int>(ids.size());
+  return result;
+}
+
 dxl::IoResult FakePacketIO::syncWrite(std::uint16_t addr, std::uint16_t len,
                                       const std::vector<std::uint8_t>& ids,
                                       const std::vector<std::uint8_t>& data) {

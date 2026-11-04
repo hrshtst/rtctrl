@@ -32,6 +32,14 @@ constexpr std::size_t kIdOffset = 4;
 constexpr std::size_t kLengthOffset = 5;
 constexpr std::size_t kBodyOffset = 7;  // the instruction
 constexpr std::uint8_t kMaxId = 252;    // 253..255 are reserved or broadcast
+constexpr std::uint8_t kBroadcastId = 0xFE;
+// A Fast Sync Read reply: header, ID and length (7), the instruction, then
+// per servo its error byte, ID, data and CRC.
+constexpr std::size_t kFastSectionOverhead = 4;
+
+std::size_t fastLengthField(std::size_t n, std::size_t len) {
+  return 1 + n * (len + kFastSectionOverhead);
+}
 
 }  // namespace
 
@@ -75,15 +83,54 @@ std::vector<std::uint8_t> encodeStatusPacket(std::uint8_t id,
   return packet;
 }
 
+std::vector<std::uint8_t> encodeFastSyncStatusPacket(
+    const std::vector<std::uint8_t>& ids,
+    const std::vector<std::uint8_t>& errors,
+    const std::vector<std::uint8_t>& data, std::size_t len) {
+  if (errors.size() != ids.size() || data.size() != ids.size() * len) {
+    throw std::invalid_argument(
+        "encodeFastSyncStatusPacket: one error byte and len data bytes per "
+        "servo");
+  }
+  const std::size_t length = fastLengthField(ids.size(), len);
+  std::vector<std::uint8_t> packet(kHeader.begin(), kHeader.end());
+  packet.push_back(kBroadcastId);
+  packet.push_back(static_cast<std::uint8_t>(length & 0xFF));
+  packet.push_back(static_cast<std::uint8_t>(length >> 8));
+  packet.push_back(kStatusInstruction);
+  for (std::size_t k = 0; k < ids.size(); ++k) {
+    packet.push_back(errors[k]);
+    packet.push_back(ids[k]);
+    packet.insert(packet.end(), data.begin() + static_cast<std::ptrdiff_t>(k * len),
+                  data.begin() + static_cast<std::ptrdiff_t>((k + 1) * len));
+    const std::uint16_t crc = crc16(packet.data(), packet.size());
+    packet.push_back(static_cast<std::uint8_t>(crc & 0xFF));
+    packet.push_back(static_cast<std::uint8_t>(crc >> 8));
+  }
+  return packet;
+}
+
 StatusReplyParser::StatusReplyParser(std::vector<std::uint8_t> ids,
-                                     std::uint16_t param_len)
+                                     std::uint16_t param_len,
+                                     GroupedRead instruction)
     : ids_(std::move(ids)),
       param_len_(param_len),
-      // Instruction, error byte, the data and the CRC; FF FF FD can only
-      // form inside the data (the instruction is 0x55 and no error byte
-      // is FF), at most once per three data bytes.
-      min_length_(static_cast<std::size_t>(param_len) + 4),
-      max_length_(static_cast<std::size_t>(param_len) + 4 + param_len / 3) {
+      instruction_(instruction),
+      // Sync Read, per packet: instruction, error byte, the data and the
+      // CRC; FF FF FD can only form inside the data (the instruction is
+      // 0x55 and no error byte is FF), at most once per three data bytes.
+      // Fast Sync Read: one exact length, never stuffed.
+      min_length_(instruction == GroupedRead::kFastSync
+                      ? fastLengthField(ids_.size(), param_len)
+                      : static_cast<std::size_t>(param_len) + 4),
+      max_length_(instruction == GroupedRead::kFastSync
+                      ? min_length_
+                      : static_cast<std::size_t>(param_len) + 4 +
+                            param_len / 3) {
+  if (instruction_ != GroupedRead::kSync &&
+      instruction_ != GroupedRead::kFastSync) {
+    throw std::invalid_argument("StatusReplyParser: not a grouped read");
+  }
   if (ids_.empty()) {
     throw std::invalid_argument("StatusReplyParser: no servo requested");
   }
@@ -106,11 +153,68 @@ StatusReplyParser::StatusReplyParser(std::vector<std::uint8_t> ids,
   errors_.assign(ids_.size(), 0);
 }
 
+std::size_t StatusReplyParser::maxReplyBytes() const {
+  if (instruction_ == GroupedRead::kFastSync) return kBodyOffset + max_length_;
+  return ids_.size() * (kBodyOffset + max_length_);
+}
+
 StatusReplyParser::Status StatusReplyParser::parse(const std::uint8_t* data,
                                                    std::size_t size) {
   fault_ = Fault::kNone;
   fault_offset_ = 0;
   packets_ = 0;
+  return instruction_ == GroupedRead::kFastSync ? parseFastSync(data, size)
+                                                : parseSync(data, size);
+}
+
+StatusReplyParser::Status StatusReplyParser::parseFastSync(
+    const std::uint8_t* data, std::size_t size) {
+  for (std::size_t i = 0; i < kHeader.size(); ++i) {
+    if (i >= size) return Status::kIncomplete;
+    if (data[i] != kHeader[i]) {
+      return fail(i + 1 < kHeader.size() ? Fault::kHeader : Fault::kReserved,
+                  i);
+    }
+  }
+  if (kIdOffset >= size) return Status::kIncomplete;
+  if (data[kIdOffset] != kBroadcastId) return fail(Fault::kId, kIdOffset);
+  if (kLengthOffset + 1 >= size) return Status::kIncomplete;
+  const std::size_t length =
+      static_cast<std::size_t>(data[kLengthOffset]) |
+      (static_cast<std::size_t>(data[kLengthOffset + 1]) << 8);
+  if (length != min_length_) return fail(Fault::kLength, kLengthOffset);
+  if (kBodyOffset >= size) return Status::kIncomplete;
+  if (data[kBodyOffset] != kStatusInstruction) {
+    return fail(Fault::kInstruction, kBodyOffset);
+  }
+  // Sections: error byte, ID, the data and a CRC each.
+  std::size_t pos = kBodyOffset + 1;
+  const std::size_t section = param_len_ + kFastSectionOverhead;
+  for (std::size_t k = 0; k < ids_.size(); ++k, pos += section) {
+    if (pos >= size) return Status::kIncomplete;
+    errors_[k] = data[pos];
+    if (pos + 1 >= size) return Status::kIncomplete;
+    if (data[pos + 1] != ids_[k]) return fail(Fault::kId, pos + 1);
+    const std::size_t first = pos + 2;
+    const std::size_t present = std::min(size, first + param_len_) - first;
+    std::copy_n(data + first, present,
+                params_.begin() + static_cast<std::ptrdiff_t>(k * param_len_));
+    const std::size_t crc_at = first + param_len_;
+    if (crc_at + 2 > size) return Status::kIncomplete;
+    if (k + 1 == ids_.size()) {
+      const std::uint16_t crc = crc16(data, crc_at);
+      const auto sent = static_cast<std::uint16_t>(
+          data[crc_at] | (static_cast<std::uint16_t>(data[crc_at + 1]) << 8));
+      if (crc != sent) return fail(Fault::kCrc, crc_at);
+    }
+    ++packets_;
+  }
+  if (size > pos) return fail(Fault::kExtraBytes, pos);
+  return Status::kComplete;
+}
+
+StatusReplyParser::Status StatusReplyParser::parseSync(const std::uint8_t* data,
+                                                       std::size_t size) {
   std::size_t pos = 0;  // where the packet being parsed starts
   for (std::size_t k = 0; k < ids_.size(); ++k) {
     for (std::size_t i = 0; i < kHeader.size(); ++i) {

@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "rtctrl/dxl/status_parser.hpp"
+
 namespace rtctrl::emu {
 
 namespace {
@@ -20,6 +22,7 @@ constexpr std::uint8_t kInstWrite = 0x03;
 constexpr std::uint8_t kInstStatus = 0x55;
 constexpr std::uint8_t kInstSyncRead = 0x82;
 constexpr std::uint8_t kInstSyncWrite = 0x83;
+constexpr std::uint8_t kInstFastSyncRead = 0x8A;
 constexpr std::uint8_t kBroadcastId = 0xFE;
 
 }  // namespace
@@ -208,7 +211,9 @@ void PtyBus::extractFrames() {
         arrival.instruction = instruction;
         arrival.id = id;
         arrival.at = std::chrono::steady_clock::now();
-        if (instruction == kInstSyncRead && body.size() >= 4) {
+        if ((instruction == kInstSyncRead ||
+             instruction == kInstFastSyncRead) &&
+            body.size() >= 4) {
           arrival.data_length =
               static_cast<std::uint16_t>(body[2] | (body[3] << 8));
         }
@@ -320,6 +325,35 @@ void PtyBus::handleFrame(std::uint8_t id, std::uint8_t instruction,
         replies.insert(replies.end(), status.begin(), status.end());
       }
       sendSyncReadReplies(std::move(replies));
+      break;
+    }
+    case kInstFastSyncRead: {
+      if (params.size() < 4) break;
+      const std::uint16_t addr =
+          static_cast<std::uint16_t>(params[0] | (params[1] << 8));
+      const std::uint16_t len =
+          static_cast<std::uint16_t>(params[2] | (params[3] << 8));
+      // One status packet for all listed ids, sent together (or as a
+      // scripted fault says). The servos build it in turn, so a listed
+      // servo that is absent or predates the instruction (firmware below
+      // v45) breaks the chain: nothing is sent, and the host times out.
+      std::vector<std::uint8_t> ids(params.begin() + 4, params.end());
+      std::vector<std::uint8_t> errors;
+      std::vector<std::uint8_t> data(ids.size() * len, 0);
+      bool chain = !ids.empty();
+      for (std::size_t i = 0; i < ids.size() && chain; ++i) {
+        MotorEmulator* motor = bus_.find(ids[i]);
+        chain = motor != nullptr &&
+                motor->peek(dxl::reg::kFirmwareVersion) >=
+                    dxl::kMinFirmwareFastSyncRead;
+        if (!chain) break;
+        motor->touch();
+        errors.push_back(motor->read(addr, &data[i * len], len).error);
+      }
+      if (chain) {
+        sendSyncReadReplies(
+            dxl::encodeFastSyncStatusPacket(ids, errors, data, len));
+      }
       break;
     }
     case kInstSyncWrite: {

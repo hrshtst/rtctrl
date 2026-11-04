@@ -399,7 +399,11 @@ def bounded_read_line(run: dict) -> str:
     if run.get("read_path") != "bounded" or "bounded_read" not in run:
         return ""
     b = run["bounded_read"]
-    return (f"  read path: bounded (budget {1e3 * b['budget_s']:.3f} ms, "
+    # Fast Sync Read (Phase B3) is named; Sync Read, the default and all
+    # that summaries before it knew, is not.
+    fast = ", Fast Sync Read" if run.get("read_instruction") == "fast_sync" \
+        else ""
+    return (f"  read path: bounded{fast} (budget {1e3 * b['budget_s']:.3f} ms, "
             f"guard {1e3 * b['guard_s']:.3f} ms): {b['reads']} reads, "
             f"{b['timeouts']} timeouts, {b['malformed']} malformed, "
             f"{b['recoveries']} recoveries, {b['guard_waits']} guard waits")

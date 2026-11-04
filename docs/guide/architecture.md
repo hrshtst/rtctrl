@@ -51,7 +51,9 @@ flowchart TB
   `StatusReplyParser` checks the status replies to one grouped read
   strictly (header, ID and order, length, byte stuffing, CRC, nothing
   after the last reply) and reports a fault as soon as the bytes received
-  rule out a valid reply.
+  rule out a valid reply. It also checks a Fast Sync Read's single packet
+  (broadcast ID, exact length, each servo's ID in order, the final CRC;
+  never stuffed).
 - **The bounded grouped read (control-rate Phase R).** Above 100 Hz,
   `Port::armBoundedSyncRead` replaces the SDK's receive for its grouped
   read windows (one list of servos, one or more lengths) with its own: a deadline (`budget`) on the monotonic clock after
@@ -63,7 +65,10 @@ flowchart TB
   the instruction. Input received meanwhile is discarded, and the next
   read, of whichever window, asks for one byte more, so a late reply of
   the normal length fails on its length field. A reply does not name its
-  register, so two windows' lengths must differ by at least 2. Unarmed, every transaction takes the SDK
+  register, so two windows of one instruction must differ in length by at
+  least 2. A window is a Sync Read or a Fast Sync Read
+  (`PacketIO::fastSyncRead`, firmware v45 and later), which `Port` sends
+  only on an armed window. Unarmed, every transaction takes the SDK
   path unchanged, and no guard is ever set. `CraneX7` registers its
   quiesce flag with the port (`PacketIO::setTransmitInhibit`): once it
   is set, every transmission is refused just before sending, and one
@@ -94,7 +99,9 @@ flowchart TB
   refuses it otherwise, before any bus access. Each `CycleRecord` notes
   the bytes per servo its read requested (`read_len`), so the cycles
   with the full read, the longest, can be budgeted on their own. Nothing
-  in the control path uses voltage or temperature.
+  in the control path uses voltage or temperature. With `instruction`
+  `kFastSync` (Phase B3) the feedback reads become Fast Sync Reads from
+  the arming on; activation then also checks firmware v45 on every servo.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`

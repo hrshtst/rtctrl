@@ -11,8 +11,8 @@
 
 namespace rtctrl::emu {
 
-// A fault applied to the replies of one sync read (fault tests of the
-// bounded read).
+// A fault applied to the replies of one grouped read, Sync Read or Fast
+// Sync Read (fault tests of the bounded read).
 struct ReplyFault {
   enum class Kind {
     kDelay,     // send the replies `delay` after the instruction arrived
@@ -30,7 +30,7 @@ struct ReplyFault {
 struct Arrival {
   std::uint8_t instruction = 0;
   std::uint8_t id = 0;
-  std::uint16_t data_length = 0;  // a sync read's data length, else 0
+  std::uint16_t data_length = 0;  // a grouped read's data length, else 0
   // When poll() extracted it: at or after its transmission.
   std::chrono::steady_clock::time_point at{};
 };
@@ -38,7 +38,8 @@ struct Arrival {
 // Serves a MotorBus over a pseudo-terminal speaking Dynamixel Protocol
 // 2.0 (header/CRC-16/byte stuffing), so the UNMODIFIED DynamixelSDK
 // PortHandler connects to the slave path like a real serial adapter.
-// Handles Ping (incl. broadcast), Read, Write, SyncRead, SyncWrite.
+// Handles Ping (incl. broadcast), Read, Write, SyncRead, FastSyncRead
+// (firmware v45 and later), SyncWrite.
 //
 // Single-threaded ownership: whoever calls poll() owns the MotorBus;
 // clients on the other end of the pty interact only through the fd. The
@@ -59,8 +60,8 @@ class PtyBus {
   // error.
   bool poll(double dt);
 
-  // Faults for the next sync reads, one each, in order; later sync reads
-  // reply normally. Appends to any faults still pending.
+  // Faults for the next grouped reads (sync or fast), one each, in order;
+  // later ones reply normally. Appends to any faults still pending.
   void scriptSyncReadFaults(const std::vector<ReplyFault>& faults);
   // Every instruction received so far, in order.
   std::vector<Arrival> arrivals() const;

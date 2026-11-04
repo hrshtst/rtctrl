@@ -15,7 +15,7 @@ for post-stabilization deletion, kept for reference per the owner's
 | `connect/disconnect` | `dxl::Port` ctor / `close()` | pty tests; hardware bring-up |
 | `load_config_file` (YAML) | `hw::Config::load` (TOML) | `hw_test` config case |
 | `torque_on/off(group)` | `CraneX7::activate/deactivate` (adds fw check, watchdog arming, goal snap, active P-gain setup, and verified shutdown without mutating gains) | `hw_test` activation cases; hardware checklist step 3 |
-| `sync_read(group)` | `SyncGroup::readAll` (one FastSync-style indirect read: pos/vel/current/voltage/temp) | `dxl_test`, pty tests |
+| `sync_read(group)` | `SyncGroup::readAll` (one Sync Read of an indirect window: pos/vel/current/voltage/temp; above 100 Hz optionally a Fast Sync Read on the bounded path, control-rate Phase B3) | `dxl_test`, pty tests |
 | `sync_write(group)` | `SyncGroup::writeGoal*` | `dxl_test`, pty tests |
 | `start_thread/stop_thread` | `CraneX7::startThread/stopThread` (+ cycle stats, deadman integration, zero-on-stop) | `thread_test` |
 | `get_position(s)/velocities/currents/voltage/temperature` | `CraneX7::lastFeedback` / `RealArm::readState` (canonical vectors) | `thread_test` bridge case |
@@ -73,11 +73,12 @@ plan's post-completion review notes):
   concrete use case appears.
 - **Analytic 3-DOF IK** — see the table above (robust numerical solver
   covers the use case).
-- **FastSyncRead (0x8A)** — the port uses ordinary `GroupSyncRead`:
-  measured at 3 Mbps it sustains the 100 Hz cycle over 8 servos with
-  zero overruns, so the fast variant remains an unneeded optimization.
-  The wire-level emulator likewise implements only the ordinary
-  variant.
+- **FastSyncRead (0x8A)** — at 100 Hz the port uses ordinary
+  `GroupSyncRead`: measured at 3 Mbps it sustains the 100 Hz cycle over
+  8 servos with zero overruns. (Amended 2026-11-04: for rates above
+  100 Hz, control-rate Phase B3 adds Fast Sync Read on the bounded read
+  path, with its own strict parser rather than the SDK's
+  `GroupFastSyncRead`; the emulators implement it.)
 - **SDK `.model` file parsing** — `dxl_inspect` ships its own register
   table (`control_table.hpp` is the single source of truth) rather
   than reading the DynamixelSDK's `.model` data files.

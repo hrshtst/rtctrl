@@ -87,13 +87,11 @@ struct Port::BoundedWindowState {
   BoundedWindowState(const std::vector<std::uint8_t>& ids,
                      BoundedReadWindow w)
       : window(w),
-        normal(ids, w.len),
-        recovery(ids, static_cast<std::uint16_t>(w.len + 1)) {}
+        normal(ids, w.len, w.instruction),
+        recovery(ids, static_cast<std::uint16_t>(w.len + 1), w.instruction) {}
 
   // Every recovery reply at its longest.
-  std::size_t maxReplyBytes() const {
-    return recovery.ids().size() * (7 + recovery.maxLengthField());
-  }
+  std::size_t maxReplyBytes() const { return recovery.maxReplyBytes(); }
 
   BoundedReadWindow window;
   StatusReplyParser normal;
@@ -114,11 +112,15 @@ struct Port::Bounded {
     rx.resize(longest + 1);
   }
 
-  BoundedWindowState* find(std::uint16_t addr, std::uint16_t len,
+  BoundedWindowState* find(GroupedRead instruction, std::uint16_t addr,
+                           std::uint16_t len,
                            const std::vector<std::uint8_t>& ids) {
     if (ids != config.ids) return nullptr;
     for (BoundedWindowState& w : windows) {
-      if (w.window.addr == addr && w.window.len == len) return &w;
+      if (w.window.instruction == instruction && w.window.addr == addr &&
+          w.window.len == len) {
+        return &w;
+      }
     }
     return nullptr;
   }
@@ -189,9 +191,16 @@ bool Port::armBoundedSyncRead(const BoundedReadConfig& config) {
       throw std::invalid_argument(
           "Port: a bounded window needs 1 to 65534 data bytes");
     }
+    const GroupedRead instruction = config.windows[i].instruction;
+    if (instruction != GroupedRead::kSync &&
+        instruction != GroupedRead::kFastSync) {
+      throw std::invalid_argument("Port: a bounded window needs a grouped read");
+    }
     // A reply does not name its register: only its length tells a late
-    // reply from the one awaited, in either epoch (len or len + 1).
+    // reply from the one awaited, in either epoch (len or len + 1). The
+    // two instructions' replies differ in their first packet's ID.
     for (std::size_t j = 0; j < i; ++j) {
+      if (config.windows[j].instruction != instruction) continue;
       const int other = config.windows[j].len;
       if (std::abs(static_cast<int>(len) - other) < 2) {
         throw std::invalid_argument(
@@ -257,9 +266,10 @@ IoResult Port::syncRead(std::uint16_t addr, std::uint16_t len,
                         std::vector<std::uint8_t>& out) {
   if (!clearToTransmit()) return inhibitedResult();
   if (bounded_ != nullptr) {
-    if (BoundedWindowState* w = bounded_->find(addr, len, ids)) {
+    if (BoundedWindowState* w =
+            bounded_->find(GroupedRead::kSync, addr, len, ids)) {
       out.resize(ids.size() * len);
-      return boundedSyncRead(*w, out);
+      return boundedRead(*w, out);
     }
   }
   SyncReadTiming& timing = last_sync_read_timing_;
@@ -301,8 +311,26 @@ IoResult Port::syncWrite(std::uint16_t addr, std::uint16_t len,
   return r;
 }
 
-IoResult Port::boundedSyncRead(BoundedWindowState& w,
-                               std::vector<std::uint8_t>& out) {
+IoResult Port::fastSyncRead(std::uint16_t addr, std::uint16_t len,
+                            const std::vector<std::uint8_t>& ids,
+                            std::vector<std::uint8_t>& out) {
+  // No SDK path: nothing is sent outside an armed window.
+  BoundedWindowState* w =
+      bounded_ == nullptr
+          ? nullptr
+          : bounded_->find(GroupedRead::kFastSync, addr, len, ids);
+  if (w == nullptr) {
+    IoResult r;
+    r.comm = kCommNotAvailable;
+    return r;
+  }
+  if (!clearToTransmit()) return inhibitedResult();
+  out.resize(ids.size() * len);
+  return boundedRead(*w, out);
+}
+
+IoResult Port::boundedRead(BoundedWindowState& w,
+                           std::vector<std::uint8_t>& out) {
   Bounded& b = *bounded_;
   const bool recovering = recovery_;
   const std::uint16_t len = w.window.len;
@@ -315,9 +343,12 @@ IoResult Port::boundedSyncRead(BoundedWindowState& w,
 
   IoResult r;
   // The SDK sends the instruction, discarding received input first.
-  r.comm = packet_->syncReadTx(
-      port_, w.window.addr, requested, b.config.ids.data(),
-      static_cast<std::uint16_t>(b.config.ids.size()));
+  const auto n = static_cast<std::uint16_t>(b.config.ids.size());
+  auto* ids = const_cast<std::uint8_t*>(b.config.ids.data());
+  r.comm = w.window.instruction == GroupedRead::kFastSync
+               ? packet_->fastSyncReadTx(port_, w.window.addr, requested, ids,
+                                         n)
+               : packet_->syncReadTx(port_, w.window.addr, requested, ids, n);
   if (r.comm != COMM_SUCCESS) return r;
   const Clock::time_point t0 = Clock::now();
   timing.instruction_sent = t0;

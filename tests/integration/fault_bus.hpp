@@ -31,16 +31,20 @@ inline constexpr std::uint8_t kSyncWrite = 0x83;
 inline constexpr std::uint8_t kRead = 0x02;
 inline constexpr std::uint8_t kWrite = 0x03;
 inline constexpr std::uint8_t kPing = 0x01;
+inline constexpr std::uint8_t kFastSyncRead = 0x8A;
 
 // A CRANE-X7-shaped bus served on a background thread. The poll loop and
 // withBus() share a mutex, so a test can change the emulated servos
 // between transactions.
 class FaultBus {
  public:
-  FaultBus() {
+  // firmware: every servo's (the emulator's default is v44, before Fast
+  // Sync Read).
+  explicit FaultBus(std::uint8_t firmware = 44) {
     for (std::uint8_t id = 2; id <= 9; ++id) {
       emu::MotorEmulator::Config config;
       config.id = id;
+      config.firmware_version = firmware;
       config.model_number =
           (id == 3) ? dxl::kModelXm540W270 : dxl::kModelXm430W350;
       bus_.add(config);
@@ -134,12 +138,26 @@ inline dxl::IoResult readPositions(dxl::Port& port, std::vector<std::uint8_t>& o
 }
 
 inline std::vector<std::uint16_t> syncReadLengths(
-    const std::vector<emu::Arrival>& arrivals) {
+    const std::vector<emu::Arrival>& arrivals,
+    std::uint8_t instruction = kSyncRead) {
   std::vector<std::uint16_t> lengths;
   for (const auto& a : arrivals) {
-    if (a.instruction == kSyncRead) lengths.push_back(a.data_length);
+    if (a.instruction == instruction) lengths.push_back(a.data_length);
   }
   return lengths;
+}
+
+// The position window by Fast Sync Read.
+inline dxl::BoundedReadConfig fastPositionRead() {
+  dxl::BoundedReadConfig config = positionRead();
+  config.windows[0].instruction = dxl::GroupedRead::kFastSync;
+  return config;
+}
+
+inline dxl::IoResult fastReadPositions(dxl::Port& port,
+                                       std::vector<std::uint8_t>& out) {
+  return port.fastSyncRead(reg::kPresentPosition.addr,
+                           reg::kPresentPosition.len, kIds, out);
 }
 
 }  // namespace fault_bus

@@ -13,10 +13,10 @@ the E1 calibration was repeated with the corrected acknowledgement. Phase R
 is complete: the strict status parser, the bounded read with its recovery,
 the bus checks that activation makes before arming it, and the probe on the
 bounded path. Its torque-off runs on 2026-11-04 closed it for development
-(below); so far only the torque-off probe uses the bounded read. Of the
-selected communication options, the motion-only read (B2) exists and
-awaits its torque-off measurement; Fast Sync Read (B3) comes next, then the
-rate-derived safety options. No rate above 100 Hz is qualified,
+(below); so far only the torque-off probe uses the bounded read. The
+selected communication options exist, the motion-only read (B2) and Fast
+Sync Read (B3), and await their torque-off measurements; the rate-derived
+safety options come next. No rate above 100 Hz is qualified,
 and every rate other than 100 Hz prints an experimental warning.
 
 ## What the numbers mean
@@ -218,6 +218,21 @@ summary's `[budget]` table gives the motion-only cycle's wire time beside
 the full one's. `e1_prod.sh` and `e1_cal.sh` take `--feedback motion`
 (with `--read-path bounded`) and `--aux-interval-ms A`; their log names
 gain `-motion`, or `-motion-aux<A>ms`.
+
+**Fast Sync Read (Phase B3).** `x7_bus_timing --read-path bounded
+--read-instruction fast` reads the feedback by Fast Sync Read (0x8A): one
+status packet for all eight servos, which they do not byte-stuff, instead
+of eight. It needs firmware v45 or later (the arm runs v47); the profile
+check refuses older servos before the first write. The reply is checked
+as strictly as a Sync Read's: the broadcast ID, the exact length, each
+servo's ID in the requested order and its error byte, and the packet's
+CRC at the end. ROBOTIS documents that only that last CRC is the
+controller's to check; the ones after each servo's data serve the servos.
+After a failure the recovery read is one byte longer per servo, as for
+Sync Read. It combines with `--feedback motion`. The scripts take
+`--read-instruction fast` (with `--read-path bounded`), and their log
+names gain `-fast`. A powered session selects it with
+`CraneX7::Options::feedback_read.instruction`.
 
 ### Summaries
 

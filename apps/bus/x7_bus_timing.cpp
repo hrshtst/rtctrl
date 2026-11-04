@@ -41,7 +41,8 @@
 //       [--rt-priority N --rt-cpu C] [--rt-lock-memory]
 //       [--fine-timer-slack]
 //       [--read-path legacy|bounded [--budget-ms B] [--guard-ms G]
-//        [--feedback full|motion [--aux-interval-ms A]]]
+//        [--feedback full|motion [--aux-interval-ms A]]
+//        [--read-instruction sync|fast]]
 //
 // --read-path chooses how the grouped feedback read receives (control-rate
 // Phase R). legacy (the default) is the DynamixelSDK's receive, as at
@@ -64,6 +65,12 @@
 // to whole cycles (default 100; 0 never after the initial read), as
 // CraneX7::Options::feedback_read does. Both windows are armed; each CSV
 // row's read_len says which one the cycle read.
+//
+// --read-instruction chooses the grouped read's instruction (Phase B3), on
+// the bounded path only: sync (the default) is Sync Read, one status
+// packet per servo; fast is Fast Sync Read, one packet for all servos,
+// which needs firmware v45 or later (the profile check then refuses older
+// servos). The read before the run stays a Sync Read.
 //
 // --duration is a deadline on the monotonic clock, not a cycle count: no
 // cycle starts once S seconds have passed since the first, so a rate the
@@ -167,6 +174,8 @@ struct Args {
   bool motion_only = false;
   double aux_interval_ms = 100.0;
   bool aux_given = false;
+  // --read-instruction fast (Phase B3): Fast Sync Read.
+  bool fast = false;
 };
 
 bool parseArgs(const std::vector<const char*>& rest, Args* a) {
@@ -211,6 +220,14 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
         return false;
       }
       a->motion_only = f == "motion";
+    } else if (flag == "--read-instruction") {
+      if (!value(&v)) return false;
+      const std::string r = v;
+      if (r != "sync" && r != "fast") {
+        std::fprintf(stderr, "--read-instruction: sync or fast\n");
+        return false;
+      }
+      a->fast = r == "fast";
     } else if (flag == "--aux-interval-ms") {
       if (!value(&v)) return false;
       if (!x7::parseStrictDouble(v, &a->aux_interval_ms)) {
@@ -284,6 +301,11 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
   }
   if (a->motion_only && !a->bounded) {
     std::fprintf(stderr, "--feedback motion needs --read-path bounded\n");
+    return false;
+  }
+  if (a->fast && !a->bounded) {
+    std::fprintf(stderr,
+                 "--read-instruction fast needs --read-path bounded\n");
     return false;
   }
   if (a->aux_given && !a->motion_only) {
@@ -617,7 +639,10 @@ class Probe {
         drain_fd_(drain_fd),
         full_every_(fullReadEvery(args)),
         ring_(std::max<std::size_t>(
-            4096, static_cast<std::size_t>(args.rate_hz * 4.0))) {}
+            4096, static_cast<std::size_t>(args.rate_hz * 4.0))) {
+    // The run's reads go through the armed bounded windows.
+    if (args.fast) group_.setReadInstruction(dxl::GroupedRead::kFastSync);
+  }
 
   // How often a cycle reads the full window: every cycle (1), every n
   // cycles, or never after the initial read (0); as CraneX7 rounds it.
@@ -919,7 +944,9 @@ int main(int argc, char* argv[]) {
   // write: a refusal leaves every servo as it was.
   hw::BusProfileReport profile_report;
   if (args.bounded) {
-    if (!hw::checkBusProfile(*port, ids, config.baudrate, hw::BusProfile{},
+    hw::BusProfile profile;
+    profile.fast_sync_read = args.fast;
+    if (!hw::checkBusProfile(*port, ids, config.baudrate, profile,
                              &profile_report, &error)) {
       std::fprintf(stderr, "refusing: bounded read: %s\n", error.c_str());
       return 1;
@@ -964,12 +991,14 @@ int main(int argc, char* argv[]) {
     return std::chrono::nanoseconds(std::llround(ms * 1e6));
   };
   if (args.bounded) {
+    const dxl::GroupedRead instruction =
+        args.fast ? dxl::GroupedRead::kFastSync : dxl::GroupedRead::kSync;
     dxl::BoundedReadConfig bounded;
     bounded.windows = {{dxl::SyncGroup::kFeedbackAddr,
-                        dxl::SyncGroup::kFeedbackSlots}};
+                        dxl::SyncGroup::kFeedbackSlots, instruction}};
     if (args.motion_only) {
-      bounded.windows.push_back(
-          {dxl::SyncGroup::kFeedbackAddr, dxl::SyncGroup::kMotionSlots});
+      bounded.windows.push_back({dxl::SyncGroup::kFeedbackAddr,
+                                 dxl::SyncGroup::kMotionSlots, instruction});
     }
     bounded.ids = ids;
     bounded.budget = to_ns(args.budget_ms);
@@ -1003,8 +1032,9 @@ int main(int argc, char* argv[]) {
   // the full reads and the full read's own cycles.
   const auto bytesFor = [&](int read_len) {
     return wire::cycleBytes(static_cast<int>(config.joints.size()),
-                            wire::ReadVariant::kSync, read_len,
-                            writeWidth(args.profile));
+                            args.fast ? wire::ReadVariant::kFastSync
+                                      : wire::ReadVariant::kSync,
+                            read_len, writeWidth(args.profile));
   };
   const auto wireS = [&](int read_len) {
     return bytesFor(read_len).total(true) * wire::byteTimeS(config.baudrate);
@@ -1012,10 +1042,13 @@ int main(int argc, char* argv[]) {
   const auto bytes = bytesFor(wire::kFeedbackBytes);
   const double wire_s = wireS(wire::kFeedbackBytes);
   std::printf("%s run: profile %s, %.1f Hz, %.1f s; analytic wire time "
-              "%.3f ms (worst-case stuffing) = %.0f%% of the period\n",
+              "%.3f ms (%s) = %.0f%% of the period\n",
               calibration ? "calibration" : "production-traffic",
               profileName(args.profile), args.rate_hz, args.duration_s,
-              1e3 * wire_s, 100.0 * wire_s * args.rate_hz);
+              1e3 * wire_s,
+              args.fast ? "Fast Sync Read, never stuffed"
+                        : "worst-case stuffing",
+              100.0 * wire_s * args.rate_hz);
   if (args.motion_only) {
     const double motion_s = wireS(dxl::SyncGroup::kMotionSlots);
     const std::uint64_t every = Probe::fullReadEvery(args);
@@ -1084,6 +1117,8 @@ int main(int argc, char* argv[]) {
                args.bounded ? "bounded" : "legacy");
   std::fprintf(summary, "feedback = \"%s\"\n",
                args.motion_only ? "motion" : "full");
+  std::fprintf(summary, "read_instruction = \"%s\"\n",
+               args.fast ? "fast_sync" : "sync");
   if (args.motion_only) {
     std::fprintf(summary, "aux_interval_s = %.9g\nfull_read_every = %llu\n",
                  args.aux_interval_ms * 1e-3,

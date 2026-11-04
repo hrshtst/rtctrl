@@ -456,6 +456,32 @@ TEST_CASE("SyncGroup's motion-only read refreshes motion and keeps voltage "
   CHECK(fb[0].temperature == Approx(52.0));
 }
 
+TEST_CASE("the emulator answers Fast Sync Read from firmware v45 only",
+          "[dxl][emu][fast]") {
+  emu::MotorBus bus = craneBus();
+  emu::FakePacketIO io(bus);
+  const std::vector<std::uint8_t> ids{2, 3, 4, 5, 6, 7, 8, 9};
+  for (auto& motor : bus.motors()) motor.poke(reg::kFirmwareVersion, 45);
+  bus.find(4)->poke(reg::kPresentPosition, 2222);
+  std::vector<std::uint8_t> fast;
+  std::vector<std::uint8_t> sync;
+  REQUIRE(io.fastSyncRead(reg::kPresentPosition.addr, 4, ids, fast).ok());
+  REQUIRE(io.syncRead(reg::kPresentPosition.addr, 4, ids, sync).ok());
+  CHECK(fast == sync);
+  CHECK(io.lastSyncReadTiming().replies == 8);
+  // One servo that predates the instruction breaks the chain.
+  bus.find(7)->poke(reg::kFirmwareVersion, 44);
+  CHECK_FALSE(io.fastSyncRead(reg::kPresentPosition.addr, 4, ids, fast).ok());
+  // SyncGroup uses it when told to.
+  for (auto& motor : bus.motors()) motor.poke(reg::kFirmwareVersion, 47);
+  dxl::SyncGroup group(io, ids);
+  REQUIRE(group.setupIndirect().ok());
+  group.setReadInstruction(dxl::GroupedRead::kFastSync);
+  std::vector<dxl::Feedback> feedback;
+  REQUIRE(group.readAll(feedback).ok());
+  CHECK(feedback[2].position == Approx(dxl::pulseToRad(2222)));
+}
+
 TEST_CASE("SyncGroup indirect setup is rejected while torque is on",
           "[dxl][emu]") {
   emu::MotorBus bus = craneBus();

@@ -566,3 +566,94 @@ TEST_CASE("activation arms the port's bounded read only on a matching bus, "
     CHECK(port.boundedReadStats().reads == 0);
   }
 }
+
+// Fast Sync Read (control-rate Phase B3) on the bounded path.
+
+TEST_CASE("Fast Sync Read is sent only on an armed window", "[pty][fast]") {
+  FaultBus bus(47);
+  dxl::Port port(bus.path(), 3000000);
+  std::vector<std::uint8_t> out;
+  const std::size_t before = bus.pty().arrivals().size();
+  CHECK(fastReadPositions(port, out).comm == dxl::kCommNotAvailable);
+  // A Sync Read window does not arm the fast instruction.
+  port.armBoundedSyncRead(positionRead());
+  CHECK(fastReadPositions(port, out).comm == dxl::kCommNotAvailable);
+  std::this_thread::sleep_for(milliseconds(20));
+  CHECK(bus.pty().arrivals().size() == before);
+}
+
+TEST_CASE("an armed Fast Sync Read returns what Sync Read returns",
+          "[pty][fast]") {
+  FaultBus bus(47);
+  bus.setPositions(2100);
+  dxl::Port port(bus.path(), 3000000);
+  std::vector<std::uint8_t> sdk;
+  REQUIRE(readPositions(port, sdk).ok());
+  // A sync and a fast window of one length may be armed together: their
+  // replies differ in the first packet's ID.
+  dxl::BoundedReadConfig config = fastPositionRead();
+  config.windows.push_back(positionRead().windows[0]);
+  port.armBoundedSyncRead(config);
+  std::vector<std::uint8_t> fast;
+  REQUIRE(fastReadPositions(port, fast).ok());
+  CHECK(fast == sdk);
+  CHECK(positions(fast) == expected(2100));
+  const dxl::SyncReadTiming t = port.lastSyncReadTiming();
+  CHECK(t.sent);
+  CHECK(t.replies == 8);  // the servos' sections of the one packet
+  std::vector<std::uint8_t> sync;
+  REQUIRE(readPositions(port, sync).ok());
+  CHECK(sync == sdk);
+  CHECK(port.boundedReadStats().reads == 2);
+  const auto arrivals = bus.waitArrivals(3);
+  CHECK(syncReadLengths(arrivals, kFastSyncRead) ==
+        std::vector<std::uint16_t>{4});
+}
+
+TEST_CASE("a lost Fast Sync Read reply is followed by a longer recovery "
+          "read that returns fresh values",
+          "[pty][fast]") {
+  FaultBus bus(47);
+  bus.setPositions(2000);
+  dxl::Port port(bus.path(), 3000000);
+  port.armBoundedSyncRead(fastPositionRead());
+  bus.pty().scriptSyncReadFaults(
+      {{emu::ReplyFault::Kind::kDrop, milliseconds(0), 0, {}}});
+  std::vector<std::uint8_t> out;
+  CHECK(fastReadPositions(port, out).comm != 0);
+  CHECK(port.boundedReadStats().timeouts == 1);
+  CHECK(port.inRecovery());
+  bus.setPositions(2300);
+  REQUIRE(fastReadPositions(port, out).ok());
+  CHECK(positions(out) == expected(2300));
+  CHECK_FALSE(port.inRecovery());
+  REQUIRE(fastReadPositions(port, out).ok());
+  const auto lengths = syncReadLengths(bus.waitArrivals(3), kFastSyncRead);
+  CHECK(lengths == std::vector<std::uint16_t>{4, 5, 4});
+  CHECK(port.boundedReadStats().recoveries == 1);
+}
+
+TEST_CASE("garbage before a Fast Sync Read reply fails it as malformed",
+          "[pty][fast]") {
+  FaultBus bus(47);
+  bus.setPositions(2000);
+  dxl::Port port(bus.path(), 3000000);
+  port.armBoundedSyncRead(fastPositionRead());
+  bus.pty().scriptSyncReadFaults(
+      {{emu::ReplyFault::Kind::kGarbage, milliseconds(0), 0, {0x00, 0x13}}});
+  std::vector<std::uint8_t> out;
+  CHECK(fastReadPositions(port, out).comm != 0);
+  CHECK(port.boundedReadStats().malformed == 1);
+  CHECK(port.boundedReadStats().last_fault ==
+        dxl::StatusReplyParser::Fault::kHeader);
+}
+
+TEST_CASE("servos older than Fast Sync Read leave it unanswered",
+          "[pty][fast]") {
+  FaultBus bus(44);
+  dxl::Port port(bus.path(), 3000000);
+  port.armBoundedSyncRead(fastPositionRead());
+  std::vector<std::uint8_t> out;
+  CHECK(fastReadPositions(port, out).comm != 0);
+  CHECK(port.boundedReadStats().timeouts == 1);
+}

@@ -123,9 +123,16 @@ class CraneX7 {
     // Nothing in the control path uses voltage or temperature: reading
     // them less often loses monitoring, not protection (each servo's own
     // limits and the Alert bit in every reply remain).
+    //
+    // instruction kFastSync (Phase B3) reads the feedback by Fast Sync
+    // Read: one status packet for every servo. It too needs the bounded
+    // read; activation then also checks firmware v45 or later on every
+    // servo (whatever bounded_read.profile says), and reads by Fast Sync
+    // Read from the arming on. The reads before it stay Sync Reads.
     struct FeedbackRead {
       bool motion_only = false;
       double aux_interval_s = 0.1;
+      dxl::GroupedRead instruction = dxl::GroupedRead::kSync;
     };
     FeedbackRead feedback_read;
   };
@@ -450,8 +457,8 @@ class CraneX7 {
   bool armBoundedRead();
   void disarmBoundedRead();
   std::uint8_t watchdogUnits() const;
-  // Options::feedback_read: refuses a motion-only read without the
-  // bounded read, or an unusable interval (no bus access).
+  // Options::feedback_read: refuses a motion-only read or Fast Sync Read
+  // without the bounded read, or an unusable interval (no bus access).
   bool verifyFeedbackRead();
   // How often the background cycle reads the full feedback window: every
   // cycle (1), every n cycles, or never (0).

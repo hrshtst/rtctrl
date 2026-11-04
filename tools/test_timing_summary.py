@@ -333,6 +333,11 @@ line = ts.bounded_read_line(bounded)
 assert "budget 35.000 ms" in line and "2 timeouts" in line, line
 assert "3 recoveries" in line and "3 guard waits" in line, line
 assert ts.bounded_read_line(probe_run(1000)) == ""
+bounded["read_instruction"] = "sync"
+assert ts.bounded_read_line(bounded) == line
+bounded["read_instruction"] = "fast_sync"
+assert ts.bounded_read_line(bounded).startswith(
+    "  read path: bounded, Fast Sync Read (budget 35.000 ms")
 
 # A log that mixes feedback read lengths (the motion-only read with a full
 # read every fifth cycle) reports each length's cycles, transaction and

@@ -25,9 +25,9 @@
 #   <log>.csv               per-cycle log (probe)
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, verdicts
-# with <log> = rate-e1-prod-<profile>-<rate>hz-<condition>[-bounded][-motion
-# [-aux<A>ms]]-<date>-<attempt> (-bounded with --read-path bounded, -motion
-# with --feedback motion).
+# with <log> = rate-e1-prod-<profile>-<rate>hz-<condition>[-bounded][-fast]
+# [-motion[-aux<A>ms]]-<date>-<attempt> (-bounded with --read-path bounded,
+# -fast with --read-instruction fast, -motion with --feedback motion).
 # A run whose .csv or .run.txt already exists was attempted: it is skipped,
 # never retried, and its recorded climb decision is kept. Use --attempt N
 # for a new series.
@@ -51,6 +51,7 @@ stress_dir="$HOME/.cache/rtctrl-stress"
 read_path=legacy
 feedback=full
 aux_ms=
+read_instruction=sync
 auto_stop=0
 no_climb=0
 dry_run=0
@@ -76,6 +77,10 @@ usage: $0 [options]
   --read-path P       legacy (default) or bounded: the probe's grouped read
                       (bounded: the probe's conservative 35 ms budget and
                       equal guard; log names gain "-bounded")
+  --read-instruction I
+                      sync (default) or fast: the grouped read's
+                      instruction (fast: Fast Sync Read, needs --read-path
+                      bounded and firmware v45; log names gain "-fast")
   --feedback F        full (default) or motion: what each cycle reads
                       (motion: the motion-only read, needs --read-path
                       bounded; log names gain "-motion")
@@ -98,7 +103,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --conditions|--profiles|--rates|--duration|--rt-priority|--rt-cpu|\
     --probe|--port|--date|--attempt|--outdir|--max-runnable|--stress-dir|\
-    --read-path|--feedback|--aux-interval-ms)
+    --read-path|--feedback|--aux-interval-ms|--read-instruction)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --conditions) conditions=$2 ;;
@@ -117,6 +122,7 @@ while [ $# -gt 0 ]; do
         --read-path) read_path=$2 ;;
         --feedback) feedback=$2 ;;
         --aux-interval-ms) aux_ms=$2 ;;
+        --read-instruction) read_instruction=$2 ;;
       esac
       shift 2 ;;
     --auto-stop) auto_stop=1; shift ;;
@@ -161,6 +167,15 @@ case "$read_path" in
   bounded) path_tag=-bounded
     read_desc="bounded (the probe's defaults: 35 ms budget, equal guard)" ;;
   *) die "--read-path must be legacy or bounded" ;;
+esac
+instr_tag=
+case "$read_instruction" in
+  sync) ;;
+  fast)
+    [ "$read_path" = bounded ] || die "--read-instruction fast needs --read-path bounded"
+    instr_tag=-fast
+    read_desc="$read_desc, Fast Sync Read" ;;
+  *) die "--read-instruction must be sync or fast" ;;
 esac
 feedback_tag=; feedback_desc=
 case "$feedback" in
@@ -231,7 +246,7 @@ fi
 stress_cmd=(stress-ng --cpu "$(nproc)" --hdd 1 --timeout "${stress_timeout}s"
             --temp-path "$stress_dir")
 
-log_base() { echo "rate-e1-prod-$2-${3}hz-$1$path_tag$feedback_tag-$date_tag-$attempt"; }
+log_base() { echo "rate-e1-prod-$2-${3}hz-$1$path_tag$instr_tag$feedback_tag-$date_tag-$attempt"; }
 
 probe_cmd() {  # condition profile rate -> the probe command in cmd[]
   local base; base=$(log_base "$1" "$2" "$3")
@@ -241,6 +256,7 @@ probe_cmd() {  # condition profile rate -> the probe command in cmd[]
         --log "$outdir/$base.csv")
   case "$1" in rt-*) cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu") ;; esac
   [ "$read_path" = bounded ] && cmd+=(--read-path bounded)
+  [ "$read_instruction" = fast ] && cmd+=(--read-instruction fast)
   [ "$feedback" = motion ] && cmd+=(--feedback motion)
   [ -n "$aux_ms" ] && cmd+=(--aux-interval-ms "$aux_ms")
 }
@@ -283,7 +299,7 @@ results=()
 add_result() { results+=("$(printf '%-10s %-9s %5s Hz  %s' "$1" "$2" "$3" "$4")"); }
 print_table() {
   echo
-  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path$feedback_desc$climb_desc):"
+  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path${instr_tag:+ (Fast Sync Read)}$feedback_desc$climb_desc):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 stop_stress() {

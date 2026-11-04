@@ -541,3 +541,97 @@ TEST_CASE("without auxiliary reads the cycle keeps activation's voltage "
   CHECK(after.front().position != before.front().position);
   REQUIRE(arm.deactivate());
 }
+
+// Fast Sync Read (control-rate Phase B3).
+
+namespace {
+
+// Counts each grouped read by instruction and length, from the thread
+// too (read after it stopped).
+class InstructionIO : public BoundedIO {
+ public:
+  explicit InstructionIO(emu::MotorBus& bus) : BoundedIO(bus) {}
+  dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
+                         const std::vector<std::uint8_t>& ids,
+                         std::vector<std::uint8_t>& out) override {
+    reads.push_back("sync" + std::to_string(len));
+    return BoundedIO::syncRead(addr, len, ids, out);
+  }
+  dxl::IoResult fastSyncRead(std::uint16_t addr, std::uint16_t len,
+                             const std::vector<std::uint8_t>& ids,
+                             std::vector<std::uint8_t>& out) override {
+    reads.push_back("fast" + std::to_string(len));
+    return BoundedIO::fastSyncRead(addr, len, ids, out);
+  }
+  std::vector<std::string> reads;
+};
+
+hw::CraneX7::Options fastOptions(bool motion_only) {
+  hw::CraneX7::Options options = motionOptions(0.01);
+  options.feedback_read.motion_only = motion_only;
+  options.feedback_read.instruction = dxl::GroupedRead::kFastSync;
+  return options;
+}
+
+}  // namespace
+
+TEST_CASE("Fast Sync Read needs the bounded read, refused with no bus "
+          "access",
+          "[hw][bounded][fast]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config, 47);
+  setReturnDelay(bus, 0);
+  WriteCountIO io(bus);
+  hw::CraneX7::Options options;
+  options.feedback_read.instruction = dxl::GroupedRead::kFastSync;
+  hw::CraneX7 arm(io, config, options);
+  CHECK_FALSE(arm.activate());
+  CHECK(contains(arm.lastError(), "Fast Sync Read needs the bounded read"));
+  CHECK(io.writes == 0);
+}
+
+TEST_CASE("Fast Sync Read checks the firmware even when the profile does "
+          "not ask",
+          "[hw][bounded][fast]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config, 44);
+  setReturnDelay(bus, 0);
+  BoundedIO io(bus);
+  auto options = fastOptions(false);
+  REQUIRE_FALSE(options.bounded_read.profile.fast_sync_read);
+  hw::CraneX7 arm(io, config, options);
+  CHECK_FALSE(arm.activate());
+  CHECK(contains(arm.lastError(), "lacks Fast Sync Read (needs >= v45)"));
+  CHECK_FALSE(io.has("arm"));
+  CHECK_FALSE(io.has("torque-on"));
+}
+
+TEST_CASE("Fast Sync Read arms its windows and takes every read from the "
+          "arming on",
+          "[hw][bounded][fast]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config, 47);
+  setReturnDelay(bus, 0);
+  InstructionIO io(bus);
+  hw::CraneX7 arm(io, config, fastOptions(true));
+  REQUIRE(arm.activate());
+  REQUIRE(io.armed.windows.size() == 2);
+  for (const auto& w : io.armed.windows) {
+    CHECK(w.instruction == dxl::GroupedRead::kFastSync);
+  }
+  // Activation read by Sync Read only, all before the arming.
+  CHECK_FALSE(io.reads.empty());
+  for (const auto& r : io.reads) CHECK(r == "sync13");
+  io.reads.clear();
+  const auto records = runCycles(arm, 11);
+  REQUIRE(records.size() >= 11);
+  REQUIRE(io.reads.size() >= 11);
+  // The full window first and every fifth cycle, by Fast Sync Read.
+  for (std::size_t i = 0; i < 11; ++i) {
+    CAPTURE(i);
+    CHECK(records[i].read_ok);
+    CHECK(io.reads[i] == (i % 5 == 0 ? "fast13" : "fast10"));
+  }
+  REQUIRE(arm.deactivate());
+  CHECK(io.has("disarm"));
+}

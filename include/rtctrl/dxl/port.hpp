@@ -31,9 +31,10 @@ struct BoundedReadStats {
 // PacketIO over DynamixelSDK (Protocol 2.0): the real serial bus.
 //
 // By default every transaction goes through the SDK, as at 100 Hz. Above
-// 100 Hz the caller arms a bounded grouped read for its (addr, len)
-// windows over one list of ids (armBoundedSyncRead). Such a syncRead then
-// sends its instruction
+// 100 Hz the caller arms a bounded grouped read for its (instruction,
+// addr, len) windows over one list of ids (armBoundedSyncRead). Such a
+// syncRead, or fastSyncRead for a Fast Sync Read window, then sends its
+// instruction
 // through the SDK but receives itself: it polls the port against a
 // deadline of `budget` after the instruction's write() returned, on the
 // monotonic clock (the SDK's own timeout uses the wall clock), and checks
@@ -51,12 +52,16 @@ struct BoundedReadStats {
 //     length field. A clean recovery read returns its first len bytes per
 //     servo, and the normal length resumes. The byte after each window
 //     must be readable. A status reply does not name its register, so
-//     two windows' lengths differ by at least 2: then no reply to one
-//     window, at its normal or its recovery length, has the length of
-//     another window's request in either epoch.
+//     two windows of one instruction differ in length by at least 2: then
+//     no reply to one window, at its normal or its recovery length, has
+//     the length of another window's request in either epoch. Replies to
+//     the two instructions differ in their first packet's ID (a servo's,
+//     or the broadcast ID), so one cannot pass for the other.
 // A servo's nonzero error byte in a well-formed reply fails the read like
 // the SDK path (IoResult::error) and is not ambiguous. The unarmed path
-// is the SDK's, unchanged; no guard is ever set on it.
+// is the SDK's, unchanged; no guard is ever set on it. Fast Sync Read
+// has no unarmed path: fastSyncRead outside an armed window returns
+// kCommNotAvailable without sending.
 //
 // Nothing is accepted at or after the deadline: the clock is read after
 // every receive, so a receiver paused across the deadline (preempted, or
@@ -87,6 +92,9 @@ class Port : public PacketIO {
   IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
                      const std::vector<std::uint8_t>& ids,
                      const std::vector<std::uint8_t>& data) override;
+  IoResult fastSyncRead(std::uint16_t addr, std::uint16_t len,
+                        const std::vector<std::uint8_t>& ids,
+                        std::vector<std::uint8_t>& out) override;
   SyncReadTiming lastSyncReadTiming() const override {
     return last_sync_read_timing_;
   }
@@ -102,8 +110,8 @@ class Port : public PacketIO {
   // Arms the bounded grouped read for exactly these windows over these ids
   // and returns true; any other syncRead keeps the SDK path. Allocates its
   // buffers here, none per read. Throws std::invalid_argument for no ids,
-  // no window, a len of 0 or 0xFFFF, two lengths less than 2 apart, a
-  // budget that is not positive, or a negative guard.
+  // no window, a len of 0 or 0xFFFF, two lengths of one instruction less
+  // than 2 apart, a budget that is not positive, or a negative guard.
   // Arming again (or disarming) ends neither a running quiet guard nor a
   // recovery still due: only a clean recovery read ends recovery.
   bool armBoundedSyncRead(const BoundedReadConfig& config) override;
@@ -138,8 +146,8 @@ class Port : public PacketIO {
     return inhibit_ != nullptr && inhibit_->load();
   }
   IoResult inhibitedResult();
-  IoResult boundedSyncRead(BoundedWindowState& window,
-                           std::vector<std::uint8_t>& out);
+  IoResult boundedRead(BoundedWindowState& window,
+                       std::vector<std::uint8_t>& out);
 
   std::string device_;
   dynamixel::PortHandler* port_;

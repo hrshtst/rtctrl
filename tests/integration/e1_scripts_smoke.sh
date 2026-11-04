@@ -240,4 +240,17 @@ grep -q -- '--feedback motion --aux-interval-ms 30' "$MBASE.run.txt"
 grep -q '10-byte reads, .* cycles: host_transaction' "$MBASE.run.txt"
 grep -q '13-byte reads, .* cycles: host_transaction' "$MBASE.run.txt"
 
+# Fast Sync Read (Phase B3), on the v47 emulator: its own names, and the
+# summary tool names the instruction.
+setsid tools/e1_cal.sh "${COMMON[@]}" --yes --read-path bounded \
+  --read-instruction fast --attempt 3 --runs current:100 </dev/null \
+  >"$ROOT/fast-cal.log" 2>&1 ||
+  fail "the Fast Sync Read calibration session failed" "$ROOT/fast-cal.log"
+FBASE="$OUT/rate-e1-cal-current-100hz-bounded-fast-$DATE-3.csv"
+grep -q '^read_instruction = "fast_sync"' "$FBASE.summary.toml"
+grep -q '^ack_invalid = 0' "$FBASE.summary.toml"
+grep -q 'read path: bounded .*, Fast Sync Read' "$FBASE.run.txt"
+grep -q 'read path: bounded, Fast Sync Read (budget 35.000 ms' "$FBASE.run.txt"
+grep -q -- '--read-instruction fast' "$FBASE.run.txt"
+
 echo "e1 session scripts OK"

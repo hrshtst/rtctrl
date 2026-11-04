@@ -304,6 +304,28 @@ assert lengths == want, lengths
 assert lengths.count(13) == int(sys.argv[2]), (lengths.count(13), sys.argv[2])
 EOF
 
+# Fast Sync Read (Phase B3): bounded only; the emulated servos (v45) have
+# it. With the motion-only read, both windows by Fast Sync Read.
+if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
+    --read-instruction fast --log "$ROOT/fastsync-legacy.csv" \
+    >"$ROOT/fastsync-legacy.log" 2>&1; then
+  fail "Fast Sync Read was accepted on the legacy path"
+fi
+grep -q 'needs --read-path bounded' "$ROOT/fastsync-legacy.log"
+"$PROBE" --port "$LINK" --read-path bounded --read-instruction fast \
+  --rate-hz 100 --profile cbp --duration 0.5 --feedback motion \
+  --aux-interval-ms 50 --log "$ROOT/fastsync.csv" >"$ROOT/fastsync.log" 2>&1 ||
+  fail "Fast Sync Read run failed" "$ROOT/fastsync.log"
+S="$ROOT/fastsync.csv.summary.toml"
+grep -q '^read_instruction = "fast_sync"' "$S"
+test "$(value "$S" reads)" = "$(value "$S" cycles)"
+grep -q '^timeouts = 0' "$S"
+grep -q '^malformed = 0' "$S"
+grep -q '^read_failures = 0' "$S"
+grep -q '^read_stuffing_max_bytes = 0' "$S"
+grep -q 'Fast Sync Read, never stuffed' "$ROOT/fastsync.log"
+grep -q '^read_instruction = "sync"' "$ROOT/motion.csv.summary.toml"
+
 # Firmware v47 in operating mode 0 overwrites a torque-off goal write with
 # present values (observed on the arm), so a goal read-back cannot
 # acknowledge a write. The Model Number read still does, for every write.

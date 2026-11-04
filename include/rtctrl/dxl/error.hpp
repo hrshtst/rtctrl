@@ -18,6 +18,9 @@ inline constexpr std::uint8_t kErrAccess = 0x07;
 // transaction was refused before anything was sent, because its owner
 // inhibited transmissions (CraneX7::requestQuiesce).
 inline constexpr int kCommTransmitInhibited = -9001;
+// The transport cannot perform this transaction (the SDK's
+// COMM_NOT_AVAILABLE): nothing was sent.
+inline constexpr int kCommNotAvailable = -9000;
 
 // Outcome of one bus transaction: `comm` is the SDK COMM_* code (0 =
 // COMM_SUCCESS) and `error` the status-packet error field.

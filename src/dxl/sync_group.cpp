@@ -76,9 +76,15 @@ IoResult SyncGroup::setupIndirect() {
   return {};
 }
 
+IoResult SyncGroup::groupedRead(std::uint16_t addr, std::uint16_t len,
+                               std::vector<std::uint8_t>& out) {
+  return read_instruction_ == GroupedRead::kFastSync
+             ? io_.fastSyncRead(addr, len, ids_, out)
+             : io_.syncRead(addr, len, ids_, out);
+}
+
 IoResult SyncGroup::readAll(std::vector<Feedback>& out) {
-  const IoResult r =
-      io_.syncRead(kFeedbackAddr, kFeedbackSlots, ids_, raw_feedback_);
+  const IoResult r = groupedRead(kFeedbackAddr, kFeedbackSlots, raw_feedback_);
   if (r.comm != 0) return r;
 
   out.resize(ids_.size());
@@ -98,8 +104,7 @@ IoResult SyncGroup::readAll(std::vector<Feedback>& out) {
 IoResult SyncGroup::readMotionWindow(std::vector<Feedback>& out) {
   // The full read's buffer: after one full read it holds this read too,
   // so neither allocates again.
-  const IoResult r =
-      io_.syncRead(kFeedbackAddr, kMotionSlots, ids_, raw_feedback_);
+  const IoResult r = groupedRead(kFeedbackAddr, kMotionSlots, raw_feedback_);
   if (r.comm != 0) return r;
 
   out.resize(ids_.size());

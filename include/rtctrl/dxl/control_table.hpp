@@ -119,6 +119,12 @@ inline constexpr std::uint8_t kMinFirmwareTorqueOnByGoalUpdate = 45;
 // Fast Sync Read (instruction 0x8A) needs firmware >= 45.
 inline constexpr std::uint8_t kMinFirmwareFastSyncRead = 45;
 
+// The grouped read instructions (Protocol 2.0), by instruction code.
+enum class GroupedRead : std::uint8_t {
+  kSync = 0x82,      // Sync Read: one status packet per servo
+  kFastSync = 0x8A,  // Fast Sync Read: one status packet for all servos
+};
+
 // The Baud Rate register (8) value for a line speed, if the X series
 // offers it.
 inline std::optional<std::uint8_t> baudRegisterFor(int baudrate) {

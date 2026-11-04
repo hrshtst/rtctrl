@@ -301,3 +301,141 @@ TEST_CASE("the parser refuses a request no servo can answer",
   CHECK(parser.minLengthField() == 17);
   CHECK(parser.maxLengthField() == 21);
 }
+
+// Fast Sync Read (control-rate Phase B3). The e-manual's example reads
+// Present Position (address 132, 4 bytes) of ids 3, 7 and 4; its bytes,
+// embedded CRCs included, are checked against the bitwise CRC.
+namespace {
+
+const Bytes kFastExample = hex(
+    "FF FF FD 00 FE 19 00 55"
+    " 00 03 A6 00 00 00 84 08"
+    " 00 07 1F 08 00 00 16 CA"
+    " 00 04 FF 03 00 00 D1 9E");
+const Bytes kFastExampleData{0xA6, 0x00, 0x00, 0x00, 0x1F, 0x08,
+                             0x00, 0x00, 0xFF, 0x03, 0x00, 0x00};
+const std::vector<std::uint8_t> kFastIds{3, 7, 4};
+
+Parser fastParser(std::vector<std::uint8_t> ids = kFastIds,
+                  std::uint16_t len = 4) {
+  return Parser(std::move(ids), len, dxl::GroupedRead::kFastSync);
+}
+
+}  // namespace
+
+TEST_CASE("the fast encoder reproduces the ROBOTIS Fast Sync Read example",
+          "[dxl][parser][fast]") {
+  CHECK(dxl::encodeFastSyncStatusPacket(kFastIds, {0, 0, 0}, kFastExampleData,
+                                        4) == kFastExample);
+  CHECK_THROWS_AS(dxl::encodeFastSyncStatusPacket(kFastIds, {0, 0},
+                                                  kFastExampleData, 4),
+                  std::invalid_argument);
+}
+
+TEST_CASE("a Fast Sync Read reply parses into data and error bytes",
+          "[dxl][parser][fast]") {
+  Parser parser = fastParser();
+  CHECK(parser.instruction() == dxl::GroupedRead::kFastSync);
+  CHECK(parser.minLengthField() == 25);
+  CHECK(parser.maxLengthField() == 25);
+  CHECK(parser.maxReplyBytes() == kFastExample.size());
+  REQUIRE(parser.parse(kFastExample.data(), kFastExample.size()) ==
+          Status::kComplete);
+  CHECK(parser.params() == kFastExampleData);
+  CHECK(parser.errors() == Bytes{0, 0, 0});
+  CHECK_FALSE(parser.anyServoError());
+  CHECK(parser.packetsParsed() == 3);
+  // Every prefix is a valid beginning; each section counts when complete.
+  for (std::size_t n = 0; n < kFastExample.size(); ++n) {
+    CAPTURE(n);
+    CHECK(parser.parse(kFastExample.data(), n) == Status::kIncomplete);
+    CHECK(parser.packetsParsed() == (n >= 24 ? 2u : n >= 16 ? 1u : 0u));
+  }
+}
+
+TEST_CASE("Fast Sync Read data is never byte-stuffed", "[dxl][parser][fast]") {
+  const Bytes data{0xFF, 0xFF, 0xFD, 0x00, 0x01, 0xFF, 0xFF, 0xFD};
+  const Bytes wire = dxl::encodeFastSyncStatusPacket({2, 3}, {0, 0}, data, 4);
+  CHECK(wire.size() == 8 + 2 * (4 + 4));
+  Parser parser = fastParser({2, 3}, 4);
+  REQUIRE(parser.parse(wire.data(), wire.size()) == Status::kComplete);
+  CHECK(parser.params() == data);
+}
+
+TEST_CASE("each Fast Sync Read fault is found at the byte that rules out a "
+          "valid reply",
+          "[dxl][parser][fast]") {
+  Parser parser = fastParser();
+  const auto expect = [&](Bytes wire, Fault fault, std::size_t offset) {
+    CHECK(parser.parse(wire.data(), wire.size()) == Status::kMalformed);
+    CHECK(parser.fault() == fault);
+    CHECK(parser.faultOffset() == offset);
+  };
+  const auto with = [](std::size_t i, std::uint8_t value) {
+    Bytes w = kFastExample;
+    w[i] = value;
+    return w;
+  };
+  expect(with(0, 0xFE), Fault::kHeader, 0);
+  expect(with(3, 0x01), Fault::kReserved, 3);
+  // A servo's own ID where the broadcast ID belongs: the first packet of a
+  // Sync Read reply, for example.
+  expect(with(4, 0x03), Fault::kId, 4);
+  expect(with(5, 0x1A), Fault::kLength, 5);
+  expect(with(7, 0x56), Fault::kInstruction, 7);
+  // The second section carries id 4: out of order.
+  expect(with(17, 0x04), Fault::kId, 17);
+  // A changed data byte, or an embedded CRC, fails the packet's CRC.
+  expect(with(11, 0x01), Fault::kCrc, 30);
+  expect(with(14, 0x85), Fault::kCrc, 30);
+  expect(with(31, 0x9F), Fault::kCrc, 30);
+  Bytes extra = kFastExample;
+  extra.push_back(0x00);
+  expect(extra, Fault::kExtraBytes, 32);
+  // Replies of the Sync Read format fail at once.
+  expect(join({packet(3, 0, {0xA6, 0, 0, 0}), packet(7, 0, {0x1F, 0x08, 0, 0})}),
+         Fault::kId, 4);
+}
+
+TEST_CASE("a Fast Sync Read reply to another request fails on its length",
+          "[dxl][parser][fast]") {
+  // The recovery read asks for one byte more per servo.
+  Parser longer = fastParser(kFastIds, 5);
+  CHECK(longer.parse(kFastExample.data(), kFastExample.size()) ==
+        Status::kMalformed);
+  CHECK(longer.fault() == Fault::kLength);
+  // A reply without the last servo.
+  const Bytes two = dxl::encodeFastSyncStatusPacket(
+      {3, 7}, {0, 0}, Bytes(kFastExampleData.begin(), kFastExampleData.begin() + 8),
+      4);
+  Parser parser = fastParser();
+  CHECK(parser.parse(two.data(), two.size()) == Status::kMalformed);
+  CHECK(parser.fault() == Fault::kLength);
+}
+
+TEST_CASE("a servo's error byte fails a Fast Sync Read without making it "
+          "malformed",
+          "[dxl][parser][fast]") {
+  const Bytes wire = dxl::encodeFastSyncStatusPacket(kFastIds, {0, 0x80, 0},
+                                                     kFastExampleData, 4);
+  Parser parser = fastParser();
+  REQUIRE(parser.parse(wire.data(), wire.size()) == Status::kComplete);
+  CHECK(parser.anyServoError());
+  CHECK(parser.errors() == Bytes{0, 0x80, 0});
+  CHECK(parser.params() == kFastExampleData);
+}
+
+TEST_CASE("no single corrupted byte passes as a complete Fast Sync Read "
+          "reply",
+          "[dxl][parser][fast]") {
+  Parser parser = fastParser();
+  int passed = 0;
+  for (std::size_t i = 0; i < kFastExample.size(); ++i) {
+    for (int x = 1; x < 256; ++x) {
+      Bytes w = kFastExample;
+      w[i] = static_cast<std::uint8_t>(w[i] ^ x);
+      if (parser.parse(w.data(), w.size()) == Status::kComplete) ++passed;
+    }
+  }
+  CHECK(passed == 0);
+}

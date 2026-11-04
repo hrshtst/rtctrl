@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "rtctrl/dxl/control_table.hpp"
+
 namespace rtctrl::dxl {
 
 // CRC-16 of Dynamixel Protocol 2.0: polynomial 0x8005, initial value 0, not
@@ -21,9 +23,23 @@ std::vector<std::uint8_t> encodeStatusPacket(std::uint8_t id,
                                              const std::uint8_t* data,
                                              std::size_t size);
 
-// Strict parser of the status packets that answer one grouped read: one
-// packet per servo, in the requested order, each carrying exactly
-// param_len data bytes. It checks, in wire order:
+// The one status packet that answers a Fast Sync Read, as the servos
+// transmit it together: header, the reserved byte, the broadcast ID, the
+// length and instruction 0x55, then for each servo in request order its
+// error byte, its ID, len data bytes and a CRC over the packet so far (the
+// running CRC the ROBOTIS example shows; the last is the packet's own). No
+// byte stuffing. `data` holds len bytes per servo. For tests and the
+// emulator; it allocates.
+std::vector<std::uint8_t> encodeFastSyncStatusPacket(
+    const std::vector<std::uint8_t>& ids,
+    const std::vector<std::uint8_t>& errors,
+    const std::vector<std::uint8_t>& data, std::size_t len);
+
+// Strict parser of the status packets that answer one grouped read.
+//
+// A Sync Read (GroupedRead::kSync) is answered by one packet per servo, in
+// the requested order, each carrying exactly param_len data bytes. It
+// checks, in wire order:
 //  - the header FF FF FD and the reserved byte 00;
 //  - the ID, which must be the next servo requested;
 //  - the length field, within the range that param_len and the most byte
@@ -39,6 +55,18 @@ std::vector<std::uint8_t> encodeStatusPacket(std::uint8_t id,
 // corrupted packet all fail. Each servo's error byte is kept: a nonzero one
 // (the Alert bit included) makes a well-formed reply a failed read, which
 // the caller tells from a malformed one with anyServoError().
+//
+// A Fast Sync Read (GroupedRead::kFastSync, firmware >= 45) is answered by
+// one packet for all servos (encodeFastSyncStatusPacket), which the
+// servos do not byte-stuff. It checks, in wire order: the header and
+// reserved byte; the broadcast ID 0xFE; a length field of exactly
+// 1 + n * (param_len + 4); instruction 0x55; for each servo, its error
+// byte, then its ID, the next one requested; the packet's CRC at the end;
+// nothing after it. The CRCs embedded after the other servos' data are
+// for the servos' own checks: ROBOTIS documents that the controller can
+// check only the last, which covers every byte before it, those CRCs
+// included. A section counts as parsed (packetsParsed) when its bytes are
+// all present; the last when its CRC also matches.
 //
 // parse() takes everything received so far for the transaction, from its
 // first byte, and is cheap to call again as more arrives: it reports a
@@ -68,7 +96,8 @@ class StatusReplyParser {
   // ids: the servos in request order, each 0..252 and none repeated.
   // param_len: data bytes per servo, at least 1. Throws
   // std::invalid_argument otherwise.
-  StatusReplyParser(std::vector<std::uint8_t> ids, std::uint16_t param_len);
+  StatusReplyParser(std::vector<std::uint8_t> ids, std::uint16_t param_len,
+                    GroupedRead instruction = GroupedRead::kSync);
 
   Status parse(const std::uint8_t* data, std::size_t size);
 
@@ -86,16 +115,23 @@ class StatusReplyParser {
 
   const std::vector<std::uint8_t>& ids() const { return ids_; }
   std::uint16_t paramLength() const { return param_len_; }
-  // The length field's range for this request: no stuffing, and the most
-  // stuffing param_len data bytes can carry.
+  GroupedRead instruction() const { return instruction_; }
+  // The length field's range for this request: for a Sync Read, no
+  // stuffing and the most stuffing param_len data bytes can carry (per
+  // packet); for a Fast Sync Read, its one exact value.
   std::size_t minLengthField() const { return min_length_; }
   std::size_t maxLengthField() const { return max_length_; }
+  // The most bytes a complete reply can take on the wire.
+  std::size_t maxReplyBytes() const;
 
  private:
   Status fail(Fault fault, std::size_t offset);
+  Status parseSync(const std::uint8_t* data, std::size_t size);
+  Status parseFastSync(const std::uint8_t* data, std::size_t size);
 
   std::vector<std::uint8_t> ids_;
   std::uint16_t param_len_;
+  GroupedRead instruction_;
   std::size_t min_length_;
   std::size_t max_length_;
   std::vector<std::uint8_t> params_;
