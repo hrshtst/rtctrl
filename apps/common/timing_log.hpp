@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 
+#include "rtctrl/arm/runner.hpp"
 #include "rtctrl/hw/crane_x7.hpp"
 #include "rtctrl/hw/cycle_record.hpp"
 #include "rtctrl/util/async_writer.hpp"
@@ -249,6 +250,38 @@ inline void printCycleStats(const rtctrl::hw::CraneX7::CycleStats& stats) {
   printLatencyLine("limiter", t.limiter);
   printLatencyLine("host_write", t.host_write);
   printLatencyLine("host_work", t.host_work);
+}
+
+// The arm's state when a run ended. Capture it right after the run and
+// before shutdown, which changes it.
+struct ArmEndState {
+  rtctrl::hw::CraneX7::CycleStats stats;
+  bool escalated = false;
+  std::string last_error;
+};
+
+inline ArmEndState captureArmEnd(const rtctrl::hw::CraneX7& arm) {
+  return {arm.cycleStats(), arm.escalated(), arm.lastError()};
+}
+
+// Why a run ended, from the runner's report (nothing is printed during
+// the run), then the arm's state at that moment and every CycleStats
+// field.
+inline void printRunEnd(const rtctrl::arm::RunReport& report,
+                        const ArmEndState& arm) {
+  std::printf("run ended: %s in cycle %ld; last accepted sample seq "
+              "%llu at %.6f s (run time %.3f s); final sample seq %llu "
+              "at %.6f s; %llu duplicate samples\n",
+              rtctrl::arm::describe(report.end), report.cycle,
+              static_cast<unsigned long long>(report.accepted_seq),
+              report.accepted_sample_t, report.run_t,
+              static_cast<unsigned long long>(report.final_seq),
+              report.final_sample_t,
+              static_cast<unsigned long long>(report.duplicates));
+  std::printf("arm at the end: %s, last error: %s\n",
+              arm.escalated ? "escalated" : "not escalated",
+              arm.last_error.empty() ? "(none)" : arm.last_error.c_str());
+  printCycleStats(arm.stats);
 }
 
 }  // namespace x7

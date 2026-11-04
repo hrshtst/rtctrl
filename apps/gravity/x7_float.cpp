@@ -118,6 +118,7 @@
 #include "rtctrl/model/joint_map.hpp"
 #include "rtctrl/model/zvector.hpp"
 #include "rtctrl/util/async_writer.hpp"
+#include "common/timing_log.hpp"
 #include "common/x7_common.hpp"
 #include "gravity/gravity_support.hpp"
 
@@ -645,7 +646,10 @@ int main(int argc, char* argv[]) {
                   demonstration_mode ? " DEMONSTRATION" : "",
                   duration_s, kMarkerDeadlineS, evaluation_window_s);
     }
-    const bool ran = arm::run(robot, controller, duration_s, &observer);
+    arm::RunReport report;
+    const bool ran =
+        arm::run(robot, controller, duration_s, &observer, &report);
+    const x7::ArmEndState arm_end = x7::captureArmEnd(*session.arm);
     const bool clean = shutdown.run();
     // Drains the queued rows: file I/O only after the arm is released.
     const bool log_ok = log == nullptr || log->close();
@@ -658,6 +662,10 @@ int main(int argc, char* argv[]) {
     const bool success_pending =
         feel_mode ? (ran && marker.released && !marker.marker_timeout)
                   : marker.window_complete;
+    // Any attempt that did not succeed says why the run ended. A
+    // completed window also ends the run through the observer, so the
+    // runner's result alone cannot decide this.
+    if (!success_pending) x7::printRunEnd(report, arm_end);
     if (!clean) {
       std::printf("SHUTDOWN FAULT (run %s)\n",
                   success_pending ? "done" : "ABORTED");
