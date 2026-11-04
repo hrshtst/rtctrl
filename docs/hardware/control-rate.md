@@ -10,10 +10,11 @@ on this page changes a controller gain or the `x7_track` scale cap.
 probe, the per-cycle timing log, the posture references and the timing
 summary. E0 and E1 ran on 2026-11-03, and checkpoint 1 is decided (below);
 the E1 calibration was repeated with the corrected acknowledgement. Phase R
-has the strict status parser, the bounded read with its recovery, and the
-bus checks that activation makes before arming it, but nothing enables
-the bounded read yet. Next come the probe on the bounded path, the
-selected communication options (Fast Sync Read and a motion-only read),
+is complete: the strict status parser, the bounded read with its recovery,
+the bus checks that activation makes before arming it, and the probe on the
+bounded path. Its torque-off runs on 2026-11-04 closed it for development
+(below); so far only the torque-off probe uses the bounded read. Next come
+the selected communication options (Fast Sync Read and a motion-only read),
 then the rate-derived safety options. No rate above 100 Hz is qualified,
 and every rate other than 100 Hz prints an experimental warning.
 
@@ -253,7 +254,7 @@ measurements alone qualify neither 200 nor 500 Hz for powered control.
 | B4, contiguous cbp goal | Conditional, until the first optimized measurements show its value |
 | D8, cbp at 1 kHz | Target cbp at 500 Hz first; reconsider 4 Mbps after measuring the optimized 3 Mbps path |
 | Scheduling | SCHED_FIFO with explicit CPU affinity is the comparison baseline. PREEMPT_RT is not the next priority. Affinity is pinning, not isolation |
-| Provisional envelopes | Real-time wake 0.25 ms and limiter 40 us (maximum observed times 1.25, rounded up). Write completion (delta) and the separate USB and servo terms stay unassigned |
+| Provisional envelopes | Real-time wake 0.25 ms (raised to 0.75 ms on 2026-11-04, [below](#phase-r-on-hardware)) and limiter 40 us (maximum observed times 1.25, rounded up). Write completion (delta) and the separate USB and servo terms stay unassigned |
 | Receive timeout | The new receive path starts with a conservative timeout on the legacy scale during torque-off validation, tightened from measurements of the implemented profile |
 | Thresholds | The acceptance criteria stay unchanged |
 
@@ -273,6 +274,50 @@ available; otherwise separate diagnostic runs with USB tracing (`usbmon`) can
 locate the batching delay. No receive-only RS-485 tap is available (owner,
 2026-11-03), so D7 is closed and the diagnostics use USB tracing. The archive
 manifests for E0 and E1 are added before the next checkpoint.
+
+### Phase R on hardware
+
+**Torque-off runs, 2026-11-04.** The E1 runs were repeated on the bounded
+read path with the 35 ms budget and an equal guard: 48 production-traffic
+runs covering every condition, profile and rate (`e1_prod.sh --no-climb`),
+and 11 calibration runs under SCHED_FIFO.
+- **Transport.** 1,000,929 bounded reads had no timeout, malformed reply,
+  recovery or guard wait. The recovery path was therefore never entered on
+  hardware; its evidence remains the emulator fault tests.
+- **Verdicts.** Pass or fail matched the legacy runs in all 33 paired runs.
+  200 Hz is still the highest rate that passes every criterion, 500 Hz fails
+  the headroom criterion (T6a) in every run, and 1000 Hz is infeasible on
+  this read.
+- **Calibration.** The completion bound stayed as loose as on the legacy
+  path (median 1.91 ms, values about 1 ms apart).
+- **Default scheduling under load.** Transactions were slower than in the
+  legacy runs of the day before, but the same stress command also loaded the
+  machine more. Separate-day runs cannot exclude an implementation effect, so
+  the difference cannot yet be attributed. An interleaved legacy and bounded
+  comparison would separate the two; it is optional and runs only if
+  explaining the difference becomes necessary.
+
+**Decided 2026-11-04.** The reviewer closed Phase R for development. The
+hardware results establish compatibility in healthy operation, and the
+unchanged read latency shows that replacing the SDK's receive logic alone
+does not solve the throughput problem.
+
+| Item | Decision |
+|---|---|
+| Phase B | B2 (motion-only read) and B3 (Fast Sync Read) proceed on the bounded path. Each is measured separately, including the longest cycle with an auxiliary read |
+| Budget and guard | Stay at 35 ms with an equal guard during Phase B development: shortening them changes failure handling without speeding successful reads |
+| 200 Hz budget | A T6a pass establishes host-side throughput only. In one real-time loaded cbp cycle (10096), the write started 4.818 ms after the read; the 102-byte write needs at least 0.340 ms at 3 Mbps, so its earliest completion (5.158 ms) is past the 5 ms period before any controller computation or USB output delay. The optimized path and the complete controller loop are measured before powered qualification is considered |
+| Wake allowance | The provisional real-time wake allowance becomes 0.75 ms, an assumption for the present configuration. The 0.25 ms of checkpoint 1 was exceeded (0.575 ms for current at 100 Hz and 0.336 ms for position at 200 Hz, both real-time loaded), and 1.25 times the maximum gives 0.719 ms. It is remeasured for the optimized profiles |
+| Diagnostics | USB tracing (`usbmon`) is the next diagnostic for the batching hypothesis and the loose acknowledgement bound. USB events are correlated with the cycle timestamps, and USB completion stays distinct from completion of the RS-485 transmission |
+
+**Interpretation.** Small wake lateness measures the delay before a cycle
+starts; it does not exclude interruptions during the receive transaction.
+The bounded receiver timestamps replies in batches, so a reply span near
+zero shows compressed host observations, not when the replies arrived on
+the bus. The spans of about 1 ms are host observations too.
+
+The E0, E1 and bounded-path files are in the
+[archive manifest](../records/data-archive.md).
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

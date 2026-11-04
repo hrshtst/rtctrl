@@ -32,6 +32,7 @@ append-only in spirit — the decisions below are closed.
 | 08-19 | `x7_gravity_demo` added (simplified gravity-compensation demonstration with customizable torque constants) and reviewed — the `--experimental-calibration` opt-in gate and the operator page followed; `apps/` sources reorganized into domain subdirectories (binaries stay flat in `build/apps/`) |
 | 08-20 | Docs renamed lowercase and nested by nav section (published URLs changed; no redirects, by owner decision); Apache-2.0 license adopted; MITOU Target Program (IPA, FY2026) acknowledgment added; docs em-dash convention recorded with `docs/records/` exempt |
 | 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate that passes every criterion, while some 500 Hz runs kept their frequency but failed the headroom criterion (no rate qualified for powered control); E1 calibration stopped because torque-off goal read-back does not work on the servos; checkpoint 1 decided the same day |
+| 11-04 | Control-rate torque-off runs on the bounded read path (Phase R): 1,000,929 reads without a transport fault and the same pass or fail as the legacy path; the reviewer closed Phase R for development, and the motion-only read and Fast Sync Read proceed |
 
 ## Decision ledger
 
@@ -46,6 +47,7 @@ append-only in spirit — the decisions below are closed.
 | 2026-08-18 | `x7_ident` hardware app removed (campaign closed; sim twin and analysis retained) | **REMOVED** | [Removed app](#removed-hardware-app-x7_ident) |
 | 2026-08-19 | `x7_gravity_demo` refuses non-vendor torque constants without the explicit `--experimental-calibration` opt-in (review directive: the config's [0.5, 1.0] scale bound is an electrical bound, not a validated float envelope) | **ENFORCED** | [Gravity demo](../hardware/gravity-demo.md#experimental-calibration-policy) |
 | 2026-11-03 | Control-rate checkpoint 1: Phase B takes Fast Sync Read and a selectable motion-only read, records the existing Return Delay Time 0, keeps the contiguous cbp goal conditional; cbp targets 500 Hz first; SCHED_FIFO with explicit affinity is the scheduling baseline; acceptance thresholds unchanged | **DECIDED** | [Checkpoint 1](../hardware/control-rate.md#checkpoint-1) |
+| 2026-11-04 | Control-rate Phase R closed for development: B2 and B3 proceed on the bounded path, keeping the 35 ms budget and equal guard; provisional real-time wake allowance raised to 0.75 ms; a T6a pass establishes host-side throughput only; no rate above 100 Hz qualified for powered control | **DECIDED** | [Phase R on hardware](../hardware/control-rate.md#phase-r-on-hardware) |
 
 ## Origin and milestones M0 to M8
 
@@ -652,6 +654,51 @@ Sync Read and the motion-only read, records the existing Return Delay Time 0,
 and keeps the contiguous cbp goal conditional; cbp targets 500 Hz first. The
 decisions are recorded in the
 [control-rate qualification](../hardware/control-rate.md#checkpoint-1).
+
+## Control-rate Phase R on hardware (2026-11-04)
+
+With Phase R implemented (the strict status parser, the bounded read with
+collision-safe recovery, the bus checks before arming it, and the probe on
+the bounded path: `5396cde` to `23648bc`), the E1 runs were repeated
+torque-off on the bounded read path at commit `5f73a08`, with the 35 ms
+budget and an equal guard. The 48 production-traffic runs covered every
+condition, profile and rate (`e1_prod.sh --no-climb`); 11 calibration runs
+ran under SCHED_FIFO. They are exploration, never acceptance evidence; the
+files are in `r4_bounded/` of the [archive manifest](data-archive.md).
+
+**Results.** The 1,000,929 bounded reads had no timeout, malformed reply,
+recovery or guard wait, so the recovery path was never entered on hardware.
+Pass or fail matched the legacy runs in all 33 paired runs. Under SCHED_FIFO
+the median transaction percentiles agree with the legacy path within 0.1 ms;
+200 Hz is still the highest rate that passes every criterion, 500 Hz fails
+the headroom criterion in every run, and 1000 Hz settles at about every other
+period. Under default scheduling with load the reads were slower than the day
+before (median transaction p99 over the paired runs 2.89 to 4.88 ms), but
+the same stress command also loaded the machine more (median wake lateness
+p99.9 1.93 to 2.44 ms). Separate-day runs cannot exclude an implementation
+effect, so the difference cannot yet be attributed. The calibration bound
+reproduced the legacy result: median 1.91 ms, values about 1 ms apart, no
+invalid acknowledgement.
+
+**Review (2026-11-04).** The reviewer checked the 59 runs and the 177
+checksums, recomputed the 48 production verdicts, and closed Phase R for
+development. The hardware results establish compatibility in healthy
+operation, the recovery evidence remains the emulator fault tests, and the
+unchanged read latency shows that replacing the SDK's receive logic alone
+does not solve the throughput problem. B2 and B3 proceed, each measured
+separately (including the longest auxiliary-read cycle), with the budget and
+guard unchanged. The 200 Hz loaded worst case is addressed now: in one
+real-time loaded cbp cycle the write started 4.818 ms after the read, and the
+102-byte write needs at least 0.340 ms at 3 Mbps, so it could not complete
+within the 5 ms period even before controller computation. A T6a pass
+therefore establishes host-side throughput only. The provisional real-time
+wake allowance rises from 0.25 to 0.75 ms (largest observed 0.575 ms; 1.25
+times that is 0.719 ms), an assumption for the present configuration. The
+reviewer also corrected two interpretations: small wake lateness does not
+exclude interruptions during the receive transaction, and a reply span is a
+host observation of batched replies, not their arrival on the bus. USB
+tracing is the next diagnostic. The decisions are recorded in the
+[control-rate qualification](../hardware/control-rate.md#phase-r-on-hardware).
 
 ## Consistency audit
 
