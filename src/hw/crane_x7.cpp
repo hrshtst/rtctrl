@@ -572,13 +572,26 @@ bool CraneX7::deactivate() {
 }
 
 bool CraneX7::readAll(std::vector<dxl::Feedback>& out) {
-  return readFeedback(out, /*full=*/true);
+  return readFeedback(out, /*full=*/true, nullptr);
 }
 
-bool CraneX7::readFeedback(std::vector<dxl::Feedback>& out, bool full) {
+bool CraneX7::readFeedback(std::vector<dxl::Feedback>& out, bool full,
+                           std::vector<dxl::Feedback>* auxiliary) {
   const dxl::IoResult r =
       full ? group_.readAll(out) : group_.readMotionWindow(out);
   if (!r.ok()) return false;
+  if (auxiliary != nullptr) {
+    if (full) {
+      // Reserved at the thread's start, so the copy does not allocate.
+      *auxiliary = out;
+    } else {
+      for (std::size_t i = 0; i < out.size() && i < auxiliary->size();
+           ++i) {
+        out[i].voltage = (*auxiliary)[i].voltage;
+        out[i].temperature = (*auxiliary)[i].temperature;
+      }
+    }
+  }
   // In current/velocity modes the servo reports MULTI-TURN position, so
   // hand-moving a limp joint across the encoder boundary leaves a
   // +/-2pi offset in every later reading (observed 2026-07-21: the
@@ -1071,11 +1084,18 @@ void CraneX7::threadLoop() {
   std::vector<double> targets;
   std::vector<double> auxiliary_targets;
   fb.reserve(config_.joints.size());
-  // A motion-only read keeps the last voltage and temperature, from
-  // activation's full read until the thread's first one.
-  {
+  // The cycle's feedback starts empty, whatever the read: until this
+  // thread's first successful read, the writers that need feedback (the
+  // current and velocity limit gates) refuse rather than command from an
+  // older state. A motion-only read takes voltage and temperature from
+  // `auxiliary` instead: activation's full read, then each full read of
+  // this thread.
+  const bool motion_only = options_.feedback_read.motion_only;
+  std::vector<dxl::Feedback> auxiliary;
+  if (motion_only) {
+    auxiliary.reserve(config_.joints.size());
     std::lock_guard<std::mutex> lock(state_mutex_);
-    fb = feedback_;
+    auxiliary = feedback_;
   }
   // The full window every cycle (1), every n cycles from the first, or
   // never (0); full_due_in counts the cycles until the next one.
@@ -1152,7 +1172,8 @@ void CraneX7::threadLoop() {
           full ? dxl::SyncGroup::kFeedbackSlots
                : dxl::SyncGroup::kMotionSlots);
       cycle_rec.read_start_ns = timingNs(Clock::now());
-      const bool fresh = readFeedback(fb, full);
+      const bool fresh =
+          readFeedback(fb, full, motion_only ? &auxiliary : nullptr);
       if (full_every > 1) {
         // A failed full read stays due.
         if (!full) {

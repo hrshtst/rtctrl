@@ -95,6 +95,9 @@ flowchart TB
   voltage and temperature) on the thread's first cycle, then every
   `aux_interval_s` (default 0.1 s, rounded up to whole cycles), or never
   after activation with 0. A failed full read is retried the next cycle.
+  Only voltage and temperature carry over from activation: until the
+  thread's first successful read, of either window, the current and
+  velocity writers have no feedback and refuse, as with the full read.
   It needs the bounded read, which then arms both windows; activation
   refuses it otherwise, before any bus access. Each `CycleRecord` notes
   the bytes per servo its read requested (`read_len`), so the cycles

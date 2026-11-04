@@ -436,22 +436,39 @@ TEST_CASE("the motion-only read needs the bounded read and a usable "
 
 namespace {
 
-// BoundedIO that reports each grouped read's length to the test after the
-// thread stopped (the thread only appends), and can fail the next full
-// window read.
+// BoundedIO that can fail the next full window read, or the next
+// fail_reads grouped reads of either length, and records in order each
+// grouped read (with its length) and each sync write. The thread only
+// appends; the test reads after it stopped.
 class MotionIO : public BoundedIO {
  public:
   explicit MotionIO(emu::MotorBus& bus) : BoundedIO(bus) {}
   dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
                          const std::vector<std::uint8_t>& ids,
                          std::vector<std::uint8_t>& out) override {
-    if (len == dxl::SyncGroup::kFeedbackSlots && fail_next_full) {
-      fail_next_full = false;
+    const std::string length = std::to_string(len);
+    if ((len == dxl::SyncGroup::kFeedbackSlots && fail_next_full) ||
+        fail_reads > 0) {
+      if (fail_reads > 0) {
+        --fail_reads;
+      } else {
+        fail_next_full = false;
+      }
+      traffic.push_back("failed " + length);
       return {-3001, dxl::kErrNone};  // the SDK's COMM_RX_TIMEOUT
     }
+    traffic.push_back("read " + length);
     return BoundedIO::syncRead(addr, len, ids, out);
   }
+  dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
+                          const std::vector<std::uint8_t>& ids,
+                          const std::vector<std::uint8_t>& data) override {
+    traffic.push_back("write");
+    return BoundedIO::syncWrite(addr, len, ids, data);
+  }
   bool fail_next_full = false;
+  int fail_reads = 0;
+  std::vector<std::string> traffic;
 };
 
 std::vector<hw::CycleRecord> runCycles(hw::CraneX7& arm, std::uint64_t n) {
@@ -539,6 +556,55 @@ TEST_CASE("without auxiliary reads the cycle keeps activation's voltage "
   CHECK(after.front().voltage == before.front().voltage);
   CHECK(after.front().temperature == before.front().temperature);
   CHECK(after.front().position != before.front().position);
+  REQUIRE(arm.deactivate());
+}
+
+TEST_CASE("a failed first motion-only cycle commands no current",
+          "[hw][bounded][motion]") {
+  // The review's B2 regression on this path (2026-11-05): whichever
+  // window the thread reads first, its feedback starts empty, so a failed
+  // first read leaves the current writer without positions and it
+  // refuses. Only voltage and temperature carry over from activation.
+  auto config = craneConfig();
+  for (auto& joint : config.joints) joint.operating_mode = 0;  // current
+  auto bus = busFor(config);
+  setReturnDelay(bus, 0);
+  MotionIO io(bus);
+  double aux_interval_s = 0.0;
+  std::string first;
+  SECTION("the full window first (10 ms auxiliary interval)") {
+    aux_interval_s = 0.01;
+    first = "13";
+  }
+  SECTION("the motion window first (no auxiliary reads)") {
+    aux_interval_s = 0.0;
+    first = "10";
+  }
+  hw::CraneX7 arm(io, config, motionOptions(aux_interval_s));
+  REQUIRE(arm.activate());
+  const auto activation = arm.lastFeedback();
+  REQUIRE_FALSE(activation.empty());
+  REQUIRE(activation.front().voltage > 0.0);
+  REQUIRE(arm.setTargetCurrents(
+      std::vector<double>(config.joints.size(), 0.2)));
+  io.traffic.clear();
+  io.fail_reads = 1;
+  const auto records = runCycles(arm, 3);
+  REQUIRE(records.size() >= 3);
+  CHECK_FALSE(records[0].read_ok);
+  CHECK_FALSE(records[0].write_ok);
+  CHECK(records[1].read_ok);
+  CHECK(records[1].write_ok);
+  // Nothing written between the failed read and the next one; a failed
+  // full read is retried.
+  REQUIRE(io.traffic.size() >= 3);
+  CHECK(io.traffic[0] == "failed " + first);
+  CHECK(io.traffic[1] == "read " + first);
+  CHECK(io.traffic[2] == "write");
+  const auto after = arm.lastFeedback();
+  REQUIRE(after.size() == activation.size());
+  CHECK(after.front().voltage == activation.front().voltage);
+  CHECK(after.front().temperature == activation.front().temperature);
   REQUIRE(arm.deactivate());
 }
 

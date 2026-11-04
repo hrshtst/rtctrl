@@ -117,9 +117,12 @@ class CraneX7 {
     // alone and the full window only on auxiliary cycles: the thread's
     // first cycle, then every aux_interval_s rounded up to whole cycles.
     // With aux_interval_s 0 the thread never reads it, and voltage and
-    // temperature keep their values from activation. A failed full read
-    // is retried the next cycle. The bounded read must be enabled (it
-    // arms both windows); activation refuses otherwise, before any write.
+    // temperature keep their values from activation. Nothing else carries
+    // over: whichever window the thread reads first, the writers that need
+    // feedback refuse until a read of this thread succeeds, as with the
+    // full read. A failed full read is retried the next cycle. The bounded
+    // read must be enabled (it arms both windows); activation refuses
+    // otherwise, before any write.
     // Nothing in the control path uses voltage or temperature: reading
     // them less often loses monitoring, not protection (each servo's own
     // limits and the Alert bit in every reply remain).
@@ -463,9 +466,12 @@ class CraneX7 {
   // How often the background cycle reads the full feedback window: every
   // cycle (1), every n cycles, or never (0).
   std::uint64_t fullReadEvery() const;
-  // readAll (full) or the motion-only read into `out`, which must hold
-  // the last voltage and temperature; on success the cached feedback.
-  bool readFeedback(std::vector<dxl::Feedback>& out, bool full);
+  // readAll (full) or the motion-only read into `out`; on success the
+  // cached feedback. With `auxiliary` (the background cycle's motion-only
+  // read), a full read refreshes it and a motion-only read takes voltage
+  // and temperature from it.
+  bool readFeedback(std::vector<dxl::Feedback>& out, bool full,
+                    std::vector<dxl::Feedback>* auxiliary);
   bool activateSteps();
   void bestEffortRelease();
   bool requireMode(std::uint8_t mode, const char* what);

@@ -7,7 +7,9 @@
 #include <functional>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "rtctrl/arm/real_arm.hpp"
 #include "rtctrl/dxl/control_table.hpp"
@@ -1311,4 +1313,83 @@ TEST_CASE("in-place position->current switch: preload lands before "
     CHECK(motor->peek(reg::kOperatingMode) == 3);  // still position
   }
   REQUIRE(arm2.deactivate());
+}
+
+namespace {
+
+// Fails the next fail_reads grouped reads and records, in order, each
+// grouped read's outcome and each sync write. The background thread only
+// appends; the test reads them after stopThread().
+class FirstReadIO : public emu::FakePacketIO {
+ public:
+  explicit FirstReadIO(emu::MotorBus& bus) : emu::FakePacketIO(bus) {}
+  dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
+                         const std::vector<std::uint8_t>& ids,
+                         std::vector<std::uint8_t>& out) override {
+    if (fail_reads > 0) {
+      --fail_reads;
+      traffic.push_back("read failed");
+      return {-3001, dxl::kErrNone};  // the SDK's COMM_RX_TIMEOUT
+    }
+    traffic.push_back("read");
+    return emu::FakePacketIO::syncRead(addr, len, ids, out);
+  }
+  dxl::IoResult syncWrite(std::uint16_t addr, std::uint16_t len,
+                          const std::vector<std::uint8_t>& ids,
+                          const std::vector<std::uint8_t>& data) override {
+    traffic.push_back("write");
+    return emu::FakePacketIO::syncWrite(addr, len, ids, data);
+  }
+  int fail_reads = 0;
+  std::vector<std::string> traffic;
+};
+
+}  // namespace
+
+TEST_CASE("a failed first background read commands no current or "
+          "velocity from activation's feedback",
+          "[hw][safety]") {
+  // Review of control-rate B2 (2026-11-05): the cycle's feedback starts
+  // empty, not from activation's read. After a failed first read the
+  // current and velocity writers have no position for their limit gates
+  // and refuse; the first successful read enables them.
+  auto config = craneConfig();
+  std::uint8_t mode = 0;
+  SECTION("current") { mode = 0; }
+  SECTION("velocity") { mode = 1; }
+  for (auto& joint : config.joints) joint.operating_mode = mode;
+  auto bus = busFor(config);
+  FirstReadIO io(bus);
+  hw::CraneX7::Options options;
+  options.timing_ring_capacity = 64;
+  hw::CraneX7 arm(io, config, options);
+  REQUIRE(arm.activate());
+  // A nonzero command is waiting when the thread starts.
+  const std::vector<double> command(config.joints.size(), 0.2);
+  const bool submitted = mode == 0 ? arm.setTargetCurrents(command)
+                                    : arm.setTargetVelocities(command);
+  REQUIRE(submitted);
+  io.traffic.clear();
+  io.fail_reads = 1;
+  REQUIRE(arm.startThread());
+  std::uint64_t seen = 0;
+  while (seen < 3) seen = arm.waitCycle(seen);
+  arm.stopThread();
+  std::vector<hw::CycleRecord> records;
+  hw::CycleRecord r;
+  while (arm.popCycleRecord(&r)) records.push_back(r);
+  REQUIRE(records.size() >= 3);
+  CHECK_FALSE(records[0].read_ok);
+  CHECK_FALSE(records[0].write_ok);
+  CHECK(records[1].read_ok);
+  CHECK(records[1].write_ok);
+  // Nothing reached the bus between the failed read and the next one.
+  REQUIRE(io.traffic.size() >= 3);
+  CHECK(io.traffic[0] == "read failed");
+  CHECK(io.traffic[1] == "read");
+  CHECK(io.traffic[2] == "write");
+  CHECK(arm.cycleStats().write_failures == 1);
+  CHECK(arm.lastError().find("no position feedback yet") !=
+        std::string::npos);
+  REQUIRE(arm.deactivate());
 }
