@@ -262,6 +262,47 @@ for kind in production calibration; do
 done
 grep -q '^ack_invalid = 0' "$ROOT/bounded-calibration.csv.summary.toml"
 grep -q '^read_path = "legacy"' "$ROOT/run.csv.summary.toml"
+grep -q '^feedback = "full"' "$ROOT/run.csv.summary.toml"
+
+# The motion-only read (Phase B2) needs the bounded path; its interval
+# needs the motion-only read.
+if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
+    --feedback motion --log "$ROOT/motion-legacy.csv" \
+    >"$ROOT/motion-legacy.log" 2>&1; then
+  fail "the motion-only read was accepted on the legacy path"
+fi
+grep -q 'needs --read-path bounded' "$ROOT/motion-legacy.log"
+if "$PROBE" --port "$LINK" --read-path bounded --rate-hz 100 \
+    --profile current --duration 0.2 --aux-interval-ms 50 \
+    --log "$ROOT/aux-full.csv" >"$ROOT/aux-full.log" 2>&1; then
+  fail "an auxiliary interval was accepted with the full read"
+fi
+grep -q 'needs --feedback motion' "$ROOT/aux-full.log"
+# 50 ms at 100 Hz: the full window every fifth cycle, both windows armed
+# and every read bounded.
+"$PROBE" --port "$LINK" --read-path bounded --rate-hz 100 \
+  --profile position --duration 0.5 --feedback motion --aux-interval-ms 50 \
+  --log "$ROOT/motion.csv" >"$ROOT/motion.log" 2>&1 ||
+  fail "motion-only run failed" "$ROOT/motion.log"
+S="$ROOT/motion.csv.summary.toml"
+grep -q '^feedback = "motion"' "$S"
+grep -q '^full_read_every = 5' "$S"
+grep -q '^window_bytes = \[13, 10\]' "$S"
+test "$(value "$S" reads)" = "$(value "$S" cycles)"
+grep -q '^timeouts = 0' "$S"
+grep -q '^read_failures = 0' "$S"
+grep -q '^motion_wire_time_worst_s = ' "$S"
+grep -q 'motion-only read: .* full read every 5 cycles' "$ROOT/motion.log"
+python3 - "$ROOT/motion.csv" "$(value "$S" full_reads)" <<'EOF'
+import csv
+import sys
+rows = list(csv.DictReader(open(sys.argv[1])))
+lengths = [int(r["read_len"]) for r in rows]
+assert lengths, "no cycles"
+want = [13 if (int(r["cycle"]) - 1) % 5 == 0 else 10 for r in rows]
+assert lengths == want, lengths
+assert lengths.count(13) == int(sys.argv[2]), (lengths.count(13), sys.argv[2])
+EOF
 
 # Firmware v47 in operating mode 0 overwrites a torque-off goal write with
 # present values (observed on the arm), so a goal read-back cannot

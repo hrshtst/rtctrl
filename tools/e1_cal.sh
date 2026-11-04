@@ -28,8 +28,9 @@
 #   <log>.csv               per-cycle log (probe)
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, summary
-# with <log> = rate-e1-cal-<profile>-<rate>hz[-rt-idle][-bounded]-<date>-
-# <attempt> (-bounded with --read-path bounded).
+# with <log> = rate-e1-cal-<profile>-<rate>hz[-rt-idle][-bounded][-motion
+# [-aux<A>ms]]-<date>-<attempt> (-bounded with --read-path bounded, -motion
+# with --feedback motion).
 # The record states the requested scheduling and the policy the probe was
 # actually granted. A run whose
 # .csv or .run.txt already exists was attempted: it is skipped, never
@@ -49,6 +50,8 @@ max_runnable=3
 rt_priority=
 rt_cpu=
 read_path=legacy
+feedback=full
+aux_ms=
 dry_run=0
 assume_yes=0
 
@@ -73,6 +76,12 @@ usage: $0 [options]
   --read-path P         legacy (default) or bounded: the probe's grouped read
                         (bounded: the probe's conservative 35 ms budget and
                         equal guard; log names gain "-bounded")
+  --feedback F          full (default) or motion: what each cycle reads
+                        (motion: the motion-only read, needs --read-path
+                        bounded; log names gain "-motion")
+  --aux-interval-ms A   the motion-only read's full-window interval,
+                        whole ms (default the probe's 100; 0: never after
+                        the first; log names gain "-motion-aux<A>ms" instead)
   --dry-run             check the prerequisites and print the plan only
   --yes                 confirm the session in advance (no prompt)
 EOF
@@ -83,7 +92,7 @@ die() { echo "e1_cal: $*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--duration|--probe|--port|--date|--attempt|--outdir|--max-runnable|\
-    --rt-priority|--rt-cpu|--read-path)
+    --rt-priority|--rt-cpu|--read-path|--feedback|--aux-interval-ms)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs+=("$2") ;;
@@ -97,6 +106,8 @@ while [ $# -gt 0 ]; do
         --rt-priority) rt_priority=$2 ;;
         --rt-cpu) rt_cpu=$2 ;;
         --read-path) read_path=$2 ;;
+        --feedback) feedback=$2 ;;
+        --aux-interval-ms) aux_ms=$2 ;;
       esac
       shift 2 ;;
     --dry-run) dry_run=1; shift ;;
@@ -129,6 +140,24 @@ case "$read_path" in
     read_desc="bounded (the probe's defaults: 35 ms budget, equal guard)" ;;
   *) die "--read-path must be legacy or bounded" ;;
 esac
+feedback_tag=; feedback_desc=
+case "$feedback" in
+  full) ;;
+  motion)
+    [ "$read_path" = bounded ] || die "--feedback motion needs --read-path bounded"
+    if [ -n "$aux_ms" ]; then
+      feedback_tag=-motion-aux${aux_ms}ms
+      feedback_desc=", feedback motion (full read every $aux_ms ms)"
+    else
+      feedback_tag=-motion
+      feedback_desc=", feedback motion (full read every 100 ms)"
+    fi ;;
+  *) die "--feedback must be full or motion" ;;
+esac
+if [ -n "$aux_ms" ]; then
+  [ "$feedback" = motion ] || die "--aux-interval-ms needs --feedback motion"
+  is_uint "$aux_ms" || die "--aux-interval-ms must be a whole number of ms"
+fi
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
 if [ -n "$rt_priority" ] || [ -n "$rt_cpu" ]; then
   [ -n "$rt_priority" ] && [ -n "$rt_cpu" ] ||
@@ -170,9 +199,9 @@ fi
 
 log_base() {  # the default-scheduling names stay as they were
   if [ "$condition" = rt-idle ]; then
-    echo "rate-e1-cal-$1-${2}hz-rt-idle$path_tag-$date_tag-$attempt"
+    echo "rate-e1-cal-$1-${2}hz-rt-idle$path_tag$feedback_tag-$date_tag-$attempt"
   else
-    echo "rate-e1-cal-$1-${2}hz$path_tag-$date_tag-$attempt"
+    echo "rate-e1-cal-$1-${2}hz$path_tag$feedback_tag-$date_tag-$attempt"
   fi
 }
 
@@ -185,6 +214,8 @@ probe_cmd() {  # profile rate -> the probe command in cmd[]
     cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu")
   fi
   [ "$read_path" = bounded ] && cmd+=(--read-path bounded)
+  [ "$feedback" = motion ] && cmd+=(--feedback motion)
+  [ -n "$aux_ms" ] && cmd+=(--aux-interval-ms "$aux_ms")
 }
 
 total=${#plan[@]}
@@ -220,7 +251,7 @@ results=()
 add_result() { results+=("$(printf '%-9s %5s Hz  %s' "$1" "$2" "$3")"); }
 print_table() {
   echo
-  echo "E1 calibration results (date $date_tag, attempt $attempt, scheduling $requested, read path $read_path):"
+  echo "E1 calibration results (date $date_tag, attempt $attempt, scheduling $requested, read path $read_path$feedback_desc):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 on_interrupt() {
@@ -281,7 +312,7 @@ for entry in "${plan[@]}"; do
     echo "commit: $commit"
     echo "probe binary: $(stat -c %y "$PROBE")"
     echo "condition: $condition"
-    echo "read path: $read_desc"
+    echo "read path: $read_desc$feedback_desc"
     echo "scheduling requested: $requested"
     echo "cpu governors: $governors"
     echo "runnable before start: $quiet (this script included)"

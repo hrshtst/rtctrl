@@ -167,6 +167,27 @@ def describe(values: np.ndarray) -> dict[str, float]:
             "max": float(values.max())}
 
 
+def by_read_length(data: dict[str, np.ndarray]) -> dict[int, dict]:
+    """Transaction and host work per feedback read length, when a log
+    mixes lengths (the motion-only read and its full reads): the cycles of
+    each length, for the longest-cycle budget. Empty otherwise."""
+    if "read_len" not in data:
+        return {}
+    lengths = sorted({int(n) for n in data["read_len"] if n > 0})
+    if len(lengths) < 2:
+        return {}
+    out = {}
+    for n in lengths:
+        rows = data["read_len"] == n
+        part = {name: values[rows] for name, values in data.items()}
+        out[n] = {"cycles": int(np.count_nonzero(rows)),
+                  "host_transaction": describe(
+                      interval(part, "read_start_ns", "read_end_ns")),
+                  "host_work": describe(
+                      interval(part, "read_start_ns", "cycle_end_ns"))}
+    return out
+
+
 def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
               delta_env_s: float | None, delta_q_s: float | None,
               run: dict | None = None) -> dict:
@@ -228,6 +249,9 @@ def summarize(kind: str, data: dict[str, np.ndarray], rate_hz: float,
             s["log_misses_by_end"] = int(np.count_nonzero(during & misses))
             s["misses_after_end"] = int(np.count_nonzero(~during & misses))
     s["measured"] = {name: describe(v) for name, v in measured.items()}
+    by_length = by_read_length(data)
+    if by_length:
+        s["by_read_len"] = by_length
 
     to_write = interval(data, "read_start_ns", "bus_write_start_ns")
     if kind == "probe" and run is not None and \
@@ -417,6 +441,14 @@ def print_summary(s: dict) -> None:
             print(f"    {name:<18} n={int(d['n']):<8} p50 {1e3 * d['p50']:8.3f}"
                   f"  p99 {1e3 * d['p99']:8.3f}  p99.9 {1e3 * d['p999']:8.3f}"
                   f"  max {1e3 * d['max']:8.3f}")
+    for n, part in s.get("by_read_len", {}).items():
+        line = f"    {n:>2}-byte reads, {part['cycles']} cycles:"
+        for name in ("host_transaction", "host_work"):
+            d = part[name]
+            if d:
+                line += (f" {name} p50 {1e3 * d['p50']:.3f} p99.9 "
+                         f"{1e3 * d['p999']:.3f} max {1e3 * d['max']:.3f};")
+        print(line.rstrip(";"))
     if "calibration" in s:
         c = s["calibration"]
         print("  calibration, completion offset C+ - bus_write_start (ms):")

@@ -20,11 +20,20 @@ struct SyncReadTiming {
   bool sent = false;    // the instruction was transmitted
 };
 
-// The bounded grouped read (control-rate plan, contract C-4): which read it
-// replaces, and its time limits. dxl::Port documents the transaction.
-struct BoundedReadConfig {
+// One grouped read the bounded path takes over: its first register and
+// its data bytes per servo.
+struct BoundedReadWindow {
   std::uint16_t addr = 0;
-  std::uint16_t len = 0;           // data bytes per servo
+  std::uint16_t len = 0;
+};
+
+// The bounded grouped read (control-rate plan, contract C-4): which reads
+// it replaces, and its time limits. dxl::Port documents the transaction.
+// Several windows serve a feedback read that alternates between lengths
+// (the motion-only read and its auxiliary full read, Phase B2); they share
+// the servos and the limits.
+struct BoundedReadConfig {
+  std::vector<BoundedReadWindow> windows;
   std::vector<std::uint8_t> ids;   // request order
   // B_txn: from the instruction's write() return to the last reply byte.
   std::chrono::nanoseconds budget{0};

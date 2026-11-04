@@ -45,20 +45,21 @@ inline const char* commandKindName(rtctrl::hw::CommandKind kind) {
 }
 
 // cycle runs 1, 2, ... over the whole file; segment counts thread starts
-// (x7_track restarts its thread at the mode switch).
+// (x7_track restarts its thread at the mode switch). read_len, last, is
+// the data bytes per servo each cycle's feedback read requested.
 inline constexpr const char* kCycleRecordCsvHeader =
     "cycle,segment,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
     "first_reply_ns,last_reply_ns,read_end_ns,window_open_ns,"
     "controller_wake_ns,submit_ns,limit_start_ns,bus_write_start_ns,"
     "write_return_ns,cycle_end_ns,feedback_seq,applied_target_seq,"
     "applied_source_feedback_seq,skipped_periods,read_ok,write_ok,"
-    "deadline_miss,command_kind";
+    "deadline_miss,command_kind,read_len";
 
 inline void appendCycleRecordCsv(rtctrl::util::AsyncWriter& log,
                                  const rtctrl::hw::CycleRecord& r) {
   log.appendf(
       "%llu,%u,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
-      "%lld,%lld,%llu,%llu,%llu,%u,%d,%d,%d,%s\n",
+      "%lld,%lld,%llu,%llu,%llu,%u,%d,%d,%d,%s,%u\n",
       static_cast<unsigned long long>(r.cycle),
       static_cast<unsigned>(r.segment),
       static_cast<long long>(r.scheduled_wake_ns),
@@ -80,7 +81,7 @@ inline void appendCycleRecordCsv(rtctrl::util::AsyncWriter& log,
       static_cast<unsigned long long>(r.applied_source_feedback_seq),
       static_cast<unsigned>(r.skipped_periods), r.read_ok ? 1 : 0,
       r.write_ok ? 1 : 0, r.deadline_miss ? 1 : 0,
-      commandKindName(r.command_kind));
+      commandKindName(r.command_kind), static_cast<unsigned>(r.read_len));
 }
 
 class CycleTimingLog {

@@ -25,8 +25,9 @@
 #   <log>.csv               per-cycle log (probe)
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, verdicts
-# with <log> = rate-e1-prod-<profile>-<rate>hz-<condition>[-bounded]-<date>-
-# <attempt> (-bounded with --read-path bounded).
+# with <log> = rate-e1-prod-<profile>-<rate>hz-<condition>[-bounded][-motion
+# [-aux<A>ms]]-<date>-<attempt> (-bounded with --read-path bounded, -motion
+# with --feedback motion).
 # A run whose .csv or .run.txt already exists was attempted: it is skipped,
 # never retried, and its recorded climb decision is kept. Use --attempt N
 # for a new series.
@@ -48,6 +49,8 @@ outdir=.
 max_runnable=3
 stress_dir="$HOME/.cache/rtctrl-stress"
 read_path=legacy
+feedback=full
+aux_ms=
 auto_stop=0
 no_climb=0
 dry_run=0
@@ -73,6 +76,12 @@ usage: $0 [options]
   --read-path P       legacy (default) or bounded: the probe's grouped read
                       (bounded: the probe's conservative 35 ms budget and
                       equal guard; log names gain "-bounded")
+  --feedback F        full (default) or motion: what each cycle reads
+                      (motion: the motion-only read, needs --read-path
+                      bounded; log names gain "-motion")
+  --aux-interval-ms A the motion-only read's full-window interval,
+                      whole ms (default the probe's 100; 0: never after
+                      the first; log names gain "-motion-aux<A>ms" instead)
   --stress-dir DIR    stress-ng --hdd directory, on a disk, not tmpfs
                       (default $stress_dir)
   --auto-stop         end a climb at its first failed check without asking
@@ -89,7 +98,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --conditions|--profiles|--rates|--duration|--rt-priority|--rt-cpu|\
     --probe|--port|--date|--attempt|--outdir|--max-runnable|--stress-dir|\
-    --read-path)
+    --read-path|--feedback|--aux-interval-ms)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --conditions) conditions=$2 ;;
@@ -106,6 +115,8 @@ while [ $# -gt 0 ]; do
         --max-runnable) max_runnable=$2 ;;
         --stress-dir) stress_dir=$2 ;;
         --read-path) read_path=$2 ;;
+        --feedback) feedback=$2 ;;
+        --aux-interval-ms) aux_ms=$2 ;;
       esac
       shift 2 ;;
     --auto-stop) auto_stop=1; shift ;;
@@ -151,6 +162,24 @@ case "$read_path" in
     read_desc="bounded (the probe's defaults: 35 ms budget, equal guard)" ;;
   *) die "--read-path must be legacy or bounded" ;;
 esac
+feedback_tag=; feedback_desc=
+case "$feedback" in
+  full) ;;
+  motion)
+    [ "$read_path" = bounded ] || die "--feedback motion needs --read-path bounded"
+    if [ -n "$aux_ms" ]; then
+      feedback_tag=-motion-aux${aux_ms}ms
+      feedback_desc=", feedback motion (full read every $aux_ms ms)"
+    else
+      feedback_tag=-motion
+      feedback_desc=", feedback motion (full read every 100 ms)"
+    fi ;;
+  *) die "--feedback must be full or motion" ;;
+esac
+if [ -n "$aux_ms" ]; then
+  [ "$feedback" = motion ] || die "--aux-interval-ms needs --feedback motion"
+  is_uint "$aux_ms" || die "--aux-interval-ms must be a whole number of ms"
+fi
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
 stress_timeout=$((duration + 15))
 
@@ -202,7 +231,7 @@ fi
 stress_cmd=(stress-ng --cpu "$(nproc)" --hdd 1 --timeout "${stress_timeout}s"
             --temp-path "$stress_dir")
 
-log_base() { echo "rate-e1-prod-$2-${3}hz-$1$path_tag-$date_tag-$attempt"; }
+log_base() { echo "rate-e1-prod-$2-${3}hz-$1$path_tag$feedback_tag-$date_tag-$attempt"; }
 
 probe_cmd() {  # condition profile rate -> the probe command in cmd[]
   local base; base=$(log_base "$1" "$2" "$3")
@@ -212,6 +241,8 @@ probe_cmd() {  # condition profile rate -> the probe command in cmd[]
         --log "$outdir/$base.csv")
   case "$1" in rt-*) cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu") ;; esac
   [ "$read_path" = bounded ] && cmd+=(--read-path bounded)
+  [ "$feedback" = motion ] && cmd+=(--feedback motion)
+  [ -n "$aux_ms" ] && cmd+=(--aux-interval-ms "$aux_ms")
 }
 
 total=$(( ${#cond_list[@]} * ${#profile_list[@]} * ${#rate_list[@]} ))
@@ -252,7 +283,7 @@ results=()
 add_result() { results+=("$(printf '%-10s %-9s %5s Hz  %s' "$1" "$2" "$3" "$4")"); }
 print_table() {
   echo
-  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path$climb_desc):"
+  echo "E1 production-traffic results (date $date_tag, attempt $attempt, read path $read_path$feedback_desc$climb_desc):"
   for line in "${results[@]}"; do echo "  $line"; done
 }
 stop_stress() {
@@ -347,7 +378,7 @@ run_one() {
     echo "commit: $commit"
     echo "probe binary: $(stat -c %y "$PROBE")"
     echo "condition: $cond"
-    echo "read path: $read_desc"
+    echo "read path: $read_desc$feedback_desc"
     echo "climb rule: $climb_rule"
     if [ "$loaded" -eq 1 ]; then echo "load: ${stress_cmd[*]}"; else echo "load: none"; fi
     case "$cond" in

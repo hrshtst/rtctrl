@@ -83,7 +83,9 @@ TEST_CASE("the cycle timing log holds one row per background cycle",
     REQUIRE(cells.size() == width);
     CHECK(cells.front() == std::to_string(i));
     CHECK(cells[1] == "1");  // one thread run: segment 1
-    CHECK(cells.back() == "periodic");
+    CHECK(cells[width - 2] == "periodic");
+    // The full feedback window every cycle: 13 bytes per servo.
+    CHECK(cells.back() == "13");
   }
   std::filesystem::remove(path);
 }

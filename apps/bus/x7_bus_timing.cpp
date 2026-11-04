@@ -40,7 +40,8 @@
 //       [--summary F.toml] [--confirm-writes] [--drain]
 //       [--rt-priority N --rt-cpu C] [--rt-lock-memory]
 //       [--fine-timer-slack]
-//       [--read-path legacy|bounded [--budget-ms B] [--guard-ms G]]
+//       [--read-path legacy|bounded [--budget-ms B] [--guard-ms G]
+//        [--feedback full|motion [--aux-interval-ms A]]]
 //
 // --read-path chooses how the grouped feedback read receives (control-rate
 // Phase R). legacy (the default) is the DynamixelSDK's receive, as at
@@ -55,6 +56,14 @@
 // powered sessions' Bus Watchdog rule does not apply here: the probe runs
 // torque-off and leaves the watchdog alone. The bounded read's counters
 // go to the summary's [bounded_read] table.
+//
+// --feedback chooses what each cycle reads (Phase B2), on the bounded path
+// only. full (the default) is the 13-byte feedback window every cycle.
+// motion reads its first 10 bytes (current, velocity, position) and the
+// full window on auxiliary cycles: the first, then every A ms rounded up
+// to whole cycles (default 100; 0 never after the initial read), as
+// CraneX7::Options::feedback_read does. Both windows are armed; each CSV
+// row's read_len says which one the cycle read.
 //
 // --duration is a deadline on the monotonic clock, not a cycle count: no
 // cycle starts once S seconds have passed since the first, so a rate the
@@ -153,6 +162,11 @@ struct Args {
   double budget_ms = 35.0;   // the SDK's legacy scale for this read
   double guard_ms = -1.0;    // negative: equal to the budget
   bool limits_given = false;
+  // --feedback motion (Phase B2): the motion-only read, with the full
+  // window every aux_interval_ms (0: never after the initial read).
+  bool motion_only = false;
+  double aux_interval_ms = 100.0;
+  bool aux_given = false;
 };
 
 bool parseArgs(const std::vector<const char*>& rest, Args* a) {
@@ -189,6 +203,21 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
         return false;
       }
       a->bounded = path == "bounded";
+    } else if (flag == "--feedback") {
+      if (!value(&v)) return false;
+      const std::string f = v;
+      if (f != "full" && f != "motion") {
+        std::fprintf(stderr, "--feedback: full or motion\n");
+        return false;
+      }
+      a->motion_only = f == "motion";
+    } else if (flag == "--aux-interval-ms") {
+      if (!value(&v)) return false;
+      if (!x7::parseStrictDouble(v, &a->aux_interval_ms)) {
+        std::fprintf(stderr, "%s: not a number: %s\n", flag.c_str(), v);
+        return false;
+      }
+      a->aux_given = true;
     } else if (flag == "--budget-ms" || flag == "--guard-ms") {
       if (!value(&v)) return false;
       double d = 0.0;
@@ -251,6 +280,18 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
   if (a->limits_given && !a->bounded) {
     std::fprintf(stderr, "--budget-ms and --guard-ms need --read-path "
                          "bounded\n");
+    return false;
+  }
+  if (a->motion_only && !a->bounded) {
+    std::fprintf(stderr, "--feedback motion needs --read-path bounded\n");
+    return false;
+  }
+  if (a->aux_given && !a->motion_only) {
+    std::fprintf(stderr, "--aux-interval-ms needs --feedback motion\n");
+    return false;
+  }
+  if (!(a->aux_interval_ms >= 0.0 && a->aux_interval_ms <= 60000.0)) {
+    std::fprintf(stderr, "--aux-interval-ms must be within [0, 60000]\n");
     return false;
   }
   if (a->guard_ms < 0.0) a->guard_ms = a->budget_ms;
@@ -525,7 +566,7 @@ constexpr const char* kCsvHeader =
     "first_reply_ns,last_reply_ns,read_end_ns,limit_start_ns,"
     "bus_write_start_ns,write_return_ns,drain_return_ns,ack_return_ns,"
     "completion_upper_ns,cycle_end_ns,read_ok,write_ok,ack_ok,"
-    "skipped_periods";
+    "skipped_periods,read_len";
 
 struct RunResult {
   bool started = false;  // the real-time policy was granted
@@ -539,6 +580,7 @@ struct RunResult {
   // Acknowledging reads that failed or returned the wrong model number.
   std::uint64_t ack_invalid = 0;
   std::uint64_t ring_drops = 0;
+  std::uint64_t full_reads = 0;  // cycles that read the full window
   double first_wake_s = 0.0;
   double last_wake_s = 0.0;
   double elapsed_s = 0.0;  // run start to the last cycle's end
@@ -573,8 +615,20 @@ class Probe {
         last_return_delay_us_(2 * last_servo_return_delay),
         last_model_(last_servo_model),
         drain_fd_(drain_fd),
+        full_every_(fullReadEvery(args)),
         ring_(std::max<std::size_t>(
             4096, static_cast<std::size_t>(args.rate_hz * 4.0))) {}
+
+  // How often a cycle reads the full window: every cycle (1), every n
+  // cycles, or never after the initial read (0); as CraneX7 rounds it.
+  static std::uint64_t fullReadEvery(const Args& args) {
+    if (!args.motion_only) return 1;
+    if (args.aux_interval_ms == 0.0) return 0;
+    const double cycles = args.aux_interval_ms * 1e-3 * args.rate_hz;
+    return std::max<std::uint64_t>(
+        1, static_cast<std::uint64_t>(std::ceil(cycles - 1e-9)));
+  }
+  std::uint64_t fullEvery() const { return full_every_; }
 
   util::SpscRing<ProbeRecord>& ring() { return ring_; }
 
@@ -620,6 +674,7 @@ class Probe {
     };
     hw::PeriodicSchedule schedule(epoch, period);
     auto scheduled = epoch;
+    std::uint64_t full_due_in = 0;  // cycles until the next full read
     std::int64_t prev_wake = -1;
     const double cpu0 = threadCpuSeconds();
     for (std::uint64_t k = 1;; ++k) {
@@ -641,9 +696,25 @@ class Probe {
       if (k == 1) result->first_wake_s = c.wake_ns * 1e-9;
       result->last_wake_s = c.wake_ns * 1e-9;
 
+      // The full window every cycle, or (motion-only) on the first and
+      // then every full_every-th; a failed full read stays due.
+      const bool full =
+          full_every_ == 1 || (full_every_ > 1 && full_due_in == 0);
+      c.read_len = static_cast<std::uint16_t>(
+          full ? dxl::SyncGroup::kFeedbackSlots
+               : dxl::SyncGroup::kMotionSlots);
       c.read_start_ns = ns(Clock::now());
-      c.read_ok = group_.readAll(fb).ok();
+      c.read_ok = (full ? group_.readAll(fb) : group_.readMotionWindow(fb))
+                      .ok();
       c.read_end_ns = ns(Clock::now());
+      if (full_every_ > 1) {
+        if (!full) {
+          --full_due_in;
+        } else if (c.read_ok) {
+          full_due_in = full_every_ - 1;
+        }
+      }
+      if (full) ++result->full_reads;
       const dxl::SyncReadTiming t = io_.lastSyncReadTiming();
       if (t.sent) c.instr_return_ns = ns(t.instruction_sent);
       if (t.replies > 0) {
@@ -735,13 +806,14 @@ class Probe {
   int last_return_delay_us_;
   std::uint16_t last_model_;
   int drain_fd_;
+  std::uint64_t full_every_;
   util::SpscRing<ProbeRecord> ring_;
 };
 
 void appendRow(util::AsyncWriter& log, const ProbeRecord& r) {
   const hw::CycleRecord& c = r.cycle;
   log.appendf("%llu,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
-              "%lld,%lld,%lld,%lld,%d,%d,%d,%u\n",
+              "%lld,%lld,%lld,%lld,%d,%d,%d,%u,%u\n",
               static_cast<unsigned long long>(c.cycle),
               static_cast<long long>(c.scheduled_wake_ns),
               static_cast<long long>(c.wake_ns),
@@ -758,7 +830,8 @@ void appendRow(util::AsyncWriter& log, const ProbeRecord& r) {
               static_cast<long long>(r.completion_upper_ns),
               static_cast<long long>(c.cycle_end_ns), c.read_ok ? 1 : 0,
               c.write_ok ? 1 : 0, r.ack_ok ? 1 : 0,
-              static_cast<unsigned>(c.skipped_periods));
+              static_cast<unsigned>(c.skipped_periods),
+              static_cast<unsigned>(c.read_len));
 }
 
 void writeHistogram(std::FILE* f, const char* name,
@@ -892,8 +965,12 @@ int main(int argc, char* argv[]) {
   };
   if (args.bounded) {
     dxl::BoundedReadConfig bounded;
-    bounded.addr = dxl::SyncGroup::kFeedbackAddr;
-    bounded.len = dxl::SyncGroup::kFeedbackSlots;
+    bounded.windows = {{dxl::SyncGroup::kFeedbackAddr,
+                        dxl::SyncGroup::kFeedbackSlots}};
+    if (args.motion_only) {
+      bounded.windows.push_back(
+          {dxl::SyncGroup::kFeedbackAddr, dxl::SyncGroup::kMotionSlots});
+    }
     bounded.ids = ids;
     bounded.budget = to_ns(args.budget_ms);
     bounded.guard = to_ns(args.guard_ms);
@@ -922,16 +999,33 @@ int main(int argc, char* argv[]) {
   log->commitRow();
 
   const bool calibration = args.confirm_writes || args.drain;
-  const auto bytes = wire::cycleBytes(
-      static_cast<int>(config.joints.size()), wire::ReadVariant::kSync,
-      wire::kFeedbackBytes, writeWidth(args.profile));
-  const double wire_s =
-      bytes.total(true) * wire::byteTimeS(config.baudrate);
+  // Worst-case stuffing; with the motion-only read, the cycles between
+  // the full reads and the full read's own cycles.
+  const auto bytesFor = [&](int read_len) {
+    return wire::cycleBytes(static_cast<int>(config.joints.size()),
+                            wire::ReadVariant::kSync, read_len,
+                            writeWidth(args.profile));
+  };
+  const auto wireS = [&](int read_len) {
+    return bytesFor(read_len).total(true) * wire::byteTimeS(config.baudrate);
+  };
+  const auto bytes = bytesFor(wire::kFeedbackBytes);
+  const double wire_s = wireS(wire::kFeedbackBytes);
   std::printf("%s run: profile %s, %.1f Hz, %.1f s; analytic wire time "
               "%.3f ms (worst-case stuffing) = %.0f%% of the period\n",
               calibration ? "calibration" : "production-traffic",
               profileName(args.profile), args.rate_hz, args.duration_s,
               1e3 * wire_s, 100.0 * wire_s * args.rate_hz);
+  if (args.motion_only) {
+    const double motion_s = wireS(dxl::SyncGroup::kMotionSlots);
+    const std::uint64_t every = Probe::fullReadEvery(args);
+    std::printf("motion-only read: %.3f ms (%.0f%%) between full reads, "
+                "the figure above on full-read cycles; full read %s\n",
+                1e3 * motion_s, 100.0 * motion_s * args.rate_hz,
+                every == 0 ? "never after the initial read"
+                           : ("every " + std::to_string(every) + " cycles")
+                                 .c_str());
+  }
 
   Probe probe(*port, config, args, config.baudrate,
               servos.back().return_delay_time, servos.back().model, drain_fd);
@@ -988,6 +1082,16 @@ int main(int argc, char* argv[]) {
   }
   std::fprintf(summary, "read_path = \"%s\"\n",
                args.bounded ? "bounded" : "legacy");
+  std::fprintf(summary, "feedback = \"%s\"\n",
+               args.motion_only ? "motion" : "full");
+  if (args.motion_only) {
+    std::fprintf(summary, "aux_interval_s = %.9g\nfull_read_every = %llu\n",
+                 args.aux_interval_ms * 1e-3,
+                 static_cast<unsigned long long>(Probe::fullReadEvery(args)));
+    std::fprintf(summary,
+                 "# full_read_every: cycles per full-window read (0: none "
+                 "after the initial read)\n");
+  }
   std::fprintf(summary, "port = %s\nbaudrate = %d\n",
                tomlString(port_path).c_str(), config.baudrate);
   std::fprintf(summary, "log = %s\nlog_complete = %s\n",
@@ -1022,6 +1126,8 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "ack_invalid = %llu\nring_drops = %llu\n",
                static_cast<unsigned long long>(result.ack_invalid),
                static_cast<unsigned long long>(result.ring_drops));
+  std::fprintf(summary, "full_reads = %llu\n",
+               static_cast<unsigned long long>(result.full_reads));
   std::fprintf(summary, "mean_frequency_hz = %.9g\n", mean_hz);
   std::fprintf(summary, "cpu_duty = %.6g\n",
                result.wall_s > 0.0 ? result.cpu_s / result.wall_s : 0.0);
@@ -1035,6 +1141,14 @@ int main(int argc, char* argv[]) {
     std::fprintf(summary, "\n[bounded_read]\n");
     std::fprintf(summary, "budget_s = %.9g\nguard_s = %.9g\n",
                  1e-3 * args.budget_ms, 1e-3 * args.guard_ms);
+    if (args.motion_only) {
+      std::fprintf(summary, "window_bytes = [%d, %d]\n",
+                   dxl::SyncGroup::kFeedbackSlots,
+                   dxl::SyncGroup::kMotionSlots);
+    } else {
+      std::fprintf(summary, "window_bytes = [%d]\n",
+                   dxl::SyncGroup::kFeedbackSlots);
+    }
     std::fprintf(summary,
                  "reads = %llu\ntimeouts = %llu\nmalformed = %llu\n"
                  "servo_errors = %llu\nrecoveries = %llu\n"
@@ -1068,6 +1182,17 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "wire_time_worst_s = %.9g\n", wire_s);
   std::fprintf(summary, "wire_fraction_of_period = %.6g\n",
                wire_s * args.rate_hz);
+  if (args.motion_only) {
+    // The cycles between full reads; the figures above are the full
+    // read's cycles, the longest.
+    const auto motion = bytesFor(dxl::SyncGroup::kMotionSlots);
+    std::fprintf(summary, "motion_read_reply_bytes = %d\n",
+                 motion.read_reply);
+    std::fprintf(summary, "motion_read_stuffing_max_bytes = %d\n",
+                 motion.read_stuffing_max);
+    std::fprintf(summary, "motion_wire_time_worst_s = %.9g\n",
+                 wireS(dxl::SyncGroup::kMotionSlots));
+  }
   const auto& t = result.timing;
   writeHistogram(summary, "wake_lateness", t.wake_lateness);
   writeHistogram(summary, "period", t.period);

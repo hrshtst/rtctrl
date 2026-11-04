@@ -109,6 +109,25 @@ class CraneX7 {
       std::chrono::nanoseconds transport_allowance{0};
     };
     BoundedRead bounded_read;
+
+    // What the background cycle reads (control-rate plan, Phase B2). By
+    // default every cycle reads the full feedback window (current,
+    // velocity, position, input voltage, temperature), the 100 Hz
+    // session's read. motion_only reads current, velocity and position
+    // alone and the full window only on auxiliary cycles: the thread's
+    // first cycle, then every aux_interval_s rounded up to whole cycles.
+    // With aux_interval_s 0 the thread never reads it, and voltage and
+    // temperature keep their values from activation. A failed full read
+    // is retried the next cycle. The bounded read must be enabled (it
+    // arms both windows); activation refuses otherwise, before any write.
+    // Nothing in the control path uses voltage or temperature: reading
+    // them less often loses monitoring, not protection (each servo's own
+    // limits and the Alert bit in every reply remain).
+    struct FeedbackRead {
+      bool motion_only = false;
+      double aux_interval_s = 0.1;
+    };
+    FeedbackRead feedback_read;
   };
 
   // What activation found while checking a bounded read's bus profile.
@@ -431,6 +450,15 @@ class CraneX7 {
   bool armBoundedRead();
   void disarmBoundedRead();
   std::uint8_t watchdogUnits() const;
+  // Options::feedback_read: refuses a motion-only read without the
+  // bounded read, or an unusable interval (no bus access).
+  bool verifyFeedbackRead();
+  // How often the background cycle reads the full feedback window: every
+  // cycle (1), every n cycles, or never (0).
+  std::uint64_t fullReadEvery() const;
+  // readAll (full) or the motion-only read into `out`, which must hold
+  // the last voltage and temperature; on success the cached feedback.
+  bool readFeedback(std::vector<dxl::Feedback>& out, bool full);
   bool activateSteps();
   void bestEffortRelease();
   bool requireMode(std::uint8_t mode, const char* what);

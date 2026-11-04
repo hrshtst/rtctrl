@@ -218,4 +218,26 @@ for base in "$OUT/rate-e1-prod-current-100hz-idle-bounded-$DATE-2.csv" \
   grep -q -- '--read-path bounded' "$base.run.txt"
 done
 
+# The motion-only read (Phase B2): bounded only, its own log names, and
+# the summary tool's report per read length.
+if tools/e1_prod.sh "${COMMON[@]}" --dry-run --feedback motion \
+    >"$ROOT/motion-legacy.log" 2>&1; then
+  fail "a motion-only session was planned on the legacy path" \
+    "$ROOT/motion-legacy.log"
+fi
+grep -q 'needs --read-path bounded' "$ROOT/motion-legacy.log"
+setsid tools/e1_prod.sh "${COMMON[@]}" --yes --read-path bounded \
+  --feedback motion --aux-interval-ms 30 --attempt 3 --conditions idle \
+  --profiles position --rates 100 </dev/null >"$ROOT/motion-prod.log" 2>&1 ||
+  fail "the motion-only production session failed" "$ROOT/motion-prod.log"
+MBASE="$OUT/rate-e1-prod-position-100hz-idle-bounded-motion-aux30ms-$DATE-3.csv"
+grep -q '^feedback = "motion"' "$MBASE.summary.toml"
+grep -q '^full_read_every = 3' "$MBASE.summary.toml"
+grep -q '^timeouts = 0' "$MBASE.summary.toml"
+grep -q 'read path: bounded .*, feedback motion (full read every 30 ms)' \
+  "$MBASE.run.txt"
+grep -q -- '--feedback motion --aux-interval-ms 30' "$MBASE.run.txt"
+grep -q '10-byte reads, .* cycles: host_transaction' "$MBASE.run.txt"
+grep -q '13-byte reads, .* cycles: host_transaction' "$MBASE.run.txt"
+
 echo "e1 session scripts OK"

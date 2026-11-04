@@ -186,8 +186,12 @@ bool CraneX7::armBoundedRead() {
     }
   }
   dxl::BoundedReadConfig config;
-  config.addr = dxl::SyncGroup::kFeedbackAddr;
-  config.len = dxl::SyncGroup::kFeedbackSlots;
+  config.windows = {{dxl::SyncGroup::kFeedbackAddr,
+                     dxl::SyncGroup::kFeedbackSlots}};
+  if (options_.feedback_read.motion_only) {
+    config.windows.push_back(
+        {dxl::SyncGroup::kFeedbackAddr, dxl::SyncGroup::kMotionSlots});
+  }
   config.ids = group_.ids();
   config.budget = options_.bounded_read.budget;
   config.guard = options_.bounded_read.guard;
@@ -226,6 +230,8 @@ bool CraneX7::activate() {
       return false;
     }
   }
+  // Option checks with no bus access: nothing to release.
+  if (!verifyFeedbackRead()) return false;
   escalated_ = false;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -302,6 +308,31 @@ void CraneX7::bestEffortRelease() {
     // watchdog, so bus silence still stops it.
     if (zeroed && off) io_.write8(joint.id, reg::kBusWatchdog.addr, 0);
   }
+}
+
+bool CraneX7::verifyFeedbackRead() {
+  const auto& f = options_.feedback_read;
+  if (!f.motion_only) return true;
+  if (!options_.bounded_read.enabled) {
+    last_error_ = "the motion-only feedback read needs the bounded read";
+    return false;
+  }
+  if (!std::isfinite(f.aux_interval_s) || f.aux_interval_s < 0.0) {
+    last_error_ = "the auxiliary read interval must be finite and at least 0";
+    return false;
+  }
+  return true;
+}
+
+std::uint64_t CraneX7::fullReadEvery() const {
+  const auto& f = options_.feedback_read;
+  if (!f.motion_only) return 1;
+  if (f.aux_interval_s == 0.0) return 0;
+  // Whole cycles, rounded up; a quotient that is whole up to rounding
+  // error (0.1 s / 2 ms) stays whole.
+  const double cycles = f.aux_interval_s / options_.control_cycle_s;
+  return std::max<std::uint64_t>(
+      1, static_cast<std::uint64_t>(std::ceil(cycles - 1e-9)));
 }
 
 bool CraneX7::activateSteps() {
@@ -523,7 +554,13 @@ bool CraneX7::deactivate() {
 }
 
 bool CraneX7::readAll(std::vector<dxl::Feedback>& out) {
-  if (!group_.readAll(out).ok()) return false;
+  return readFeedback(out, /*full=*/true);
+}
+
+bool CraneX7::readFeedback(std::vector<dxl::Feedback>& out, bool full) {
+  const dxl::IoResult r =
+      full ? group_.readAll(out) : group_.readMotionWindow(out);
+  if (!r.ok()) return false;
   // In current/velocity modes the servo reports MULTI-TURN position, so
   // hand-moving a limp joint across the encoder boundary leaves a
   // +/-2pi offset in every later reading (observed 2026-07-21: the
@@ -1016,6 +1053,16 @@ void CraneX7::threadLoop() {
   std::vector<double> targets;
   std::vector<double> auxiliary_targets;
   fb.reserve(config_.joints.size());
+  // A motion-only read keeps the last voltage and temperature, from
+  // activation's full read until the thread's first one.
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    fb = feedback_;
+  }
+  // The full window every cycle (1), every n cycles from the first, or
+  // never (0); full_due_in counts the cycles until the next one.
+  const std::uint64_t full_every = fullReadEvery();
+  std::uint64_t full_due_in = 0;
   targets.reserve(config_.joints.size());
   auxiliary_targets.reserve(config_.joints.size());
   WriteOutcome outcome;
@@ -1081,8 +1128,22 @@ void CraneX7::threadLoop() {
     // bookkeeping stays alive so waitCycle()/stopThread() remain
     // responsive.
     if (!quiesced_.load()) {
+      const bool full =
+          full_every == 1 || (full_every > 1 && full_due_in == 0);
+      cycle_rec.read_len = static_cast<std::uint16_t>(
+          full ? dxl::SyncGroup::kFeedbackSlots
+               : dxl::SyncGroup::kMotionSlots);
       cycle_rec.read_start_ns = timingNs(Clock::now());
-      if (readAll(fb)) {
+      const bool fresh = readFeedback(fb, full);
+      if (full_every > 1) {
+        // A failed full read stays due.
+        if (!full) {
+          --full_due_in;
+        } else if (fresh) {
+          full_due_in = full_every - 1;
+        }
+      }
+      if (fresh) {
         read_ok = true;
         failed_reads_row = 0;
       } else {

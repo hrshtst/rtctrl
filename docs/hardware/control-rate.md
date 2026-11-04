@@ -13,9 +13,10 @@ the E1 calibration was repeated with the corrected acknowledgement. Phase R
 is complete: the strict status parser, the bounded read with its recovery,
 the bus checks that activation makes before arming it, and the probe on the
 bounded path. Its torque-off runs on 2026-11-04 closed it for development
-(below); so far only the torque-off probe uses the bounded read. Next come
-the selected communication options (Fast Sync Read and a motion-only read),
-then the rate-derived safety options. No rate above 100 Hz is qualified,
+(below); so far only the torque-off probe uses the bounded read. Of the
+selected communication options, the motion-only read (B2) exists and
+awaits its torque-off measurement; Fast Sync Read (B3) comes next, then the
+rate-derived safety options. No rate above 100 Hz is qualified,
 and every rate other than 100 Hz prints an experimental warning.
 
 ## What the numbers mean
@@ -203,6 +204,20 @@ timeouts, malformed replies, recoveries, guard waits), and
 `--read-path bounded` and add `-bounded` to the log names. A powered
 session's Bus Watchdog rule does not apply: the probe runs torque-off
 and leaves the watchdog alone.
+
+**The motion-only read (Phase B2).** `x7_bus_timing --read-path bounded
+--feedback motion` reads the feedback window's first 10 bytes (current,
+velocity, position) and the full 13 bytes on auxiliary cycles: the first,
+then every `--aux-interval-ms` (default 100, rounded up to whole cycles;
+0 never after the initial read), as a powered session's
+`CraneX7::Options::feedback_read` does. Both windows are armed on the
+bounded path, and each CSV row's `read_len` says which one the cycle
+read. A full-read cycle is the longest, so `timing_summary.py` reports
+the transaction and host work of each read length separately, and the
+summary's `[budget]` table gives the motion-only cycle's wire time beside
+the full one's. `e1_prod.sh` and `e1_cal.sh` take `--feedback motion`
+(with `--read-path bounded`) and `--aux-interval-ms A`; their log names
+gain `-motion`, or `-motion-aux<A>ms`.
 
 ### Summaries
 

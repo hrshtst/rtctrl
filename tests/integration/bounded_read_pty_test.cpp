@@ -58,8 +58,7 @@ TEST_CASE("the production feedback window reads over the bounded path",
   REQUIRE(group.setupIndirect().ok());
   // SyncGroup's feedback window: 13 bytes at the start of Indirect Data.
   dxl::BoundedReadConfig config = positionRead();
-  config.addr = reg::kIndirectDataBase;
-  config.len = 13;
+  config.windows = {{reg::kIndirectDataBase, 13}};
   port.armBoundedSyncRead(config);
   std::vector<dxl::Feedback> fb;
   REQUIRE(group.readAll(fb).ok());
@@ -68,6 +67,49 @@ TEST_CASE("the production feedback window reads over the bounded path",
   for (std::size_t i = 0; i < kIds.size(); ++i) {
     CHECK(fb[i].position == dxl::pulseToRad(1500 + kIds[i]));
   }
+}
+
+TEST_CASE("two windows over the same servos both read bounded, and the "
+          "read after a failure in one is the other's recovery read",
+          "[pty][bounded]") {
+  FaultBus bus;
+  bus.setPositions(1800);
+  dxl::Port port(bus.path(), 3000000);
+  dxl::SyncGroup group(port, kIds);
+  REQUIRE(group.setupIndirect().ok());
+  // The motion-only read (10 bytes) and the full feedback window (13).
+  dxl::BoundedReadConfig config = positionRead();
+  config.windows = {{reg::kIndirectDataBase, 13}, {reg::kIndirectDataBase, 10}};
+  port.armBoundedSyncRead(config);
+  std::vector<dxl::Feedback> fb;
+  REQUIRE(group.readAll(fb).ok());
+  REQUIRE(group.readMotionWindow(fb).ok());
+  CHECK(port.boundedReadStats().reads == 2);
+  for (std::size_t i = 0; i < kIds.size(); ++i) {
+    CHECK(fb[i].position == dxl::pulseToRad(1800 + kIds[i]));
+  }
+  const std::size_t before = bus.pty().arrivals().size();
+
+  // The full read's replies never come: it times out, and the motion-only
+  // read that follows asks for 11 bytes, then 10 again.
+  bus.pty().scriptSyncReadFaults({{emu::ReplyFault::Kind::kDrop,
+                                   milliseconds(0), 0, {}}});
+  CHECK_FALSE(group.readAll(fb).ok());
+  CHECK(port.inRecovery());
+  bus.setPositions(1900);
+  REQUIRE(group.readMotionWindow(fb).ok());
+  CHECK_FALSE(port.inRecovery());
+  REQUIRE(group.readMotionWindow(fb).ok());
+  for (std::size_t i = 0; i < kIds.size(); ++i) {
+    CHECK(fb[i].position == dxl::pulseToRad(1900 + kIds[i]));
+  }
+  const auto arrivals = bus.waitArrivals(before + 3);
+  const std::vector<emu::Arrival> after(
+      arrivals.begin() + static_cast<std::ptrdiff_t>(before), arrivals.end());
+  const std::vector<std::uint16_t> want{13, 11, 10};
+  CHECK(syncReadLengths(after) == want);
+  CHECK(port.boundedReadStats().timeouts == 1);
+  CHECK(port.boundedReadStats().recoveries == 1);
 }
 
 TEST_CASE("a reply delayed within the budget is accepted", "[pty][bounded]") {
@@ -303,8 +345,23 @@ TEST_CASE("a bounded read is armed only with a usable window and limits",
   };
   CHECK_THROWS_AS(port.armBoundedSyncRead(with([](auto& c) { c.ids = {}; })),
                   std::invalid_argument);
-  CHECK_THROWS_AS(port.armBoundedSyncRead(with([](auto& c) { c.len = 0; })),
+  CHECK_THROWS_AS(
+      port.armBoundedSyncRead(with([](auto& c) { c.windows = {}; })),
+      std::invalid_argument);
+  CHECK_THROWS_AS(
+      port.armBoundedSyncRead(with([](auto& c) { c.windows[0].len = 0; })),
+      std::invalid_argument);
+  CHECK_THROWS_AS(port.armBoundedSyncRead(
+                      with([](auto& c) { c.windows[0].len = 0xFFFF; })),
                   std::invalid_argument);
+  // A reply carries no register address: windows whose lengths, or
+  // recovery lengths, could be taken for each other are refused.
+  for (const std::uint16_t near : {4, 5, 3}) {
+    CHECK_THROWS_AS(port.armBoundedSyncRead(with([near](auto& c) {
+                      c.windows.push_back({reg::kPresentVelocity.addr, near});
+                    })),
+                    std::invalid_argument);
+  }
   CHECK_THROWS_AS(port.armBoundedSyncRead(
                       with([](auto& c) { c.budget = milliseconds(0); })),
                   std::invalid_argument);
@@ -342,8 +399,7 @@ struct BoundedArm {
     REQUIRE(arm.activate());
     // SyncGroup's feedback window: 13 bytes at the start of Indirect Data.
     dxl::BoundedReadConfig config = positionRead();
-    config.addr = reg::kIndirectDataBase;
-    config.len = 13;
+    config.windows = {{reg::kIndirectDataBase, 13}};
     config.guard = guard;
     port.armBoundedSyncRead(config);
   }

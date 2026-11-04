@@ -44,6 +44,8 @@ flowchart TB
   for tests. `SyncGroup` programs the servos' indirect-address banks
   so one sync-read fetches position/velocity/current/voltage/
   temperature for the whole group and one sync-write sets the goals.
+  `readMotionWindow` reads only the window's first 10 bytes (current,
+  velocity, position) and keeps the voltage and temperature it holds.
   `control_table.hpp`/`conversions.hpp` fix the XM register map and
   raw-unit conversions (incl. per-model torque constants).
   `StatusReplyParser` checks the status replies to one grouped read
@@ -51,16 +53,17 @@ flowchart TB
   after the last reply) and reports a fault as soon as the bytes received
   rule out a valid reply.
 - **The bounded grouped read (control-rate Phase R).** Above 100 Hz,
-  `Port::armBoundedSyncRead` replaces the SDK's receive for one grouped
-  read with its own: a deadline (`budget`) on the monotonic clock after
+  `Port::armBoundedSyncRead` replaces the SDK's receive for its grouped
+  read windows (one list of servos, one or more lengths) with its own: a deadline (`budget`) on the monotonic clock after
   the instruction leaves, and `StatusReplyParser` on the bytes as they
   arrive. Nothing is accepted at or after the deadline, even bytes that a
   receiver paused across it then holds complete. A timeout or a malformed
   reply is ambiguous, since late bytes may still come. The read fails, and a quiet guard holds every
   transmission (fallback writes included) until `budget + guard` after
   the instruction. Input received meanwhile is discarded, and the next
-  read asks for one byte more, so a late reply of the normal length
-  fails on its length field. Unarmed, every transaction takes the SDK
+  read, of whichever window, asks for one byte more, so a late reply of
+  the normal length fails on its length field. A reply does not name its
+  register, so two windows' lengths must differ by at least 2. Unarmed, every transaction takes the SDK
   path unchanged, and no guard is ever set. `CraneX7` registers its
   quiesce flag with the port (`PacketIO::setTransmitInhibit`): once it
   is set, every transmission is refused just before sending, and one
@@ -81,6 +84,17 @@ flowchart TB
   Watchdog only after a confirmed torque-off. `busDiscovery()` reports
   what was found. Deactivation, a failed activation and the
   destructor disarm.
+- **The motion-only read (control-rate Phase B2).**
+  `CraneX7::Options::feedback_read` with `motion_only` reads current,
+  velocity and position every cycle, and the full window (with input
+  voltage and temperature) on the thread's first cycle, then every
+  `aux_interval_s` (default 0.1 s, rounded up to whole cycles), or never
+  after activation with 0. A failed full read is retried the next cycle.
+  It needs the bounded read, which then arms both windows; activation
+  refuses it otherwise, before any bus access. Each `CycleRecord` notes
+  the bytes per servo its read requested (`read_len`), so the cycles
+  with the full read, the longest, can be budgeted on their own. Nothing
+  in the control path uses voltage or temperature.
 - **`model/`: kinematics and dynamics.** RAII wrappers over mi-lib's
   C API: `ChainModel` (load `.ztk`, FK, gravity torque, inverse
   dynamics), `JointMap` (coordinate/force mappings), `IkSolver`

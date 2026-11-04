@@ -51,6 +51,10 @@ struct CycleRecord {
   std::uint64_t applied_target_seq = 0;
   std::uint64_t applied_source_feedback_seq = 0;
   std::uint32_t skipped_periods = 0;  // boundaries skipped after this cycle
+  // Data bytes per servo the cycle's feedback read requested: the full
+  // window, or the motion-only read between auxiliary cycles (Phase B2);
+  // 0 when it read nothing.
+  std::uint16_t read_len = 0;
   bool read_ok = false;
   bool write_ok = false;
   // The window closed with no submission while a controller was armed:

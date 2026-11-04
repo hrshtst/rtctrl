@@ -334,6 +334,39 @@ assert "budget 35.000 ms" in line and "2 timeouts" in line, line
 assert "3 recoveries" in line and "3 guard waits" in line, line
 assert ts.bounded_read_line(probe_run(1000)) == ""
 
+# A log that mixes feedback read lengths (the motion-only read with a full
+# read every fifth cycle) reports each length's cycles, transaction and
+# host work; the full reads here take 0.2 ms longer.
+header, rows = probe_rows(100)
+mixed = []
+for row in rows:
+    full = row[0] % 5 == 1
+    if full:
+        row[7] += 200_000   # read_end
+        row[14] += 200_000  # cycle_end
+    mixed.append(row + [13 if full else 10])
+path = write(header + ",read_len", mixed)
+kind, data = ts.load(path)
+s = ts.summarize(kind, data, 500.0, None, None)
+path.unlink()
+assert sorted(s["by_read_len"]) == [10, 13], s["by_read_len"]
+assert s["by_read_len"][13]["cycles"] == 20
+assert s["by_read_len"][10]["cycles"] == 80
+assert abs(s["by_read_len"][10]["host_transaction"]["max"] - 0.7e-3) < 1e-12
+assert abs(s["by_read_len"][13]["host_transaction"]["max"] - 0.9e-3) < 1e-12
+assert (s["by_read_len"][13]["host_work"]["max"] -
+        s["by_read_len"][10]["host_work"]["max"]) > 0.199e-3
+# One length (every full-window run), or a log from before the column:
+# no breakdown.
+path = write(header + ",read_len", [row + [13] for row in rows])
+kind, data = ts.load(path)
+assert "by_read_len" not in ts.summarize(kind, data, 500.0, None, None)
+path.unlink()
+path = write(header, rows)
+kind, data = ts.load(path)
+assert "by_read_len" not in ts.summarize(kind, data, 500.0, None, None)
+path.unlink()
+
 # Nearest rank is exact on small samples.
 assert ts.nearest_rank(np.array([3.0, 1.0, 2.0]), 0.5) == 2.0
 assert ts.nearest_rank(np.array([3.0, 1.0, 2.0]), 1.0) == 3.0

@@ -95,6 +95,25 @@ IoResult SyncGroup::readAll(std::vector<Feedback>& out) {
   return r;
 }
 
+IoResult SyncGroup::readMotionWindow(std::vector<Feedback>& out) {
+  // The full read's buffer: after one full read it holds this read too,
+  // so neither allocates again.
+  const IoResult r =
+      io_.syncRead(kFeedbackAddr, kMotionSlots, ids_, raw_feedback_);
+  if (r.comm != 0) return r;
+
+  out.resize(ids_.size());
+  for (std::size_t i = 0; i < ids_.size(); ++i) {
+    const std::uint8_t* p = &raw_feedback_[i * kMotionSlots];
+    out[i].position =
+        pulseToRad(static_cast<std::int32_t>(leU32(p + 6)));
+    out[i].velocity =
+        velocityToRadPerSec(static_cast<std::int32_t>(leU32(p + 2)));
+    out[i].current = currentToAmps(static_cast<std::int16_t>(leU16(p)));
+  }
+  return r;
+}
+
 namespace {
 
 void putU16(std::uint8_t* p, std::uint16_t v) {

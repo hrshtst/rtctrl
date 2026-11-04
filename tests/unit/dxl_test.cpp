@@ -2,6 +2,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 #include "rtctrl/dxl/conversions.hpp"
 #include "rtctrl/dxl/sync_group.hpp"
@@ -26,6 +28,19 @@ emu::MotorBus craneBus() {
   }
   return bus;
 }
+
+// Records each grouped read's data length.
+class CountingIO : public emu::FakePacketIO {
+ public:
+  explicit CountingIO(emu::MotorBus& bus) : emu::FakePacketIO(bus) {}
+  dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
+                         const std::vector<std::uint8_t>& ids,
+                         std::vector<std::uint8_t>& out) override {
+    sync_read_lengths.push_back(len);
+    return emu::FakePacketIO::syncRead(addr, len, ids, out);
+  }
+  std::vector<std::uint16_t> sync_read_lengths;
+};
 
 }  // namespace
 
@@ -407,6 +422,38 @@ TEST_CASE("SyncGroup reads motion directly without an indirect map",
   CHECK(feedback[0].position == Approx(dxl::pulseToRad(2300)));
   CHECK(feedback[0].voltage == 0.0);
   CHECK(feedback[0].temperature == 0.0);
+}
+
+TEST_CASE("SyncGroup's motion-only read refreshes motion and keeps voltage "
+          "and temperature",
+          "[dxl][emu]") {
+  emu::MotorBus bus = craneBus();
+  CountingIO io(bus);
+  dxl::SyncGroup group(io, {2, 3, 4, 5, 6, 7, 8, 9});
+  REQUIRE(group.setupIndirect().ok());
+  std::vector<dxl::Feedback> fb;
+  REQUIRE(group.readAll(fb).ok());
+  CHECK(fb[0].voltage == Approx(12.0));
+
+  bus.find(2)->poke(reg::kPresentCurrent, 41);
+  bus.find(2)->poke(reg::kPresentVelocity, 23);
+  bus.find(2)->poke(reg::kPresentPosition, 2400);
+  bus.find(2)->poke(reg::kPresentInputVoltage, 111);  // 11.1 V, unread
+  bus.find(2)->poke(reg::kPresentTemperature, 52);
+  io.sync_read_lengths.clear();
+  REQUIRE(group.readMotionWindow(fb).ok());
+  // One grouped read of the window's first 10 bytes.
+  CHECK(io.sync_read_lengths == std::vector<std::uint16_t>{10});
+  REQUIRE(fb.size() == 8);
+  CHECK(fb[0].current == Approx(dxl::currentToAmps(41)));
+  CHECK(fb[0].velocity == Approx(dxl::velocityToRadPerSec(23)));
+  CHECK(fb[0].position == Approx(dxl::pulseToRad(2400)));
+  CHECK(fb[0].voltage == Approx(12.0));
+  CHECK(fb[0].temperature == Approx(35.0));
+  // The next full read brings them.
+  REQUIRE(group.readAll(fb).ok());
+  CHECK(fb[0].voltage == Approx(11.1));
+  CHECK(fb[0].temperature == Approx(52.0));
 }
 
 TEST_CASE("SyncGroup indirect setup is rejected while torque is on",

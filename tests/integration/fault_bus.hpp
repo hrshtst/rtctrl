@@ -104,8 +104,7 @@ inline constexpr auto kGuard = milliseconds(30);
 
 inline dxl::BoundedReadConfig positionRead() {
   dxl::BoundedReadConfig config;
-  config.addr = reg::kPresentPosition.addr;
-  config.len = reg::kPresentPosition.len;
+  config.windows = {{reg::kPresentPosition.addr, reg::kPresentPosition.len}};
   config.ids = kIds;
   config.budget = kBudget;
   config.guard = kGuard;

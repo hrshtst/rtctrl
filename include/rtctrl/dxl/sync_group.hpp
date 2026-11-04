@@ -44,6 +44,12 @@ class SyncGroup {
   // One syncRead of all feedback signals; `out` is resized to ids().
   IoResult readAll(std::vector<Feedback>& out);
 
+  // One syncRead of the window's motion part only (current, velocity and
+  // position: kMotionSlots of its bytes, control-rate Phase B2). Voltage
+  // and temperature keep the values `out` holds (zero for an element it
+  // gains). Needs setupIndirect(), like readAll().
+  IoResult readMotionWindow(std::vector<Feedback>& out);
+
   // One syncWrite of all goal registers (the servo uses what its
   // operating mode consumes). Sizes must equal ids().
   IoResult writeGoals(const std::vector<double>& current_amps,
@@ -58,8 +64,10 @@ class SyncGroup {
   //   [0..1]  PresentCurrent   [2..5] PresentVelocity
   //   [6..9]  PresentPosition  [10..11] PresentInputVoltage
   //   [12]    PresentTemperature
-  // readAll() is one syncRead of this window, which a bounded read arms.
+  // readAll() is one syncRead of this window, which a bounded read arms;
+  // readMotionWindow() reads its first kMotionSlots bytes.
   static constexpr int kFeedbackSlots = 13;
+  static constexpr int kMotionSlots = 10;
   static constexpr std::uint16_t kFeedbackAddr = reg::kIndirectDataBase;
 
  private:

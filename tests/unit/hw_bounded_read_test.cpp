@@ -141,8 +141,9 @@ TEST_CASE("a matching bus arms the bounded read after the watchdog and "
   REQUIRE(io.has("arm"));
   CHECK(io.first("arm") > io.last("watchdog"));
   CHECK(io.first("arm") < io.first("torque-on"));
-  CHECK(io.armed.addr == dxl::SyncGroup::kFeedbackAddr);
-  CHECK(io.armed.len == dxl::SyncGroup::kFeedbackSlots);
+  REQUIRE(io.armed.windows.size() == 1);
+  CHECK(io.armed.windows[0].addr == dxl::SyncGroup::kFeedbackAddr);
+  CHECK(io.armed.windows[0].len == dxl::SyncGroup::kFeedbackSlots);
   const std::vector<std::uint8_t> ids{2, 3, 4, 5, 6, 7, 8, 9};
   CHECK(io.armed.ids == ids);
   CHECK(io.armed.budget == milliseconds(20));
@@ -404,4 +405,139 @@ TEST_CASE("the bus profile check only reads", "[hw][bounded]") {
     CHECK(contains(error, "no Baud Rate register value"));
   }
   CHECK(io.writes == 0);
+}
+
+// The motion-only feedback read (control-rate Phase B2).
+
+TEST_CASE("the motion-only read needs the bounded read and a usable "
+          "interval, refused before any write",
+          "[hw][bounded][motion]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  setReturnDelay(bus, 0);
+  WriteCountIO io(bus);
+  hw::CraneX7::Options options;
+  options.feedback_read.motion_only = true;
+  SECTION("without the bounded read") {
+    hw::CraneX7 arm(io, config, options);
+    CHECK_FALSE(arm.activate());
+    CHECK(contains(arm.lastError(), "needs the bounded read"));
+  }
+  SECTION("a negative interval") {
+    options = boundedOptions();
+    options.feedback_read.motion_only = true;
+    options.feedback_read.aux_interval_s = -0.1;
+    hw::CraneX7 arm(io, config, options);
+    CHECK_FALSE(arm.activate());
+    CHECK(contains(arm.lastError(), "interval"));
+  }
+  CHECK(io.writes == 0);
+}
+
+namespace {
+
+// BoundedIO that reports each grouped read's length to the test after the
+// thread stopped (the thread only appends), and can fail the next full
+// window read.
+class MotionIO : public BoundedIO {
+ public:
+  explicit MotionIO(emu::MotorBus& bus) : BoundedIO(bus) {}
+  dxl::IoResult syncRead(std::uint16_t addr, std::uint16_t len,
+                         const std::vector<std::uint8_t>& ids,
+                         std::vector<std::uint8_t>& out) override {
+    if (len == dxl::SyncGroup::kFeedbackSlots && fail_next_full) {
+      fail_next_full = false;
+      return {-3001, dxl::kErrNone};  // the SDK's COMM_RX_TIMEOUT
+    }
+    return BoundedIO::syncRead(addr, len, ids, out);
+  }
+  bool fail_next_full = false;
+};
+
+std::vector<hw::CycleRecord> runCycles(hw::CraneX7& arm, std::uint64_t n) {
+  REQUIRE(arm.startThread());
+  std::uint64_t seen = 0;
+  while (seen < n) seen = arm.waitCycle(seen);
+  arm.stopThread();
+  std::vector<hw::CycleRecord> records;
+  hw::CycleRecord r;
+  while (arm.popCycleRecord(&r)) records.push_back(r);
+  return records;
+}
+
+hw::CraneX7::Options motionOptions(double aux_interval_s) {
+  hw::CraneX7::Options options = boundedOptions();
+  options.control_cycle_s = 0.002;
+  options.timing_ring_capacity = 256;
+  options.feedback_read.motion_only = true;
+  options.feedback_read.aux_interval_s = aux_interval_s;
+  return options;
+}
+
+}  // namespace
+
+TEST_CASE("the motion-only read arms both windows and reads the full one "
+          "first, then every auxiliary interval",
+          "[hw][bounded][motion]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  setReturnDelay(bus, 0);
+  MotionIO io(bus);
+  // 10 ms at 2 ms per cycle: the full window every fifth cycle.
+  hw::CraneX7 arm(io, config, motionOptions(0.01));
+  REQUIRE(arm.activate());
+  REQUIRE(io.armed.windows.size() == 2);
+  CHECK(io.armed.windows[0].addr == dxl::SyncGroup::kFeedbackAddr);
+  CHECK(io.armed.windows[0].len == dxl::SyncGroup::kFeedbackSlots);
+  CHECK(io.armed.windows[1].addr == dxl::SyncGroup::kFeedbackAddr);
+  CHECK(io.armed.windows[1].len == dxl::SyncGroup::kMotionSlots);
+  SECTION("on schedule") {
+    const auto records = runCycles(arm, 16);
+    REQUIRE(records.size() >= 16);
+    for (std::size_t i = 0; i < 16; ++i) {
+      CAPTURE(records[i].cycle);
+      CHECK(records[i].read_ok);
+      CHECK(records[i].read_len == (records[i].cycle % 5 == 1 ? 13 : 10));
+    }
+  }
+  SECTION("a failed full read is retried the next cycle") {
+    io.fail_next_full = true;
+    const auto records = runCycles(arm, 12);
+    REQUIRE(records.size() >= 12);
+    const std::vector<std::uint16_t> want{13, 13, 10, 10, 10, 10,
+                                          13, 10, 10, 10, 10, 13};
+    for (std::size_t i = 0; i < want.size(); ++i) {
+      CAPTURE(records[i].cycle);
+      CHECK(records[i].read_ok == (i != 0));
+      CHECK(records[i].read_len == want[i]);
+    }
+  }
+  REQUIRE(arm.deactivate());
+}
+
+TEST_CASE("without auxiliary reads the cycle keeps activation's voltage "
+          "and temperature and refreshes motion",
+          "[hw][bounded][motion]") {
+  const auto config = craneConfig();
+  auto bus = busFor(config);
+  setReturnDelay(bus, 0);
+  MotionIO io(bus);
+  hw::CraneX7 arm(io, config, motionOptions(0.0));
+  REQUIRE(arm.activate());
+  const auto before = arm.lastFeedback();
+  // Before the thread starts (it then owns the bus): new voltage,
+  // temperature and position on the first servo.
+  bus.motors().front().poke(reg::kPresentInputVoltage, 111);
+  bus.motors().front().poke(reg::kPresentTemperature, 52);
+  bus.motors().front().poke(reg::kPresentPosition, 2348);
+  const auto records = runCycles(arm, 6);
+  for (const auto& r : records) {
+    CHECK(r.read_len == dxl::SyncGroup::kMotionSlots);
+  }
+  const auto after = arm.lastFeedback();
+  REQUIRE(after.size() == before.size());
+  CHECK(after.front().voltage == before.front().voltage);
+  CHECK(after.front().temperature == before.front().temperature);
+  CHECK(after.front().position != before.front().position);
+  REQUIRE(arm.deactivate());
 }
