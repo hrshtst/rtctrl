@@ -213,9 +213,14 @@ then every `--aux-interval-ms` (default 100, rounded up to whole cycles;
 `CraneX7::Options::feedback_read` does. Both windows are armed on the
 bounded path, and each CSV row's `read_len` says which one the cycle
 read. A full-read cycle is the longest, so `timing_summary.py` reports
-the transaction and host work of each read length separately, and the
-summary's `[budget]` table gives the motion-only cycle's wire time beside
-the full one's. `e1_prod.sh` and `e1_cal.sh` take `--feedback motion`
+the transaction and host work of each read length separately. The
+summary's `[budget]` table budgets the longest cycle the run's cadence
+contains (`read_len` names its read): the full read's whenever a cycle
+reads the full window, the motion-only read's with `--aux-interval-ms 0`.
+A run that mixes the two gives the motion-only cycle's wire time beside
+it. The initial full read before the run (a Sync Read on the legacy path)
+is startup traffic, outside the log, and the table budgets it separately
+(`startup_read_*`). `e1_prod.sh` and `e1_cal.sh` take `--feedback motion`
 (with `--read-path bounded`) and `--aux-interval-ms A`; their log names
 gain `-motion`, or `-motion-aux<A>ms`.
 

@@ -64,7 +64,9 @@
 // full window on auxiliary cycles: the first, then every A ms rounded up
 // to whole cycles (default 100; 0 never after the initial read), as
 // CraneX7::Options::feedback_read does. Both windows are armed; each CSV
-// row's read_len says which one the cycle read.
+// row's read_len says which one the cycle read. The summary's [budget]
+// table budgets the longest cycle the cadence contains, and the initial
+// read before the run separately, as startup traffic.
 //
 // --read-instruction chooses the grouped read's instruction (Phase B3), on
 // the bounded path only: sync (the default) is Sync Read, one status
@@ -1028,19 +1030,35 @@ int main(int argc, char* argv[]) {
   log->commitRow();
 
   const bool calibration = args.confirm_writes || args.drain;
-  // Worst-case stuffing; with the motion-only read, the cycles between
-  // the full reads and the full read's own cycles.
+  // Worst-case stuffing. The budget is the run's longest cycle, as its
+  // cadence has it: the full read's when any cycle reads the full window,
+  // the motion-only read's when none does (--aux-interval-ms 0).
+  const int n_servos = static_cast<int>(config.joints.size());
+  const double byte_s = wire::byteTimeS(config.baudrate);
   const auto bytesFor = [&](int read_len) {
-    return wire::cycleBytes(static_cast<int>(config.joints.size()),
+    return wire::cycleBytes(n_servos,
                             args.fast ? wire::ReadVariant::kFastSync
                                       : wire::ReadVariant::kSync,
                             read_len, writeWidth(args.profile));
   };
   const auto wireS = [&](int read_len) {
-    return bytesFor(read_len).total(true) * wire::byteTimeS(config.baudrate);
+    return bytesFor(read_len).total(true) * byte_s;
   };
-  const auto bytes = bytesFor(wire::kFeedbackBytes);
-  const double wire_s = wireS(wire::kFeedbackBytes);
+  const std::uint64_t full_every = Probe::fullReadEvery(args);
+  const bool mixed_reads = full_every > 1;  // full and motion-only cycles
+  const int budget_len = full_every == 0 ? dxl::SyncGroup::kMotionSlots
+                                         : wire::kFeedbackBytes;
+  const auto bytes = bytesFor(budget_len);
+  const double wire_s = wireS(budget_len);
+  // Startup traffic, before the timed cycles: the initial read is a Sync
+  // Read of the full window on the legacy path, with no write.
+  const int startup_len = wire::kFeedbackBytes;
+  const int startup_instruction = wire::syncReadInstructionBytes(n_servos);
+  const int startup_reply = wire::syncReadReplyBytes(n_servos, startup_len);
+  const int startup_stuffing =
+      wire::syncReadStuffingMaxBytes(n_servos, startup_len);
+  const double startup_s =
+      (startup_instruction + startup_reply + startup_stuffing) * byte_s;
   std::printf("%s run: profile %s, %.1f Hz, %.1f s; analytic wire time "
               "%.3f ms (%s) = %.0f%% of the period\n",
               calibration ? "calibration" : "production-traffic",
@@ -1050,15 +1068,26 @@ int main(int argc, char* argv[]) {
                         : "worst-case stuffing",
               100.0 * wire_s * args.rate_hz);
   if (args.motion_only) {
-    const double motion_s = wireS(dxl::SyncGroup::kMotionSlots);
-    const std::uint64_t every = Probe::fullReadEvery(args);
-    std::printf("motion-only read: %.3f ms (%.0f%%) between full reads, "
-                "the figure above on full-read cycles; full read %s\n",
-                1e3 * motion_s, 100.0 * motion_s * args.rate_hz,
-                every == 0 ? "never after the initial read"
-                           : ("every " + std::to_string(every) + " cycles")
-                                 .c_str());
+    if (mixed_reads) {
+      const double motion_s = wireS(dxl::SyncGroup::kMotionSlots);
+      std::printf("motion-only read: %.3f ms (%.0f%%) between full reads, "
+                  "the figure above on full-read cycles; full read every "
+                  "%llu cycles\n",
+                  1e3 * motion_s, 100.0 * motion_s * args.rate_hz,
+                  static_cast<unsigned long long>(full_every));
+    } else if (full_every == 0) {
+      std::printf("motion-only read on every cycle (the figure above); no "
+                  "full read after the initial one\n");
+    } else {
+      std::printf("motion-only read: none, the full window on every cycle "
+                  "(the auxiliary interval is at most one period)\n");
+    }
   }
+  std::printf("startup traffic, before the run and not in these figures: "
+              "the checks, the indirect-address setup and one full-window "
+              "Sync Read on the legacy path (%.3f ms with worst-case "
+              "stuffing)\n",
+              1e3 * startup_s);
 
   Probe probe(*port, config, args, config.baudrate,
               servos.back().return_delay_time, servos.back().model, drain_fd);
@@ -1122,7 +1151,7 @@ int main(int argc, char* argv[]) {
   if (args.motion_only) {
     std::fprintf(summary, "aux_interval_s = %.9g\nfull_read_every = %llu\n",
                  args.aux_interval_ms * 1e-3,
-                 static_cast<unsigned long long>(Probe::fullReadEvery(args)));
+                 static_cast<unsigned long long>(full_every));
     std::fprintf(summary,
                  "# full_read_every: cycles per full-window read (0: none "
                  "after the initial read)\n");
@@ -1205,9 +1234,14 @@ int main(int argc, char* argv[]) {
   }
   std::fprintf(summary, "\n[budget]\n");
   std::fprintf(summary,
-               "# Analytic wire bytes of the production cycle; excludes USB "
-               "and adapter latency,\n# Return Delay Time, servo "
-               "processing and scheduling.\n");
+               "# Analytic wire bytes of the run's longest production "
+               "cycle; excludes USB and\n# adapter latency, Return Delay "
+               "Time, servo processing and scheduling.\n");
+  std::fprintf(summary,
+               "# read_len: bytes per servo that cycle's read requests, "
+               "the full window's when\n# any cycle reads it, else the "
+               "motion-only window's\n");
+  std::fprintf(summary, "read_len = %d\n", budget_len);
   std::fprintf(summary, "read_instruction_bytes = %d\n",
                bytes.read_instruction);
   std::fprintf(summary, "read_reply_bytes = %d\n", bytes.read_reply);
@@ -1217,7 +1251,7 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "wire_time_worst_s = %.9g\n", wire_s);
   std::fprintf(summary, "wire_fraction_of_period = %.6g\n",
                wire_s * args.rate_hz);
-  if (args.motion_only) {
+  if (mixed_reads) {
     // The cycles between full reads; the figures above are the full
     // read's cycles, the longest.
     const auto motion = bytesFor(dxl::SyncGroup::kMotionSlots);
@@ -1228,6 +1262,20 @@ int main(int argc, char* argv[]) {
     std::fprintf(summary, "motion_wire_time_worst_s = %.9g\n",
                  wireS(dxl::SyncGroup::kMotionSlots));
   }
+  std::fprintf(summary,
+               "# Startup traffic, before the timed cycles and in neither "
+               "the log nor the figures\n# above: the inventory, torque "
+               "and profile checks, the indirect-address setup,\n# then "
+               "one full-window Sync Read on the legacy path, whose worst "
+               "case is:\n");
+  std::fprintf(summary, "startup_read_len = %d\n", startup_len);
+  std::fprintf(summary, "startup_read_instruction_bytes = %d\n",
+               startup_instruction);
+  std::fprintf(summary, "startup_read_reply_bytes = %d\n", startup_reply);
+  std::fprintf(summary, "startup_read_stuffing_max_bytes = %d\n",
+               startup_stuffing);
+  std::fprintf(summary, "startup_read_wire_time_worst_s = %.9g\n",
+               startup_s);
   const auto& t = result.timing;
   writeHistogram(summary, "wake_lateness", t.wake_lateness);
   writeHistogram(summary, "period", t.period);

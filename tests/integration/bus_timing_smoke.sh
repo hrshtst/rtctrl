@@ -292,6 +292,8 @@ test "$(value "$S" reads)" = "$(value "$S" cycles)"
 grep -q '^timeouts = 0' "$S"
 grep -q '^read_failures = 0' "$S"
 grep -q '^motion_wire_time_worst_s = ' "$S"
+# The budget is the longest cycle, the full read's.
+grep -q '^read_len = 13' "$S"
 grep -q 'motion-only read: .* full read every 5 cycles' "$ROOT/motion.log"
 python3 - "$ROOT/motion.csv" "$(value "$S" full_reads)" <<'EOF'
 import csv
@@ -325,6 +327,38 @@ grep -q '^read_failures = 0' "$S"
 grep -q '^read_stuffing_max_bytes = 0' "$S"
 grep -q 'Fast Sync Read, never stuffed' "$ROOT/fastsync.log"
 grep -q '^read_instruction = "sync"' "$ROOT/motion.csv.summary.toml"
+
+# With no auxiliary reads every timed cycle reads the motion window, so
+# that cycle is the budget (Fast Sync Read of 10 bytes and a position
+# write: 196 bytes); the initial full read is startup traffic, budgeted
+# on its own (a legacy Sync Read of 13 bytes: 246 bytes worst case).
+"$PROBE" --port "$LINK" --read-path bounded --read-instruction fast \
+  --rate-hz 100 --profile position --duration 0.3 --feedback motion \
+  --aux-interval-ms 0 --log "$ROOT/fastsync-noaux.csv" \
+  >"$ROOT/fastsync-noaux.log" 2>&1 ||
+  fail "the run without auxiliary reads failed" "$ROOT/fastsync-noaux.log"
+S="$ROOT/fastsync-noaux.csv.summary.toml"
+grep -q '^full_read_every = 0' "$S"
+grep -q '^full_reads = 0' "$S"
+grep -q '^read_len = 10' "$S"
+grep -q '^startup_read_len = 13' "$S"
+if grep -q '^motion_' "$S"; then
+  fail "a run with one read length reported a second budget" "$S"
+fi
+grep -q 'motion-only read on every cycle' "$ROOT/fastsync-noaux.log"
+grep -q '^startup traffic, before the run' "$ROOT/fastsync-noaux.log"
+python3 - "$ROOT/fastsync-noaux.csv" "$(value "$S" baudrate)" \
+  "$(value "$S" wire_time_worst_s)" \
+  "$(value "$S" startup_read_wire_time_worst_s)" <<'EOF'
+import csv
+import sys
+rows = list(csv.DictReader(open(sys.argv[1])))
+assert rows, "no cycles"
+assert {r["read_len"] for r in rows} == {"10"}, "a full read in the run"
+byte_s = 10.0 / int(sys.argv[2])
+assert abs(float(sys.argv[3]) - 196 * byte_s) < 1e-12, sys.argv[3]
+assert abs(float(sys.argv[4]) - 246 * byte_s) < 1e-12, sys.argv[4]
+EOF
 
 # Firmware v47 in operating mode 0 overwrites a torque-off goal write with
 # present values (observed on the arm), so a goal read-back cannot
