@@ -31,9 +31,14 @@
 # A loaded run starts stress-ng --cpu <n> --hdd 1; an -excl run pins it to
 # the CPUs outside the excluded set, with one --cpu worker per CPU there.
 #
+# The load starts once the recorders record, and the load and the
+# recorders must last the whole run: one that ends before the probe does
+# voids the run, as does a load that does not report success.
+#
 # A failed criterion is data, not a stop. A probe that exits nonzero, a
-# tracer that does not start or stop cleanly, or an analysis error stops the
-# session (the stop rule).
+# tracer that does not start, stop cleanly or last the run, a load that
+# does not last the run or succeed, or an analysis error stops the session
+# (the stop rule).
 #
 # Each run leaves gitignored files in the output directory:
 #   <log>.csv               per-cycle log (probe)
@@ -48,8 +53,8 @@
 #
 # Privileged steps (trace-cmd, tcpdump, bpftrace, modprobe) go through sudo;
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
-# runs them directly, and TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE and TRACEFS
-# replace the tools and the tracefs path.
+# runs them directly, and TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG
+# and TRACEFS replace the tools and the tracefs path.
 set -u
 
 PROBE=./build/apps/x7_bus_timing  # --probe overrides it (the tests do)
@@ -59,6 +64,7 @@ TRACE_CMD=${TRACE_CMD:-trace-cmd}
 TCPDUMP=${TCPDUMP:-tcpdump}
 BPFTRACE=${BPFTRACE:-bpftrace}
 MODPROBE=${MODPROBE:-modprobe}
+STRESS_NG=${STRESS_NG:-stress-ng}
 TRACEFS=${TRACEFS:-/sys/kernel/tracing}
 if [ "${TRACE_SESSION_SUDO:-sudo}" = none ]; then sudo_cmd=(); else sudo_cmd=(sudo); fi
 
@@ -82,6 +88,7 @@ date_tag=$(date +%Y%m%d)
 attempt=1
 outdir=.
 max_runnable=3
+load_tail=15
 stress_dir="$HOME/.cache/rtctrl-stress"
 dry_run=0
 assume_yes=0
@@ -116,6 +123,8 @@ usage: $0 [options]
                       including this script (default $max_runnable)
   --stress-dir DIR    stress-ng --hdd directory, on a disk, not tmpfs
                       (default $stress_dir)
+  --load-tail S       seconds the load's timeout exceeds the run's duration
+                      (default $load_tail)
   --dry-run           check the prerequisites and print the plan only
   --yes               confirm the session in advance (no prompt)
 EOF
@@ -127,7 +136,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--outdir|--max-runnable|\
-    --stress-dir)
+    --stress-dir|--load-tail)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
@@ -145,6 +154,7 @@ while [ $# -gt 0 ]; do
         --outdir) outdir=$2 ;;
         --max-runnable) max_runnable=$2 ;;
         --stress-dir) stress_dir=$2 ;;
+        --load-tail) load_tail=$2 ;;
       esac
       shift 2 ;;
     --no-usbmon) usbmon=0; shift ;;
@@ -218,6 +228,7 @@ if [ "$rt_priority" -lt 1 ] || [ "$rt_priority" -gt 99 ]; then
   die "--rt-priority must be 1 to 99 (0 would mean ordinary scheduling)"
 fi
 is_uint "$max_runnable" || die "--max-runnable must be an integer"
+is_uint "$load_tail" && [ "$load_tail" -gt 0 ] || die "--load-tail must be a positive integer"
 is_uint "$buffer_kb" && [ "$buffer_kb" -gt 0 ] || die "--buffer-kb must be a positive integer"
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
 
@@ -233,7 +244,7 @@ for c in $online; do
 done
 [ ${#others[@]} -gt 0 ] || die "--exclude-cpus leaves no CPU for the load and the tracers"
 other_cpus=$(IFS=,; echo "${others[*]}")
-stress_timeout=$((duration + 15))
+stress_timeout=$((duration + load_tail))
 
 # The adapter to capture: the probe's port, unless --usb-device names it.
 if [ "$any_traced" -eq 1 ] && [ "$usbmon" -eq 1 ] && [ -z "$usb_device" ]; then
@@ -273,7 +284,7 @@ if [ "$any_rt" -eq 1 ]; then
   case " $excluded " in *" $rt_cpu "*) ;; *) problems+=("--exclude-cpus $exclude_cpus leaves out the real-time CPU $rt_cpu") ;; esac
 fi
 if [ "$any_loaded" -eq 1 ]; then
-  command -v stress-ng >/dev/null ||
+  command -v "$STRESS_NG" >/dev/null ||
     problems+=("stress-ng is not installed (sudo apt install stress-ng), or leave out the loaded conditions")
   probe_dir=$stress_dir
   while [ ! -d "$probe_dir" ]; do probe_dir=$(dirname "$probe_dir"); done
@@ -317,10 +328,10 @@ stress_cmd() {  # condition -> scmd[]
   scmd=()
   case "$1" in
     *loaded-excl)
-      scmd=(taskset -c "$other_cpus" stress-ng --cpu "${#others[@]}" --hdd 1
+      scmd=(taskset -c "$other_cpus" "$STRESS_NG" --cpu "${#others[@]}" --hdd 1
             --timeout "${stress_timeout}s" --temp-path "$stress_dir") ;;
     *loaded)
-      scmd=(stress-ng --cpu "$(nproc)" --hdd 1 --timeout "${stress_timeout}s"
+      scmd=("$STRESS_NG" --cpu "$(nproc)" --hdd 1 --timeout "${stress_timeout}s"
             --temp-path "$stress_dir") ;;
   esac
 }
@@ -443,6 +454,12 @@ stop_tracer() {  # name job -> its exit status (SIGINT, then SIGKILL after 120 s
   status=$?
   sleep 0.2  # let the pipe's reader finish the output file
   return "$status"
+}
+recorders_ended() {  # the run's recorders that are no longer running
+  local gone=''
+  alive "$trace_job" || gone="trace-cmd ended"
+  if [ "$usbmon" -eq 1 ]; then alive "$usbmon_job" || gone+="${gone:+, }tcpdump ended"; fi
+  echo "$gone"
 }
 stop_all() {
   if [ -n "$trace_job" ]; then stop_tracer trace "$trace_job"; trace_job=; fi
@@ -645,23 +662,6 @@ run_one() {
     irq_state
     echo
   } >"$note"
-  if [ "$loaded" -eq 1 ]; then
-    mkdir -p "$stress_dir"
-    stress_out=$(mktemp)
-    setsid "${scmd[@]}" >"$stress_out" 2>&1 &
-    stress_pid=$!
-    sleep 2
-    if ! kill -0 "$stress_pid" 2>/dev/null; then
-      wait "$stress_pid"
-      echo "stress-ng ended before the run (exit $?):" | tee -a "$note"
-      tee -a "$note" <"$stress_out"
-      rm -f "$stress_out"
-      stress_pid=
-      echo "verdict: not run (no load)" >>"$note"
-      outcome=stop
-      return
-    fi
-  fi
   if [ "$mode" = traced ]; then
     start_tracer trace "$TRACE_CMD" "${trace_args[@]}" -o "$dat"
     if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
@@ -692,6 +692,37 @@ run_one() {
         return
       fi
     fi
+  fi
+  # The load starts once the recorders are recording, so their startup
+  # takes none of its time, and it must outlast the probe.
+  if [ "$loaded" -eq 1 ]; then
+    mkdir -p "$stress_dir"
+    stress_out=$(mktemp)
+    setsid "${scmd[@]}" >"$stress_out" 2>&1 &
+    stress_pid=$!
+    sleep 2
+    if ! alive "$stress_pid"; then
+      wait "$stress_pid"
+      echo "stress-ng ended before the run (exit $?):" | tee -a "$note"
+      tee -a "$note" <"$stress_out"
+      rm -f "$stress_out"
+      stress_pid=
+      echo "verdict: not run (no load)" >>"$note"
+      stop_all
+      outcome=stop
+      return
+    fi
+  fi
+  if [ "$mode" = traced ]; then
+    local ended
+    ended=$(recorders_ended)
+    if [ -n "$ended" ]; then
+      echo "trace_session: $ended before the run: session stopped" | tee -a "$note"
+      echo "verdict: not run (tracer)" >>"$note"
+      stop_all
+      outcome=stop
+      return
+    fi
     echo "clock pair before: $(clock_pair)" >>"$note"
   fi
   ( taskset -cp "$other_cpus" "$BASHPID" >/dev/null
@@ -699,17 +730,29 @@ run_one() {
   snap_pid=$!
   "${cmd[@]}" 2>&1 | tee -a "$note"
   probe_status=${PIPESTATUS[0]}
+  # The load and the recorders must have lasted the whole run: checked as
+  # the probe ends, before anything is stopped.
+  local load_problem='' tracer_problem=''
+  if [ "$loaded" -eq 1 ] && ! alive "$stress_pid"; then
+    load_problem="the load ended before the probe did"
+  fi
+  if [ "$mode" = traced ]; then
+    tracer_problem=$(recorders_ended)
+    [ -n "$tracer_problem" ] && tracer_problem+=" before the probe did"
+  fi
   wait "$snap_pid" 2>/dev/null
   if [ "$mode" = traced ]; then
     echo "clock pair after: $(clock_pair)" >>"$note"
-    local trace_status usbmon_status=0 tracer_problem=
+    local trace_status usbmon_status=0
     stop_tracer trace "$trace_job"; trace_status=$?; trace_job=
     { echo; echo "--- trace-cmd (exit $trace_status) ---"; cat "$tmp/trace.out"; } >>"$note"
-    [ "$trace_status" -eq 0 ] && [ -s "$dat" ] || tracer_problem="trace-cmd exit $trace_status"
+    [ "$trace_status" -eq 0 ] && [ -s "$dat" ] ||
+      tracer_problem+="${tracer_problem:+, }trace-cmd exit $trace_status"
     if [ "$usbmon" -eq 1 ]; then
       stop_tracer usbmon "$usbmon_job"; usbmon_status=$?; usbmon_job=
       { echo; echo "--- tcpdump (exit $usbmon_status) ---"; cat "$tmp/usbmon.out"; } >>"$note"
-      [ "$usbmon_status" -eq 0 ] && [ -s "$pcap" ] || tracer_problem+="${tracer_problem:+, }tcpdump exit $usbmon_status"
+      [ "$usbmon_status" -eq 0 ] && [ -s "$pcap" ] ||
+        tracer_problem+="${tracer_problem:+, }tcpdump exit $usbmon_status"
     fi
     if [ ${#sudo_cmd[@]} -gt 0 ]; then
       priv chown "$(id -u):$(id -g)" "$dat" 2>/dev/null
@@ -717,12 +760,19 @@ run_one() {
     fi
   fi
   if [ "$loaded" -eq 1 ]; then
+    # A failed probe ends the load at once; otherwise it runs out its
+    # timeout and must report success.
     [ "$probe_status" -eq 0 ] || kill -TERM -- "-$stress_pid" 2>/dev/null
     wait "$stress_pid"
     stress_status=$?
     stress_pid=
     { echo; echo "--- stress-ng (exit $stress_status) ---"; cat "$stress_out"; } >>"$note"
     rm -f "$stress_out"
+    if [ -n "$load_problem" ]; then
+      load_problem+=" (stress-ng exit $stress_status)"
+    elif [ "$stress_status" -ne 0 ]; then
+      load_problem="stress-ng exit $stress_status"
+    fi
   fi
   { echo; echo "--- IRQ placement after ---"; irq_state; } >>"$note"
   if [ "$probe_status" -ne 0 ]; then
@@ -731,9 +781,15 @@ run_one() {
     outcome=stop
     return
   fi
-  if [ "$mode" = traced ] && [ -n "$tracer_problem" ]; then
+  if [ -n "$tracer_problem" ]; then
     { echo; echo "verdict: tracer failure ($tracer_problem)"; } >>"$note"
     echo "trace_session: $tracer_problem: session stopped. See $note"
+    outcome=stop
+    return
+  fi
+  if [ -n "$load_problem" ]; then
+    { echo; echo "verdict: load failure ($load_problem)"; } >>"$note"
+    echo "trace_session: $load_problem: session stopped. See $note"
     outcome=stop
     return
   fi

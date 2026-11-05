@@ -2,11 +2,13 @@
 # tools/trace_session.sh over dxl_emu, with stand-in tracers (trace-cmd,
 # tcpdump, bpftrace, modprobe) and no sudo: the refusals, the
 # untraced/traced pairs and their records, the mono trace clock, the
-# usbmon device filter, the clock pairs, resuming without a retry, and the
-# stops when the fair server is not read, a tracer does not start or the
-# trace clock is not mono. Functional only: a pty answers instantly and the
-# tracers record nothing real, so no verdict is asserted. The loaded and
-# real-time conditions need stress-ng and a real-time priority limit, so
+# usbmon device filter, the clock pairs, resuming without a retry, the
+# load (a stand-in stress-ng) starting after the recorders and pinned off
+# the excluded CPUs, and the stops when the fair server is not read, a
+# tracer does not start, the trace clock is not mono, a recorder or the
+# load ends before the probe does, or the load fails. Functional only: a
+# pty answers instantly and the tracers record nothing real, so no verdict
+# is asserted. Real-time conditions need a real-time priority limit, so
 # they stay out of this test (the plan is checked with --dry-run).
 set -eu
 
@@ -57,7 +59,10 @@ esac
 stop=0
 trap 'stop=1' INT
 echo "Hit Ctrl^C to stop recording"
-while [ "$stop" -eq 0 ]; do sleep 0.05; done
+echo "trace-ready" >>"$FAKE_LOG.events"
+# FAKE_TRACE_LIFE: end on its own after that many seconds, successfully.
+end=$(( $(date +%s) + ${FAKE_TRACE_LIFE:-100000} ))
+while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
 echo "stand-in trace data" >"$out"
 echo "CPU0 data recorded at offset=0x0"
 echo "overrun: 0"
@@ -75,7 +80,9 @@ done
 stop=0
 trap 'stop=1' INT
 echo "tcpdump: listening on $iface, link-type USB_LINUX_MMAPPED (stand-in)" >&2
-while [ "$stop" -eq 0 ]; do sleep 0.05; done
+echo "usbmon-ready" >>"$FAKE_LOG.events"
+end=$(( $(date +%s) + ${FAKE_USBMON_LIFE:-100000} ))
+while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
 python3 -c 'import struct, sys; open(sys.argv[1], "wb").write(struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 262144, 220))' "$out"
 echo "0 packets captured" >&2
 exit 0
@@ -89,6 +96,20 @@ echo "Attached 3 probes"
 for ((c = $(nproc) - 1; c >= 0; c--)); do
   echo "cpu $c fair_server_pick_task runtime_ns 50000000 period_ns 1000000000 deadline_ns 1000000000 dl_server 1 dl_defer 1"
 done
+EOF
+cat >"$FAKE/stress-ng" <<'EOF'
+#!/usr/bin/env bash
+# Runs out its --timeout (or FAKE_STRESS_LIFE seconds) and exits
+# FAKE_STRESS_EXIT (default 0), logging its start and its CPUs.
+echo "load" >>"$FAKE_LOG.events"
+python3 -c 'import os; print("affinity", ",".join(map(str, sorted(os.sched_getaffinity(0)))))' >>"$FAKE_LOG.stress-ng"
+life=
+while [ $# -gt 0 ]; do
+  case "$1" in --timeout) life=${2%s}; shift ;; esac
+  shift
+done
+sleep "${FAKE_STRESS_LIFE:-$life}"
+exit "${FAKE_STRESS_EXIT:-0}"
 EOF
 cat >"$FAKE/modprobe" <<'EOF'
 #!/usr/bin/env bash
@@ -104,7 +125,7 @@ printf '480\n' >"$ROOT/usbdev/speed"
 
 export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
-export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe"
+export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
 
 # The quiet-machine gate is lifted: the test suite runs in parallel. The
 # tracers need a CPU outside the excluded set, so CPU 0 alone is excluded
@@ -220,6 +241,76 @@ b=$(base current-100hz-idle-bounded-traced 3)
 grep -q 'the trace clock is not mono' "$ROOT/clock.log"
 grep -q '^verdict: not run (trace clock)' "$b.run.txt"
 
+# A loaded traced run: the load starts after both recorders record, is
+# pinned off the excluded CPU (0), runs out its timeout and succeeds.
+: >"$ROOT/fake.events"
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 5 --load-tail 5 \
+  --modes traced --runs current:100:loaded-excl:full </dev/null >"$ROOT/load.log" 2>&1 ||
+  fail "the loaded session failed" "$ROOT/load.log"
+b=$(base current-100hz-loaded-excl-bounded-traced 5)
+grep -Eq '^verdict: (pass|fail)' "$b.run.txt" || fail "no verdict in $b.run.txt" "$b.run.txt"
+grep -q '^--- stress-ng (exit 0) ---' "$b.run.txt"
+[ "$(tr '\n' ' ' <"$ROOT/fake.events")" = "trace-ready usbmon-ready load " ] ||
+  fail "the load did not start after the recorders" "$ROOT/fake.events"
+python3 - "$ROOT/fake.stress-ng" <<'PY' || fail "the -excl load was not pinned off CPU 0" "$ROOT/fake.stress-ng"
+import sys
+cpus = [int(c) for c in open(sys.argv[1]).read().split()[-1].split(",")]
+sys.exit(0 if cpus and 0 not in cpus else 1)
+PY
+
+# A load that ends before the probe does voids the run and stops the
+# session, even with the probe's own run intact.
+if FAKE_STRESS_LIFE=4 FAKE_STRESS_EXIT=7 setsid tools/trace_session.sh "${COMMON[@]}" \
+    --yes --attempt 6 --duration 4 --modes untraced \
+    --runs current:100:loaded:full,cbp:100:loaded:full </dev/null >"$ROOT/shortload.log" 2>&1; then
+  fail "a load that ended early was accepted" "$ROOT/shortload.log"
+fi
+b=$(base current-100hz-loaded-bounded-untraced 6)
+grep -q '^verdict: load failure (the load ended before the probe did (stress-ng exit 7))' "$b.run.txt" ||
+  fail "no load failure in $b.run.txt" "$b.run.txt"
+[ ! -e "$(base cbp-100hz-loaded-bounded-untraced 6).run.txt" ] ||
+  fail "a run started after the load failed" "$ROOT/shortload.log"
+
+# A load that lasts but does not succeed is rejected too.
+if FAKE_STRESS_EXIT=3 setsid tools/trace_session.sh "${COMMON[@]}" --yes \
+    --attempt 7 --load-tail 5 --modes untraced --runs current:100:loaded:full \
+    </dev/null >"$ROOT/badload.log" 2>&1; then
+  fail "a failed load was accepted" "$ROOT/badload.log"
+fi
+grep -q '^verdict: load failure (stress-ng exit 3)' \
+  "$(base current-100hz-loaded-bounded-untraced 7).run.txt"
+
+# A recorder that ends before the probe does, even successfully, voids the
+# run and stops the session.
+for tracer in trace usbmon; do
+  case "$tracer" in
+    trace) attempt=8; env_life=FAKE_TRACE_LIFE; name=trace-cmd ;;
+    usbmon) attempt=9; env_life=FAKE_USBMON_LIFE; name=tcpdump ;;
+  esac
+  if env "$env_life=2" setsid tools/trace_session.sh "${COMMON[@]}" --yes \
+      --attempt "$attempt" --duration 4 --modes traced \
+      --runs current:100:idle:full,cbp:100:idle:full </dev/null >"$ROOT/short-$tracer.log" 2>&1; then
+    fail "a $name that ended early was accepted" "$ROOT/short-$tracer.log"
+  fi
+  b=$(base current-100hz-idle-bounded-traced "$attempt")
+  grep -q "^verdict: tracer failure ($name ended before the probe did)" "$b.run.txt" ||
+    fail "no tracer failure in $b.run.txt" "$b.run.txt"
+  [ ! -e "$(base cbp-100hz-idle-bounded-traced "$attempt").run.txt" ] ||
+    fail "a run started after $name ended" "$ROOT/short-$tracer.log"
+done
+
+# A recorder that ends while the load settles stops the session before the
+# probe runs.
+if FAKE_TRACE_LIFE=1 setsid tools/trace_session.sh "${COMMON[@]}" --yes \
+    --attempt 10 --modes traced --runs current:100:loaded:full \
+    </dev/null >"$ROOT/settle.log" 2>&1; then
+  fail "a recorder that ended before the run was accepted" "$ROOT/settle.log"
+fi
+b=$(base current-100hz-loaded-bounded-traced 10)
+[ ! -e "$b" ] || fail "the probe ran without its recorder" "$ROOT/settle.log"
+grep -q 'trace-cmd ended before the run' "$ROOT/settle.log"
+grep -q '^verdict: not run (tracer)' "$b.run.txt"
+
 # An emulator rehearsal traces without usbmon.
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \
   --modes traced --runs current:100:idle:fast </dev/null >"$ROOT/nousb.log" 2>&1 ||
@@ -240,7 +331,7 @@ grep -q 'no USB device to capture' "$ROOT/nodev.log"
 setsid tools/trace_session.sh "${COMMON[@]}" --dry-run </dev/null >"$ROOT/plan.log" 2>&1 ||
   fail "the default plan failed" "$ROOT/plan.log"
 grep -q '^plan: 14 runs' "$ROOT/plan.log"
-grep -q 'load: taskset -c 1[0-9,]* stress-ng --cpu [0-9]* --hdd 1' "$ROOT/plan.log"
+grep -q 'load: taskset -c 1[0-9,]* [^ ]*stress-ng --cpu [0-9]* --hdd 1' "$ROOT/plan.log"
 grep -q -- "rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-$DATE-1.csv --rt-priority 80 --rt-cpu 0" "$ROOT/plan.log"
 grep -q "rate-trace-cbp-1000hz-rt-idle-bounded-fast-untraced-$DATE-1.csv" "$ROOT/plan.log"
 

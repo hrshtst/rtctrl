@@ -517,8 +517,13 @@ settings, topology and the adapter. Every run record repeats them, with the
 run's IRQ placement before and after, and a snapshot halfway through each
 run records every task's CPU, policy and allowed CPUs. The session changes
 no scheduler setting; it loads the usbmon module if needed and unloads it at
-the end. A failed criterion is data. A probe that exits nonzero, a tracer
-that does not start or stop cleanly, or an analysis error stops the session.
+the end. A loaded run starts its load once the recorders are recording, so
+their startup takes none of the load's time. The load and the recorders
+must last the whole run: one that ends before the probe does voids the run,
+even with a successful exit, and so does a load that does not report
+success. A failed criterion is data. A probe that exits nonzero, a tracer
+that does not start, stop cleanly or last the run, a load that does not
+last the run or succeed, or an analysis error stops the session.
 
 Each run leaves `<log>.csv.run.txt` and `<log>.csv.tasks.txt` beside its log
 and summary, and a traced run also `<log>.csv.trace.dat` and
