@@ -1182,7 +1182,8 @@ cycle, and `x7_controller_bench` measures controller computation without a bus.
 `tools/timing_summary.py` reduces probe logs and app `--timing-log` files to
 measured, estimated and envelope quantities. The procedure that uses them is
 [control-rate qualification](../hardware/control-rate.md);
-`tools/e1_prod.sh` and `tools/e1_cal.sh` run its torque-off E1 step.
+`tools/e1_prod.sh` and `tools/e1_cal.sh` run its torque-off E1 step, and
+`tools/trace_session.sh` its traced torque-off diagnostics.
 
 On the library side, `hw::CraneX7::Options::timing_ring_capacity` enables the
 per-cycle `hw::CycleRecord` ring that `popCycleRecord()` drains, and

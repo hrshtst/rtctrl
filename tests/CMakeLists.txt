@@ -614,6 +614,19 @@ set_tests_properties(e1_session_scripts_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "e1 session scripts OK"
   LABELS integration)
 
+# The traced torque-off session (tools/trace_session.sh) over the emulator,
+# with stand-in tracers and no sudo.
+add_test(NAME trace_session_script_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/trace_session_smoke.sh
+      $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
+      ${CMAKE_BINARY_DIR}/trace_session_smoke $<TARGET_FILE:dxl_inspect>)
+set_tests_properties(trace_session_script_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "trace session script OK"
+  LABELS integration)
+
 add_test(NAME x7_follow_timing_log_smoke
   COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_timing_smoke.sh
           $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_follow>

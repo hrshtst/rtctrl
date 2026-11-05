@@ -478,6 +478,58 @@ tracefs and perf only at the confidentiality level, which is not set.
 The files are in `b2b3_bounded/` of the
 [archive manifest](../records/data-archive.md).
 
+### Traced torque-off diagnostics
+
+`tools/trace_session.sh` runs the targeted diagnostics decided on
+2026-11-05, torque-off, from the repo root. Like the E1 scripts, it asks the
+operator to confirm the session, waits for a quiet machine before each run,
+refuses real-time conditions below the shell's real-time priority limit, and
+prints its plan with `--dry-run`. Its default runs, all on the bounded read
+path under SCHED_FIFO 80 on CPU 3:
+- Fast Sync Read with the motion-only read (the full window every 100 ms)
+  for current at 500 and 1000 Hz, under rt-idle, rt-loaded and
+  rt-loaded-excl;
+- cbp at 1000 Hz with Fast Sync Read of the full window, under rt-idle.
+
+An `-excl` run pins stress-ng to the CPUs outside the excluded set (CPU 3
+and its SMT sibling, CPU 2, by default), with one CPU worker per CPU there.
+`--runs` lists other runs as `profile:rate:condition:variant`.
+
+Each run is made untraced and then traced under the same conditions, so
+each pair shows the tracing overhead. A traced run records:
+- scheduler, interrupt, timer, workqueue and xHCI URB events, with
+  `trace-cmd record -C mono`. The mono clock is `CLOCK_MONOTONIC`, the clock
+  of the probe's `monotonic_origin_ns`; ftrace's default `local` clock is not
+  assumed equivalent. The script checks the trace clock while recording and
+  stops the session before the probe runs if it is not mono;
+- the adapter's usbmon traffic, with tcpdump limited to its USB device.
+  usbmon stamps its events on `CLOCK_REALTIME` in microseconds, so the record
+  also takes the tightest of 2000 `CLOCK_MONOTONIC`, `CLOCK_REALTIME`,
+  `CLOCK_MONOTONIC` reads before and after the run: their offset maps the
+  capture onto the probe's clock when the two agree (no clock step). The
+  xHCI events in the trace give an independent alignment. usbmon records the
+  driver and host-controller interface, not the last RS-485 byte.
+
+The tracers run on the CPUs outside the excluded set. Before the first run,
+the session reads the fair server's settings with the read-only bpftrace
+probe above, and records them with the lockdown state, boot line, real-time
+settings, topology and the adapter. Every run record repeats them, with the
+run's IRQ placement before and after, and a snapshot halfway through each
+run records every task's CPU, policy and allowed CPUs. The session changes
+no scheduler setting; it loads the usbmon module if needed and unloads it at
+the end. A failed criterion is data. A probe that exits nonzero, a tracer
+that does not start or stop cleanly, or an analysis error stops the session.
+
+Each run leaves `<log>.csv.run.txt` and `<log>.csv.tasks.txt` beside its log
+and summary, and a traced run also `<log>.csv.trace.dat` and
+`<log>.csv.usbmon.pcap`, with `<log>` =
+`rate-trace-<profile>-<rate>hz-<condition>-bounded<tags>-<untraced|traced>-<date>-<attempt>`.
+The privileged steps go through sudo; the probe runs as the invoking user.
+Before the arm, a rehearsal over `dxl_emu` checks the tracers and the clock
+correlation: `--port` the emulator's link (with Return Delay Time 0 written
+to the emulated servos) and `--usb-device` the adapter's sysfs directory,
+whose capture stays empty while nothing opens its port.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
