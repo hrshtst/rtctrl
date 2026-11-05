@@ -12,6 +12,7 @@ add_executable(unit_tests
   unit/async_writer_test.cpp
   unit/async_zvs_writer_test.cpp
   unit/realtime_test.cpp
+  unit/clock_test.cpp
   unit/link_force_bundle_test.cpp
   unit/posture_test.cpp
   unit/trajectory_test.cpp

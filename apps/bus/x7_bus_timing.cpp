@@ -83,6 +83,12 @@
 // (late_wake_*), since it has no CSV row. The summary records the elapsed
 // time (elapsed_s, through the last cycle's end).
 //
+// The log's *_ns stamps count from the run's epoch on the monotonic
+// clock. For correlation with scheduler and USB traces, the summary also
+// records, once per run, that epoch's CLOCK_MONOTONIC time
+// (monotonic_origin_ns) and the kernel thread ID of the probe thread that
+// runs the cycles (worker_tid); the log itself is unchanged.
+//
 // Outputs are created exclusively (an existing file is refused). Exit 0
 // means the measurement completed with complete outputs and torque off
 // throughout; failures it measured (read failures, overruns) are data,
@@ -121,6 +127,7 @@
 #include "rtctrl/hw/cycle_record.hpp"
 #include "rtctrl/hw/cycle_timing.hpp"
 #include "rtctrl/util/async_writer.hpp"
+#include "rtctrl/util/clock.hpp"
 #include "rtctrl/util/realtime.hpp"
 #include "rtctrl/util/spsc_ring.hpp"
 
@@ -596,6 +603,9 @@ struct RunResult {
   bool started = false;  // the real-time policy was granted
   std::string error;
   std::string scheduler;
+  long worker_tid = 0;  // the probe thread's kernel thread ID
+  // CLOCK_MONOTONIC at the log's epoch, in ns (set once the run starts).
+  std::int64_t monotonic_origin_ns = 0;
   std::uint64_t cycles = 0;
   std::uint64_t skipped_periods = 0;
   std::uint64_t overruns = 0;
@@ -662,6 +672,7 @@ class Probe {
   // Runs on the probe thread.
   void run(const std::vector<dxl::Feedback>& initial, RunResult* result,
            std::atomic<bool>* done) {
+    result->worker_tid = util::currentThreadId();
     std::string why;
     if (!util::applyRealtimePolicy(args_.realtime, &why)) {
       result->error = "real-time policy refused: " + why;
@@ -691,6 +702,8 @@ class Probe {
         last_return_delay_us_ * 1e3));
 
     const auto epoch = Clock::now();
+    // Once, before the first cycle: every stamp below counts from here.
+    result->monotonic_origin_ns = util::monotonicNs(epoch);
     // The stop rule: a cycle starts only before this point.
     const auto deadline =
         epoch + std::chrono::duration_cast<Clock::duration>(
@@ -1166,6 +1179,19 @@ int main(int argc, char* argv[]) {
   std::fprintf(summary, "\n[result]\n");
   std::fprintf(summary, "started = %s\n", result.started ? "true" : "false");
   std::fprintf(summary, "error = %s\n", tomlString(result.error).c_str());
+  std::fprintf(summary,
+               "# the probe thread's kernel thread ID, as scheduler traces "
+               "name it\nworker_tid = %ld\n",
+               result.worker_tid);
+  if (result.started) {
+    std::fprintf(summary,
+                 "# the log's epoch on CLOCK_MONOTONIC: a stamp's absolute "
+                 "time is\n# monotonic_origin_ns + its *_ns value (-1 marks "
+                 "a stamp not taken);\n# first_wake_s, last_wake_s and "
+                 "late_wake_s count from it as well\n"
+                 "monotonic_origin_ns = %lld\n",
+                 static_cast<long long>(result.monotonic_origin_ns));
+  }
   std::fprintf(summary, "cycles = %llu\n",
                static_cast<unsigned long long>(result.cycles));
   std::fprintf(summary, "# run start to the last cycle's end, monotonic\n");
@@ -1294,6 +1320,11 @@ int main(int argc, char* argv[]) {
   const bool summary_closed = std::fclose(summary) == 0;
 
   std::printf("scheduler: %s\n", result.scheduler.c_str());
+  if (result.started) {
+    std::printf("worker thread %ld; log epoch at CLOCK_MONOTONIC %lld ns\n",
+                result.worker_tid,
+                static_cast<long long>(result.monotonic_origin_ns));
+  }
   std::printf("ran %.3f s (deadline %.3f s); cycles %llu, mean %.3f Hz, "
               "overruns %llu, skipped %llu, read failures %llu, write "
               "failures %llu",

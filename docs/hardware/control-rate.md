@@ -156,6 +156,12 @@ stamps `tcdrain()`, whose meaning is adapter-specific; it is reported beside
 Each run writes a per-cycle CSV and a summary TOML (`<log>.summary.toml`) with
 the run kind, the analytic wire budget, failure counts, the achieved frequency
 and the phase histograms (bin upper edges, never below the recorded quantile).
+The CSV's `*_ns` stamps count from the run's epoch. For correlation with
+scheduler and USB traces, the summary also records, once per run, that
+epoch on `CLOCK_MONOTONIC` (`monotonic_origin_ns`: a stamp's absolute time
+is the origin plus the stamp) and the kernel thread ID of the probe thread
+that runs the cycles (`worker_tid`, the ID scheduler traces give it); the
+probe prints both too.
 
 `tools/e1_prod.sh` and `tools/e1_cal.sh` run E1 from the repo root, so no
 command is typed by hand; `--dry-run` checks the prerequisites and prints the

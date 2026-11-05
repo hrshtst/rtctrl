@@ -78,9 +78,11 @@ grep -q '^\[histogram.host_transaction\]' "$SUMMARY"
 # may not sustain, the run ends once the deadline passes, never later than
 # one late wake plus one cycle's work after it. The bound comes from the
 # run's own measurements, not from a wall-clock threshold.
+MONO_BEFORE=$(python3 -c 'import time; print(time.monotonic_ns())')
 "$PROBE" --port "$LINK" --rate-hz 1000 --profile cbp --duration 0.3 \
   --log "$ROOT/fast.csv" >"$ROOT/fast.log" 2>&1 ||
   fail "1 kHz production-traffic run failed" "$ROOT/fast.log"
+MONO_AFTER=$(python3 -c 'import time; print(time.monotonic_ns())')
 grep -q '^ran [0-9.]* s (deadline 0.300 s)' "$ROOT/fast.log"
 python3 - "$ROOT/fast.csv.summary.toml" "$ROOT/fast.csv" <<'EOF_PY'
 import sys
@@ -97,6 +99,54 @@ bound = s["duration_s"] + late + work + 1e-3
 assert r["elapsed_s"] <= bound, (r["elapsed_s"], bound)
 assert r["last_wake_s"] <= s["duration_s"] + late + 1e-3, r["last_wake_s"]
 assert r["elapsed_s"] >= s["duration_s"] - 2.0 / s["rate_hz"], r["elapsed_s"]
+EOF_PY
+
+# The log on the system clock: the summary's monotonic_origin_ns places
+# every stamp on CLOCK_MONOTONIC (Python's time.monotonic_ns reads it), so
+# each falls between the clock read before the probe started and the one
+# after it exited, in the log's order. The log itself is unchanged: the
+# same columns, the stamps still relative to the epoch.
+python3 - "$ROOT/fast.csv.summary.toml" "$ROOT/fast.csv" "$ROOT/fast.log" \
+  "$MONO_BEFORE" "$MONO_AFTER" <<'EOF_PY'
+import csv
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    r = tomllib.load(stream)["result"]
+with open(sys.argv[2], newline="") as stream:
+    reader = csv.DictReader(stream)
+    header = reader.fieldnames
+    rows = list(reader)
+assert header == (
+    "cycle,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
+    "first_reply_ns,last_reply_ns,read_end_ns,limit_start_ns,"
+    "bus_write_start_ns,write_return_ns,drain_return_ns,ack_return_ns,"
+    "completion_upper_ns,cycle_end_ns,read_ok,write_ok,ack_ok,"
+    "skipped_periods,read_len"
+).split(","), header
+before, after = int(sys.argv[4]), int(sys.argv[5])
+origin = r["monotonic_origin_ns"]
+assert before <= origin <= after, (before, origin, after)
+assert int(rows[0]["scheduled_wake_ns"]) == 0, rows[0]["scheduled_wake_ns"]
+columns = [c for c in header if c.endswith("_ns")]
+last = before
+for row in rows:
+    for c in ("wake_ns", "read_start_ns", "read_end_ns", "cycle_end_ns"):
+        t = origin + int(row[c])
+        assert last <= t <= after, (row["cycle"], c, last, t, after)
+        last = t
+    for c in columns:
+        if int(row[c]) >= 0:
+            assert before <= origin + int(row[c]) <= after, (row["cycle"], c)
+first_wake = round(r["first_wake_s"] * 1e9)
+assert abs(first_wake - int(rows[0]["wake_ns"])) <= 1, first_wake
+assert r["worker_tid"] > 0, r["worker_tid"]
+with open(sys.argv[3]) as stream:
+    log = stream.read()
+line = (f"worker thread {r['worker_tid']}; log epoch at CLOCK_MONOTONIC "
+        f"{origin} ns")
+assert line in log, line
 EOF_PY
 
 # The deadline also holds against the clock after a wake: a probe stopped
@@ -116,8 +166,9 @@ kill -STOP "$PROBE_PID"
 sleep 2.5
 kill -CONT "$PROBE_PID"
 wait "$PROBE_PID" || fail "stalled run failed" "$ROOT/stall.log"
+STALL_PID=$PROBE_PID
 PROBE_PID=
-python3 - "$ROOT/stall.csv.summary.toml" "$ROOT/stall.csv" <<'EOF_PY'
+python3 - "$ROOT/stall.csv.summary.toml" "$ROOT/stall.csv" "$STALL_PID" <<'EOF_PY'
 import csv
 import sys
 import tomllib
@@ -136,6 +187,8 @@ in_sleep = r["late_wake_stop"] and r["late_wake_lateness_s"] > 0.5
 in_cycle = int(rows[-1]["cycle_end_ns"]) >= deadline_ns
 assert in_sleep or in_cycle, "the stall left no record"
 print("stopped in its sleep" if in_sleep else "stopped mid-cycle")
+# The cycles ran on the probe thread, not the process's main thread.
+assert 0 < r["worker_tid"] != int(sys.argv[3]), (r["worker_tid"], sys.argv[3])
 EOF_PY
 if grep -q '^late_wake_stop = true' "$ROOT/stall.csv.summary.toml"; then
   grep -q 'past the deadline: no further cycle started' "$ROOT/stall.log"
