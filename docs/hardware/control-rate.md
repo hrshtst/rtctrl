@@ -14,9 +14,10 @@ is complete: the strict status parser, the bounded read with its recovery,
 the bus checks that activation makes before arming it, and the probe on the
 bounded path. Its torque-off runs on 2026-11-04 closed it for development
 (below); so far only the torque-off probe uses the bounded read. The
-selected communication options exist, the motion-only read (B2) and Fast
-Sync Read (B3), and await their torque-off measurements; the rate-derived
-safety options come next. No rate above 100 Hz is qualified,
+selected communication options, the motion-only read (B2) and Fast Sync
+Read (B3), were measured torque-off on 2026-11-05 (below). Targeted USB and
+scheduler diagnostics come next; the rate-derived safety options (Phase C)
+are still to come. No rate above 100 Hz is qualified,
 and every rate other than 100 Hz prints an experimental warning.
 
 ## What the numbers mean
@@ -289,7 +290,7 @@ measurements alone qualify neither 200 nor 500 Hz for powered control.
 | B4, contiguous cbp goal | Conditional, until the first optimized measurements show its value |
 | D8, cbp at 1 kHz | Target cbp at 500 Hz first; reconsider 4 Mbps after measuring the optimized 3 Mbps path |
 | Scheduling | SCHED_FIFO with explicit CPU affinity is the comparison baseline. PREEMPT_RT is not the next priority. Affinity is pinning, not isolation |
-| Provisional envelopes | Real-time wake 0.25 ms (raised to 0.75 ms on 2026-11-04, [below](#phase-r-on-hardware)) and limiter 40 us (maximum observed times 1.25, rounded up). Write completion (delta) and the separate USB and servo terms stay unassigned |
+| Provisional envelopes | Real-time wake 0.25 ms (raised to 0.75 ms on 2026-11-04, [below](#phase-r-on-hardware), and to 5.1 ms on 2026-11-05, [below](#phase-b2-and-b3-on-hardware)) and limiter 40 us (maximum observed times 1.25, rounded up). Write completion (delta) and the separate USB and servo terms stay unassigned |
 | Receive timeout | The new receive path starts with a conservative timeout on the legacy scale during torque-off validation, tightened from measurements of the implemented profile |
 | Thresholds | The acceptance criteria stay unchanged |
 
@@ -342,7 +343,7 @@ does not solve the throughput problem.
 | Phase B | B2 (motion-only read) and B3 (Fast Sync Read) proceed on the bounded path. Each is measured separately, including the longest cycle with an auxiliary read |
 | Budget and guard | Stay at 35 ms with an equal guard during Phase B development: shortening them changes failure handling without speeding successful reads |
 | 200 Hz budget | A T6a pass establishes host-side throughput only. In one real-time loaded cbp cycle (10096), the write started 4.818 ms after the read; the 102-byte write needs at least 0.340 ms at 3 Mbps, so its earliest completion (5.158 ms) is past the 5 ms period before any controller computation or USB output delay. The optimized path and the complete controller loop are measured before powered qualification is considered |
-| Wake allowance | The provisional real-time wake allowance becomes 0.75 ms, an assumption for the present configuration. The 0.25 ms of checkpoint 1 was exceeded (0.575 ms for current at 100 Hz and 0.336 ms for position at 200 Hz, both real-time loaded), and 1.25 times the maximum gives 0.719 ms. It is remeasured for the optimized profiles |
+| Wake allowance | The provisional real-time wake allowance becomes 0.75 ms, an assumption for the present configuration. The 0.25 ms of checkpoint 1 was exceeded (0.575 ms for current at 100 Hz and 0.336 ms for position at 200 Hz, both real-time loaded), and 1.25 times the maximum gives 0.719 ms. It is remeasured for the optimized profiles (superseded on 2026-11-05, [below](#phase-b2-and-b3-on-hardware)) |
 | Diagnostics | USB tracing (`usbmon`) is the next diagnostic for the batching hypothesis and the loose acknowledgement bound. USB events are correlated with the cycle timestamps, and USB completion stays distinct from completion of the RS-485 transmission |
 
 **Interpretation.** Small wake lateness measures the delay before a cycle
@@ -352,6 +353,103 @@ zero shows compressed host observations, not when the replies arrived on
 the bus. The spans of about 1 ms are host observations too.
 
 The E0, E1 and bounded-path files are in the
+[archive manifest](../records/data-archive.md).
+
+### Phase B2 and B3 on hardware
+
+**Torque-off runs, 2026-11-05.** At commit `630df10`, the Phase R matrix was
+repeated for five variants of the bounded read, with the 35 ms budget and an
+equal guard:
+- the motion-only read, with an auxiliary read every 100 ms (`--feedback
+  motion`) or none after the initial one (`--aux-interval-ms 0`);
+- Fast Sync Read of the full window (`--read-instruction fast`);
+- Fast Sync Read with each motion-only cadence.
+
+Each variant had 48 production-traffic runs (`e1_prod.sh --no-climb`) and 11
+calibration runs under SCHED_FIFO: 295 runs and 5,224,577 bounded reads.
+
+- **Transport.** One read timed out (current, 1000 Hz, real-time loaded,
+  Fast Sync Read with the motion-only read, cycle 6209). There was no
+  malformed reply or servo error. The receive loop observed the expiry
+  50.954 ms after the read started, past its 35 ms deadline, and had parsed
+  no reply section: a scheduling delay can make the host observe the expiry
+  late, and the late data were not accepted. The guard held (the write
+  returned at 70.038 ms, after the computed guard expiry at 70.013 ms), and
+  the next read, the recovery read, succeeded. These are host observations.
+  The CSV's `bus_write_start` is stamped before the port waits on the guard,
+  and a write's return after the guard does not establish when its bytes
+  left, so the log supports correct recovery behavior but is no wire
+  capture; the software guard tests remain the guard's evidence. Torque and
+  the Bus Watchdog were off, so no powered watchdog recovery was tested.
+- **Verdicts.** Passing runs over the five variants and three profiles, by
+  the applicable probe criteria (T4 and T6b are not established by these
+  runs):
+
+  | Requested rate | Default, idle | Default, loaded | SCHED_FIFO, idle | SCHED_FIFO, loaded |
+  |---|---|---|---|---|
+  | 100 Hz | 15/15 | 0/15 | 15/15 | 15/15 |
+  | 200 Hz | 11/15 | 0/15 | 15/15 | 14/15 |
+  | 500 Hz | 0/15 | 0/15 | 0/15 | 0/15 |
+  | 1000 Hz | 0/15 | 0/15 | 0/15 | 0/15 |
+
+  200 Hz is a candidate for selected real-time profiles, not a pass across
+  variants or scheduling conditions: Fast Sync Read of the full window with
+  current commands failed T6a under real-time load (host work p99.9
+  3.670 ms against 3.500 ms). Every 500 Hz run failed T6a; the best
+  real-time idle host work p99.9 was 1.696 ms against 1.400 ms (position,
+  Fast Sync Read, motion-only read without auxiliary reads). Every 1000 Hz
+  run failed T1, T2 and T6a. Its best mean rates, 695.6 Hz for current and
+  676.5 Hz for position, are throughputs with skipped cycles, not 1 kHz
+  loops; cbp stayed at 500 Hz.
+- **Completion within the period.** A host-work pass is not completion
+  qualification. In the failing run above, the write of cycle 4394 started
+  4.917 ms after its read, and the 38-byte write needs at least 0.127 ms at
+  3 Mbps: its earliest completion (5.044 ms) is past the 5 ms period. The
+  motion-only Sync Read has another (cycle 10305 of the current, 200 Hz,
+  real-time loaded run: 5.049 ms).
+- **Read time.** The improvement matches the wire bytes saved. Unstuffed, a
+  13-byte Sync Read takes 0.713 ms and a 10-byte Fast Sync Read 0.473 ms, a
+  0.240 ms reduction; the median host transaction fell by about 0.22 to
+  0.30 ms. (The analytic budget's 0.820 ms for the Sync Read includes
+  worst-case stuffing.) Transactions cluster near whole milliseconds (about
+  0.95, 1.95, 2.95 and 3.94 ms). That is evidence for investigating USB and
+  adapter delivery; it does not identify the adapter's latency timer as the
+  cause, nor exclude delayed host processing or servo-side gaps. Where the
+  two reads alternate, full-read cycles took about 0.1 ms longer at the
+  median than motion-only ones.
+- **Calibration.** The acknowledgement bound stays loose: the completion
+  median was 1.907 to 1.928 ms in 54 of the 55 calibration runs and
+  2.894 ms in the other (cbp, 100 Hz, Fast Sync Read with the motion-only
+  read), with no invalid acknowledgement. There is still no defensible
+  sub-millisecond write-completion envelope.
+- **Wake lateness.** Six real-time runs exceeded the 0.75 ms allowance:
+  five loaded (0.798, 0.825, 0.935, 0.950 and 0.970 ms) and one idle
+  (4.042 ms: cbp, 1000 Hz, Fast Sync Read of the full window, in a cluster
+  of cycles 6.1 to 8.4 s into the run, cause unknown).
+
+**Scheduling.** The kernel (7.0.0-42-generic) is built without
+`CONFIG_RT_GROUP_SCHED`, so the real-time runtime settings
+(`sched_rt_runtime_us` 950000 of 1000000) do not by themselves show the
+classic real-time throttler at work. The fair deadline server, which
+upstream Linux 7.0 initializes to 50 ms per 1000 ms, is a candidate for the
+50 ms stall. Its CPU 3 settings are not yet recorded, and its involvement in
+this event is a hypothesis. CPU 3 shares a physical core with CPU 2, and the
+competing load ran on both, so pinning the probe did not give it an
+exclusive core.
+
+**Decided 2026-11-05.** The reviewer accepted B2 and B3 as completed
+exploratory measurements.
+
+| Item | Decision |
+|---|---|
+| Rates | 200 Hz is a candidate for selected real-time profiles. 500 and 1000 Hz, and powered qualification of any rate above 100 Hz, stay open |
+| Wake allowance | 5.1 ms (1.25 times the 4.042 ms maximum, rounded up): one provisional allowance for these unchanged real-time profiles, superseding 0.75 ms. It is an engineering assumption, not a guarantee or a T5 threshold, and qualifies no rate; it does not bound pauses within a read. A narrower one needs a narrower configuration, or evidence explaining and removing the outlier, then new measurements. It is remeasured after the scheduling environment is addressed, before checkpoint 2 |
+| Budget and guard | Unchanged. The 35 ms receive budget constrains acceptance, not how soon the host reacts when its thread stops running, and these observations do not justify shortening the budget or the guard |
+| Scheduler | Record the fair server's CPU 3 `runtime` and `period` (`/sys/kernel/debug/sched/fair_server/cpu3/`) and capture scheduler events before changing any setting; a settings change is not an established fix |
+| Next diagnostics | A few targeted torque-off runs, not the full matrix. usbmon transmit and receive events, scheduler events and the probe's timestamps are correlated through the probe worker's thread ID and a once-per-session absolute `CLOCK_MONOTONIC` origin for the CSV, whose semantics stay unchanged. The runs cover Fast Sync Read with the motion-only read at 500 and 1000 Hz, quiet and loaded, with and without CPUs 2 and 3 excluded from the competing load (load stays on the other CPUs), and the cbp 1000 Hz idle anomaly. They record the fair-server settings, the topology, affinities and IRQ placement, and include comparable untraced runs for the tracing overhead. They locate each delay: before USB completion, between completions, or after the data reached the host but before the worker consumed it. usbmon records the driver and host-controller interface, not the last RS-485 byte |
+| Powered work | Both project watchdogs stay enabled, and T5 and T6a stay |
+
+The files are in `b2b3_bounded/` of the
 [archive manifest](../records/data-archive.md).
 
 ## Later steps (after the bounded transaction and Phases B and C)

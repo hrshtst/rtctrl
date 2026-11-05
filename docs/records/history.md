@@ -33,6 +33,7 @@ append-only in spirit — the decisions below are closed.
 | 08-20 | Docs renamed lowercase and nested by nav section (published URLs changed; no redirects, by owner decision); Apache-2.0 license adopted; MITOU Target Program (IPA, FY2026) acknowledgment added; docs em-dash convention recorded with `docs/records/` exempt |
 | 11-03 | Control-rate E0 and E1, torque-off on the legacy read path: 200 Hz is the highest rate that passes every criterion, while some 500 Hz runs kept their frequency but failed the headroom criterion (no rate qualified for powered control); E1 calibration stopped because torque-off goal read-back does not work on the servos; checkpoint 1 decided the same day |
 | 11-04 | Control-rate torque-off runs on the bounded read path (Phase R): 1,000,929 reads without a transport fault and the same pass or fail as the legacy path; the reviewer closed Phase R for development, and the motion-only read and Fast Sync Read proceed |
+| 11-05 | Control-rate torque-off runs of the motion-only read and Fast Sync Read (B2, B3): 295 runs, one timeout and the first recovery on hardware; read time fell by the wire bytes saved, 200 Hz stays a candidate for selected real-time profiles, and 500 Hz fails the headroom criterion in every run; the reviewer accepted them as completed exploratory measurements and set a 5.1 ms provisional wake allowance |
 
 ## Decision ledger
 
@@ -48,6 +49,7 @@ append-only in spirit — the decisions below are closed.
 | 2026-08-19 | `x7_gravity_demo` refuses non-vendor torque constants without the explicit `--experimental-calibration` opt-in (review directive: the config's [0.5, 1.0] scale bound is an electrical bound, not a validated float envelope) | **ENFORCED** | [Gravity demo](../hardware/gravity-demo.md#experimental-calibration-policy) |
 | 2026-11-03 | Control-rate checkpoint 1: Phase B takes Fast Sync Read and a selectable motion-only read, records the existing Return Delay Time 0, keeps the contiguous cbp goal conditional; cbp targets 500 Hz first; SCHED_FIFO with explicit affinity is the scheduling baseline; acceptance thresholds unchanged | **DECIDED** | [Checkpoint 1](../hardware/control-rate.md#checkpoint-1) |
 | 2026-11-04 | Control-rate Phase R closed for development: B2 and B3 proceed on the bounded path, keeping the 35 ms budget and equal guard; provisional real-time wake allowance raised to 0.75 ms; a T6a pass establishes host-side throughput only; no rate above 100 Hz qualified for powered control | **DECIDED** | [Phase R on hardware](../hardware/control-rate.md#phase-r-on-hardware) |
+| 2026-11-05 | Control-rate B2 and B3 accepted as completed exploratory measurements: 200 Hz a candidate for selected real-time profiles only; one provisional real-time wake allowance of 5.1 ms (an assumption, not a T5 threshold); budget and guard unchanged; targeted USB and scheduler tracing next; no rate above 100 Hz qualified for powered control | **DECIDED** | [B2 and B3 on hardware](../hardware/control-rate.md#phase-b2-and-b3-on-hardware) |
 
 ## Origin and milestones M0 to M8
 
@@ -699,6 +701,71 @@ exclude interruptions during the receive transaction, and a reply span is a
 host observation of batched replies, not their arrival on the bus. USB
 tracing is the next diagnostic. The decisions are recorded in the
 [control-rate qualification](../hardware/control-rate.md#phase-r-on-hardware).
+
+## Control-rate B2 and B3 on hardware (2026-11-05)
+
+With the motion-only read (B2, `856723f`) and Fast Sync Read (B3,
+`da3854c`) implemented and their review fixes in (`af481ed`, `630df10`),
+the Phase R matrix was repeated torque-off at commit `630df10` for five
+variants of the bounded read: the motion-only read with an auxiliary read
+every 100 ms or none after the initial one, Fast Sync Read of the full
+window, and Fast Sync Read with each motion-only cadence. Each variant had
+48 production-traffic runs (`e1_prod.sh --no-climb`) and 11 calibration
+runs under SCHED_FIFO, with the 35 ms budget and an equal guard: 295 runs,
+5,224,577 bounded reads. They are exploration, never acceptance evidence;
+the files are in `b2b3_bounded/` of the [archive manifest](data-archive.md).
+
+**Results.** One read timed out (current, 1000 Hz, real-time loaded, Fast
+Sync Read with the motion-only read): the receive loop observed the expiry
+50.954 ms after the read started, past its 35 ms deadline, so the worker
+was most likely not running for about 50 ms. The guard held and the next
+read, the recovery read, succeeded: the first recovery on hardware, seen
+from the host. No variant moved a verdict boundary. At 200 Hz all 15
+real-time idle runs passed and 14 of 15 real-time loaded; Fast Sync Read
+of the full window with current commands failed T6a under load (host work
+p99.9 3.670 ms against 3.500 ms), and default scheduling passed 11 of 15
+idle and none loaded. Every 500 Hz run failed T6a (best real-time idle host
+work p99.9 1.696 ms against 1.400 ms), and every 1000 Hz run failed T1, T2
+and T6a (best mean rates 695.6 Hz for current and 676.5 Hz for position,
+with skipped cycles; cbp stayed at 500 Hz). The median host transaction
+fell by about 0.22 to 0.30 ms. The calibration bound stayed loose (median
+about 1.91 ms in 54 of 55 runs, 2.894 ms in one). Six real-time runs
+exceeded the 0.75 ms wake allowance, the largest 4.042 ms in an idle run.
+
+**Review (2026-11-05).** The reviewer verified the 295 runs and the 885
+checksums against the repository copies and the archive, recomputed the
+240 production verdicts, and accepted B2 and B3 as completed exploratory
+measurements after five corrections to the first report:
+- 200 Hz is a candidate for selected real-time profiles, not a pass across
+  variants or conditions. In the failing run, cycle 4394's earliest write
+  completion is 5.044 ms, past the 5 ms period, and a motion-only Sync Read
+  run has another at 5.049 ms: a host-work pass is not completion
+  qualification.
+- The 50 ms stall was first attributed to the real-time throttling reserve
+  from the two sysctl values, but the kernel is built without
+  `CONFIG_RT_GROUP_SCHED`. The fair deadline server (50 ms per 1000 ms
+  upstream) is a candidate; its CPU 3 settings are to be recorded, and
+  scheduler events captured, before any setting changes.
+- The host log supports correct recovery behavior; it is not a wire
+  capture, and the write's return after the guard does not establish when
+  its bytes left.
+- One provisional wake allowance of 5.1 ms (1.25 times the 4.042 ms
+  maximum, rounded up) covers these unchanged real-time profiles; 1.25 ms
+  would have excluded a known observation. It is an assumption, not a T5
+  threshold, and is remeasured after the scheduling environment is
+  addressed.
+- The first report compared the 0.820 ms worst-case Sync Read budget with
+  Fast Sync Read's 0.473 ms. Unstuffed, the Sync Read takes 0.713 ms: the
+  0.240 ms reduction is consistent with the median improvement, so the
+  claim that the gain fell short of the serialization saved was not
+  established. Millisecond clustering of the transactions motivates the USB
+  investigation but does not identify the adapter's latency timer.
+
+Targeted torque-off diagnostics come next: usbmon and scheduler events
+correlated with the probe's timestamps (through the worker's thread ID and
+an absolute monotonic origin), with and without competing load on CPUs 2
+and 3, which share a physical core. The decisions are recorded in the
+[control-rate qualification](../hardware/control-rate.md#phase-b2-and-b3-on-hardware).
 
 ## Consistency audit
 
