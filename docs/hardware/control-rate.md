@@ -438,8 +438,9 @@ calibration runs under SCHED_FIFO: 295 runs and 5,224,577 bounded reads.
 (`sched_rt_runtime_us` 950000 of 1000000) do not by themselves show the
 classic real-time throttler at work. The fair deadline server, which
 upstream Linux 7.0 initializes to 50 ms per 1000 ms, is a candidate for the
-50 ms stall. Its CPU 3 settings are not yet recorded, and its involvement in
-this event is a hypothesis. CPU 3 shares a physical core with CPU 2, and the
+50 ms stall. Its settings, read on 2026-11-06 (below), are those defaults,
+and its involvement in this event is a hypothesis. CPU 3 shares a physical
+core with CPU 2, and the
 competing load ran on both, so pinning the probe did not give it an
 exclusive core.
 
@@ -454,6 +455,25 @@ exploratory measurements.
 | Scheduler | Record the fair server's CPU 3 `runtime` and `period` (`/sys/kernel/debug/sched/fair_server/cpu3/`) and capture scheduler events before changing any setting; a settings change is not an established fix |
 | Next diagnostics | A few targeted torque-off runs, not the full matrix. usbmon transmit and receive events, scheduler events and the probe's timestamps are correlated through the probe worker's thread ID and a once-per-session absolute `CLOCK_MONOTONIC` origin for the CSV, whose semantics stay unchanged. The runs cover Fast Sync Read with the motion-only read at 500 and 1000 Hz, quiet and loaded, with and without CPUs 2 and 3 excluded from the competing load (load stays on the other CPUs), and the cbp 1000 Hz idle anomaly. They record the fair-server settings, the topology, affinities and IRQ placement, and include comparable untraced runs for the tracing overhead. They locate each delay: before USB completion, between completions, or after the data reached the host but before the worker consumed it. usbmon records the driver and host-controller interface, not the last RS-485 byte |
 | Powered work | Both project watchdogs stay enabled, and T5 and T6a stay |
+
+**Scheduler settings (read 2026-11-06).** Secure Boot is enabled, so the
+kernel runs in integrity lockdown (`/sys/kernel/security/lockdown`), which
+refuses access, even to root, to debugfs files that can be written. The fair
+server's `runtime` and `period` files under
+`/sys/kernel/debug/sched/fair_server/` are such files, so they were read
+instead from the kernel's live scheduler structures, with a read-only
+bpftrace probe on `dl_server_start` and `dl_server_update`. On every CPU (0
+to 31), CPUs 2 and 3 included, the fair server has a 50 ms runtime, a
+1000 ms period and relative deadline, and is deferred (`dl_defer`); the
+probe saw no sched_ext server. These are the upstream defaults. The lockdown
+refuses writes to those files too, so the settings have not changed since
+boot and cannot be changed without lifting it. A 50 ms runtime is consistent
+with the stall's length but does not establish the fair server's
+involvement, which stays a hypothesis until scheduler events are captured.
+Also recorded: `sched_rt_runtime_us` 950000 and `sched_rt_period_us`
+1000000, and a boot command line without `isolcpus`, `nohz_full` or a
+lockdown setting. The lockdown did not block the BPF probe, and it restricts
+tracefs and perf only at the confidentiality level, which is not set.
 
 The files are in `b2b3_bounded/` of the
 [archive manifest](../records/data-archive.md).

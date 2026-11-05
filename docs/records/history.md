@@ -767,6 +767,13 @@ an absolute monotonic origin), with and without competing load on CPUs 2
 and 3, which share a physical core. The decisions are recorded in the
 [control-rate qualification](../hardware/control-rate.md#phase-b2-and-b3-on-hardware).
 
+The fair server's settings were read on 2026-11-06. Secure Boot's integrity
+lockdown refuses the debugfs files even to root, so a read-only bpftrace
+probe read the kernel's live structures instead: on every CPU, CPU 3
+included, 50 ms per 1000 ms, deferred, the upstream defaults (unchanged
+since boot, since the lockdown also refuses writes). This keeps the fair
+server a candidate for the stall, not an established cause.
+
 ## Consistency audit
 
 A post-closure audit (executed 2026-07-28, two commits) unified
