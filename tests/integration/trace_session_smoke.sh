@@ -40,7 +40,9 @@ done
 fail() { echo "$1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 
 # Stand-ins. Each logs its arguments; the recorders run until SIGINT and
-# then write their file, as the real ones do.
+# then write their file, as the real ones do. Like the real trace-cmd on a
+# pipe, the trace-cmd stand-in holds its readiness line until it exits
+# unless stdbuf made its output line-buffered.
 cat >"$FAKE/trace-cmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.trace-cmd"
@@ -58,12 +60,18 @@ case "$clock" in
 esac
 stop=0
 trap 'stop=1' INT
-echo "Hit Ctrl^C to stop recording"
+held=
+if [ "${_STDBUF_O:-}" = L ]; then
+  echo "Hit Ctrl^C to stop recording"
+else
+  held="Hit Ctrl^C to stop recording"
+fi
 echo "trace-ready" >>"$FAKE_LOG.events"
 # FAKE_TRACE_LIFE: end on its own after that many seconds, successfully.
 end=$(( $(date +%s) + ${FAKE_TRACE_LIFE:-100000} ))
 while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
 echo "stand-in trace data" >"$out"
+[ -n "$held" ] && echo "$held"
 echo "CPU0 data recorded at offset=0x0"
 echo "overrun: 0"
 exit 0

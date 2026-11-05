@@ -262,6 +262,7 @@ problems=()
   problems+=("run from the repo root after building ($PROBE, $SUMMARY_TOOL)")
 [ -d "$outdir" ] && [ -w "$outdir" ] || problems+=("--outdir $outdir is not a writable directory")
 command -v taskset >/dev/null || problems+=("taskset is not installed (util-linux)")
+command -v stdbuf >/dev/null || problems+=("stdbuf is not installed (coreutils)")
 command -v python3 >/dev/null || problems+=("python3 is not installed")
 command -v "$BPFTRACE" >/dev/null ||
   problems+=("$BPFTRACE is not installed: it reads the fair server's settings")
@@ -367,7 +368,7 @@ if [ "$dry_run" -eq 1 ]; then
     done
   done
   if [ "$any_traced" -eq 1 ]; then
-    printf 'traced runs add: %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
+    printf 'traced runs add: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
     if [ "$usbmon" -eq 1 ]; then
       printf "                 %s %s -w <log>.csv.usbmon.pcap '%s' (device %s)\n" \
         "$TCPDUMP" "${usbmon_opts[*]}" "$usbmon_filter" "${usb_device:-unknown}"
@@ -410,9 +411,10 @@ priv() { "${sudo_cmd[@]}" "$@"; }
 # Starts a privileged tracer in the background, on the tracer CPUs. A
 # script's background commands start with SIGINT ignored, so the wrapper
 # restores its default before the tracer runs (the tracer stops on SIGINT)
-# and records the tracer's PID. The output goes through a pipe: AppArmor
-# would replace an inherited file descriptor that tcpdump's profile does
-# not allow with /dev/null.
+# and records the tracer's PID (the wrapper execs the command, so the PID
+# stays the tracer's). The output goes through a pipe: AppArmor would
+# replace an inherited file descriptor that tcpdump's profile does not
+# allow with /dev/null.
 start_tracer() {  # name -> <name>_job; the rest is the command
   local name=$1; shift
   rm -f "$tmp/$name.pid" "$tmp/$name.out"
@@ -460,6 +462,14 @@ recorders_ended() {  # the run's recorders that are no longer running
   alive "$trace_job" || gone="trace-cmd ended"
   if [ "$usbmon" -eq 1 ]; then alive "$usbmon_job" || gone+="${gone:+, }tcpdump ended"; fi
   echo "$gone"
+}
+own_outputs() {  # gives tracer outputs that exist to the invoking user
+  local f
+  [ ${#sudo_cmd[@]} -gt 0 ] || return 0
+  for f in "$@"; do
+    [ -e "$f" ] && priv chown "$(id -u):$(id -g)" "$f" 2>/dev/null
+  done
+  return 0
 }
 stop_all() {
   if [ -n "$trace_job" ]; then stop_tracer trace "$trace_job"; trace_job=; fi
@@ -650,7 +660,7 @@ run_one() {
     echo "uptime:$(uptime)"
     printf 'command:'; printf ' %q' "${cmd[@]}"; echo
     if [ "$mode" = traced ]; then
-      printf 'trace: %s' "$TRACE_CMD"; printf ' %q' "${trace_args[@]}"; printf ' -o %q\n' "$dat"
+      printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${trace_args[@]}"; printf ' -o %q\n' "$dat"
       if [ "$usbmon" -eq 1 ]; then
         printf 'usbmon: %s' "$TCPDUMP"; printf ' %q' "${usbmon_opts[@]}" -w "$pcap" "$usbmon_filter"; echo
       else
@@ -663,11 +673,16 @@ run_one() {
     echo
   } >"$note"
   if [ "$mode" = traced ]; then
-    start_tracer trace "$TRACE_CMD" "${trace_args[@]}" -o "$dat"
+    # On a pipe, the C library would hold trace-cmd's "Hit Ctrl^C to stop
+    # recording" until it exits; stdbuf (which execs it, keeping the PID)
+    # makes its output line-buffered. tcpdump reports on stderr, which is
+    # unbuffered.
+    start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${trace_args[@]}" -o "$dat"
     if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
+      stop_all
+      own_outputs "$dat"
       { echo "--- trace-cmd did not start ---"; cat "$tmp/trace.out"; } | tee -a "$note"
       echo "verdict: not run (tracer)" >>"$note"
-      stop_all
       outcome=stop
       return
     fi
@@ -679,15 +694,17 @@ run_one() {
         echo "trace_session: the trace clock is not mono ($clock_line)" | tee -a "$note"
         echo "verdict: not run (trace clock)" >>"$note"
         stop_all
+        own_outputs "$dat"
         outcome=stop
         return ;;
     esac
     if [ "$usbmon" -eq 1 ]; then
       start_tracer usbmon "$TCPDUMP" "${usbmon_opts[@]}" -w "$pcap" "$usbmon_filter"
       if ! wait_line usbmon "$usbmon_job" "listening on usbmon$usb_bus" 30; then
+        stop_all
+        own_outputs "$dat" "$pcap"
         { echo "--- tcpdump did not start ---"; cat "$tmp/usbmon.out"; } | tee -a "$note"
         echo "verdict: not run (tracer)" >>"$note"
-        stop_all
         outcome=stop
         return
       fi
@@ -709,6 +726,7 @@ run_one() {
       stress_pid=
       echo "verdict: not run (no load)" >>"$note"
       stop_all
+      own_outputs "$dat" "$pcap"
       outcome=stop
       return
     fi
@@ -720,6 +738,7 @@ run_one() {
       echo "trace_session: $ended before the run: session stopped" | tee -a "$note"
       echo "verdict: not run (tracer)" >>"$note"
       stop_all
+      own_outputs "$dat" "$pcap"
       outcome=stop
       return
     fi
@@ -754,10 +773,7 @@ run_one() {
       [ "$usbmon_status" -eq 0 ] && [ -s "$pcap" ] ||
         tracer_problem+="${tracer_problem:+, }tcpdump exit $usbmon_status"
     fi
-    if [ ${#sudo_cmd[@]} -gt 0 ]; then
-      priv chown "$(id -u):$(id -g)" "$dat" 2>/dev/null
-      [ "$usbmon" -eq 1 ] && priv chown "$(id -u):$(id -g)" "$pcap" 2>/dev/null
-    fi
+    own_outputs "$dat" "$pcap"
   fi
   if [ "$loaded" -eq 1 ]; then
     # A failed probe ends the load at once; otherwise it runs out its
