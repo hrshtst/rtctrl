@@ -9,15 +9,21 @@ in-repo under `data/` (one per starred file below). Checksums are
 SHA-256 at the archival date stated by each section; the older tables
 below were archived on 2026-07-28. The control-rate sections (`e0/`,
 `e1_prod/`, `e1_cal/` and `r4_bounded/`, checksums taken 2026-11-04;
-`b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/` and `latency_timer/`,
-taken 2026-11-06)
+`b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/`, `latency_timer/`
+and `profiled_torque_off/`, taken 2026-11-06)
 are kept on a separate volume of the
 same private archive; their paths are
 relative to that volume's project folder. A citation in the project records
 is verifiable by checking the named file against its hash. Project
 records and code comments cite these datasets by
 bare filename (e.g. `track8.csv`, `pass1.csv`, `p1_j1_survey_r2.csv`)
-— every such name resolves to a row in the tables below.
+— every such name resolves to a row in the tables below. The exception
+is a name two sections share: six untraced and traced runs of 2026-11-06
+have the same names in `traced_torque_off/` and `profiled_torque_off/`
+(different runs, different hashes), so those runs and their sidecars are
+cited with their directory, as in
+`profiled_torque_off/rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.run.txt`.
+The session tools refuse a log name already listed here.
 
 ## `m8-tracking/` — M8 torque-tracking runs (2026-07-21)
 
@@ -1411,6 +1417,10 @@ log, probe summary, session record and task snapshot; a traced run also has
 its trace and the adapter's usbmon capture. The evidence for the traced
 diagnostics; cited in
 [history.md](history.md#control-rate-traced-torque-off-diagnostics-2026-11-06).
+Six of its names (current at 500 and 1000 Hz under rt-loaded, and at
+1000 Hz under rt-loaded-excl, untraced and traced) recur in
+`profiled_torque_off/` for different runs: cite those, and their sidecars,
+with the directory.
 
 | file | role | sha256 |
 |---|---|---|
@@ -1517,3 +1527,81 @@ phase-1 and hold results; cited in
 | `rate-hold-20261106-1.csv` | latency hold diagnostic (servo 2, 50 ms windows), every write and read, raw bytes and monotonic time | `3e31d43698b809bdce820bdccb115cf09b6e8dc05148cde2a3535ea909698819` |
 | `rate-hold-20261106-1.csv.run.txt` | latency hold diagnostic (servo 2, 50 ms windows), the diagnostic's record | `99c2f70fe7aa22532983b5b8baacdc7169a3f2b7d5e94eb5df39b3a91eb63112` |
 | `rate-hold-20261106-1.csv.usbmon.pcap` | latency hold diagnostic (servo 2, 50 ms windows), the adapter's usbmon capture | `ba55e835234adf0c827f95dc59a7297a2744ca39c51686af68b4bbae76129466` |
+
+## `profiled_torque_off/` — control-rate profiled torque-off matrix (2026-11-06)
+
+9 runs at `c766bec` (`tools/trace_session.sh --modes untraced,traced,profiled`,
+60 s each): current at 1000 Hz under rt-loaded and rt-loaded-excl and at
+500 Hz under rt-loaded, each untraced, traced and profiled, on the bounded
+read path with the 35 ms budget and an equal guard. Each run has its
+per-cycle log, probe summary, session record and task snapshot; a traced or
+profiled run also has its trace and the adapter's usbmon capture, and a
+profiled run perf's samples of the real-time CPU and the worker's two
+exports. The 500 Hz rt-loaded untraced and traced runs had an uncontrolled
+background load (`exiftool` in their task snapshots). The 500 Hz and the
+1000 Hz rt-loaded-excl profiles report lost records, so their sampling is
+degraded; their trace timing stands. The six untraced and traced names
+repeat names in `traced_torque_off/` for different runs (the session saw
+only its output directory): cite them, and their sidecars, with the
+directory. The evidence for the profiled diagnostics; cited in
+[history.md](history.md#control-rate-traced-torque-off-diagnostics-2026-11-06).
+
+| file | role | sha256 |
+|---|---|---|
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced), per-cycle log | `d235949764ccdb1deadea1ce130989ff53395cdf83856e8fcbf7f7940b7fe35a` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced), probe summary | `a1d1162bdace02a739019f2a15e7919fa95beea88d658f3ef1c291baa53d8ce7` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced), session record | `0a21f7310f65866bc501d2e1ffe7963a0312ec3ac3032857f326d89c363236e3` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced), task snapshot | `9c04e689491fb320cf8b61c607ef43c0befa5ea1d38ed2533db1340095a2769c` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced), per-cycle log | `c73c7f2c653e674eb18ee7207bc31e49771c863b3dfe9f151ca5d73443fddc7a` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced), probe summary | `8f87ae870933e19fef5006e8d05d67803b56bb66e6a14bf3b212ab019d2ebccf` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced), session record | `a6effa9de4d610af1e6e593b204b96975ee04b2a2205c61cf68f446888bdb282` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced), task snapshot | `3a0e080b1df76342cc237ba3931fa5bdfe98d958527e1479543e266e8e1216e5` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.trace.dat` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `bd716525223e328fbe67615ef43e1212fd6960f5a9d8052acef81dc979a1de87` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.usbmon.pcap` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced), the adapter's usbmon capture | `0b0b89b885ae9c52d2316abcb3cb4178869fa7d367c8a54eb9db6ddfed46e578` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), per-cycle log | `e43db2ec37f7f54a2c42ee7d84941448e80a4f1cb0bd3fbd5108256511996aed` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), probe summary | `2d29796a275bf781913fcfbb1c53b1b590755851f3d2340a44b5c4e90992371c` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), session record | `f3dac31779b9a5cec503df02a8810248b4b3d19c985c364785a1c10fdacae18d` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), task snapshot | `b44512924107364ca1bc1401878216fc94d16f209f849635fc1a1326772ce681` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.trace.dat` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), scheduler, timer, workqueue and xHCI trace, with the probe's timer arming and cancellation, sleep calls and page faults and the workqueue's activations (trace-cmd, mono clock) | `4386e4869bd5ec0da333cca93a6e1e67affb5ea7f4fa3b9d4d1a6fea76482a10` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.usbmon.pcap` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the adapter's usbmon capture | `6a2a62d95c4740329ebdac982ec08faae932c17f56f167e472d6183f310d467f` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.data` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), perf samples of the real-time CPU with DWARF call chains (999 Hz, 4096-byte stack copies, mono clock) | `b7cf298efca0af7ffa2f8e9faff6663fcb29d74bc57601f37d22c6485a989760` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the worker's samples, sampled instruction pointers (perf script -G) | `37cd659504429c9c1e6e2e70eca49e969cfb99bad00476dea3f8ac504a2706f0` |
+| `rate-trace-current-1000hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.stacks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the worker's samples with their call chains (perf script) | `ab94b9b8ec16597210e89a798d95016b65f60d22902bfb0632f20784cc83f45e` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261106-1.csv` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, untraced), per-cycle log | `1f30279bea97a2ecdc15e46984af110a563d4af2cbe1e9f18c588380fb687548` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, untraced), probe summary | `15a3210fe23e8cbd6b7a0d35273aeea5a363a734cf3b4841ddbe6acb95c2e7a7` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, untraced), session record | `fc1eb23ae30c9c51a104632b19be1f3029d813c3589a23bbe93702df9a65b91f` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, untraced), task snapshot | `7951e5d8164a5e4ca8bf6cec93e3697c7a585210b4bea65b8ad98833658457f9` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-20261106-1.csv` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, traced), per-cycle log | `a57e49aa5b117e57a1c305f8ea8f29935d5b08d049048d25ea34aef04c1f9a5a` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, traced), probe summary | `0f7d9c34012aec8d0026579001925dbae8cd2909d689be11f81505c0ef1a3e9d` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, traced), session record | `0190dbf566b184276ced752d21b22e8abbcd4dd3844da65fa91768d5c847bc0d` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, traced), task snapshot | `0175a2a1963cee6818dc7600d2ebf15fc8a24c5139133718320b3d03f8a3fe62` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-20261106-1.csv.trace.dat` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, traced), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `cb5ef7c8977d828421f2a4cf1dc8734e2758ab42c1462d49dd95f9283bfef7a3` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-20261106-1.csv.usbmon.pcap` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, traced), the adapter's usbmon capture | `8359bc43ec418763bc70a69022231000bfd85c3dd71477f77051da40927092e3` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), per-cycle log | `a4d9eb013601ea00a84cbc55ee61e379fce1dd1fec6371eed8b2a8973b5e5513` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), probe summary | `40bf7c79a1f6d86e47d690c6b469a73b82d90dd6dc31d0b7317f601aea162b38` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), session record | `23567121f7503c3ace0f49f25217742b6e3cf34da9c8d64a14869665a07ddd5c` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), task snapshot | `d1abc1c32922649bd11937fd81cb2c987c7471d07f6a20d8004521cb528c0e31` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.trace.dat` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), scheduler, timer, workqueue and xHCI trace, with the probe's timer arming and cancellation, sleep calls and page faults and the workqueue's activations (trace-cmd, mono clock) | `ca892e5bd7e5cb02c2365ac48fcc67ab13c701bf65571185f9aa9128e4bcbd39` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.usbmon.pcap` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), the adapter's usbmon capture | `4765655148291a7f3140b3ef307c003fd9dd9f2bbbe9921b11ddccf8c41ff935` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.perf.data` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), perf samples of the real-time CPU with DWARF call chains (999 Hz, 4096-byte stack copies, mono clock); degraded sampling (perf reported lost records) | `56fe4725f55fe70e2c6f2c96673cc2dc1da23eeba4066c8584fc47edd9a4c453` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.perf.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), the worker's samples, sampled instruction pointers (perf script -G) | `b9ed44f08d080c59b0a3e74c965a0d2ecaeb886f42ac597e8f68a3488d65ea88` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-profiled-20261106-1.csv.perf.stacks.txt` | profiled torque-off matrix run (current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read, profiled), the worker's samples with their call chains (perf script) | `e62327594229c2aeeb1936e0cd3c144e09f3109f71458575ecd20f321e91ce07` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced; uncontrolled background load: exiftool), per-cycle log | `5dda2a57fbcca7969dfbba0b2cdad4f99be1302306b74d893360c2a820bfc5e1` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced; uncontrolled background load: exiftool), probe summary | `fa94b2f5236502b4d04c99d424346273b3d1649319fbf1911b6ec3c744e2de90` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced; uncontrolled background load: exiftool), session record | `71d4d22a50288348996ce39dcb1120842df7428553b62c7a4aeb6d6702692a6f` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, untraced; uncontrolled background load: exiftool), task snapshot | `7c23124c857f76f44aa9d7326bd7c59bdd81df5b3686c882b667dbf5580e1fb5` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced; uncontrolled background load: exiftool), per-cycle log | `512874c896403163ad4e923feee6dd4cb3ee59965eb6ef2253fd5b094b4fef09` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced; uncontrolled background load: exiftool), probe summary | `adec5deea664891f2945ef48fea7aa5bf4ae2af46e20a605d44cbb36de4345bb` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced; uncontrolled background load: exiftool), session record | `45fd42b16e3287f61fcf6705e7310d79784c76ded7357ae001ca5547838d2c87` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced; uncontrolled background load: exiftool), task snapshot | `de76921375e161e8c2d041f779d53b38b68140366aa968e1551dd15eb8b75b60` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.trace.dat` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced; uncontrolled background load: exiftool), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `e27832b7c99c3be16a4a8245e67c6b959c228a4e7c50c1194b7458e6128ff5e3` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-traced-20261106-1.csv.usbmon.pcap` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, traced; uncontrolled background load: exiftool), the adapter's usbmon capture | `a6ea90bdde843825c75dec2e40c9e2727390e563538afb301a93461d0cd1deea` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), per-cycle log | `e9b90be2ba97c6a4d558ecc1644ebde4274735697e6fe397319fef001b08b741` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.summary.toml` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), probe summary | `d316aa6e684e9163d384fc073e5aa3f0ddce1c5ea8d73ea87867036caf9466d3` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.run.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), session record | `c7a203db80a6d907dac1ecd1d427a56ea0609258e73de5985b2695eabacc0ac9` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.tasks.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), task snapshot | `06abfbae264d65fa145d03c7c248340efbee7c7a2ce80be7a863aaae85a9bce2` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.trace.dat` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), scheduler, timer, workqueue and xHCI trace, with the probe's timer arming and cancellation, sleep calls and page faults and the workqueue's activations (trace-cmd, mono clock) | `04457b6d0758abdb3214bbb8c6c0596b5a22e44c1c6561df2975b5ff2ce4369c` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.usbmon.pcap` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the adapter's usbmon capture | `6d08e1772e6be4fe663635bb7039a4e0abe164320cf32d631d1e9cf02264b694` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.data` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), perf samples of the real-time CPU with DWARF call chains (999 Hz, 4096-byte stack copies, mono clock); degraded sampling (perf reported lost records) | `b3ea0d2a6abca7a9250906bbb97b6dbf26784af856d7b51cbd5282434c881c06` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the worker's samples, sampled instruction pointers (perf script -G) | `105ffb5f61ea0c389f28ec395606bb6f63b65a3ba84ba2c8e4cf712e0e7c7d11` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.stacks.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the worker's samples with their call chains (perf script) | `4a90c3f7ba4a2ade30cd567e8bcf5f7bc217a9424979afb4244f6c28d34665a3` |
