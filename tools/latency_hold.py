@@ -3,7 +3,7 @@
 
 usage: sudo tools/latency_hold.py [--port P] [--id N] [--window-ms W]
                                   [--outdir DIR] [--date YYYYMMDD]
-                                  [--attempt N] [--yes]
+                                  [--attempt N] [--manifest FILE] [--yes]
 
 At a 0 ms latency timer the adapter returned only its two status bytes
 after a ping (2026-11-06). This asks whether it received the reply and
@@ -46,7 +46,10 @@ status, and a stop, a cleanup failure or an interruption keeps its status.
 
 Outputs in --outdir (gitignored in the repo root): <base>.csv (every write
 and read), <base>.csv.run.txt (the record) and <base>.csv.usbmon.pcap,
-with <base> = rate-hold-<date>-<attempt>.
+with <base> = rate-hold-<date>-<attempt>. A <base>.csv that already
+appears in the archive manifest (docs/records/data-archive.md, or
+--manifest) is refused, since the output directory forgets the archived
+runs: pass a free --attempt.
 """
 
 from __future__ import annotations
@@ -477,6 +480,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--outdir", default=".", help="where the outputs go (default the current directory)")
     p.add_argument("--date", default=datetime.date.today().strftime("%Y%m%d"))
     p.add_argument("--attempt", type=int, default=1)
+    p.add_argument("--manifest", default="docs/records/data-archive.md",
+                   help="the archive manifest the output names must not repeat (default %(default)s)")
     p.add_argument("--yes", action="store_true", help="confirm in advance (no prompt)")
     a = p.parse_args(argv)
     if not 1 <= a.id <= 252 or not 10 <= a.window_ms <= 1000 or a.attempt < 1:
@@ -502,6 +507,16 @@ def main(argv: list[str]) -> int:
     pcap = pathlib.Path(f"{base}.usbmon.pcap")
     if any(x.exists() for x in (base, note_path, pcap)):
         print(f"latency_hold: attempt {a.attempt} of {a.date} exists; pass a new --attempt", file=sys.stderr)
+        return 2
+    try:
+        manifest = pathlib.Path(a.manifest).read_text(errors="replace")
+    except OSError as e:
+        print(f"latency_hold: no archive manifest at {a.manifest} to check the output names against "
+              f"({e.strerror}): run from the repo root, or pass --manifest", file=sys.stderr)
+        return 2
+    if f"`{base.name}" in manifest:
+        print(f"latency_hold: {base.name} is already in the archive manifest {a.manifest}; "
+              "pass a new --attempt", file=sys.stderr)
         return 2
     if not a.yes:
         print(f"This diagnostic pings servo {a.id} on {port} (pings only) and sets the adapter's "

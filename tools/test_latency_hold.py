@@ -289,9 +289,10 @@ def write_faults() -> None:
     expect(a.state() == (1, 1, False) and any("restored to 1 ms" in x for x in hold.notes), "restored after it")
 
 
-def through_main(rc=0, pcap="packets", output=None, drift_at=None):
-    """main() with the port, the timer, privileges and the recorder replaced.
-    Returns its status, the record, and the order of close and stop."""
+def through_main(rc=0, pcap="packets", output=None, drift_at=None, manifest=None):
+    """main() with the port, the timer, privileges and the recorder replaced
+    (and the archive manifest, given its text, or "missing"). Returns its
+    status, the record (empty if none), and the order of close and stop."""
     clock = Clock()
     a = Adapter(clock, "held")
     order = []
@@ -347,9 +348,16 @@ def through_main(rc=0, pcap="packets", output=None, drift_at=None):
                 patch.object(lh, "Recorder", Recorder), \
                 patch.object(lh.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)), \
                 patch.object(lh.os, "chown"), contextlib.redirect_stdout(out):
+            extra = []
+            if manifest is not None:
+                m = pathlib.Path(tmp, "manifest.md")
+                if manifest != "missing":
+                    m.write_text(manifest)
+                extra = ["--manifest", str(m)]
             status = lh.main(["--yes", "--port", os.path.join(tmp, "tty"), "--outdir", tmp,
-                              "--date", "20000101"])
-        record = pathlib.Path(tmp, "rate-hold-20000101-1.csv.run.txt").read_text()
+                              "--date", "20000101", *extra])
+        note = pathlib.Path(tmp, "rate-hold-20000101-1.csv.run.txt")
+        record = note.read_text() if note.exists() else ""
     return status, record, order, out.getvalue(), a
 
 
@@ -476,6 +484,21 @@ def main() -> int:
 
     write_faults()
     main_orchestration()
+
+    # An output name already in the archive manifest (here through a
+    # sidecar's row), or a missing manifest, is refused before anything is
+    # sent or set; another name is not.
+    row = "| `rate-hold-20000101-1.csv.usbmon.pcap` | archived | `0` |\n"
+    for manifest, what in ((row, "an archived name"), ("missing", "a missing manifest")):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status, record, order, out, a = through_main(manifest=manifest)
+        expect(status == 2 and record == "" and order == [] and a.state() == (1, 1, False)
+               and a.events == [], f"{what}: refused untouched ({status}, {order}, {a.state()})")
+        expect(("is already in the archive manifest" if manifest == row else "no archive manifest at")
+               in err.getvalue(), f"{what}: {err.getvalue()}")
+    status, *_ = through_main(manifest=row.replace("20000101-1", "20000101-2"))
+    expect(status == 0, f"a free name runs: {status}")
 
     # The command line refuses without root, and bad arguments.
     if lh.os.geteuid() != 0:
