@@ -130,12 +130,18 @@ EOF
 # The adapter's latency timer, kept in $FAKE_LOG.latency-state as "sysfs
 # device low_latency". set stores the value; the adapter keeps 1 with the
 # low-latency flag set, and its previous value for a request of
-# FAKE_LATENCY_IGNORE.
+# FAKE_LATENCY_IGNORE; a set of FAKE_LATENCY_FAIL_SET fails and changes
+# nothing.
 cat >"$FAKE/latency" <<'EOF'
 #!/usr/bin/env bash
 state="$FAKE_LOG.latency-state"
 echo "$*" >>"$FAKE_LOG.latency"
 read -r s d l <"$state"
+if [ "$1" = set ] && [ "$3" = "${FAKE_LATENCY_FAIL_SET:-}" ]; then
+  echo "tty $2 sysfs $s device $d low_latency $l adapter 0403:6014 bcdDevice 0900 channel 1"
+  echo "latency_timer: cannot write the latency timer (stand-in failing as asked)" >&2
+  exit 7
+fi
 if [ "$1" = set ]; then
   s=$3
   if [ "$l" = 1 ]; then d=1; elif [ "$3" != "${FAKE_LATENCY_IGNORE:-}" ]; then d=$3; fi
@@ -421,6 +427,7 @@ set $LT_TTY 1
 read $LT_TTY
 read $LT_TTY
 read $LT_TTY
+read $LT_TTY
 set $LT_TTY 4"
 [ "$(cat "$ROOT/fake.latency")" = "$expected_calls" ] ||
   fail "the latency timer was not set and read as planned" "$ROOT/fake.latency"
@@ -443,7 +450,7 @@ for s in 1:1 0:2 1:3; do
     grep -q "^latency steps: 1,0,1; at the session's start: tty $LT_TTY sysfs 4 device 4 low_latency 0" "$note"
   done
 done
-grep -q '^latency timer restored to 4 ms' "$(base current-100hz-idle-bounded-lt1-s3-traced 13).run.txt" ||
+grep -q '^cleanup: latency timer restored to 4 ms' "$(base current-100hz-idle-bounded-lt1-s3-traced 13).run.txt" ||
   fail "the restoration is not in the last record" "$(base current-100hz-idle-bounded-lt1-s3-traced 13).run.txt"
 grep -Eq 'current:100:idle:full@0ms#2 +traced' "$ROOT/latency.log"
 
@@ -507,6 +514,79 @@ wait "$pid" || status=$?
 grep -q '^verdict: latency timer failure (the adapter.s latency timer read tty .* device 16 .* after the run, not 0 ms)' "$b.run.txt" ||
   fail "no latency failure in $b.run.txt" "$b.run.txt"
 [ "$(latency_state)" = "4 4 0" ] || fail "the drifted timer was not restored" "$ROOT/latency-drift.log"
+
+# Starting at the first step's own value, the session sets nothing, yet it
+# owes that value back once a run begins: a run that changes the adapter is
+# voided, and the cleanup sets the starting value again; an undisturbed
+# session's cleanup verifies it.
+echo "1 1 0" >"$ROOT/fake.latency-state"
+: >"$ROOT/fake.latency"
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 20 --duration 3 \
+  --modes untraced --latency-steps 1,0,1 --runs current:100:idle:full </dev/null >"$ROOT/latency-drift1.log" 2>&1 &
+pid=$!
+b=$(base current-100hz-idle-bounded-lt1-s1-untraced 20)
+for _ in $(seq 1 300); do [ -e "$b" ] && break; sleep 0.1; done
+[ -e "$b" ] || fail "the probe never started" "$ROOT/latency-drift1.log"
+echo "1 16 0" >"$ROOT/fake.latency-state"
+status=0
+wait "$pid" || status=$?
+[ "$status" -eq 1 ] || fail "a run whose latency timer changed was accepted (exit $status)" "$ROOT/latency-drift1.log"
+grep -q '^verdict: latency timer failure' "$b.run.txt" || fail "no latency failure in $b.run.txt" "$b.run.txt"
+[ "$(latency_state)" = "1 1 0" ] || fail "the starting 1 ms was not restored: $(latency_state)" "$ROOT/latency-drift1.log"
+[ "$(grep -c '^set ' "$ROOT/fake.latency")" -eq 1 ] && tail -n 1 "$ROOT/fake.latency" | grep -qx "set $LT_TTY 1" ||
+  fail "the cleanup did not set the starting value (and only that)" "$ROOT/fake.latency"
+grep -q '^cleanup: latency timer restored to 1 ms' "$b.run.txt"
+: >"$ROOT/fake.latency"
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 21 --modes untraced \
+  --latency-steps 1 --runs current:100:idle:full </dev/null >"$ROOT/latency-same.log" 2>&1 ||
+  fail "the session at its starting value failed" "$ROOT/latency-same.log"
+! grep -q '^set ' "$ROOT/fake.latency" || fail "a session at its starting value set the timer" "$ROOT/fake.latency"
+[ "$(grep -c '^read ' "$ROOT/fake.latency")" -eq 4 ] || fail "the cleanup did not verify the timer" "$ROOT/fake.latency"
+grep -q "cleanup: the adapter's latency timer is verified at the starting 1 ms" "$ROOT/latency-same.log"
+grep -q '^cleanup: latency timer verified at the starting 1 ms' "$(base current-100hz-idle-bounded-lt1-s1-untraced 21).run.txt"
+
+# A cleanup that cannot restore the starting value fails the session: an
+# otherwise successful one exits 3; a stop and an interruption keep their
+# status. The adapter is left at the step's value, and the records say so.
+echo "4 4 0" >"$ROOT/fake.latency-state"
+status=0
+FAKE_LATENCY_FAIL_SET=4 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 22 --modes untraced \
+  --latency-steps 0 --runs current:100:idle:full </dev/null >"$ROOT/latency-restore-fail.log" 2>&1 || status=$?
+[ "$status" -eq 3 ] || fail "a failed restoration exited $status, not 3" "$ROOT/latency-restore-fail.log"
+b=$(base current-100hz-idle-bounded-lt0-s1-untraced 22)
+grep -Eq '^verdict: (pass|fail)' "$b.run.txt" || fail "the run itself did not complete" "$b.run.txt"
+grep -q "CLEANUP FAILED: the adapter's latency timer is NOT restored to 4 ms" "$ROOT/latency-restore-fail.log"
+grep -q 'the session fails: its cleanup did not restore' "$ROOT/latency-restore-fail.log"
+grep -q '^cleanup: latency timer NOT restored to 4 ms' "$b.run.txt"
+[ "$(latency_state)" = "0 0 0" ] || fail "unexpected adapter state $(latency_state)"
+echo "4 4 0" >"$ROOT/fake.latency-state"
+status=0
+FAKE_LATENCY_IGNORE=0 FAKE_LATENCY_FAIL_SET=4 setsid tools/trace_session.sh "${COMMON[@]}" --yes \
+  --attempt 23 --modes untraced --latency-steps 0 --runs current:100:idle:full \
+  </dev/null >"$ROOT/latency-stop-fail.log" 2>&1 || status=$?
+[ "$status" -eq 1 ] || fail "a stop with a failed restoration exited $status, not 1" "$ROOT/latency-stop-fail.log"
+grep -q 'CLEANUP FAILED' "$ROOT/latency-stop-fail.log"
+echo "4 4 0" >"$ROOT/fake.latency-state"
+FAKE_LATENCY_FAIL_SET=4 python3 -c '
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --yes \
+  --attempt 24 --duration 4 --modes traced --latency-steps 0 \
+  --runs current:100:idle:full </dev/null >"$ROOT/latency-int-fail.log" 2>&1 &
+pid=$!
+b=$(base current-100hz-idle-bounded-lt0-s1-traced 24)
+for _ in $(seq 1 300); do
+  grep -q '^clock pair before' "$b.run.txt" 2>/dev/null && break
+  sleep 0.1
+done
+grep -q '^clock pair before' "$b.run.txt" || fail "the probe never started" "$ROOT/latency-int-fail.log"
+kill -TERM "$pid"
+status=0
+wait "$pid" || status=$?
+[ "$status" -eq 130 ] || fail "an interruption with a failed restoration exited $status" "$ROOT/latency-int-fail.log"
+grep -q 'CLEANUP FAILED' "$ROOT/latency-int-fail.log"
+echo "4 4 0" >"$ROOT/fake.latency-state"
 
 # The low-latency flag at the start, or values that differ, refuse the
 # session before anything is sent; a startup failure before the read

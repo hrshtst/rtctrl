@@ -36,13 +36,21 @@
 # and refuses if the flag is set or the two values differ. Before and after
 # each run it reads all three again: a run whose adapter does not hold the
 # step's value, with the flag clear, is voided and stops the session. The
-# probe expects the step's value (--expect-latency-timer-ms). The session
-# restores the value it found on every exit: the end, a stop, Ctrl-C,
-# SIGTERM, SIGHUP and any other exit of the script (an EXIT trap backs up
-# the cleanup); only a SIGKILL or a crash skips it. The bounded read's
+# probe expects the step's value (--expect-latency-timer-ms). Once the
+# first stepped run begins, the session owes the value it found back: on
+# every exit of the script (its EXIT trap: the end, a stop, Ctrl-C,
+# SIGTERM, SIGHUP or any other exit; only a SIGKILL or a crash skips it)
+# it reads the adapter, verifies that the starting value is in effect, and
+# sets it again if not. A cleanup that leaves another value fails the
+# session: an otherwise successful one exits 3, and a stop or an
+# interruption keeps its own status. The bounded read's
 # profile check requires 1 ms (only the probe's option relaxes it), but the
 # 100 Hz path does not read the timer: the restoration is what keeps the
 # host's setting. Without --latency-steps the timer is left alone.
+#
+# Exit status: 0 the session completed; 1 a run stopped it (the stop rule);
+# 2 it was refused before anything was sent; 3 it completed but its cleanup
+# did not restore the adapter's latency timer; 130 it was interrupted.
 #
 # Conditions: idle, loaded, loaded-excl, rt-idle, rt-loaded, rt-loaded-excl.
 # A loaded run starts stress-ng --cpu <n> --hdd 1; an -excl run pins it to
@@ -550,9 +558,10 @@ stop_all() {
   own_outputs
 }
 # The adapter experiment's latency timer: the value found at the start,
-# the value set last, whether the session changed it, and the record of
-# the last run, where the restoration is written too.
-lt_orig=; lt_now=; lt_changed=0; last_note=
+# the value set last, whether the session owes the starting value back (from
+# the first stepped run on, set or not), and the record of the last run,
+# where the cleanup is written too.
+lt_orig=; lt_now=; lt_owed=0; last_note=
 lt_parse() {  # a latency_timer.py line -> lt_sysfs lt_device lt_low
   local line
   line=$(grep -m 1 '^tty ' <<<"$1")
@@ -560,30 +569,54 @@ lt_parse() {  # a latency_timer.py line -> lt_sysfs lt_device lt_low
   lt_device=$(sed -n 's/.* device \([^ ]*\) .*/\1/p' <<<"$line")
   lt_low=$(sed -n 's/.* low_latency \([^ ]*\) .*/\1/p' <<<"$line")
 }
-# Back to the value the session found, once the session changed it. Every
-# exit calls it: finish() for the end, a stop and an interrupt, and the
-# EXIT trap for any other exit (it then does nothing if already restored).
+# The cleanup: once owed, verify the starting value on the adapter and set it
+# again if another is in effect. 0 when the adapter holds it (verified or
+# restored), 1 when it does not; written to the session's output and to the
+# last run record either way.
 restore_latency() {
   local out
-  [ "$lt_changed" -eq 1 ] || return 0
+  [ "$lt_owed" -eq 1 ] || return 0
+  out=$(priv "$LATENCY_TOOL" read "$lt_tty" 2>&1)
+  lt_parse "$out"
+  if [ "$lt_sysfs" = "$lt_orig" ] && [ "$lt_device" = "$lt_orig" ] && [ "$lt_low" = 0 ]; then
+    lt_owed=0
+    cleanup_note "verified at the starting $lt_orig ms" "$out"
+    return 0
+  fi
   if out=$(priv "$LATENCY_TOOL" set "$lt_tty" "$lt_orig" 2>&1); then
-    lt_changed=0
-    echo "trace_session: the adapter's latency timer is restored to $lt_orig ms ($out)"
-    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
-      printf '\n--- session end ---\nlatency timer restored to %s ms: %s\n' "$lt_orig" "$out" >>"$last_note"
-    fi
+    lt_owed=0
+    cleanup_note "restored to $lt_orig ms" "$out"
+    return 0
+  fi
+  cleanup_note "NOT restored to $lt_orig ms" "$out"
+  echo "  restore it by hand: echo $lt_orig | sudo tee /sys/bus/usb-serial/devices/$lt_tty/latency_timer" >&2
+  return 1
+}
+cleanup_note() {  # what happened, the tool's output
+  local line
+  line=$(grep -m 1 '^tty ' <<<"$2")
+  if [ "${1#NOT}" = "$1" ]; then
+    echo "trace_session: cleanup: the adapter's latency timer is $1 (${line:-$2})"
   else
-    echo "trace_session: RESTORING THE ADAPTER'S LATENCY TIMER TO $lt_orig ms FAILED: $out" >&2
-    echo "  restore it by hand: echo $lt_orig | sudo tee /sys/bus/usb-serial/devices/$lt_tty/latency_timer" >&2
-    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
-      printf '\n--- session end ---\nlatency timer NOT restored to %s ms: %s\n' "$lt_orig" "$out" >>"$last_note"
-    fi
+    echo "trace_session: CLEANUP FAILED: the adapter's latency timer is $1: $2" >&2
+  fi
+  if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+    printf '\n--- session end ---\ncleanup: latency timer %s: %s\n' "$1" "${line:-$2}" >>"$last_note"
+  fi
+}
+# Every exit ends here. A second interrupt cannot cut the cleanup short,
+# and a cleanup failure turns an otherwise successful exit into status 3.
+on_exit() {
+  local status=$?
+  trap '' INT TERM HUP
+  if ! restore_latency; then
+    echo "trace_session: the session fails: its cleanup did not restore the adapter's latency timer" >&2
+    [ "$status" -eq 0 ] && exit 3
   fi
   return 0
 }
 finish() {
   stop_all
-  restore_latency
   if [ "$usbmon_loaded_here" -eq 1 ]; then priv "$MODPROBE" -r usbmon; fi
   [ -n "$keepalive_pid" ] && kill "$keepalive_pid" 2>/dev/null
   rm -rf "$tmp"
@@ -597,7 +630,7 @@ on_interrupt() {
   exit 130
 }
 trap on_interrupt INT TERM HUP
-trap restore_latency EXIT
+trap on_exit EXIT
 
 if [ ${#sudo_cmd[@]} -gt 0 ]; then
   "${sudo_cmd[@]}" -v || die "sudo is needed for the tracers and the fair-server read"
@@ -804,10 +837,12 @@ run_one() {
     echo
   } >"$note"
   last_note=$note
-  # The step's latency timer, set if it changes, and checked in effect.
+  # The step's latency timer, set if it changes, and checked in effect. From
+  # here the session owes the starting value back, set or not: the run opens
+  # the port, and a run can change the adapter's value.
   if [ -n "$step" ]; then
+    lt_owed=1
     if [ "$lt_ms" != "$lt_now" ]; then
-      lt_changed=1
       lt_out=$(priv "$LATENCY_TOOL" set "$lt_tty" "$lt_ms" 2>&1); lt_status=$?
       lt_now=$lt_ms
     else

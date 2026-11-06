@@ -693,11 +693,17 @@ that follows the setting goes away again at 1 ms.
   --expect-latency-timer-ms`), so its own bus-profile check refuses any
   other. Without that option the bounded read's profile check requires
   1 ms, as before; the 100 Hz path reads no latency timer.
-- So the session restores the starting value on every exit: at the end, on
-  a stop, on Ctrl-C, SIGTERM or SIGHUP, and through an EXIT trap on any
-  other exit of the script. Only a SIGKILL or a crash skips it, leaving the
-  step's value until the timer is set again (the udev rule sets 1 ms at the
-  next plug-in). The run records carry every check and the restoration.
+- So once the first stepped run begins, the session owes the starting
+  value back, whether or not it had to set a step: a run opens the port and
+  can change the adapter's value. On every exit (the end, a stop, Ctrl-C,
+  SIGTERM, SIGHUP or any other exit of the script, all through its EXIT
+  trap) it reads the adapter, verifies that the starting value is in effect
+  and sets it again if not. A cleanup that leaves another value fails the
+  session: an otherwise successful one exits 3, and a stop or an
+  interruption keeps its own status. Only a SIGKILL or a crash skips the
+  cleanup, leaving the step's value until the timer is set again (the udev
+  rule sets 1 ms at the next plug-in). The run records carry every check
+  and the cleanup's result.
 
 **Measurements.** For each run, compared across the steps: the probe's
 read and complete-cycle timing, criteria, errors and recoveries
