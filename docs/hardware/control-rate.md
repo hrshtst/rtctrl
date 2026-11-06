@@ -888,8 +888,9 @@ run:
   8,609 were written with and without call chains;
 - 8,608 of the worker's samples fall in its on-CPU time in the trace; the
   other, 0.6 us after its switch-out event, is in the context switch itself.
-  Shifted by 2 us, 39 to 62 fall outside, so the two clocks agree to about
-  1 us (the worker was on its CPU 51% of the time);
+  Shifted by 2 us, 39 to 62 fall outside (the worker was on its CPU 51% of
+  the time): the check is sensitive to a 2 us displacement and the clocks
+  were consistent as observed, which is not a guaranteed accuracy bound;
 - 8,377 call chains (97%) reach `Probe::run` and the thread's start through
   the bounded read and the SDK's `readPort`, every kernel frame resolved. Of
   the rest, 94 taken at a system call's entry or exit have no user
