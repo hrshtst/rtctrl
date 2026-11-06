@@ -57,11 +57,18 @@ started and ended by a kernel worker; the worker's resumption (its wake by
 that kernel worker and switch-in, when it was blocked) and the probe's
 last-reply stamp. Work items are followed by context and work identity
 through workqueue_execute_end: a task's work by its thread ID, softirq
-work by its CPU. A read's time is located before the first USB completion
-(instruction delivery, the wire, the servos and the adapter's buffering),
-between the completions, or after the last completion (the data is in the
-host, not yet with the worker). A cycle that overran is attributed to the
-largest of these, its wake lateness and its write.
+work by its CPU. When a read's completion work queued no TTY work (it was
+already pending), the TTY work's queue time is not in the trace: that
+read's wait is reported separately, from the completion work's start
+(bh_to_tty_start_no_queue), never as a queue wait. A read's time is
+located before the first USB completion (instruction transport, the wire,
+the servos' turnaround, the adapter's buffering and the host's USB
+processing), between the completions, or after the last completion (the
+data is in the host, not yet with the worker). For a cycle that overran,
+the largest measured of these parts, its wake lateness and its write is
+reported: where the time went, not what caused it. The adapter's bulk IN
+completions within the run (from the first cycle's wake to the last
+cycle's end) give the cadence at which it delivered data or status.
 """
 
 from __future__ import annotations
@@ -472,6 +479,20 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
     return rec
 
 
+def usb_cadence(run: Run, tr: Trace, out) -> None:
+    """The adapter's bulk IN completions (data or status only) in the run."""
+    o, rows = run.origin, run.rows
+    lo, hi = o + int(rows[0]["wake_ns"]), o + int(rows[-1]["cycle_end_ns"])
+    ts = [c[0] for c in tr.in_done if lo <= c[0] <= hi]
+    if len(ts) < 2:
+        print(f"  adapter bulk IN completions in the run: {len(ts)}", file=out)
+        return
+    gaps = [b - a for a, b in zip(ts, ts[1:])]
+    print(f"  adapter bulk IN completions in the run: {len(ts)} over {(ts[-1] - ts[0]) / 1e9:.6f} s "
+          "(first to last); consecutive intervals:", file=out)
+    show("in_completion_interval", gaps, out)
+
+
 def port_work_item(data: list, bh: dict, queued: list) -> str | None:
     """The TTY work item queued most often by the USB completion work that
     follows the adapter's data completions."""
@@ -515,7 +536,9 @@ def segments(x: dict) -> dict:
     put("after_last_completion", "last", "last_reply")
     put("host_transaction", "read_start", "read_end")
     if "tty_queue" not in x:
-        put("tty_queue_to_start", "bh_start", "tty_start")
+        # No queue event: the work was already pending, so its queue time is
+        # unknown. Not a queue wait; reported apart from tty_queue_to_start.
+        put("bh_to_tty_start_no_queue", "bh_start", "tty_start")
     return s
 
 
@@ -524,9 +547,13 @@ def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
     print("  receive path per read (us): from the trace, with the probe's stamps", file=out)
     for name in ("before_send", "instruction_usb", "to_first_completion", "between_completions",
                  "after_last_completion", "completion_to_bh", "bh_to_tty_queue",
-                 "tty_queue_to_start", "tty_run", "tty_end_to_last_reply", "tty_end_to_waking",
-                 "waking_to_switch_in", "host_transaction"):
+                 "tty_queue_to_start", "bh_to_tty_start_no_queue", "tty_run",
+                 "tty_end_to_last_reply", "tty_end_to_waking", "waking_to_switch_in",
+                 "host_transaction"):
         show(name, [s[name] for s in segs if name in s], out)
+    no_queue = sum(1 for x in rec if "tty_start" in x and "tty_queue" not in x)
+    print(f"  {no_queue} reads whose USB completion work queued no TTY work (already pending): "
+          "their wait is bh_to_tty_start_no_queue, not a queue wait", file=out)
     split = [x for x in rec if x["completions"] > 1]
     blocked = sum(1 for x in rec if "blocked" in x)
     print(f"  {len(split)} of {len(rec)} replies arrived in more than one completion; "
@@ -538,10 +565,10 @@ def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
     if wakers:
         print("  the worker's wakers' work: " + ", ".join(f"{k} {v}" for k, v in sorted(wakers.items())), file=out)
 
-    # Overruns: the cycle's largest part.
+    # Overruns: the cycle's largest measured part, a location, not a cause.
     o, rows = run.origin, run.rows
     by_row = {x["row"]: s for x, s in zip(rec, segs)}
-    causes: dict[str, int] = {}
+    largest: dict[str, int] = {}
     overran = [i for i, r in enumerate(rows) if int(r["skipped_periods"]) > 0]
     for i in overran:
         r = rows[i]
@@ -555,10 +582,10 @@ def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
         ws, wr = int(r["bus_write_start_ns"]), int(r["write_return_ns"])
         if ws >= 0 and wr >= 0:
             parts["write"] = wr - ws
-        cause = max(parts.items(), key=lambda kv: kv[1])[0]
-        causes[cause] = causes.get(cause, 0) + 1
-    print(f"  overran cycles: {len(overran)}; largest part: "
-          + (", ".join(f"{k} {v}" for k, v in sorted(causes.items(), key=lambda kv: -kv[1])) or "-"),
+        part = max(parts.items(), key=lambda kv: kv[1])[0]
+        largest[part] = largest.get(part, 0) + 1
+    print(f"  overran cycles: {len(overran)}; largest measured part: "
+          + (", ".join(f"{k} {v}" for k, v in sorted(largest.items(), key=lambda kv: -kv[1])) or "-"),
           file=out)
     del o
 
@@ -588,8 +615,8 @@ def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
         print(f"  latest {len(wl)} wakes (us from the scheduled wake):", file=out)
         for lat, i in wl:
             if i not in by_cycle:
-                print(f"    cycle {rows[i]['cycle']:>6} wake {lat / 1e3:7.1f}: no timer wake "
-                      "(began without sleeping)", file=out)
+                why = "the first cycle (begins at once)" if i == 0 else "no timer wake (began without sleeping)"
+                print(f"    cycle {rows[i]['cycle']:>6} wake {lat / 1e3:7.1f}: {why}", file=out)
                 continue
             entry, now, cpu, waking, running, prev_end, sched, wake = by_cycle[i]
             j = bisect.bisect_left(ins_ts, waking)
@@ -612,8 +639,8 @@ def write_segments(path: pathlib.Path, rec: list[dict]) -> None:
     names = ["cycle", "read_len", "completions", "tty_pid", "tty_cpu", "blocked", "kworker_prev"]
     keys = ["before_send", "instruction_usb", "to_first_completion", "between_completions",
             "after_last_completion", "completion_to_bh", "bh_to_tty_queue", "tty_queue_to_start",
-            "tty_run", "tty_end_to_last_reply", "tty_end_to_waking", "waking_to_switch_in",
-            "host_transaction"]
+            "bh_to_tty_start_no_queue", "tty_run", "tty_end_to_last_reply", "tty_end_to_waking",
+            "waking_to_switch_in", "host_transaction"]
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(names + [k + "_ns" for k in keys])
@@ -681,6 +708,7 @@ def main() -> int:
     timer = check_timer_wakes(run, tr, failures, out)
     transfers = check_transfers(run, tr, failures, out)
     rec = receive_path(run, tr, transfers, failures, out)
+    usb_cadence(run, tr, out)
     if tr.work_anomalies:
         print(f"  {tr.work_anomalies} workqueue executions ended without a recorded start "
               "(begun before the trace)", file=out)

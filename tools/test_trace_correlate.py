@@ -6,7 +6,10 @@ A synthetic three-cycle probe run at 500 Hz and its trace, written in
 and the replies' USB completions with the completion work, the TTY work
 and the worker's resumption. The clean run passes and its receive path is
 pinned (a reply split across two completions; another TTY's
-flush_to_ldisc starting first; a waking after the waker's work ended).
+flush_to_ldisc starting first; a waking after the waker's work ended), and
+so is the adapter's completion cadence. A read whose completion work
+queued no TTY work (already pending) reports its wait apart, never as a
+queue wait.
 Every association and alignment failure is then provoked once and must
 fail the run, and the documented exception (a cycle that began without
 sleeping) must not.
@@ -69,7 +72,7 @@ class Run:
                 f"1-9 {ep}-bulk: urb {urb} pipe 3221292032 slot 5 length {actual}/{length} "
                 "sgs 0/0 stream 0 flags 0")
 
-    def completion(self, c: float, actual: int, waking_in_barrier: bool) -> float:
+    def completion(self, c: float, actual: int, waking_in_barrier: bool, queue: bool = True) -> float:
         """One data completion and its path to the worker; returns the
         probe's stamp after the worker read the data."""
         self.urb(c, 0, "<idle>", 7, "giveback", "ep1in", "0xin", actual, 512)
@@ -77,8 +80,9 @@ class Run:
                 "work struct=0xbh function=usb_giveback_urb_bh workqueue=events_bh req_cpu=8192 cpu=7")
         self.ev(c + 2.0, "<idle>", 0, 7, "..s1.", "workqueue_execute_start",
                 "work struct 0xbh: function usb_giveback_urb_bh")
-        self.ev(c + 3.0, "<idle>", 0, 7, "dNs2.", "workqueue_queue_work",
-                "work struct=0xtty function=flush_to_ldisc workqueue=events_unbound req_cpu=8192 cpu=-1")
+        if queue:
+            self.ev(c + 3.0, "<idle>", 0, 7, "dNs2.", "workqueue_queue_work",
+                    "work struct=0xtty function=flush_to_ldisc workqueue=events_unbound req_cpu=8192 cpu=-1")
         self.ev(c + 3.5, "<idle>", 0, 7, ".Ns1.", "workqueue_execute_end",
                 "work struct 0xbh: function usb_giveback_urb_bh")
         self.worker_out(c + 3.8, "D")
@@ -131,7 +135,8 @@ class Run:
             for t, actual in replies:
                 if i == 0 and o.get("short"):
                     actual -= 20
-                stamps.append(self.completion(read_start + t, actual, waking_in_barrier=(i != 2)))
+                stamps.append(self.completion(read_start + t, actual, waking_in_barrier=(i != 2),
+                                              queue=not (i == 0 and o.get("no_queue"))))
             read_end = stamps[-1] + 0.5
             if i == 0 and o.get("stray"):
                 self.urb(read_end + 200.0, 0, "<idle>", 7, "giveback", "ep1in", "0xin", 12, 512)
@@ -208,6 +213,11 @@ def main() -> int:
         # belongs to no work.
         expect("the worker's wakers' work: - 1, wq_barrier_func 2" in out, "the wakers' work", out)
         expect("association and alignment: PASS" in out, "PASS reported", out)
+        # Three status-only completions and four with data, within the run.
+        expect("adapter bulk IN completions in the run: 7 over 0.004600 s" in out, "the cadence", out)
+        expect("latest 3 wakes" in out and "cycle      1 wake     1.3: the first cycle (begins at once)" in out,
+               "the first cycle listed as such", out)
+        expect("0 reads whose USB completion work queued no TTY work" in out, "every TTY work queued", out)
         rows = list(csv.DictReader(open(seg)))
         expect(len(rows) == 3, "a segment row per read", out)
         r = rows[1]
@@ -228,8 +238,20 @@ def main() -> int:
 
         code, out, _ = correlate(root, "overran", overran=True)
         expect(code == 0, "an overrun is not an association failure", out)
-        expect("overran cycles: 1; largest part: between USB completions 1" in out,
+        expect("overran cycles: 1; largest measured part: between USB completions 1" in out,
                "the overrun located", out)
+
+        # Without a queue event the TTY work's queue time is unknown: its
+        # wait from the completion work's start is reported apart.
+        code, out, seg = correlate(root, "no_queue", no_queue=True)
+        expect(code == 0, "a TTY work that was already pending is no failure", out)
+        expect("1 reads whose USB completion work queued no TTY work" in out, "counted", out)
+        r = list(csv.DictReader(open(seg)))[0]
+        expect(r["tty_queue_to_start_ns"] == "" and r["bh_to_tty_start_no_queue_ns"] == "2500"
+               and r["bh_to_tty_queue_ns"] == "", "reported apart, not as a queue wait", out)
+        r = list(csv.DictReader(open(seg)))[1]
+        expect(r["tty_queue_to_start_ns"] == "1500" and r["bh_to_tty_start_no_queue_ns"] == "",
+               "the other reads keep their queue wait", out)
 
         failures = {
             "missing": "timer wakes: 1 sleeps without a wake",
