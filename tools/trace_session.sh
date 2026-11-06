@@ -6,9 +6,9 @@
 # torque-off and the arm at rest and supported. x7_bus_timing refuses to
 # measure otherwise, and it never writes Torque Enable or Drive Mode.
 #
-# Each listed run is made twice, untraced and then traced, under the same
-# conditions, so the pair shows the tracing overhead. A traced run records,
-# around the probe:
+# Each listed run is made in each mode, by default untraced and then traced,
+# under the same conditions, so the runs show the tracing overhead. A traced
+# run records, around the probe:
 #   - scheduler, interrupt, timer, workqueue and xHCI URB events with
 #     trace-cmd on ftrace's mono clock (CLOCK_MONOTONIC, the clock of the
 #     probe's monotonic_origin_ns); the session stops if the clock is not
@@ -16,6 +16,14 @@
 #   - the adapter's usbmon traffic with tcpdump (usbmon stamps are
 #     CLOCK_REALTIME, so the record also takes CLOCK_MONOTONIC and
 #     CLOCK_REALTIME pairs before and after the run).
+# A profiled run (--modes ...,profiled; rt-* conditions only) records what a
+# traced run does, plus the probe threads' timer arming (hrtimer_start,
+# hrtimer_cancel), sleep calls (clock_nanosleep and nanosleep entry and
+# exit) and page faults, each filtered to the probe's comm, the workqueue's
+# activations, and perf's samples of the real-time CPU with call chains on
+# the mono clock (perf record -k mono -C <cpu> -F <hz> -g). Afterwards the
+# worker's samples are written as text (perf script --tid). The traced mode's
+# events stay as they were, so its runs compare with earlier ones.
 # The tracers run on the CPUs outside the excluded set (the real-time CPU
 # and its SMT siblings by default), and read nothing on the bus.
 #
@@ -72,16 +80,20 @@
 #   <log>.csv.tasks.txt     tasks, CPUs and affinities halfway through
 #   <log>.csv.trace.dat     trace-cmd record (traced runs)
 #   <log>.csv.usbmon.pcap   usbmon capture of the adapter (traced runs)
+#   <log>.csv.perf.data     perf samples of the real-time CPU (profiled runs)
+#   <log>.csv.perf.txt      the worker's samples as text (profiled runs)
 # with <log> = rate-trace-<profile>-<rate>hz-<condition>-bounded<variant
-# tags>[-lt<ms>-s<step>]-<untraced|traced>-<date>-<attempt>. A run whose
+# tags>[-lt<ms>-s<step>]-<untraced|traced|profiled>-<date>-<attempt>. A run whose
 # .csv or .run.txt already exists was attempted: it is skipped, never
 # retried.
 #
 # Privileged steps (trace-cmd, tcpdump, bpftrace, modprobe) go through sudo;
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
 # runs them directly and TRACE_SESSION_SUDO=<command> uses that command in
-# sudo's place, and TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG,
-# LATENCY_TOOL and TRACEFS replace the tools and the tracefs path.
+# sudo's place, TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG,
+# LATENCY_TOOL, PERF and TRACEFS replace the tools and the tracefs path, and
+# TRACE_SESSION_RTPRIO_LIMIT replaces the real-time priority limit checked
+# (with a stand-in probe, which needs none).
 set -u
 
 PROBE=./build/apps/x7_bus_timing  # --probe overrides it (the tests do)
@@ -94,6 +106,7 @@ MODPROBE=${MODPROBE:-modprobe}
 STRESS_NG=${STRESS_NG:-stress-ng}
 TRACEFS=${TRACEFS:-/sys/kernel/tracing}
 LATENCY_TOOL=${LATENCY_TOOL:-tools/latency_timer.py}
+PERF=${PERF:-perf}
 case "${TRACE_SESSION_SUDO:-sudo}" in
   none) sudo_cmd=() ;;
   *) sudo_cmd=("${TRACE_SESSION_SUDO:-sudo}") ;;
@@ -108,6 +121,7 @@ runs+=,current:1000:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motio
 runs+=,cbp:1000:rt-idle:fast
 modes=untraced,traced
 latency_steps=
+perf_hz=4999
 duration=60
 rt_priority=80
 rt_cpu=3
@@ -136,7 +150,11 @@ usage: $0 [options]
                       variant   full, motion, motion-aux0ms, fast,
                                 fast-motion or fast-motion-aux0ms (all on
                                 the bounded read path)
-  --modes LIST        untraced,traced (default), or one of them
+  --modes LIST        untraced,traced (default), any of untraced, traced and
+                      profiled (traced, plus timer arming, sleep calls, page
+                      faults and perf samples of the real-time CPU; rt-*
+                      conditions only)
+  --perf-hz N         a profiled run's perf sampling frequency (default $perf_hz)
   --latency-steps L   the adapter experiment: each run once per step of the
                       adapter's USB latency timer in ms, 0 to 255 (for
                       example 1,0,1), restored on every exit (default: the
@@ -172,12 +190,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--outdir|--max-runnable|\
-    --stress-dir|--load-tail|--latency-steps)
+    --stress-dir|--load-tail|--latency-steps|--perf-hz)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
         --modes) modes=$2 ;;
         --latency-steps) latency_steps=$2 ;;
+        --perf-hz) perf_hz=$2 ;;
         --duration) duration=$2 ;;
         --rt-priority) rt_priority=$2 ;;
         --rt-cpu) rt_cpu=$2 ;;
@@ -240,7 +259,7 @@ variant_flags() {
 IFS=, read -r -a run_list <<<"$runs"
 IFS=, read -r -a mode_list <<<"$modes"
 [ ${#run_list[@]} -gt 0 ] || die "--runs is empty"
-any_rt=0; any_loaded=0; any_traced=0
+any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; all_rt=1
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v extra <<<"$spec"
   [ -z "${extra:-}" ] && [ -n "${v:-}" ] || die "run '$spec' is not profile:rate:condition:variant"
@@ -251,11 +270,16 @@ for spec in "${run_list[@]}"; do
     *) die "run '$spec': unknown condition '$c'" ;;
   esac
   variant_flags "$v" || die "run '$spec': unknown variant '$v'"
-  case "$c" in rt-*) any_rt=1 ;; esac
+  case "$c" in rt-*) any_rt=1 ;; *) all_rt=0 ;; esac
   case "$c" in *loaded*) any_loaded=1 ;; esac
 done
 for m in "${mode_list[@]}"; do
-  case "$m" in untraced) ;; traced) any_traced=1 ;; *) die "unknown mode '$m'" ;; esac
+  case "$m" in
+    untraced) ;;
+    traced) any_traced=1 ;;
+    profiled) any_traced=1; any_profiled=1 ;;
+    *) die "unknown mode '$m'" ;;
+  esac
 done
 # The latency steps, as ms:index (one empty step without the experiment).
 lt_list=()
@@ -271,6 +295,11 @@ if [ -n "$latency_steps" ]; then
   done
 fi
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -gt 0 ] || die "--duration must be a positive integer"
+is_uint "$perf_hz" && [ "$perf_hz" -ge 100 ] && [ "$perf_hz" -le 20000 ] ||
+  die "--perf-hz must be 100 to 20000"
+if [ "$any_profiled" -eq 1 ] && [ "$all_rt" -ne 1 ]; then
+  die "the profiled mode samples the real-time CPU: use it with rt-* conditions only"
+fi
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 is_uint "$rt_priority" && is_uint "$rt_cpu" || die "--rt-priority and --rt-cpu must be integers"
 # The probe reads priority 0 as ordinary scheduling, never SCHED_FIFO.
@@ -328,6 +357,9 @@ if [ ${#lt_list[@]} -gt 0 ]; then
 fi
 command -v "$BPFTRACE" >/dev/null ||
   problems+=("$BPFTRACE is not installed: it reads the fair server's settings")
+if [ "$any_profiled" -eq 1 ]; then
+  command -v "$PERF" >/dev/null || problems+=("$PERF is not installed (linux-tools)")
+fi
 if [ "$any_traced" -eq 1 ]; then
   command -v "$TRACE_CMD" >/dev/null || problems+=("$TRACE_CMD is not installed")
   if [ "$usbmon" -eq 1 ]; then
@@ -338,7 +370,7 @@ if [ "$any_traced" -eq 1 ]; then
   fi
 fi
 if [ "$any_rt" -eq 1 ]; then
-  lim=$(ulimit -r)
+  lim=${TRACE_SESSION_RTPRIO_LIMIT:-$(ulimit -r)}
   if [ "$lim" != unlimited ] && [ "$lim" -lt "$rt_priority" ]; then
     problems+=("real-time priority limit is $lim, below $rt_priority: in the shell that starts this script run
       sudo prlimit --pid \$\$ --rtprio=90:90")
@@ -383,6 +415,20 @@ trace_events=(
 )
 trace_args=(record -C mono -b "$buffer_kb")
 for e in "${trace_events[@]}"; do trace_args+=(-e "$e"); done
+# A profiled run adds the probe threads' timer arming, sleep calls and page
+# faults (filtered to the probe's comm: the kernel truncates it to 15
+# characters) and the workqueue's activations.
+probe_comm=$(basename "$PROBE" | cut -c 1-15)
+profile_events=(
+  timer:hrtimer_start timer:hrtimer_cancel
+  syscalls:sys_enter_clock_nanosleep syscalls:sys_exit_clock_nanosleep
+  syscalls:sys_enter_nanosleep syscalls:sys_exit_nanosleep
+  exceptions:page_fault_user exceptions:page_fault_kernel
+)
+profile_args=("${trace_args[@]}")
+for e in "${profile_events[@]}"; do profile_args+=(-e "$e" -f "comm == \"$probe_comm\""); done
+profile_args+=(-e workqueue:workqueue_activate_work)
+perf_args=(record -k mono -C "$rt_cpu" -F "$perf_hz" -g)
 # usbmon's mmapped header carries the device address at byte 11.
 usbmon_opts=(-i "usbmon$usb_bus" -Z root -s 0)
 usbmon_filter="link[11] == $usb_devnum"
@@ -430,6 +476,7 @@ if [ "$dry_run" -eq 1 ]; then
         probe_cmd "$p" "$r" "$c" "$v" "$m" "$step"
         stress_cmd "$c"
         printf '  [%s' "$m"
+        [ "$m" = profiled ] && printf '; profiled'
         [ -n "$step" ] && printf '; latency timer %s ms (step %s)' "${step%%:*}" "${step##*:}"
         [ ${#scmd[@]} -gt 0 ] && printf '; load: %s' "${scmd[*]}"
         printf '] '; printf '%q ' "${cmd[@]}"; echo
@@ -441,6 +488,10 @@ if [ "$dry_run" -eq 1 ]; then
   fi
   if [ "$any_traced" -eq 1 ]; then
     printf 'traced runs add: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
+    if [ "$any_profiled" -eq 1 ]; then
+      printf 'profiled runs record: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${profile_args[*]}"
+      printf '                      %s %s -o <log>.csv.perf.data\n' "$PERF" "${perf_args[*]}"
+    fi
     if [ "$usbmon" -eq 1 ]; then
       printf "                 %s %s -w <log>.csv.usbmon.pcap '%s' (device %s)\n" \
         "$TCPDUMP" "${usbmon_opts[*]}" "$usbmon_filter" "${usb_device:-unknown}"
@@ -468,7 +519,7 @@ fi
 tmp=$(mktemp -d)
 stress_pid=
 keepalive_pid=
-trace_job=; usbmon_job=
+trace_job=; usbmon_job=; perf_job=
 usbmon_loaded_here=0
 run_outputs=()  # the tracer outputs of the run in progress, for own_outputs
 results=()
@@ -534,7 +585,17 @@ recorders_ended() {  # the run's recorders that are no longer running
   local gone=''
   alive "$trace_job" || gone="trace-cmd ended"
   if [ "$usbmon" -eq 1 ]; then alive "$usbmon_job" || gone+="${gone:+, }tcpdump ended"; fi
+  if [ -n "$perf_job" ]; then alive "$perf_job" || gone+="${gone:+, }perf ended"; fi
   echo "$gone"
+}
+wait_file() {  # name job file seconds -> 0 once the recorder wrote its file
+  local i
+  for ((i = 0; i < $4 * 10; i++)); do
+    [ -s "$3" ] && return 0
+    alive "$2" || break
+    sleep 0.1
+  done
+  [ -s "$3" ]
 }
 # Gives the run's tracer outputs that exist to the invoking user. Every
 # path that stops the recorders calls it (stop_all does, and so does the
@@ -550,6 +611,7 @@ own_outputs() {
 stop_all() {
   if [ -n "$trace_job" ]; then stop_tracer trace "$trace_job"; trace_job=; fi
   if [ -n "$usbmon_job" ]; then stop_tracer usbmon "$usbmon_job"; usbmon_job=; fi
+  if [ -n "$perf_job" ]; then stop_tracer perf "$perf_job"; perf_job=; fi
   if [ -n "$stress_pid" ]; then
     kill -TERM -- "-$stress_pid" 2>/dev/null
     wait "$stress_pid" 2>/dev/null
@@ -703,6 +765,7 @@ fi
   lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE 2>&1 | sed 's/^/  /'
   echo "cpu governors: $(sort /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null | uniq -c | xargs)"
   echo "irqbalance: $(systemctl is-active irqbalance 2>&1)"
+  echo "unbound workqueues: cpumask $(cat /sys/devices/virtual/workqueue/cpumask 2>&1), affinity scope $(cat /sys/module/workqueue/parameters/default_affinity_scope 2>&1)"
   if [ -n "$usb_device" ]; then
     echo "adapter: $usb_device, $(cat "$usb_device/idVendor" 2>&1):$(cat "$usb_device/idProduct" 2>&1), $(cat "$usb_device/speed" 2>&1) Mbps, bus $usb_bus device $usb_devnum"
   fi
@@ -785,11 +848,17 @@ run_one() {
   local profile=$1 rate=$2 cond=$3 variant=$4 mode=$5 step=${6:-} base csv note
   local loaded=0 probe_status check_status seen stress_out stress_status snap_pid
   local dat pcap lt_ms=${step%%:*} lt_out lt_status irq_before irq_after t_before t_after
+  local traced=0 profiled=0 perfdat perftxt targs
+  case "$mode" in traced) traced=1 ;; profiled) traced=1; profiled=1 ;; esac
   base=$(log_base "$profile" "$rate" "$cond" "$variant" "$mode" "$step")
   csv="$outdir/$base.csv"
   note="$csv.run.txt"
   dat="$csv.trace.dat"
   pcap="$csv.usbmon.pcap"
+  perfdat="$csv.perf.data"
+  perftxt="$csv.perf.txt"
+  targs=("${trace_args[@]}")
+  [ "$profiled" -eq 1 ] && targs=("${profile_args[@]}")
   run_outputs=()
   failed=
   k=$((k + 1))
@@ -817,14 +886,17 @@ run_one() {
     fi
     if [ "$loaded" -eq 1 ]; then echo "load: ${scmd[*]}"; else echo "load: none"; fi
     case "$cond" in
-      rt-*) echo "scheduling: --rt-priority $rt_priority --rt-cpu $rt_cpu (rtprio limit $(ulimit -r))" ;;
+      rt-*) echo "scheduling: --rt-priority $rt_priority --rt-cpu $rt_cpu (rtprio limit ${TRACE_SESSION_RTPRIO_LIMIT:-$(ulimit -r)})" ;;
       *) echo "scheduling: default" ;;
     esac
     echo "runnable before start: $quiet (this script included)"
     echo "uptime:$(uptime)"
     printf 'command:'; printf ' %q' "${cmd[@]}"; echo
-    if [ "$mode" = traced ]; then
-      printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${trace_args[@]}"; printf ' -o %q\n' "$dat"
+    if [ "$traced" -eq 1 ]; then
+      printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${targs[@]}"; printf ' -o %q\n' "$dat"
+      if [ "$profiled" -eq 1 ]; then
+        printf 'perf: %s' "$PERF"; printf ' %q' "${perf_args[@]}"; printf ' -o %q\n' "$perfdat"
+      fi
       if [ "$usbmon" -eq 1 ]; then
         printf 'usbmon: %s' "$TCPDUMP"; printf ' %q' "${usbmon_opts[@]}" -w "$pcap" "$usbmon_filter"; echo
       else
@@ -858,14 +930,15 @@ run_one() {
       return
     fi
   fi
-  if [ "$mode" = traced ]; then
+  if [ "$traced" -eq 1 ]; then
     run_outputs=("$dat")
     if [ "$usbmon" -eq 1 ]; then run_outputs+=("$pcap"); fi
+    if [ "$profiled" -eq 1 ]; then run_outputs+=("$perfdat"); fi
     # On a pipe, the C library would hold trace-cmd's "Hit Ctrl^C to stop
     # recording" until it exits; stdbuf (which execs it, keeping the PID)
     # makes its output line-buffered. tcpdump reports on stderr, which is
     # unbuffered.
-    start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${trace_args[@]}" -o "$dat"
+    start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${targs[@]}" -o "$dat"
     if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
       stop_all
       { echo "--- trace-cmd did not start ---"; cat "$tmp/trace.out"; } | tee -a "$note"
@@ -894,6 +967,19 @@ run_one() {
         return
       fi
     fi
+    if [ "$profiled" -eq 1 ]; then
+      # perf says nothing until it stops; it is recording once its file has
+      # its header.
+      start_tracer perf "$PERF" "${perf_args[@]}" -o "$perfdat"
+      if ! wait_file perf "$perf_job" "$perfdat" 30; then
+        stop_all
+        { echo "--- perf did not start ---"; cat "$tmp/perf.out"; } | tee -a "$note"
+        echo "verdict: not run (tracer)" >>"$note"
+        outcome=stop
+        return
+      fi
+      sleep 1
+    fi
   fi
   # The load starts once the recorders are recording, so their startup
   # takes none of its time, and it must outlast the probe.
@@ -915,7 +1001,7 @@ run_one() {
       return
     fi
   fi
-  if [ "$mode" = traced ]; then
+  if [ "$traced" -eq 1 ]; then
     local ended
     ended=$(recorders_ended)
     if [ -n "$ended" ]; then
@@ -940,12 +1026,12 @@ run_one() {
   if [ "$loaded" -eq 1 ] && ! alive "$stress_pid"; then
     load_problem="the load ended before the probe did"
   fi
-  if [ "$mode" = traced ]; then
+  if [ "$traced" -eq 1 ]; then
     tracer_problem=$(recorders_ended)
     [ -n "$tracer_problem" ] && tracer_problem+=" before the probe did"
   fi
   wait "$snap_pid" 2>/dev/null
-  if [ "$mode" = traced ]; then
+  if [ "$traced" -eq 1 ]; then
     echo "clock pair after: $(clock_pair)" >>"$note"
     local trace_status usbmon_status=0
     stop_tracer trace "$trace_job"; trace_status=$?; trace_job=
@@ -957,6 +1043,32 @@ run_one() {
       { echo; echo "--- tcpdump (exit $usbmon_status) ---"; cat "$tmp/usbmon.out"; } >>"$note"
       [ "$usbmon_status" -eq 0 ] && [ -s "$pcap" ] ||
         tracer_problem+="${tracer_problem:+, }tcpdump exit $usbmon_status"
+    fi
+    if [ "$profiled" -eq 1 ]; then
+      local perf_status script_status wtid perf_clean=0
+      stop_tracer perf "$perf_job"; perf_status=$?; perf_job=
+      # perf record finishes its file, then dies of the SIGINT that stopped
+      # it: a clean stop is that status (or 0) with its closing report.
+      if { [ "$perf_status" -eq 0 ] || [ "$perf_status" -eq 130 ]; } && [ -s "$perfdat" ] &&
+         grep -q 'Captured and wrote' "$tmp/perf.out"; then
+        perf_clean=1
+      else
+        tracer_problem+="${tracer_problem:+, }perf exit $perf_status"
+      fi
+      { echo; echo "--- perf (exit $perf_status, $([ "$perf_clean" -eq 1 ] && echo "a clean stop" || echo "NOT a clean stop")) ---"
+        cat "$tmp/perf.out"; } >>"$note"
+      # The worker's samples as text, symbols resolved as root.
+      wtid=$(sed -n 's/^worker_tid = //p' "$csv.summary.toml" 2>/dev/null)
+      if [ -n "$wtid" ] && [ "$perf_clean" -eq 1 ]; then
+        priv "$PERF" script -i "$perfdat" --ns -G -F comm,tid,cpu,time,ip,sym,dso --tid "$wtid" \
+          >"$perftxt" 2>"$tmp/perf-script.err"
+        script_status=$?
+        echo "perf script --tid $wtid (exit $script_status): $(wc -l <"$perftxt") samples" >>"$note"
+        [ "$script_status" -eq 0 ] && [ -s "$perftxt" ] ||
+          tracer_problem+="${tracer_problem:+, }perf script exit $script_status"
+      elif [ "$probe_status" -eq 0 ]; then
+        tracer_problem+="${tracer_problem:+, }no worker thread for perf script"
+      fi
     fi
     own_outputs
   fi

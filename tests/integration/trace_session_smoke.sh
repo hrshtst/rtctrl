@@ -10,7 +10,11 @@
 # session (Ctrl-C or SIGTERM) giving its outputs back, and the adapter
 # experiment's latency steps (a stand-in latency tool): the steps in order,
 # their checks before and after each run, the stops when the adapter does
-# not hold a step's value, and the restoration on every exit. Functional only: a
+# not hold a step's value, and the restoration on every exit; and the
+# profiled mode (a stand-in perf and a stand-in probe replaying a real run,
+# since rt-* conditions need a real-time priority limit the test cannot
+# have): its recorders, the worker's samples, and the stops when perf does
+# not start or ends early. Functional only: a
 # pty answers instantly and the tracers record nothing real, so no verdict
 # is asserted. Real-time conditions need a real-time priority limit, so
 # they stay out of this test (the plan is checked with --dry-run).
@@ -154,6 +158,46 @@ if [ "$1" = set ] && { [ "$s" != "$3" ] || [ "$d" != "$3" ] || [ "$l" != 0 ]; };
 fi
 exit 0
 EOF
+# perf: record writes its file and runs until SIGINT, then reports and dies
+# of that signal, as perf does; script prints one sample of the --tid given.
+cat >"$FAKE/perf" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.perf"
+case "$1" in
+  record)
+    out=
+    while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; esac; shift; done
+    [ "${FAKE_PERF_FAIL:-0}" = 1 ] && { echo "stand-in perf: failing as asked" >&2; exit 1; }
+    echo "PERFILE2 stand-in header" >"$out"
+    stop=0
+    trap 'stop=1' INT
+    end=$(( $(date +%s) + ${FAKE_PERF_LIFE:-100000} ))
+    while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
+    echo "stand-in samples" >>"$out"
+    echo "[ perf record: Captured and wrote 0.010 MB $out (12 samples) ]" >&2
+    if [ "$stop" -eq 1 ]; then trap - INT; kill -INT $$; fi
+    exit 0 ;;
+  script)
+    tid=
+    while [ $# -gt 0 ]; do case "$1" in --tid) tid=$2; shift ;; esac; shift; done
+    echo "   probe $tid [000]  1000.000100000:  ffffffff81000000 do_nanosleep ([kernel.kallsyms])"
+    exit 0 ;;
+esac
+EOF
+# A stand-in probe for the profiled runs: it replays a real run's log
+# ($FAKE_PROBE_TEMPLATE, from the pairs below) for --duration seconds.
+cat >"$FAKE/probe" <<'EOF'
+#!/usr/bin/env bash
+log=; dur=1
+while [ $# -gt 0 ]; do
+  case "$1" in --log) log=$2; shift ;; --duration) dur=$2; shift ;; esac
+  shift
+done
+cp "$FAKE_PROBE_TEMPLATE" "$log"
+cp "$FAKE_PROBE_TEMPLATE.summary.toml" "$log.summary.toml"
+echo "worker thread $(sed -n 's/^worker_tid = //p' "$log.summary.toml") (stand-in probe)"
+sleep "$dur"
+EOF
 # In sudo's place (TRACE_SESSION_SUDO): logs each privileged command and
 # runs it as the invoking user; its timestamp checks succeed.
 cat >"$FAKE/sudo" <<'EOF'
@@ -173,7 +217,7 @@ printf '480\n' >"$ROOT/usbdev/speed"
 export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
-export LATENCY_TOOL="$FAKE/latency"
+export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf"
 echo "4 4 0" >"$ROOT/fake.latency-state"
 
 # The quiet-machine gate is lifted: the test suite runs in parallel. The
@@ -628,6 +672,65 @@ for bad in 1,256 1,x 1,,0; do
   fi
   grep -q 'is not a latency timer of 0 to 255 ms' "$ROOT/latency-bad.log"
 done
+
+# The profiled mode: a traced run plus the probe threads' timer arming,
+# sleep calls and page faults (filtered to the probe's comm) and perf
+# samples of the real-time CPU, written as text for the worker. It needs
+# rt-* conditions: the stand-in probe replays the first pair's traced run.
+export FAKE_PROBE_TEMPLATE
+FAKE_PROBE_TEMPLATE=$(base current-100hz-idle-bounded-fast-motion-traced 1)
+PROFILE=(--probe "$FAKE/probe" --port "$LINK" --outdir "$OUT" --date "$DATE" --max-runnable 100000
+         --usb-device "$ROOT/usbdev" --rt-cpu 0 --exclude-cpus 0)
+wtid=$(sed -n 's/^worker_tid = //p' "$FAKE_PROBE_TEMPLATE.summary.toml")
+: >"$ROOT/fake.trace-cmd"
+TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 25 \
+  --duration 2 --modes untraced,profiled --runs current:100:rt-idle:fast-motion \
+  </dev/null >"$ROOT/profiled.log" 2>&1 || fail "the profiled session failed" "$ROOT/profiled.log"
+b=$(base current-100hz-rt-idle-bounded-fast-motion-profiled 25)
+for f in "$b" "$b.run.txt" "$b.trace.dat" "$b.usbmon.pcap" "$b.perf.data" "$b.perf.txt"; do
+  [ -s "$f" ] || fail "missing $f" "$ROOT/profiled.log"
+done
+grep -Eq '^verdict: (pass|fail)' "$b.run.txt" || fail "no verdict in $b.run.txt" "$b.run.txt"
+grep -q "^perf: $FAKE/perf record -k mono -C 0 -F 4999 -g -o $b.perf.data" "$b.run.txt" ||
+  fail "the record does not name the perf command" "$b.run.txt"
+grep -q '^--- perf (exit 130, a clean stop) ---' "$b.run.txt" || fail "perf's SIGINT stop not accepted" "$b.run.txt"
+grep -q "^perf script --tid $wtid (exit 0): 1 samples" "$b.run.txt"
+grep -q "probe $wtid \[000\]" "$b.perf.txt" || fail "the worker's samples are not written" "$b.perf.txt"
+grep -q -- "-e timer:hrtimer_start -f comm == \"probe\" .*-e syscalls:sys_enter_clock_nanosleep -f comm == \"probe\" .*-e exceptions:page_fault_user -f comm == \"probe\" .*-e workqueue:workqueue_activate_work" "$ROOT/fake.trace-cmd" ||
+  fail "trace-cmd was not given the profiled events" "$ROOT/fake.trace-cmd"
+grep -q '^unbound workqueues: cpumask ' "$b.run.txt"
+u=$(base current-100hz-rt-idle-bounded-fast-motion-untraced 25)
+[ -f "$u" ] && [ ! -e "$u.perf.data" ] && [ ! -e "$u.trace.dat" ] || fail "the untraced run was profiled" "$u.run.txt"
+# perf that does not start, or ends before the probe, stops the session.
+if FAKE_PERF_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 26 --duration 2 --modes profiled --runs current:100:rt-idle:fast-motion,cbp:100:rt-idle:fast \
+    </dev/null >"$ROOT/profiled-nostart.log" 2>&1; then
+  fail "a profiled run without perf went on" "$ROOT/profiled-nostart.log"
+fi
+b=$(base current-100hz-rt-idle-bounded-fast-motion-profiled 26)
+[ ! -e "$b" ] || fail "the probe ran without perf" "$ROOT/profiled-nostart.log"
+grep -q '^--- perf did not start ---' "$b.run.txt" && grep -q '^verdict: not run (tracer)' "$b.run.txt"
+[ ! -e "$(base cbp-100hz-rt-idle-bounded-fast-profiled 26).run.txt" ] || fail "a run started after perf failed"
+if FAKE_PERF_LIFE=4 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 27 --duration 8 --modes profiled --runs current:100:rt-idle:fast-motion \
+    </dev/null >"$ROOT/profiled-short.log" 2>&1; then
+  fail "a perf that ended early was accepted" "$ROOT/profiled-short.log"
+fi
+b=$(base current-100hz-rt-idle-bounded-fast-motion-profiled 27)
+grep -q '^verdict: tracer failure (perf ended before the probe did' "$b.run.txt" ||
+  fail "no tracer failure for perf in $b.run.txt" "$b.run.txt"
+# Only rt-* conditions pin the probe to the sampled CPU.
+if setsid tools/trace_session.sh "${PROFILE[@]}" --dry-run --modes profiled \
+    --runs current:100:idle:full </dev/null >"$ROOT/profiled-idle.log" 2>&1; then
+  fail "a profiled run without real-time scheduling was planned" "$ROOT/profiled-idle.log"
+fi
+grep -q 'use it with rt-\* conditions only' "$ROOT/profiled-idle.log"
+TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --dry-run --modes untraced,traced,profiled \
+  --runs current:1000:rt-loaded:fast-motion </dev/null >"$ROOT/profiled-plan.log" 2>&1 ||
+  fail "the profiled plan failed" "$ROOT/profiled-plan.log"
+grep -q '^plan: 3 runs' "$ROOT/profiled-plan.log"
+grep -q "^                      $FAKE/perf record -k mono -C 0 -F 4999 -g -o <log>.csv.perf.data" "$ROOT/profiled-plan.log" ||
+  fail "the plan does not name the perf command" "$ROOT/profiled-plan.log"
 
 # An emulator rehearsal traces without usbmon.
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \
