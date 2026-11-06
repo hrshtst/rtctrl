@@ -795,13 +795,13 @@ the session's exit statuses (3 when the cleanup cannot leave 1 ms).
 - the control ping at 1 ms was answered as usual. tcpdump stopped cleanly
   with no packet dropped, and the cleanup verified 1 ms.
 
-This strongly supports delayed delivery: at 0 ms the servo replied, and
-the adapter received the reply and held it, delivering it only once the
-timer was 1 ms again. When the adapter received it is not measured. So 0 ms
-is not a faster setting on this adapter: it withheld received data for at
-least 50 ms, and 1 ms is the lowest setting at which it delivered data. The
-latency timer therefore offers no way to shorten the quiet runs' wait for
-the adapter's next delivery, and 1 ms stays the working setting.
+This strongly supports delayed delivery: the servo replied, and the
+adapter delivered the reply only once the timer was 1 ms again. No payload
+was delivered for 50 ms after the ping; when the reply reached the adapter
+is not measured. So 0 ms is not a faster setting here, and 1 ms is the
+lowest working setting tested on this adapter and software configuration.
+This closes the latency timer experiment and keeps 1 ms as the working
+setting; it does not establish a general limit of the transport.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
