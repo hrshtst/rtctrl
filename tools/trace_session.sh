@@ -20,9 +20,13 @@
 # traced run does, plus the probe threads' timer arming (hrtimer_start,
 # hrtimer_cancel), sleep calls (clock_nanosleep and nanosleep entry and
 # exit) and page faults, each filtered to the probe's comm, the workqueue's
-# activations, and perf's samples of the real-time CPU with call chains on
-# the mono clock (perf record -k mono -C <cpu> -F <hz> -g). Afterwards the
-# worker's samples are written as text (perf script --tid). The traced mode's
+# activations, and perf's samples of the real-time CPU on the mono clock,
+# with call chains unwound from a copy of each sample's user stack (perf
+# record -k mono -C <cpu> -F <hz> --call-graph dwarf,<bytes>: the Release
+# build keeps no frame pointers). Afterwards, as root, the worker's samples
+# are written as text twice: their sampled instruction pointers
+# (<log>.csv.perf.txt) and their call chains (<log>.csv.perf.stacks.txt), and
+# perf's sample, lost and throttle counts go to the record. The traced mode's
 # events stay as they were, so its runs compare with earlier ones.
 # The tracers run on the CPUs outside the excluded set (the real-time CPU
 # and its SMT siblings by default), and read nothing on the bus.
@@ -81,7 +85,8 @@
 #   <log>.csv.trace.dat     trace-cmd record (traced runs)
 #   <log>.csv.usbmon.pcap   usbmon capture of the adapter (traced runs)
 #   <log>.csv.perf.data     perf samples of the real-time CPU (profiled runs)
-#   <log>.csv.perf.txt      the worker's samples as text (profiled runs)
+#   <log>.csv.perf.txt      the worker's sampled instruction pointers (profiled)
+#   <log>.csv.perf.stacks.txt  the worker's samples' call chains (profiled)
 # with <log> = rate-trace-<profile>-<rate>hz-<condition>-bounded<variant
 # tags>[-lt<ms>-s<step>]-<untraced|traced|profiled>-<date>-<attempt>. A run whose
 # .csv or .run.txt already exists was attempted: it is skipped, never
@@ -121,7 +126,8 @@ runs+=,current:1000:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motio
 runs+=,cbp:1000:rt-idle:fast
 modes=untraced,traced
 latency_steps=
-perf_hz=4999
+perf_hz=999
+perf_stack=4096
 duration=60
 rt_priority=80
 rt_cpu=3
@@ -155,6 +161,8 @@ usage: $0 [options]
                       faults and perf samples of the real-time CPU; rt-*
                       conditions only)
   --perf-hz N         a profiled run's perf sampling frequency (default $perf_hz)
+  --perf-stack B      bytes of user stack perf copies per sample for its DWARF
+                      unwinding, a multiple of 8 (default $perf_stack)
   --latency-steps L   the adapter experiment: each run once per step of the
                       adapter's USB latency timer in ms, 0 to 255 (for
                       example 1,0,1), restored on every exit (default: the
@@ -190,13 +198,14 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--outdir|--max-runnable|\
-    --stress-dir|--load-tail|--latency-steps|--perf-hz)
+    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
         --modes) modes=$2 ;;
         --latency-steps) latency_steps=$2 ;;
         --perf-hz) perf_hz=$2 ;;
+        --perf-stack) perf_stack=$2 ;;
         --duration) duration=$2 ;;
         --rt-priority) rt_priority=$2 ;;
         --rt-cpu) rt_cpu=$2 ;;
@@ -297,6 +306,8 @@ fi
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -gt 0 ] || die "--duration must be a positive integer"
 is_uint "$perf_hz" && [ "$perf_hz" -ge 100 ] && [ "$perf_hz" -le 20000 ] ||
   die "--perf-hz must be 100 to 20000"
+is_uint "$perf_stack" && [ "$perf_stack" -ge 1024 ] && [ "$perf_stack" -le 65528 ] &&
+  [ $((perf_stack % 8)) -eq 0 ] || die "--perf-stack must be a multiple of 8 from 1024 to 65528"
 if [ "$any_profiled" -eq 1 ] && [ "$all_rt" -ne 1 ]; then
   die "the profiled mode samples the real-time CPU: use it with rt-* conditions only"
 fi
@@ -428,7 +439,7 @@ profile_events=(
 profile_args=("${trace_args[@]}")
 for e in "${profile_events[@]}"; do profile_args+=(-e "$e" -f "comm == \"$probe_comm\""); done
 profile_args+=(-e workqueue:workqueue_activate_work)
-perf_args=(record -k mono -C "$rt_cpu" -F "$perf_hz" -g)
+perf_args=(record -k mono -C "$rt_cpu" -F "$perf_hz" --call-graph "dwarf,$perf_stack")
 # usbmon's mmapped header carries the device address at byte 11.
 usbmon_opts=(-i "usbmon$usb_bus" -Z root -s 0)
 usbmon_filter="link[11] == $usb_devnum"
@@ -848,7 +859,7 @@ run_one() {
   local profile=$1 rate=$2 cond=$3 variant=$4 mode=$5 step=${6:-} base csv note
   local loaded=0 probe_status check_status seen stress_out stress_status snap_pid
   local dat pcap lt_ms=${step%%:*} lt_out lt_status irq_before irq_after t_before t_after
-  local traced=0 profiled=0 perfdat perftxt targs
+  local traced=0 profiled=0 perfdat perftxt perfstacks targs
   case "$mode" in traced) traced=1 ;; profiled) traced=1; profiled=1 ;; esac
   base=$(log_base "$profile" "$rate" "$cond" "$variant" "$mode" "$step")
   csv="$outdir/$base.csv"
@@ -857,6 +868,7 @@ run_one() {
   pcap="$csv.usbmon.pcap"
   perfdat="$csv.perf.data"
   perftxt="$csv.perf.txt"
+  perfstacks="$csv.perf.stacks.txt"
   targs=("${trace_args[@]}")
   [ "$profiled" -eq 1 ] && targs=("${profile_args[@]}")
   run_outputs=()
@@ -1057,15 +1069,23 @@ run_one() {
       fi
       { echo; echo "--- perf (exit $perf_status, $([ "$perf_clean" -eq 1 ] && echo "a clean stop" || echo "NOT a clean stop")) ---"
         cat "$tmp/perf.out"; } >>"$note"
-      # The worker's samples as text, symbols resolved as root.
+      # The worker's samples as text, symbols resolved as root: the sampled
+      # instruction pointers alone, then with their call chains; and perf's
+      # own counts of samples, lost samples and throttling.
       wtid=$(sed -n 's/^worker_tid = //p' "$csv.summary.toml" 2>/dev/null)
       if [ -n "$wtid" ] && [ "$perf_clean" -eq 1 ]; then
+        local stacks_status
         priv "$PERF" script -i "$perfdat" --ns -G -F comm,tid,cpu,time,ip,sym,dso --tid "$wtid" \
           >"$perftxt" 2>"$tmp/perf-script.err"
         script_status=$?
-        echo "perf script --tid $wtid (exit $script_status): $(wc -l <"$perftxt") samples" >>"$note"
-        [ "$script_status" -eq 0 ] && [ -s "$perftxt" ] ||
-          tracer_problem+="${tracer_problem:+, }perf script exit $script_status"
+        priv "$PERF" script -i "$perfdat" --ns -F comm,tid,cpu,time,ip,sym,dso --tid "$wtid" \
+          >"$perfstacks" 2>>"$tmp/perf-script.err"
+        stacks_status=$?
+        echo "perf script --tid $wtid (exit $script_status): $(wc -l <"$perftxt") samples; with call chains (exit $stacks_status): $(grep -cE '\[[0-9]+\] +[0-9]+\.[0-9]+:' "$perfstacks") samples" >>"$note"
+        priv "$PERF" report -i "$perfdat" --stats 2>&1 | grep -E 'SAMPLE|LOST|THROTTLE' |
+          sed 's/^ */perf stats: /' >>"$note"
+        [ "$script_status" -eq 0 ] && [ -s "$perftxt" ] && [ "$stacks_status" -eq 0 ] && [ -s "$perfstacks" ] ||
+          tracer_problem+="${tracer_problem:+, }perf script exit $script_status/$stacks_status"
       elif [ "$probe_status" -eq 0 ]; then
         tracer_problem+="${tracer_problem:+, }no worker thread for perf script"
       fi

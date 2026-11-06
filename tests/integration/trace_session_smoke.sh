@@ -159,7 +159,8 @@ fi
 exit 0
 EOF
 # perf: record writes its file and runs until SIGINT, then reports and dies
-# of that signal, as perf does; script prints one sample of the --tid given.
+# of that signal, as perf does; script prints one sample of the --tid given
+# (with its call chain unless -G), and report --stats its counts.
 cat >"$FAKE/perf" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.perf"
@@ -178,9 +179,18 @@ case "$1" in
     if [ "$stop" -eq 1 ]; then trap - INT; kill -INT $$; fi
     exit 0 ;;
   script)
-    tid=
-    while [ $# -gt 0 ]; do case "$1" in --tid) tid=$2; shift ;; esac; shift; done
-    echo "   probe $tid [000]  1000.000100000:  ffffffff81000000 do_nanosleep ([kernel.kallsyms])"
+    tid=; flat=0
+    while [ $# -gt 0 ]; do case "$1" in --tid) tid=$2; shift ;; -G) flat=1 ;; esac; shift; done
+    if [ "$flat" -eq 1 ]; then
+      echo "   probe $tid [000]  1000.000100000:  ffffffff81000000 do_nanosleep ([kernel.kallsyms])"
+    else
+      printf '   probe %s [000]  1000.000100000:\n\tffffffff81000000 do_nanosleep ([kernel.kallsyms])\n\t55d000001234 Probe::run (/x7_bus_timing)\n\n' "$tid"
+    fi
+    exit 0 ;;
+  report)
+    echo "           SAMPLE events:         12"
+    echo "             LOST events:          0"
+    echo "         THROTTLE events:          0"
     exit 0 ;;
 esac
 EOF
@@ -687,15 +697,20 @@ TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --ye
   --duration 2 --modes untraced,profiled --runs current:100:rt-idle:fast-motion \
   </dev/null >"$ROOT/profiled.log" 2>&1 || fail "the profiled session failed" "$ROOT/profiled.log"
 b=$(base current-100hz-rt-idle-bounded-fast-motion-profiled 25)
-for f in "$b" "$b.run.txt" "$b.trace.dat" "$b.usbmon.pcap" "$b.perf.data" "$b.perf.txt"; do
+for f in "$b" "$b.run.txt" "$b.trace.dat" "$b.usbmon.pcap" "$b.perf.data" "$b.perf.txt" "$b.perf.stacks.txt"; do
   [ -s "$f" ] || fail "missing $f" "$ROOT/profiled.log"
 done
 grep -Eq '^verdict: (pass|fail)' "$b.run.txt" || fail "no verdict in $b.run.txt" "$b.run.txt"
-grep -q "^perf: $FAKE/perf record -k mono -C 0 -F 4999 -g -o $b.perf.data" "$b.run.txt" ||
+# (printf %q may quote the comma)
+grep -Eq "^perf: $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf\\\\?,4096 -o $b.perf.data" "$b.run.txt" ||
   fail "the record does not name the perf command" "$b.run.txt"
 grep -q '^--- perf (exit 130, a clean stop) ---' "$b.run.txt" || fail "perf's SIGINT stop not accepted" "$b.run.txt"
-grep -q "^perf script --tid $wtid (exit 0): 1 samples" "$b.run.txt"
+grep -q "^perf script --tid $wtid (exit 0): 1 samples; with call chains (exit 0): 1 samples" "$b.run.txt" ||
+  fail "the record does not count the worker's samples" "$b.run.txt"
+grep -q '^perf stats: LOST events: *0' "$b.run.txt" && grep -q '^perf stats: THROTTLE events: *0' "$b.run.txt" ||
+  fail "the record lacks perf's counts" "$b.run.txt"
 grep -q "probe $wtid \[000\]" "$b.perf.txt" || fail "the worker's samples are not written" "$b.perf.txt"
+grep -q 'Probe::run' "$b.perf.stacks.txt" || fail "the worker's call chains are not written" "$b.perf.stacks.txt"
 grep -q -- "-e timer:hrtimer_start -f comm == \"probe\" .*-e syscalls:sys_enter_clock_nanosleep -f comm == \"probe\" .*-e exceptions:page_fault_user -f comm == \"probe\" .*-e workqueue:workqueue_activate_work" "$ROOT/fake.trace-cmd" ||
   fail "trace-cmd was not given the profiled events" "$ROOT/fake.trace-cmd"
 grep -q '^unbound workqueues: cpumask ' "$b.run.txt"
@@ -725,11 +740,17 @@ if setsid tools/trace_session.sh "${PROFILE[@]}" --dry-run --modes profiled \
   fail "a profiled run without real-time scheduling was planned" "$ROOT/profiled-idle.log"
 fi
 grep -q 'use it with rt-\* conditions only' "$ROOT/profiled-idle.log"
+for bad in 1000 7 70000; do
+  if setsid tools/trace_session.sh "${PROFILE[@]}" --dry-run --modes profiled --perf-stack "$bad" \
+      --runs current:100:rt-idle:full </dev/null >"$ROOT/profiled-stack.log" 2>&1; then
+    fail "--perf-stack $bad was accepted" "$ROOT/profiled-stack.log"
+  fi
+done
 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --dry-run --modes untraced,traced,profiled \
   --runs current:1000:rt-loaded:fast-motion </dev/null >"$ROOT/profiled-plan.log" 2>&1 ||
   fail "the profiled plan failed" "$ROOT/profiled-plan.log"
 grep -q '^plan: 3 runs' "$ROOT/profiled-plan.log"
-grep -q "^                      $FAKE/perf record -k mono -C 0 -F 4999 -g -o <log>.csv.perf.data" "$ROOT/profiled-plan.log" ||
+grep -q "^                      $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf,4096 -o <log>.csv.perf.data" "$ROOT/profiled-plan.log" ||
   fail "the plan does not name the perf command" "$ROOT/profiled-plan.log"
 
 # An emulator rehearsal traces without usbmon.
