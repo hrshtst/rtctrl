@@ -90,7 +90,10 @@
 # with <log> = rate-trace-<profile>-<rate>hz-<condition>-bounded<variant
 # tags>[-lt<ms>-s<step>]-<untraced|traced|profiled>-<date>-<attempt>. A run whose
 # .csv or .run.txt already exists was attempted: it is skipped, never
-# retried.
+# retried. Since the output directory forgets the runs moved to the archive,
+# the session refuses to start if any planned <log>.csv already appears in
+# the archive manifest (docs/records/data-archive.md, or --manifest): a free
+# --attempt avoids the name.
 #
 # Privileged steps (trace-cmd, tcpdump, bpftrace, modprobe) go through sudo;
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
@@ -138,6 +141,7 @@ usbmon=1
 buffer_kb=16384
 date_tag=$(date +%Y%m%d)
 attempt=1
+manifest=docs/records/data-archive.md
 outdir=.
 max_runnable=3
 load_tail=15
@@ -180,6 +184,8 @@ usage: $0 [options]
   --buffer-kb N       trace-cmd buffer per CPU (default $buffer_kb)
   --date YYYYMMDD     date in the log names (default today, $date_tag)
   --attempt N         attempt number in the log names (default $attempt)
+  --manifest FILE     the archive manifest the log names must not repeat
+                      (default $manifest)
   --outdir DIR        where the logs go (default the repo root)
   --max-runnable N    quiet-machine threshold, mean runnable tasks
                       including this script (default $max_runnable)
@@ -197,7 +203,7 @@ die() { echo "trace_session: $*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
-    --port|--usb-device|--buffer-kb|--date|--attempt|--outdir|--max-runnable|\
+    --port|--usb-device|--buffer-kb|--date|--attempt|--manifest|--outdir|--max-runnable|\
     --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
@@ -216,6 +222,7 @@ while [ $# -gt 0 ]; do
         --buffer-kb) buffer_kb=$2 ;;
         --date) date_tag=$2 ;;
         --attempt) attempt=$2 ;;
+        --manifest) manifest=$2 ;;
         --outdir) outdir=$2 ;;
         --max-runnable) max_runnable=$2 ;;
         --stress-dir) stress_dir=$2 ;;
@@ -477,6 +484,31 @@ probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
 }
 
 total=$(( ${#run_list[@]} * ${#step_list[@]} * ${#mode_list[@]} ))
+
+# A planned log name already in the archive manifest would give a second
+# dataset that name: refused, as the prerequisites are (a dry run lists it).
+taken=()
+if [ -f "$manifest" ]; then
+  for spec in "${run_list[@]}"; do
+    IFS=: read -r p r c v <<<"$spec"
+    for step in "${step_list[@]}"; do
+      for m in "${mode_list[@]}"; do
+        b=$(log_base "$p" "$r" "$c" "$v" "$m" "$step")
+        grep -qF -- "\`$b.csv" "$manifest" && taken+=("$b")
+      done
+    done
+  done
+  if [ ${#taken[@]} -gt 0 ]; then
+    for b in "${taken[@]}"; do
+      echo "trace_session: $b.csv is already in the archive manifest $manifest" >&2
+    done
+    echo "trace_session: pass an --attempt whose log names are free" >&2
+  fi
+else
+  echo "trace_session: no archive manifest at $manifest to check the log names against (run from the repo root, or pass --manifest)" >&2
+  taken+=(none)
+fi
+[ ${#taken[@]} -eq 0 ] || [ "$dry_run" -eq 1 ] || exit 2
 
 if [ "$dry_run" -eq 1 ]; then
   echo "plan: $total runs (date $date_tag, attempt $attempt), tracers and -excl load on CPUs $other_cpus:"
