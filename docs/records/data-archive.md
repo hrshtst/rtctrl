@@ -1491,7 +1491,9 @@ Two sessions at `50e1169` (`tools/trace_session.sh --latency-steps`) on
 current at 500 Hz, rt-idle, with Fast Sync Read and the motion-only read:
 attempt 1 with the steps 1, 0 and 1 ms (both 1 ms runs, and the 0 ms run
 that stopped at the probe's startup inventory), and attempt 2, a traced
-repetition of the 0 ms step. The evidence for the phase-1 result; cited in
+repetition of the 0 ms step; then the hold diagnostic at `d761371`
+(`tools/latency_hold.py`, `rate-hold-20261106-1`). The evidence for the
+phase-1 and hold results; cited in
 [history.md](history.md#control-rate-traced-torque-off-diagnostics-2026-11-06).
 
 | file | role | sha256 |
@@ -1512,3 +1514,6 @@ repetition of the 0 ms step. The evidence for the phase-1 result; cited in
 | `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.tasks.txt` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), task snapshot | `f575f63475538c770aa538158978e3199ddf4135a99dc11d5d2dd7b278b3bb45` |
 | `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.trace.dat` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `7f9bb3b64d4a4a8a01812391db04453309afd90f8e76386eddcc480863e582be` |
 | `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.usbmon.pcap` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), the adapter's usbmon capture | `c85421e5d827d785a9e35095a2df8ead77daa2ef9a0c5e661c175ef36d3063fb` |
+| `rate-hold-20261106-1.csv` | latency hold diagnostic (servo 2, 50 ms windows), every write and read, raw bytes and monotonic time | `3e31d43698b809bdce820bdccb115cf09b6e8dc05148cde2a3535ea909698819` |
+| `rate-hold-20261106-1.csv.run.txt` | latency hold diagnostic (servo 2, 50 ms windows), the diagnostic's record | `99c2f70fe7aa22532983b5b8baacdc7169a3f2b7d5e94eb5df39b3a91eb63112` |
+| `rate-hold-20261106-1.csv.usbmon.pcap` | latency hold diagnostic (servo 2, 50 ms windows), the adapter's usbmon capture | `ba55e835234adf0c827f95dc59a7297a2744ca39c51686af68b4bbae76129466` |

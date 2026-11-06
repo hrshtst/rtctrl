@@ -781,6 +781,28 @@ diagnostic exits nonzero. From the verified start on, the cleanup verifies
 or restores 1 ms on every handled exit, before the recorder stops, with
 the session's exit statuses (3 when the cleanup cannot leave 1 ms).
 
+**Hold result, 2026-11-06.** At `d761371` (`rate-hold-20261106-1`):
+- the baseline ping at 1 ms got the servo's reply 1.07 ms later;
+- at 0 ms, held by the adapter (sysfs, its own value, the flag clear), the
+  one experimental ping was written whole, and for the next 50 ms the
+  adapter returned 2,495 bulk IN completions, about 50 per millisecond,
+  each with only its two status bytes;
+- with nothing sent and the port left as it was, the timer was set to
+  1 ms again: the deliveries returned to one per millisecond, and the
+  first, 0.77 ms after the setting request, carried the complete 14-byte
+  reply from servo 2 (CRC good), which the diagnostic read 0.46 ms after
+  the setting read back;
+- the control ping at 1 ms was answered as usual. tcpdump stopped cleanly
+  with no packet dropped, and the cleanup verified 1 ms.
+
+This strongly supports delayed delivery: at 0 ms the servo replied, and
+the adapter received the reply and held it, delivering it only once the
+timer was 1 ms again. When the adapter received it is not measured. So 0 ms
+is not a faster setting on this adapter: it withheld received data for at
+least 50 ms, and 1 ms is the lowest setting at which it delivered data. The
+latency timer therefore offers no way to shorten the quiet runs' wait for
+the adapter's next delivery, and 1 ms stays the working setting.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

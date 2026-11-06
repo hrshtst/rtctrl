@@ -815,6 +815,13 @@ or the adapter held or dropped the reply, is not resolved. 1 ms stays the
 working setting, and a hold diagnostic (`tools/latency_hold.py`) tests
 whether the adapter holds the reply at 0 ms.
 
+The hold diagnostic (`rate-hold-20261106-1`) answered it: at 0 ms the
+adapter returned only status bytes for the 50 ms after its one ping, then,
+with nothing further sent, delivered the servo's complete reply within a
+millisecond of its timer's return to 1 ms. At 0 ms the adapter withholds
+received data, so 1 ms is the lowest setting that delivers it, and the
+latency timer cannot shorten the wait for the adapter's next delivery.
+
 ## Consistency audit
 
 A post-closure audit (executed 2026-07-28, two commits) unified
