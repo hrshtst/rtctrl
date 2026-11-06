@@ -270,22 +270,29 @@ fi
 grep -q "fair server's settings for CPU 0 were not read" "$ROOT/nobpf.log"
 [ -z "$(ls -A "$OUT")" ] || fail "a session without the fair-server read left files"
 
-# A log name already in the archive manifest (here through a sidecar's row)
-# is refused before anything is sent, since the output directory forgets
-# the archived runs; so is a missing manifest. A dry run lists the name and
-# goes on.
+# A log name already in the archive manifest is refused before anything is
+# sent, since the output directory forgets the archived runs: through a
+# sidecar's bare row, and through a directory-qualified entry and citation.
+# Another attempt's name (10, not 1) is no collision. A missing manifest is
+# refused too, and a dry run lists the name and goes on.
 archived=rate-trace-current-100hz-idle-bounded-fast-motion-untraced-$DATE-1
-printf '| `%s.csv.run.txt` | archived run, session record | `0` |\n' "$archived" >"$ROOT/manifest.md"
-if setsid tools/trace_session.sh "${COMMON[@]}" --yes --runs "$RUNS" --manifest "$ROOT/manifest.md" \
-    </dev/null >"$ROOT/archived.log" 2>&1; then
-  fail "a session reusing an archived log name started" "$ROOT/archived.log"
-fi
-grep -q "^trace_session: $archived.csv is already in the archive manifest $ROOT/manifest.md" "$ROOT/archived.log" &&
-  grep -q 'pass an --attempt whose log names are free' "$ROOT/archived.log" ||
-  fail "no refusal of the archived log name" "$ROOT/archived.log"
-[ "$(grep -c 'is already in the archive manifest' "$ROOT/archived.log")" -eq 1 ] ||
-  fail "a free log name was refused" "$ROOT/archived.log"
-[ -z "$(ls -A "$OUT")" ] || fail "a session reusing an archived log name left files"
+other=rate-trace-current-100hz-idle-bounded-fast-motion-traced-$DATE-10
+printf '| `%s.csv.run.txt` | archived run, session record | `0` |\n| `%s.csv` | another attempt | `0` |\n' \
+  "$archived" "$other" >"$ROOT/manifest.md"
+printf '| `profiled_torque_off/%s.csv.run.txt` | archived | `0` |\ncited as profiled_torque_off/%s.csv.trace.dat and %s.csv\n' \
+  "$archived" "$archived" "$other" >"$ROOT/manifest-dirs.md"
+for mf in "$ROOT/manifest.md" "$ROOT/manifest-dirs.md"; do
+  if setsid tools/trace_session.sh "${COMMON[@]}" --yes --runs "$RUNS" --manifest "$mf" \
+      </dev/null >"$ROOT/archived.log" 2>&1; then
+    fail "a session reusing an archived log name ($mf) started" "$ROOT/archived.log"
+  fi
+  grep -q "^trace_session: $archived.csv is already in the archive manifest $mf" "$ROOT/archived.log" &&
+    grep -q 'pass an --attempt whose log names are free' "$ROOT/archived.log" ||
+    fail "no refusal of the archived log name ($mf)" "$ROOT/archived.log"
+  [ "$(grep -c 'is already in the archive manifest' "$ROOT/archived.log")" -eq 1 ] ||
+    fail "a free log name was refused ($mf)" "$ROOT/archived.log"
+  [ -z "$(ls -A "$OUT")" ] || fail "a session reusing an archived log name ($mf) left files"
+done
 if setsid tools/trace_session.sh "${COMMON[@]}" --yes --runs "$RUNS" --manifest "$ROOT/no-manifest.md" \
     </dev/null >"$ROOT/nomanifest.log" 2>&1; then
   fail "a session without the archive manifest started" "$ROOT/nomanifest.log"

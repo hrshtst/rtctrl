@@ -92,8 +92,9 @@
 # .csv or .run.txt already exists was attempted: it is skipped, never
 # retried. Since the output directory forgets the runs moved to the archive,
 # the session refuses to start if any planned <log>.csv already appears in
-# the archive manifest (docs/records/data-archive.md, or --manifest): a free
-# --attempt avoids the name.
+# the archive manifest (docs/records/data-archive.md, or --manifest), bare or
+# directory-qualified, itself or as a sidecar's prefix: a free --attempt
+# avoids the name.
 #
 # Privileged steps (trace-cmd, tcpdump, bpftrace, modprobe) go through sudo;
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
@@ -489,12 +490,17 @@ total=$(( ${#run_list[@]} * ${#step_list[@]} * ${#mode_list[@]} ))
 # dataset that name: refused, as the prerequisites are (a dry run lists it).
 taken=()
 if [ -f "$manifest" ]; then
+  # Every name the manifest holds, reduced to its basename: a table row's,
+  # a directory-qualified entry's or citation's, a sidecar's. A log is taken
+  # if its <log>.csv is one of them or the start of a sidecar's.
+  archived=$(grep -oE '[A-Za-z0-9._/+-]+' "$manifest" | sed 's#.*/##')
   for spec in "${run_list[@]}"; do
     IFS=: read -r p r c v <<<"$spec"
     for step in "${step_list[@]}"; do
       for m in "${mode_list[@]}"; do
         b=$(log_base "$p" "$r" "$c" "$v" "$m" "$step")
-        grep -qF -- "\`$b.csv" "$manifest" && taken+=("$b")
+        awk -v n="$b.csv" '$0 == n || index($0, n ".") == 1 { found = 1; exit }
+                           END { exit !found }' <<<"$archived" && taken+=("$b")
       done
     done
   done
