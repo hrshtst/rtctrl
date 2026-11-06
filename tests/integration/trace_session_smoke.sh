@@ -4,9 +4,10 @@
 # untraced/traced pairs and their records, the mono trace clock, the
 # usbmon device filter, the clock pairs, resuming without a retry, the
 # load (a stand-in stress-ng) starting after the recorders and pinned off
-# the excluded CPUs, and the stops when the fair server is not read, a
+# the excluded CPUs, the stops when the fair server is not read, a
 # tracer does not start, the trace clock is not mono, a recorder or the
-# load ends before the probe does, or the load fails. Functional only: a
+# load ends before the probe does, or the load fails, and an interrupted
+# session (Ctrl-C or SIGTERM) giving its outputs back. Functional only: a
 # pty answers instantly and the tracers record nothing real, so no verdict
 # is asserted. Real-time conditions need a real-time priority limit, so
 # they stay out of this test (the plan is checked with --dry-run).
@@ -122,6 +123,14 @@ EOF
 cat >"$FAKE/modprobe" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.modprobe"
+EOF
+# In sudo's place (TRACE_SESSION_SUDO): logs each privileged command and
+# runs it as the invoking user; its timestamp checks succeed.
+cat >"$FAKE/sudo" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in -v|-n) exit 0 ;; esac
+echo "$*" >>"$FAKE_LOG.sudo"
+exec "$@"
 EOF
 chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot" >"$ROOT/tracefs/trace_clock"
@@ -318,6 +327,49 @@ b=$(base current-100hz-loaded-bounded-traced 10)
 [ ! -e "$b" ] || fail "the probe ran without its recorder" "$ROOT/settle.log"
 grep -q 'trace-cmd ended before the run' "$ROOT/settle.log"
 grep -q '^verdict: not run (tracer)' "$b.run.txt"
+
+# An interrupted session stops its recorders and gives the run's outputs to
+# the invoking user, as every other path does: Ctrl-C reaches the whole
+# process group (the probe ends at once), SIGTERM only the script (its trap
+# runs once the probe's run ends). Through the stand-in sudo, so the
+# ownership handback is visible. Started in the background, the session
+# would ignore SIGINT (and bash cannot trap a signal ignored at entry); like
+# one started at a terminal, this one does not, and it leads its own
+# process group.
+for sig in INT TERM; do
+  case "$sig" in INT) attempt=11; target=group ;; TERM) attempt=12; target=script ;; esac
+  : >"$ROOT/fake.sudo"
+  TRACE_SESSION_SUDO="$FAKE/sudo" python3 -c '
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --yes \
+    --attempt "$attempt" --duration 4 --modes traced --runs current:100:idle:full,cbp:100:idle:full \
+    </dev/null >"$ROOT/int-$sig.log" 2>&1 &
+  pid=$!
+  b=$(base current-100hz-idle-bounded-traced "$attempt")
+  for _ in $(seq 1 300); do
+    grep -q '^clock pair before' "$b.run.txt" 2>/dev/null && break
+    sleep 0.1
+  done
+  grep -q '^clock pair before' "$b.run.txt" || fail "the probe never started" "$ROOT/int-$sig.log"
+  [ "$(ps -o pgid= -p "$pid" | tr -d ' ')" = "$pid" ] || fail "the session does not lead its process group"
+  sleep 1
+  if [ "$target" = group ]; then kill -INT -- "-$pid"; else kill -TERM "$pid"; fi
+  status=0
+  wait "$pid" || status=$?
+  [ "$status" -eq 130 ] || fail "the interrupted session exited $status" "$ROOT/int-$sig.log"
+  grep -q 'INTERRUPTED (counts as attempted)' "$ROOT/int-$sig.log" ||
+    fail "the interrupt was not reported" "$ROOT/int-$sig.log"
+  [ -s "$b.trace.dat" ] && [ -s "$b.usbmon.pcap" ] ||
+    fail "the interrupted run's recorders did not write their files" "$ROOT/int-$sig.log"
+  for f in "$b.trace.dat" "$b.usbmon.pcap"; do
+    grep -qxF "chown $(id -u):$(id -g) $f" "$ROOT/fake.sudo" ||
+      fail "$f was not given back after SIG$sig" "$ROOT/fake.sudo"
+  done
+  [ ! -e "$(base cbp-100hz-idle-bounded-traced "$attempt").run.txt" ] ||
+    fail "a run started after SIG$sig" "$ROOT/int-$sig.log"
+done
 
 # An emulator rehearsal traces without usbmon.
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \

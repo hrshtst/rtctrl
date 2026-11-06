@@ -529,8 +529,9 @@ Each run leaves `<log>.csv.run.txt` and `<log>.csv.tasks.txt` beside its log
 and summary, and a traced run also `<log>.csv.trace.dat` and
 `<log>.csv.usbmon.pcap`, with `<log>` =
 `rate-trace-<profile>-<rate>hz-<condition>-bounded<tags>-<untraced|traced>-<date>-<attempt>`.
-The privileged steps go through sudo; the probe runs as the invoking user.
-Before the arm, a rehearsal over `dxl_emu` checks the tracers and the clock
+The privileged steps go through sudo; the probe runs as the invoking user,
+and the session gives the trace and the capture to that user on every path,
+an interrupted session (Ctrl-C or SIGTERM) included. Before the arm, a rehearsal over `dxl_emu` checks the tracers and the clock
 correlation: `--port` the emulator's link (with Return Delay Time 0 written
 to the emulated servos) and `--usb-device` the adapter's sysfs directory,
 whose capture stays empty while nothing opens its port.
