@@ -289,6 +289,17 @@ set_tests_properties(timing_summary_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timing summary regressions OK"
   LABELS unit)
 
+# Traced-run correlation: the association and alignment checks, each of
+# their failures, and the receive path on a synthetic probe run and trace.
+add_test(NAME trace_correlate_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_trace_correlate.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(trace_correlate_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "trace correlate regressions OK"
+  LABELS unit)
+
 # SI profile flags: strict nonnegative doubles; raw and SI forms of
 # one register are mutually exclusive. Both reject before any bus
 # contact.
