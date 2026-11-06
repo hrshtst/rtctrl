@@ -29,13 +29,20 @@ Each window's payload is classified: a matching reply from the servo
 adapter (it does not timestamp the adapter's reception); no payload
 leaves reception, transmission and dropping unresolved.
 
-Cleanup on every handled exit (the end, an abort, Ctrl-C, SIGTERM,
-SIGHUP): the starting 1 ms is verified, and set again if another value is
-in effect. Exit status: 0 completed (whatever the outcome); 1 aborted (the
-baseline had no matching reply, a setting did not read back, or the
-recorder failed); 2 refused before anything was sent; 3 completed but the
-cleanup did not leave 1 ms; 130 interrupted. A failed cleanup is reported
-whatever the status.
+Once the starting 1 ms is verified, before the baseline ping, the cleanup
+is owed: on every handled exit (the end, an abort, Ctrl-C, SIGTERM,
+SIGHUP) the 1 ms is verified, and set again if another value is in effect.
+A ping that is not written whole (a short write or a write error) aborts
+the sequence, as does any other transport error: no ping is retried, so
+the experimental ping stays the only one. The capture is evidence only if
+tcpdump stopped with status 0, the capture holds packets and tcpdump
+reports no drop; otherwise the result is marked invalid. Exit status: 0
+completed with valid evidence (whatever the outcome); 1 aborted (the
+baseline had no matching reply, a ping was not written whole, a transport
+error, a setting did not read back) or the evidence is invalid; 2 refused
+before anything was sent; 3 the cleanup did not leave 1 ms; 130
+interrupted. A failed cleanup or invalid evidence is reported whatever the
+status, and a stop, a cleanup failure or an interruption keeps its status.
 
 Outputs in --outdir (gitignored in the repo root): <base>.csv (every write
 and read), <base>.csv.run.txt (the record) and <base>.csv.usbmon.pcap,
@@ -238,9 +245,17 @@ class Hold:
         return self.check(phase, ms)
 
     def ping(self, phase: str) -> None:
+        """One ping, written whole or the sequence aborts (never retried:
+        the experimental ping must stay the only one)."""
         pkt = ping_packet(self.servo_id)
-        n = self.serial.write(pkt)
-        self.log(phase, "write", f"ping id {self.servo_id}, {n} of {len(pkt)} bytes", pkt[:n])
+        try:
+            n = self.serial.write(pkt)
+        except OSError as e:
+            self.log(phase, "write", f"ping id {self.servo_id} failed: {e}")
+            raise Aborted(f"{phase}: the ping was not written ({e})") from e
+        self.log(phase, "write", f"ping id {self.servo_id}, {n} of {len(pkt)} bytes", pkt[:max(0, n)])
+        if n != len(pkt):
+            raise Aborted(f"{phase}: a short write ({n} of {len(pkt)} bytes); no ping is retried")
 
     def observe(self, phase: str) -> bytes:
         deadline = self.clock.now() + self.window_ns
@@ -265,6 +280,9 @@ class Hold:
         if not holds(st, WORKING_MS):
             raise Refused(f"the adapter's latency timer is not the working {WORKING_MS} ms "
                           f"with the flag clear ({state_text(st)}): nothing was sent")
+        # From here the cleanup verifies the working value, and sets it again
+        # if anything (the baseline included) changed it.
+        self.owed = True
         # 1. The baseline at 1 ms.
         self.serial.flush_input()
         self.log("baseline", "flush")
@@ -324,6 +342,9 @@ class Hold:
             status = 2
         except Aborted as e:
             self.note(f"aborted: {e}")
+            status = 1
+        except (OSError, termios.error) as e:
+            self.note(f"aborted: a transport error: {e}")
             status = 1
         except Interrupted:
             self.note("interrupted")
@@ -414,6 +435,24 @@ class Recorder:
             out, _ = self.proc.communicate()
         self.output += (out or "").splitlines()
         return self.proc.returncode
+
+
+def capture_problems(rc, pcap: pathlib.Path, output: list[str]) -> list[str]:
+    """Why the usbmon capture is not usable evidence (none: it is)."""
+    problems = []
+    if rc != 0:
+        problems.append(f"tcpdump exited {rc}")
+    if not pcap.exists():
+        problems.append("no capture file")
+    elif pcap.stat().st_size <= 24:  # the pcap header alone
+        problems.append("the capture holds no packet")
+    dropped = [int(m.split()[0]) for m in output if m.strip().endswith("packets dropped by kernel")
+               and m.split()[0].isdigit()]
+    if not dropped:
+        problems.append("tcpdump reported no drop count")
+    elif dropped[-1] > 0:
+        problems.append(f"{dropped[-1]} packets dropped by kernel")
+    return problems
 
 
 def config_port_baud(config: pathlib.Path) -> tuple[str, int]:
@@ -533,17 +572,27 @@ def main(argv: list[str]) -> int:
         if serial is not None:
             serial.close()
         record.append(f"clock pair after: {clock_pair()}")
-        rc = recorder.stop()
+        # The restore and the close are done; now the recorder.
+        try:
+            rc = recorder.stop()
+        except (OSError, subprocess.SubprocessError) as e:
+            rc = None
+            record.append(f"tcpdump did not stop: {e}")
         record.append(f"--- tcpdump (exit {rc}) ---")
         record += recorder.output
+        invalid = capture_problems(rc, pcap, recorder.output) if hold is not None else []
         if loaded_usbmon:
             subprocess.run([os.environ.get("MODPROBE", "modprobe"), "-r", "usbmon"])
         if hold is not None:
             if hold.cleanup_ok is False and status == 0:
                 status = 3
+            if invalid and status == 0:
+                status = 1
             record.append("--- sequence ---")
             record += hold.notes
-            record.append(f"outcome: {hold.outcome()}")
+            if invalid:
+                record.append("capture: INVALID EVIDENCE: " + "; ".join(invalid))
+            record.append(f"outcome: {'INVALID EVIDENCE; observed: ' if invalid else ''}{hold.outcome()}")
             hold.write_csv(base)
         record.append(f"exit status: {status}")
         note_path.write_text("\n".join(record) + "\n")
@@ -554,7 +603,9 @@ def main(argv: list[str]) -> int:
         for line in (hold.notes if hold is not None else []):
             print(line)
         if hold is not None:
-            print(f"outcome: {hold.outcome()}")
+            if invalid:
+                print("capture: INVALID EVIDENCE: " + "; ".join(invalid))
+            print(f"outcome: {'INVALID EVIDENCE; observed: ' if invalid else ''}{hold.outcome()}")
         print(f"record: {note_path} (exit status {status})")
         for s, h in previous.items():
             signal.signal(s, h)

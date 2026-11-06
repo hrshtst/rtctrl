@@ -772,9 +772,14 @@ and `CLOCK_MONOTONIC` time (`rate-hold-<date>-<attempt>.csv`, with
 `.csv.run.txt` and `.csv.usbmon.pcap`). A matching reply after the switch,
 before anything further is sent, supports delayed delivery by the adapter,
 though it does not timestamp the adapter's reception; no payload leaves
-reception, transmission and dropping unresolved. The cleanup verifies or
-restores 1 ms on every handled exit, with the session's exit statuses (3
-when the cleanup cannot leave 1 ms).
+reception, transmission and dropping unresolved. A ping not written whole
+aborts the sequence, as does any other transport error: no ping is
+retried, so the experimental ping stays the only one. The result counts as
+evidence only if tcpdump stopped cleanly, the capture holds packets and
+tcpdump reports no drop; otherwise it is marked invalid and the
+diagnostic exits nonzero. From the verified start on, the cleanup verifies
+or restores 1 ms on every handled exit, before the recorder stops, with
+the session's exit statuses (3 when the cleanup cannot leave 1 ms).
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

@@ -6,10 +6,16 @@ on a simulated monotonic clock, and the real sequence runs on it: a reply
 held at 0 ms and delivered after the switch to 1 ms, no payload, a partial
 and a corrupt payload, a reply at 0 ms, a setting that does not read back
 or cannot be written, a cleanup that cannot restore 1 ms, an interruption,
-a refusal and a silent baseline. Pinned: the Protocol 2.0 ping and its
-CRC, the payload classes, that only pings are sent, that nothing is sent
-or flushed between the 0 ms ping and the end of the window after the
-switch, the cleanup and the exit statuses.
+a refusal and a silent baseline, a baseline that changes the timer, pings
+not written whole (short, zero or failed writes) and a read error. Through
+main(), with the port, the timer, privileges and the recorder replaced:
+valid evidence, and a recorder that fails to stop, a missing or empty
+capture, reported drops or no drop count, each invalidating the result
+with the restore and close still done first. Pinned: the Protocol 2.0 ping
+and its CRC, the payload classes, that only pings are sent, that nothing
+is sent or flushed between the 0 ms ping and the end of the window after
+the switch, that nothing is sent after an abort, the cleanup and the exit
+statuses.
 
 With --emulator DXL_EMU, the real serial port class runs instead, on
 dxl_emu's pseudo-terminal (only the latency timer stands in): its
@@ -17,13 +23,17 @@ configuration, exclusive open, reads against monotonic deadlines and
 flushes, with the emulated servo answering every ping.
 """
 
+import contextlib
 import importlib.util
+import io
 import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 import time
+import types
+from unittest.mock import patch
 
 sys.path.insert(0, "tools")
 spec = importlib.util.spec_from_file_location("lh", "tools/latency_hold.py")
@@ -231,6 +241,140 @@ def emulator(emu: str) -> int:
     return 0
 
 
+class FaultySerial(Serial):
+    """Fails the n-th write: a return value, or an exception to raise."""
+
+    def __init__(self, a: Adapter, n: int, result) -> None:
+        super().__init__(a)
+        self.n, self.result, self.attempts = n, result, 0
+
+    def write(self, data):
+        self.attempts += 1
+        if self.attempts == self.n:
+            if isinstance(self.result, BaseException):
+                raise self.result
+            if self.result > 0:
+                self.a.events.append(("write", data[:self.result]))
+            return self.result
+        return super().write(data)
+
+
+def write_faults() -> None:
+    for n, phase in ((1, "baseline"), (2, "zero")):
+        for result, words in ((0, "short write (0 of 10"), (4, "short write (4 of 10"),
+                              (OSError(5, "Input/output error"), "the ping was not written")):
+            clock = Clock()
+            a = Adapter(clock, "held")
+            serial = FaultySerial(a, n, result)
+            hold = lh.Hold(serial, Latency(a), clock, 2, 50 * MS)
+            status = hold.run()
+            what = f"{phase} write {result!r}"
+            expect(status == 1 and any(words in x for x in hold.notes), f"{what}: {status} {hold.notes}")
+            expect(serial.attempts == n, f"{what}: nothing written after the abort ({serial.attempts})")
+            expect(a.state() == (1, 1, False) and not hold.owed, f"{what}: 1 ms left")
+            expect("zero" not in hold.result if n == 2 else "baseline" not in hold.result,
+                   f"{what}: no observation of a ping not sent")
+    # A read error is a transport error, with the cleanup done.
+    clock = Clock()
+    a = Adapter(clock, "held")
+
+    class BadRead(Serial):
+        def read(self, timeout_ns):
+            if sum(1 for e in a.events if e[0] == "write") >= 2:
+                raise OSError(5, "Input/output error")
+            return super().read(timeout_ns)
+    hold = lh.Hold(BadRead(a), Latency(a), clock, 2, 50 * MS)
+    status = hold.run()
+    expect(status == 1 and any("a transport error" in x for x in hold.notes), f"read error: {hold.notes}")
+    expect(a.state() == (1, 1, False) and any("restored to 1 ms" in x for x in hold.notes), "restored after it")
+
+
+def through_main(rc=0, pcap="packets", output=None, drift_at=None):
+    """main() with the port, the timer, privileges and the recorder replaced.
+    Returns its status, the record, and the order of close and stop."""
+    clock = Clock()
+    a = Adapter(clock, "held")
+    order = []
+    if drift_at is not None:
+        def drift():
+            a.device = 0
+            a.set_fail.add(1)
+        a.on_write = {drift_at: drift}
+    if output is None:
+        output = ["3564 packets captured", "3564 packets received by filter", "0 packets dropped by kernel"]
+
+    class Port(Serial):
+        def close(self):
+            order.append("close")
+
+    class Meta:
+        bus, devnum, vid, pid, bcd, channel = 1, 4, "0403", "6014", 0x900, 1
+
+        def read_sysfs(self):
+            return a.sysfs
+
+        def read_device(self):
+            return a.device
+
+        def write_sysfs(self, ms):
+            a.set(ms)
+
+    class Recorder:
+        def __init__(self, bus, devnum, path, tcpdump):
+            self.path, self.cmd, self.output = path, ["stand-in-tcpdump"], ["listening on usbmon1"]
+
+        def wait_ready(self, seconds):
+            return True
+
+        def alive(self):
+            return True
+
+        def stop(self):
+            order.append("stop")
+            if pcap == "packets":
+                self.path.write_bytes(b"\0" * 24 + b"\1" * 80)
+            elif pcap == "header":
+                self.path.write_bytes(b"\0" * 24)
+            self.output += output
+            return rc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = io.StringIO()
+        with patch.object(lh.os, "geteuid", return_value=0), \
+                patch.object(lh.lt, "Adapter", return_value=Meta()), \
+                patch.object(lh, "Serial", return_value=Port(a)), \
+                patch.object(lh, "Clock", return_value=clock), \
+                patch.object(lh, "Recorder", Recorder), \
+                patch.object(lh.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)), \
+                patch.object(lh.os, "chown"), contextlib.redirect_stdout(out):
+            status = lh.main(["--yes", "--port", os.path.join(tmp, "tty"), "--outdir", tmp,
+                              "--date", "20000101"])
+        record = pathlib.Path(tmp, "rate-hold-20000101-1.csv.run.txt").read_text()
+    return status, record, order, out.getvalue(), a
+
+
+def main_orchestration() -> None:
+    status, record, order, out, a = through_main()
+    expect(status == 0 and "exit status: 0" in record, f"valid evidence: {status}\n{record}")
+    expect("outcome: a matching reply arrived only after the switch to 1 ms" in record
+           and "INVALID" not in record + out, "the outcome stands")
+    expect(order == ["close", "stop"] and a.state() == (1, 1, False), "closed before the recorder stops")
+    for kw, words in (({"rc": 7}, "tcpdump exited 7"), ({"pcap": None}, "no capture file"),
+                      ({"pcap": "header"}, "the capture holds no packet"),
+                      ({"output": ["10 packets captured", "3 packets dropped by kernel"]},
+                       "3 packets dropped by kernel"),
+                      ({"output": ["10 packets captured"]}, "tcpdump reported no drop count")):
+        status, record, order, out, a = through_main(**kw)
+        expect(status == 1 and "exit status: 1" in record, f"{kw}: status {status}")
+        expect(f"capture: INVALID EVIDENCE: {words}" in record and "outcome: INVALID EVIDENCE; observed:" in record
+               and "INVALID EVIDENCE" in out, f"{kw}: {record}")
+        expect(order == ["close", "stop"] and "cleanup: latency timer verified at 1 ms" in record
+               and a.state() == (1, 1, False), f"{kw}: the restore and close come first")
+    # A cleanup failure keeps status 3 with invalid evidence too.
+    status, record, order, out, a = through_main(rc=7, drift_at=3)
+    expect(status == 3 and "NOT restored" in record and "INVALID EVIDENCE" in record, f"3 kept: {status}")
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--emulator":
         return emulator(sys.argv[2])
@@ -314,6 +458,24 @@ def main() -> int:
     status, hold, a = run("silent")
     expect(status == 1 and any("baseline ping had no matching reply" in n for n in hold.notes), "silent baseline")
     expect(not any(e[0] == "set" for e in a.events) and not hold.owed, "the timer untouched")
+    expect(any(n.startswith("cleanup: latency timer verified at 1 ms") for n in hold.notes),
+           "the silent baseline's cleanup verifies 1 ms")
+    # A baseline that changes the timer is caught by the cleanup, owed from
+    # the verified start on.
+    clock = Clock()
+    a = Adapter(clock, "silent")
+
+    def to16():
+        a.sysfs = a.device = 16
+    a.on_write = {1: to16}
+    hold = lh.Hold(Serial(a), Latency(a), clock, 2, 50 * MS)
+    status = hold.run()
+    expect(status == 1 and a.state() == (1, 1, False), f"baseline drift: {status} {a.state()}")
+    expect([e[1] for e in a.events if e[0] == "set"] == [1] and hold.cleanup_ok
+           and any("restored to 1 ms" in n for n in hold.notes), f"restored after the drift: {hold.notes}")
+
+    write_faults()
+    main_orchestration()
 
     # The command line refuses without root, and bad arguments.
     if lh.os.geteuid() != 0:
