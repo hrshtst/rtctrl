@@ -42,7 +42,7 @@
 //       [--fine-timer-slack]
 //       [--read-path legacy|bounded [--budget-ms B] [--guard-ms G]
 //        [--feedback full|motion [--aux-interval-ms A]]
-//        [--read-instruction sync|fast]]
+//        [--read-instruction sync|fast] [--expect-latency-timer-ms L]]
 //
 // --read-path chooses how the grouped feedback read receives (control-rate
 // Phase R). legacy (the default) is the DynamixelSDK's receive, as at
@@ -54,7 +54,11 @@
 // write the probe then checks, read-only, every servo's Return Delay Time
 // (0 assumed), Status Return Level, baud register and the adapter's
 // latency timer (hw::checkBusProfile), and refuses on a mismatch. The
-// powered sessions' Bus Watchdog rule does not apply here: the probe runs
+// latency timer is expected at 1 ms, as on every bounded read path;
+// --expect-latency-timer-ms L (0 to 255) expects L instead, for the
+// torque-off adapter experiment that sets it (tools/trace_session.sh
+// --latency-steps). The summary records the expected and the read value.
+// The// powered sessions' Bus Watchdog rule does not apply here: the probe runs
 // torque-off and leaves the watchdog alone. The bounded read's counters
 // go to the summary's [bounded_read] table.
 //
@@ -185,6 +189,10 @@ struct Args {
   bool aux_given = false;
   // --read-instruction fast (Phase B3): Fast Sync Read.
   bool fast = false;
+  // --expect-latency-timer-ms: the adapter latency timer the bus profile
+  // check expects (1 ms, as on every bounded read path, unless given).
+  int expect_latency_timer_ms = 1;
+  bool latency_given = false;
 };
 
 bool parseArgs(const std::vector<const char*>& rest, Args* a) {
@@ -261,6 +269,16 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
         return false;
       }
       (flag == "--rate-hz" ? a->rate_hz : a->duration_s) = d;
+    } else if (flag == "--expect-latency-timer-ms") {
+      if (!value(&v)) return false;
+      long n = 0;
+      if (!x7::parseStrictLong(v, &n) || n < 0 || n > 255) {
+        std::fprintf(stderr, "%s: an integer from 0 to 255: %s\n",
+                     flag.c_str(), v);
+        return false;
+      }
+      a->expect_latency_timer_ms = static_cast<int>(n);
+      a->latency_given = true;
     } else if (flag == "--rt-priority" || flag == "--rt-cpu") {
       if (!value(&v)) return false;
       long n = 0;
@@ -319,6 +337,12 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
   }
   if (a->aux_given && !a->motion_only) {
     std::fprintf(stderr, "--aux-interval-ms needs --feedback motion\n");
+    return false;
+  }
+  if (a->latency_given && !a->bounded) {
+    std::fprintf(stderr, "--expect-latency-timer-ms needs --read-path "
+                         "bounded (only its bus profile checks the "
+                         "adapter)\n");
     return false;
   }
   if (!(a->aux_interval_ms >= 0.0 && a->aux_interval_ms <= 60000.0)) {
@@ -961,6 +985,12 @@ int main(int argc, char* argv[]) {
   if (args.bounded) {
     hw::BusProfile profile;
     profile.fast_sync_read = args.fast;
+    profile.required_latency_timer_ms = args.expect_latency_timer_ms;
+    if (args.latency_given) {
+      std::printf("bounded read: expecting an adapter latency timer of %d ms "
+                  "(--expect-latency-timer-ms; the bounded read requires 1 otherwise)\n",
+                  args.expect_latency_timer_ms);
+    }
     if (!hw::checkBusProfile(*port, ids, config.baudrate, profile,
                              &profile_report, &error)) {
       std::fprintf(stderr, "refusing: bounded read: %s\n", error.c_str());
@@ -1250,6 +1280,10 @@ int main(int argc, char* argv[]) {
                  static_cast<unsigned long long>(b.recoveries),
                  static_cast<unsigned long long>(b.guard_waits),
                  static_cast<unsigned long long>(b.inhibited));
+    std::fprintf(summary,
+                 "# the latency timer the profile check expected (1 unless "
+                 "--expect-latency-timer-ms)\nexpected_latency_timer_ms = %d\n",
+                 args.expect_latency_timer_ms);
     if (profile_report.latency_timer_ms) {
       std::fprintf(summary, "latency_timer_ms = %d\n",
                    *profile_report.latency_timer_ms);

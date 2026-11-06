@@ -314,6 +314,31 @@ for kind in production calibration; do
   grep -q 'the device exposes no latency timer' "$ROOT/bounded-$kind.log"
 done
 grep -q '^ack_invalid = 0' "$ROOT/bounded-calibration.csv.summary.toml"
+grep -q '^expected_latency_timer_ms = 1' "$ROOT/bounded-production.csv.summary.toml"
+
+# The adapter experiment's expected latency timer: 0 to 255, on the
+# bounded path only, and recorded (a pty exposes no timer to compare).
+for bad in 256 -1 1.5; do
+  if "$PROBE" --port "$LINK" --read-path bounded --rate-hz 100 \
+      --profile current --duration 0.2 --expect-latency-timer-ms "$bad" \
+      --log "$ROOT/latency-bad.csv" >"$ROOT/latency-bad.log" 2>&1; then
+    fail "--expect-latency-timer-ms $bad was accepted"
+  fi
+  grep -q 'an integer from 0 to 255' "$ROOT/latency-bad.log"
+done
+if "$PROBE" --port "$LINK" --rate-hz 100 --profile current --duration 0.2 \
+    --expect-latency-timer-ms 0 --log "$ROOT/latency-legacy.csv" \
+    >"$ROOT/latency-legacy.log" 2>&1; then
+  fail "--expect-latency-timer-ms was accepted on the legacy path"
+fi
+grep -q 'expect-latency-timer-ms needs --read-path bounded' "$ROOT/latency-legacy.log"
+test ! -e "$ROOT/latency-legacy.csv"
+"$PROBE" --port "$LINK" --read-path bounded --rate-hz 100 --profile current \
+  --duration 0.3 --expect-latency-timer-ms 0 --log "$ROOT/latency-0.csv" \
+  >"$ROOT/latency-0.log" 2>&1 || fail "the run expecting 0 ms failed" "$ROOT/latency-0.log"
+grep -q 'expecting an adapter latency timer of 0 ms' "$ROOT/latency-0.log"
+grep -q '^expected_latency_timer_ms = 0' "$ROOT/latency-0.csv.summary.toml"
+grep -q '^latency_timer_verified = false' "$ROOT/latency-0.csv.summary.toml"
 grep -q '^read_path = "legacy"' "$ROOT/run.csv.summary.toml"
 grep -q '^feedback = "full"' "$ROOT/run.csv.summary.toml"
 

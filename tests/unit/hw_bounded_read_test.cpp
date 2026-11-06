@@ -203,6 +203,13 @@ TEST_CASE("activation refuses a bus the bounded read cannot rely on, "
     io.latency = 16;
     expected_error = "latency timer is 16 ms";
   }
+  SECTION("an adapter latency timer of 0 ms") {
+    // A session on the bounded read keeps requiring 1 ms: an experiment's
+    // 0 ms setting left on the adapter is refused before any write (the
+    // 100 Hz path reads no latency timer).
+    io.latency = 0;
+    expected_error = "latency timer is 0 ms, not 1";
+  }
   SECTION("a servo that keeps another watchdog interval") {
     io.watchdog_ignored_by = 6;
     expected_error = "id 6 Bus Watchdog reads 4, not the programmed 5";
@@ -240,6 +247,35 @@ TEST_CASE("Fast Sync Read is accepted from firmware v45", "[hw][bounded]") {
   REQUIRE(arm.activate());
   CHECK(arm.boundedReadArmed());
   CHECK(arm.busDiscovery().profile.latency_timer_ms == 1);
+}
+
+TEST_CASE("a latency timer other than 1 ms passes only when expected",
+          "[hw][bounded]") {
+  // The torque-off probe's experiment option sets the expected value; the
+  // profile's default stays 1 ms.
+  const auto config = craneConfig();
+  auto bus = busFor(config, 47);
+  setReturnDelay(bus, 0);
+  BoundedIO io(bus);
+  std::vector<std::uint8_t> ids;
+  for (const auto& j : config.joints) ids.push_back(j.id);
+  io.latency = 0;
+  hw::BusProfile profile;
+  hw::BusProfileReport report;
+  std::string error;
+  CHECK(profile.required_latency_timer_ms == 1);
+  CHECK_FALSE(hw::checkBusProfile(io, ids, config.baudrate, profile, &report,
+                                  &error));
+  CHECK(contains(error, "latency timer is 0 ms, not 1"));
+  profile.required_latency_timer_ms = 0;
+  error.clear();
+  CHECK(hw::checkBusProfile(io, ids, config.baudrate, profile, &report,
+                            &error));
+  CHECK(report.latency_timer_ms == 0);
+  io.latency = 1;
+  CHECK_FALSE(hw::checkBusProfile(io, ids, config.baudrate, profile, &report,
+                                  &error));
+  CHECK(contains(error, "latency timer is 1 ms, not 0"));
 }
 
 TEST_CASE("the longest bus silence must stay below the programmed watchdog "
