@@ -15,9 +15,10 @@ the bus checks that activation makes before arming it, and the probe on the
 bounded path. Its torque-off runs on 2026-11-04 closed it for development
 (below); so far only the torque-off probe uses the bounded read. The
 selected communication options, the motion-only read (B2) and Fast Sync
-Read (B3), were measured torque-off on 2026-11-05 (below). Targeted USB and
-scheduler diagnostics come next; the rate-derived safety options (Phase C)
-are still to come. No rate above 100 Hz is qualified,
+Read (B3), were measured torque-off on 2026-11-05 (below), and targeted USB
+and scheduler diagnostics ran torque-off on 2026-11-06 (below); the
+rate-derived safety options (Phase C) are still to come. No rate above
+100 Hz is qualified,
 and every rate other than 100 Hz prints an experimental warning.
 
 ## What the numbers mean
@@ -531,10 +532,106 @@ and summary, and a traced run also `<log>.csv.trace.dat` and
 `rate-trace-<profile>-<rate>hz-<condition>-bounded<tags>-<untraced|traced>-<date>-<attempt>`.
 The privileged steps go through sudo; the probe runs as the invoking user,
 and the session gives the trace and the capture to that user on every path,
-an interrupted session (Ctrl-C or SIGTERM) included. Before the arm, a rehearsal over `dxl_emu` checks the tracers and the clock
-correlation: `--port` the emulator's link (with Return Delay Time 0 written
-to the emulated servos) and `--usb-device` the adapter's sysfs directory,
-whose capture stays empty while nothing opens its port.
+an interrupted session (Ctrl-C or SIGTERM) included. Before the arm, a
+rehearsal over `dxl_emu` checks the tracers and the clock correlation:
+`--port` the emulator's link (with Return Delay Time 0 written to the
+emulated servos) and `--usb-device` the adapter's sysfs directory, whose
+capture stays empty while nothing opens its port.
+
+`uv run --project tools tools/trace_correlate.py <log>.csv` analyses a
+traced run. It first checks association and alignment, and exits nonzero if
+any check fails:
+- each wake of the worker by its sleep timer (a waking inside that timer's
+  callback) belongs, one to one, to the probe's sleep that contains it (from
+  the previous cycle's end to the wake stamp); the expiry's trace time, the
+  timer's own `CLOCK_MONOTONIC` time, the cycle's scheduled wake, the
+  worker's switch-in and the probe's wake stamp must fall in causal order.
+  A cycle without a wake must have begun without sleeping: its scheduled
+  wake had passed, and the worker never left the CPU;
+- the adapter's bulk OUT submissions pair one to one, in order, with the
+  probe's read instructions and writes, each between the probe's stamps
+  around its call;
+- each Fast Sync Read's bulk IN completions add up to its reply (the
+  adapter's two status bytes per packet removed), and no data arrives
+  outside a read.
+
+These checks show consistency, not a calibrated accuracy bound. The tool
+then follows each reply from the adapter's last USB completion through the
+USB completion work, the TTY work that moves the bytes to the line
+discipline (`flush_to_ldisc`, matched by the port's work item and followed
+per kernel worker through its end) and the worker's resumption. It locates
+each read's time before the first USB completion, between completions or
+after the last one, and attributes each overrun to the largest of these,
+the wake lateness and the write.
+
+**Torque-off runs, 2026-11-06.** At commit `b593b4d`, `tools/trace_session.sh`
+ran its default plan: 14 runs of 60 s, seven conditions each untraced and
+then traced. Every run completed without a read or write failure, timeout,
+malformed reply or ring drop, and every recorder and load lasted its run
+and exited 0. Every traced run recorded on the mono clock with no overrun or
+dropped event on any of the 32 CPUs and no usbmon packet dropped, and its
+clock pairs moved by at most 6 ns. Every run failed T2 and T6a, and all but
+the two 500 Hz idle runs failed T1. `tools/trace_correlate.py` passed on all
+seven traced runs. In the three 1000 Hz runs, 3, 1 and 2 cycles began
+without sleeping, their scheduled wake 0.05 to 0.23 us after the previous
+cycle's end.
+
+| Traced run | Replies in two completions | Before the first completion, p50 | After the last completion, p50 / p99 / max | TTY work's wait for its worker, p50 / p99 / max | Host transaction, p50 / p99.9 / max |
+|---|---|---|---|---|---|
+| current, 500 Hz, rt-idle | 52% | 636 us | 7.8 us / 137 us / 2.03 ms | 2.0 us / 107 us / 2.02 ms | 1.187 / 1.793 / 3.560 ms |
+| current, 500 Hz, rt-loaded | 45% | 707 us | 318 us / 1.01 ms / 3.08 ms | 309 us / 999 us / 3.07 ms | 1.956 / 3.960 / 4.006 ms |
+| current, 500 Hz, rt-loaded-excl | 51% | 649 us | 10.2 us / 593 us / 2.89 ms | 2.2 us / 585 us / 2.88 ms | 1.192 / 2.826 / 4.344 ms |
+| current, 1000 Hz, rt-idle | 37% | 726 us | 7.0 us / 70 us / 168 us | 1.5 us / 63 us / 161 us | 0.994 / 1.714 / 1.796 ms |
+| current, 1000 Hz, rt-loaded | 47% | 719 us | 114 us / 995 us / 3.83 ms | 105 us / 985 us / 3.82 ms | 1.366 / 3.948 / 5.170 ms |
+| current, 1000 Hz, rt-loaded-excl | 37% | 728 us | 10.3 us / 718 us / 2.90 ms | 2.2 us / 709 us / 2.89 ms | 1.013 / 3.084 / 4.432 ms |
+| cbp, 1000 Hz, rt-idle | 81% | 655 us | 7.1 us / 72 us / 169 us | 1.5 us / 65 us / 163 us | 1.495 / 1.989 / 2.062 ms |
+
+- **Before the last USB completion.** The adapter returned data to the host
+  once a millisecond, with data or with only its two status bytes: 60,339
+  bulk IN completions in the 60 s of the 500 Hz idle traced run, consecutive
+  ones 978 to 1022 us apart (1st to 99th percentile). That matches the
+  adapter's 1 ms latency timer; the trace and usbmon see only the host side,
+  not the RS-485 line. A reply waited in the adapter for the next
+  completion, and one that straddled a completion arrived in two, 998 to
+  999 us apart at the median. So a read takes its wire time plus up to
+  about 1 ms before the host has it. At 1000 Hz, 70 to 74% of the overruns
+  are dominated by the time between completions and 26 to 28% by the time
+  before the first; 29,985 of the cbp run's 30,001 cycles overran, so it ran
+  at 500 Hz.
+- **After the last USB completion.** Idle, the host delivered the data to
+  the worker within 7.0 to 7.8 us at the median. Each read's last step waits
+  for the TTY work on a normal-priority kernel worker that may run on any
+  CPU: in 93% or more of each run's reads the worker was blocked in that
+  work's flush when the work ended, and was woken by that kernel worker.
+  Under the full load the TTY work waited for its kernel worker 309 us
+  (500 Hz) and 105 us (1000 Hz) at the median, up to 3.8 ms; in the slowest
+  reads its kernel worker was switched in after stress-ng and other tasks.
+  Keeping the load off CPUs 2 and 3 restored the median (2.2 us) but not
+  the tail (p99 585 and 709 us, up to 2.9 ms), and some of the slowest
+  reads' TTY work ran on CPUs 2 and 3. At 500 Hz under the full load, 205
+  of the 450 overruns are dominated by this time, 183 by the time between
+  completions and 62 by the time before the first; under the `-excl` load,
+  238 of 300 by the time between completions and 62 by this time.
+- **Tracing overhead.** The tracers run on the CPUs outside 2 and 3, among
+  the load. Idle, a traced run's host transaction matched its untraced
+  pair's within 0.06 ms at p50 and p99.9. Under the full load the traced
+  median was higher (500 Hz: 1.956 against 1.567 ms; 1000 Hz: 1.366
+  against 1.215 ms); under either load the p99.9 stayed within 0.15 ms of
+  the untraced pair's, and the 500 Hz `-excl` run skipped 303 periods traced
+  against 151 untraced.
+- **Wake lateness.** The one T5 failure (traced, 1000 Hz, full load: max
+  1.427 ms) comes from 15 cycles, 0.53 to 1.43 ms late, within 1.2 s (42.2
+  to 43.4 s into the run). In each, the worker reached its sleep 0.5 to
+  1.6 ms after its cycle ended and its timer then expired on time from
+  there; it stayed on CPU 3 until then, and the recorded events do not show
+  what it did. Its untraced pair's wake lateness stayed within 0.034 ms.
+- **The 50 ms stall** of 2026-11-05 did not recur: the longest host
+  transaction was 5.170 ms. The fair server's involvement in it stays a
+  hypothesis.
+
+These are exploratory torque-off measurements. They change no setting and
+qualify no rate; the receive budget, the guard and the wake allowance stay
+as decided.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
