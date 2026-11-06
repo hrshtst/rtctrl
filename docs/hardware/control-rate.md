@@ -559,10 +559,15 @@ These checks show consistency, not a calibrated accuracy bound. The tool
 then follows each reply from the adapter's last USB completion through the
 USB completion work, the TTY work that moves the bytes to the line
 discipline (`flush_to_ldisc`, matched by the port's work item and followed
-per kernel worker through its end) and the worker's resumption. It locates
-each read's time before the first USB completion, between completions or
-after the last one, and attributes each overrun to the largest of these,
-the wake lateness and the write.
+per kernel worker through its end) and the worker's resumption. When the
+completion work queued no TTY work (it was already pending), the TTY work's
+queue time is not in the trace, and that read's wait is reported apart,
+never as a queue wait. The tool locates each read's time before the first
+USB completion, between completions or after the last one; for each
+overrun it reports the largest measured of these parts, the wake lateness
+and the write, which locates the time but does not identify its cause. It
+also counts the adapter's bulk IN completions within the run and their
+spacing.
 
 **Torque-off runs, 2026-11-06.** At commit `b593b4d`, `tools/trace_session.sh`
 ran its default plan: 14 runs of 60 s, seven conditions each untraced and
@@ -574,57 +579,75 @@ clock pairs moved by at most 6 ns. Every run failed T2 and T6a, and all but
 the two 500 Hz idle runs failed T1. `tools/trace_correlate.py` passed on all
 seven traced runs. In the three 1000 Hz runs, 3, 1 and 2 cycles began
 without sleeping, their scheduled wake 0.05 to 0.23 us after the previous
-cycle's end.
+cycle's end stamp.
 
-| Traced run | Replies in two completions | Before the first completion, p50 | After the last completion, p50 / p99 / max | TTY work's wait for its worker, p50 / p99 / max | Host transaction, p50 / p99.9 / max |
-|---|---|---|---|---|---|
-| current, 500 Hz, rt-idle | 52% | 636 us | 7.8 us / 137 us / 2.03 ms | 2.0 us / 107 us / 2.02 ms | 1.187 / 1.793 / 3.560 ms |
-| current, 500 Hz, rt-loaded | 45% | 707 us | 318 us / 1.01 ms / 3.08 ms | 309 us / 999 us / 3.07 ms | 1.956 / 3.960 / 4.006 ms |
-| current, 500 Hz, rt-loaded-excl | 51% | 649 us | 10.2 us / 593 us / 2.89 ms | 2.2 us / 585 us / 2.88 ms | 1.192 / 2.826 / 4.344 ms |
-| current, 1000 Hz, rt-idle | 37% | 726 us | 7.0 us / 70 us / 168 us | 1.5 us / 63 us / 161 us | 0.994 / 1.714 / 1.796 ms |
-| current, 1000 Hz, rt-loaded | 47% | 719 us | 114 us / 995 us / 3.83 ms | 105 us / 985 us / 3.82 ms | 1.366 / 3.948 / 5.170 ms |
-| current, 1000 Hz, rt-loaded-excl | 37% | 728 us | 10.3 us / 718 us / 2.90 ms | 2.2 us / 709 us / 2.89 ms | 1.013 / 3.084 / 4.432 ms |
-| cbp, 1000 Hz, rt-idle | 81% | 655 us | 7.1 us / 72 us / 169 us | 1.5 us / 65 us / 163 us | 1.495 / 1.989 / 2.062 ms |
+| Traced run | Replies in two completions | Before the first completion, p50 | After the last completion, p50 / p99 / max | TTY work's queue wait, p50 / p99 / max | Reads without a TTY queue event | Host transaction, p50 / p99.9 / max |
+|---|---|---|---|---|---|---|
+| current, 500 Hz, rt-idle | 52% | 636 us | 7.8 us / 137 us / 2.03 ms | 2.0 us / 107 us / 2.02 ms | 23 | 1.187 / 1.793 / 3.560 ms |
+| current, 500 Hz, rt-loaded | 45% | 707 us | 318 us / 1.01 ms / 3.08 ms | 307 us / 991 us / 3.07 ms | 106 | 1.956 / 3.960 / 4.006 ms |
+| current, 500 Hz, rt-loaded-excl | 51% | 649 us | 10.2 us / 593 us / 2.89 ms | 2.2 us / 566 us / 2.88 ms | 24 | 1.192 / 2.826 / 4.344 ms |
+| current, 1000 Hz, rt-idle | 37% | 726 us | 7.0 us / 70 us / 168 us | 1.5 us / 63 us / 161 us | 1 | 0.994 / 1.714 / 1.796 ms |
+| current, 1000 Hz, rt-loaded | 47% | 719 us | 114 us / 995 us / 3.83 ms | 104 us / 969 us / 3.82 ms | 80 | 1.366 / 3.948 / 5.170 ms |
+| current, 1000 Hz, rt-loaded-excl | 37% | 728 us | 10.3 us / 718 us / 2.90 ms | 2.2 us / 707 us / 2.89 ms | 43 | 1.013 / 3.084 / 4.432 ms |
+| cbp, 1000 Hz, rt-idle | 81% | 655 us | 7.1 us / 72 us / 169 us | 1.5 us / 65 us / 163 us | 2 | 1.495 / 1.989 / 2.062 ms |
 
-- **Before the last USB completion.** The adapter returned data to the host
-  once a millisecond, with data or with only its two status bytes: 60,339
-  bulk IN completions in the 60 s of the 500 Hz idle traced run, consecutive
-  ones 978 to 1022 us apart (1st to 99th percentile). That matches the
-  adapter's 1 ms latency timer; the trace and usbmon see only the host side,
-  not the RS-485 line. A reply waited in the adapter for the next
-  completion, and one that straddled a completion arrived in two, 998 to
-  999 us apart at the median. So a read takes its wire time plus up to
-  about 1 ms before the host has it. At 1000 Hz, 70 to 74% of the overruns
-  are dominated by the time between completions and 26 to 28% by the time
-  before the first; 29,985 of the cbp run's 30,001 cycles overran, so it ran
-  at 500 Hz.
+The queue wait is measured on the reads whose USB completion work queued
+the TTY work. For the others the work was already pending, its queue time
+is not in the trace, and the wait from the completion work's start is
+reported apart (up to 2.6 ms under load); the after-last-completion column
+includes every read.
+
+- **Before the last USB completion.** The adapter's bulk IN completions,
+  with data or with only its two status bytes, came at a nominal 1 ms
+  cadence: 60,002 within each traced run's 59.999 s, consecutive ones 999
+  to 1000 us apart at the median. As the host observed them, their spacing
+  ranged from 744 to 1203 us in the idle and `-excl` runs, and more widely
+  under the full load (218 to 1817 us). The cadence matches the configured
+  latency timer (1 ms). A reply that straddled a completion arrived in two,
+  998 to 999 us apart at the median, which supports the replies waiting in
+  the adapter's buffer for its next delivery; the trace and usbmon see the
+  host side only, so the RS-485 arrival times are not measured. The time
+  before the first completion includes the instruction's transport, the
+  wire, the servos' turnaround, that buffering and the host's USB
+  processing. The latency timer is a setting, and whether the adapter
+  delivers sooner with a lower one is untested: these runs do not establish
+  a 1 kHz limit of the hardware. At 1000 Hz the time between completions
+  was the largest measured part of 70 to 74% of the overruns, and the time
+  before the first of 26 to 28%; 29,985 of the cbp run's 30,001 cycles
+  overran, so it ran at 500 Hz.
 - **After the last USB completion.** Idle, the host delivered the data to
   the worker within 7.0 to 7.8 us at the median. Each read's last step waits
   for the TTY work on a normal-priority kernel worker that may run on any
   CPU: in 93% or more of each run's reads the worker was blocked in that
   work's flush when the work ended, and was woken by that kernel worker.
-  Under the full load the TTY work waited for its kernel worker 309 us
-  (500 Hz) and 105 us (1000 Hz) at the median, up to 3.8 ms; in the slowest
-  reads its kernel worker was switched in after stress-ng and other tasks.
-  Keeping the load off CPUs 2 and 3 restored the median (2.2 us) but not
-  the tail (p99 585 and 709 us, up to 2.9 ms), and some of the slowest
-  reads' TTY work ran on CPUs 2 and 3. At 500 Hz under the full load, 205
-  of the 450 overruns are dominated by this time, 183 by the time between
-  completions and 62 by the time before the first; under the `-excl` load,
-  238 of 300 by the time between completions and 62 by this time.
+  Under the full load the TTY work's queue wait was 307 us (500 Hz) and
+  104 us (1000 Hz) at the median, up to 3.8 ms; in the slowest reads its
+  kernel worker was switched in after stress-ng and other tasks. Keeping the
+  load off CPUs 2 and 3 restored the median (2.2 us) but not the tail (p99
+  566 and 707 us, up to 2.9 ms), and some of the slowest reads' TTY work ran
+  on CPUs 2 and 3. At 500 Hz under the full load, this time was the largest
+  measured part of 205 of the 450 overruns, the time between completions of
+  183 and the time before the first of 62; under the `-excl` load, the time
+  between completions of 238 of 300 and this time of 62.
 - **Tracing overhead.** The tracers run on the CPUs outside 2 and 3, among
   the load. Idle, a traced run's host transaction matched its untraced
   pair's within 0.06 ms at p50 and p99.9. Under the full load the traced
   median was higher (500 Hz: 1.956 against 1.567 ms; 1000 Hz: 1.366
   against 1.215 ms); under either load the p99.9 stayed within 0.15 ms of
   the untraced pair's, and the 500 Hz `-excl` run skipped 303 periods traced
-  against 151 untraced.
+  against 151 untraced. With one pair per condition, these differences
+  suggest that the tracing perturbs a loaded run; they do not isolate its
+  cost.
 - **Wake lateness.** The one T5 failure (traced, 1000 Hz, full load: max
   1.427 ms) comes from 15 cycles, 0.53 to 1.43 ms late, within 1.2 s (42.2
   to 43.4 s into the run). In each, the worker reached its sleep 0.5 to
-  1.6 ms after its cycle ended and its timer then expired on time from
-  there; it stayed on CPU 3 until then, and the recorded events do not show
-  what it did. Its untraced pair's wake lateness stayed within 0.034 ms.
+  1.6 ms after its cycle-end stamp, which precedes the cycle's bookkeeping
+  and the sleep call, and its timer then expired on time from there. It was
+  not descheduled in between; that does not show that the probe's code ran
+  throughout (interrupts or time in the kernel remain possible), and the
+  recorded events do not show what it did. Its untraced pair's wake
+  lateness stayed within 0.034 ms. The trace does not implicate the fair
+  server or the tracing itself.
 - **The 50 ms stall** of 2026-11-05 did not recur: the longest host
   transaction was 5.170 ms. The fair server's involvement in it stays a
   hypothesis.

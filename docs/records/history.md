@@ -782,19 +782,25 @@ alignment) ran seven conditions, each untraced and traced, 60 s
 each, with no transport error and no lost trace event or usbmon packet.
 `tools/trace_correlate.py` associated every timer wake, bulk transfer and
 reply completion with the probe's own stamps in all seven traced runs. The
-read's time is mostly before the host has the data: the adapter returned
-data once a millisecond, as its 1 ms latency timer would, so a reply waited
-there for the next completion and one straddling a completion arrived in
-two, about 1 ms apart (37 to 81% of the replies). At 1000 Hz that time
-dominated every overrun but a few hundred, and 29,985 of the cbp run's
-30,001 cycles overran, holding it at 500 Hz. Idle, the host then delivered the data to the worker
+read's time is mostly before the host has the data: the adapter delivered
+at a nominal 1 ms cadence, matching its configured 1 ms latency timer, and
+a reply straddling a delivery arrived in two, about 1 ms apart (37 to 81%
+of the replies), which supports the replies waiting in its buffer (the
+RS-485 side is not observed, and whether a lower latency setting delivers
+sooner is untested, so no 1 kHz hardware limit is established). At
+1000 Hz the time before the last completion was the largest measured part
+of every overrun but a few hundred, and 29,985 of the cbp run's 30,001
+cycles overran, holding it at 500 Hz. Idle, the host then delivered the data to the worker
 within about 8 us at the median, but each read's last step waits for the
 TTY work (`flush_to_ldisc`) on a normal-priority kernel worker: under the
-full load that wait was 105 to 309 us at the median and up to 3.8 ms, and
+full load its queue wait was 104 to 307 us at the median and up to 3.8 ms
+(reads whose TTY work was already pending, without a queue time, are
+reported apart), and
 keeping the load off CPUs 2 and 3 removed the median wait but not the tail
 (up to 2.9 ms). The 50 ms stall did not recur (longest host transaction
 5.170 ms), and one traced loaded run's late wakes (to 1.427 ms) came from
-the worker reaching its sleep late, for reasons the events do not show.
+the worker reaching its sleep up to 1.6 ms after its cycle-end stamp, for
+reasons the events do not show.
 These are exploratory measurements; the details are in the
 [control-rate qualification](../hardware/control-rate.md#traced-torque-off-diagnostics).
 
