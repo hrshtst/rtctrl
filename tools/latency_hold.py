@@ -48,8 +48,9 @@ Outputs in --outdir (gitignored in the repo root): <base>.csv (every write
 and read), <base>.csv.run.txt (the record) and <base>.csv.usbmon.pcap,
 with <base> = rate-hold-<date>-<attempt>. A <base>.csv that already
 appears in the archive manifest (docs/records/data-archive.md, or
---manifest) is refused, since the output directory forgets the archived
-runs: pass a free --attempt.
+--manifest), bare or directory-qualified, itself or as a sidecar's prefix,
+is refused, since the output directory forgets the archived runs: pass a
+free --attempt.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ import datetime
 import fcntl
 import os
 import pathlib
+import re
 import select
 import signal
 import subprocess
@@ -472,6 +474,17 @@ def config_port_baud(config: pathlib.Path) -> tuple[str, int]:
     return port, baud
 
 
+def archived(manifest: str, name: str) -> bool:
+    """Whether the manifest holds the file name: every name-like token,
+    reduced to its basename (a table row's, a directory-qualified entry's
+    or citation's), equal to it or the start of its sidecar's."""
+    for token in re.findall(r"[A-Za-z0-9._/+-]+", manifest):
+        base = token.rsplit("/", 1)[-1]
+        if base == name or base.startswith(name + "."):
+            return True
+    return False
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("--port", help="serial port (default: config/crane_x7.toml's)")
@@ -514,7 +527,7 @@ def main(argv: list[str]) -> int:
         print(f"latency_hold: no archive manifest at {a.manifest} to check the output names against "
               f"({e.strerror}): run from the repo root, or pass --manifest", file=sys.stderr)
         return 2
-    if f"`{base.name}" in manifest:
+    if archived(manifest, base.name):
         print(f"latency_hold: {base.name} is already in the archive manifest {a.manifest}; "
               "pass a new --attempt", file=sys.stderr)
         return 2

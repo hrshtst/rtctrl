@@ -485,20 +485,25 @@ def main() -> int:
     write_faults()
     main_orchestration()
 
-    # An output name already in the archive manifest (here through a
-    # sidecar's row), or a missing manifest, is refused before anything is
-    # sent or set; another name is not.
+    # An output name already in the archive manifest, through a sidecar's
+    # bare row, a directory-qualified entry or a directory-qualified citation,
+    # or a missing manifest, is refused before anything is sent or set;
+    # another attempt's names (2 and 10, not 1) are not.
     row = "| `rate-hold-20000101-1.csv.usbmon.pcap` | archived | `0` |\n"
-    for manifest, what in ((row, "an archived name"), ("missing", "a missing manifest")):
+    qualified = "| `latency_timer/rate-hold-20000101-1.csv.run.txt` | archived | `0` |\n"
+    cited = "as cited in latency_timer/rate-hold-20000101-1.csv.\n"
+    for manifest, what in ((row, "a bare row"), (qualified, "a qualified entry"), (cited, "a qualified citation"),
+                           ("missing", "a missing manifest")):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             status, record, order, out, a = through_main(manifest=manifest)
         expect(status == 2 and record == "" and order == [] and a.state() == (1, 1, False)
                and a.events == [], f"{what}: refused untouched ({status}, {order}, {a.state()})")
-        expect(("is already in the archive manifest" if manifest == row else "no archive manifest at")
+        expect(("no archive manifest at" if manifest == "missing" else "is already in the archive manifest")
                in err.getvalue(), f"{what}: {err.getvalue()}")
-    status, *_ = through_main(manifest=row.replace("20000101-1", "20000101-2"))
-    expect(status == 0, f"a free name runs: {status}")
+    for other in ("20000101-2", "20000101-10"):
+        status, *_ = through_main(manifest=row.replace("20000101-1", other) + qualified.replace("20000101-1", other))
+        expect(status == 0, f"a free name runs beside attempt {other}: {status}")
 
     # The command line refuses without root, and bad arguments.
     if lh.os.geteuid() != 0:
