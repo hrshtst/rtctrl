@@ -71,6 +71,21 @@ completions within the run (from the first cycle's wake to the last
 cycle's end) give the cadence at which it delivered data or status, and
 the xHCI interrupt handlers and USB completion work in the run (for every
 device on the controller) the host's USB work.
+
+Placement: for each read's last completion, the xHCI interrupt's CPU, the
+USB completion work's context (at interrupt exit or in ksoftirqd), the TTY
+work's kernel worker and CPU, and that worker's waking after the work was
+queued (or that it was already awake) and its switch-in: the queue wait
+splits into before the waking, from the waking to the switch-in (the run
+queue) and from the switch-in to the work. Summaries by CPU, and the parts
+of the queue waits of 100 us or more.
+
+Sleep timing (profiled runs, tools/trace_session.sh --modes profiled): from
+each cycle's end stamp to the worker's sleep call (clock_nanosleep or
+nanosleep), and for the latest wakes the call, the arming of its timer, the
+page faults and the worker's perf samples (<run>.csv.perf.txt) in between.
+The cycle-end stamp precedes the cycle's bookkeeping and the sleep call,
+and not being descheduled does not show that the probe's code ran.
 """
 
 from __future__ import annotations
@@ -129,6 +144,12 @@ class Trace:
         self.kworker_in: dict[int, list] = {}  # pid -> [(ts, cpu, prev comm, prev state)]
         self.irq_open: dict[int, tuple] = {}  # cpu -> (entry ts, irq) of an xHCI handler
         self.xhci_irq: list[tuple] = []        # (entry ts, handler duration)
+        self.kworker_wake: dict[int, list] = {}  # pid -> [(ts, waker comm, waker cpu, target cpu)]
+        # A profiled run's worker events: sleep-call entries, timer arming
+        # (ts, expires) of its hrtimer_wakeup timers, and page faults.
+        self.sleep_calls: list[int] = []
+        self.timer_arms: list[tuple] = []
+        self.faults: list[tuple] = []
         self.lines = 0
 
     def feed(self, line: str) -> None:
@@ -150,7 +171,13 @@ class Trace:
                 stack.pop()
         elif ev == "sched_waking":
             p = PID.search(rest)
-            if not p or int(p[1]) != self.tid:
+            if not p:
+                return
+            if int(p[1]) != self.tid:
+                if rest.startswith("comm=kworker/"):
+                    tc = re.search(r"target_cpu=(\d+)", rest)
+                    self.kworker_wake.setdefault(int(p[1]), []).append(
+                        (ts, m["comm"], cpu, int(tc[1]) if tc else -1))
                 return
             stack = self.expiring.get(cpu)
             if stack and stack[-1][2] and stack[-1][1] is not None:
@@ -183,6 +210,16 @@ class Trace:
                     self.out_done.setdefault(u["urb"], []).append(ts)
             elif ev == "xhci_urb_giveback":
                 self.in_done.append((ts, cpu, int(u["actual"])))
+        elif ev in ("sys_enter_clock_nanosleep", "sys_enter_nanosleep"):
+            if pid == self.tid:
+                self.sleep_calls.append(ts)
+        elif ev == "hrtimer_start":
+            if pid == self.tid and "function=hrtimer_wakeup" in rest:
+                x = re.search(r"\bexpires=(\d+)", rest)
+                self.timer_arms.append((ts, int(x[1]) if x else None))
+        elif ev in ("page_fault_user", "page_fault_kernel"):
+            if pid == self.tid:
+                self.faults.append((ts, ev))
         elif ev == "irq_handler_entry":
             if "name=xhci" in rest:
                 n = re.search(r"irq=(\d+)", rest)
@@ -202,7 +239,7 @@ class Trace:
             e = EXEC.search(rest)
             if e:
                 key = self.context(flags, cpu, pid)
-                self.work_stack.setdefault(key, []).append((e["work"], e["fn"], ts, pid, cpu))
+                self.work_stack.setdefault(key, []).append((e["work"], e["fn"], ts, pid, cpu, m["comm"]))
         elif ev == "workqueue_execute_end":
             e = EXEC.search(rest)
             if not e:
@@ -210,9 +247,9 @@ class Trace:
             stack = self.work_stack.get(self.context(flags, cpu, pid), [])
             for i in range(len(stack) - 1, -1, -1):
                 if stack[i][0] == e["work"]:
-                    work, fn, start, wpid, wcpu = stack.pop(i)
+                    work, fn, start, wpid, wcpu, wcomm = stack.pop(i)
                     if fn in self.executions:
-                        self.executions[fn].append((start, ts, wpid, wcpu, work))
+                        self.executions[fn].append((start, ts, wpid, wcpu, work, wcomm))
                     break
             else:
                 self.work_anomalies += 1
@@ -403,11 +440,11 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
     data = [d for d in data if d[2] > 0]
     data_ts = [d[0] for d in data]
     bh = {}
-    for start, end, _, cpu, _ in tr.executions[BH_WORK]:
-        bh.setdefault(cpu, []).append((start, end))
+    for start, end, _, cpu, _, comm in tr.executions[BH_WORK]:
+        bh.setdefault(cpu, []).append((start, end, comm))
     for v in bh.values():
         v.sort()
-    bh_starts = {cpu: [s for s, _ in v] for cpu, v in bh.items()}
+    bh_starts = {cpu: [s for s, *_ in v] for cpu, v in bh.items()}
     queued = sorted(tr.tty_queued)
     queued_ts = [q[0] for q in queued]
     # Other TTYs (terminals, ptys) run flush_to_ldisc too: the adapter's
@@ -441,16 +478,16 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
             continue
         first, (last, last_cpu, _) = mine[0][0], mine[-1]
         x = {"cycle": int(r["cycle"]), "row": i, "read_len": int(r["read_len"]),
-             "completions": len(mine), "read_start": o + int(r["read_start_ns"]),
+             "completions": len(mine), "irq_cpu": last_cpu, "read_start": o + int(r["read_start_ns"]),
              "submit": submit, "instr_done": done, "first": first, "last": last,
              "last_reply": last_reply, "read_end": stamp(r, "read_end_ns", o)}
         # The USB completion work on the interrupt's CPU: running then, or next.
         st = bh_starts.get(last_cpu, [])
         k = bisect.bisect_right(st, last) - 1
         if k >= 0 and bh[last_cpu][k][1] >= last:
-            x["bh_start"], x["bh_end"] = bh[last_cpu][k]
+            x["bh_start"], x["bh_end"], x["bh_comm"] = bh[last_cpu][k]
         elif k + 1 < len(st):
-            x["bh_start"], x["bh_end"] = bh[last_cpu][k + 1]
+            x["bh_start"], x["bh_end"], x["bh_comm"] = bh[last_cpu][k + 1]
         # The TTY work queued from it (none if it was already pending).
         q = bisect.bisect_left(queued_ts, last)
         while "bh_end" in x and q < len(queued) and queued[q][0] <= x["bh_end"]:
@@ -480,7 +517,16 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
             kin = tr.kworker_in.get(x["tty_pid"], [])
             kk = bisect.bisect_right([e[0] for e in kin], x["tty_start"]) - 1
             if kk >= 0:
-                x["kworker_in"], _, x["kworker_prev"], _ = kin[kk]
+                x["kworker_in"], x["kworker_in_cpu"], x["kworker_prev"], _ = kin[kk]
+            # Its waking after the work was queued, if it slept: else it was
+            # already awake (running or runnable).
+            since = x.get("tty_queue", x.get("bh_start", last))
+            kw = tr.kworker_wake.get(x["tty_pid"], [])
+            kj = bisect.bisect_right([e[0] for e in kw], x["tty_start"]) - 1
+            if kj >= 0 and kw[kj][0] >= since:
+                x["kworker_woken"], x["kworker_waker"], _, x["kworker_target"] = kw[kj]
+            else:
+                x["kworker_awake"] = True
         rec.append(x)
     lo, hi = o + int(rows[0]["wake_ns"]), o + int(rows[-1]["cycle_end_ns"])
     stray = [k for k, d in enumerate(data) if lo <= d[0] <= hi and k not in assigned]
@@ -521,7 +567,7 @@ def port_work_item(data: list, bh: dict, queued: list) -> str | None:
     """The TTY work item queued most often by the USB completion work that
     follows the adapter's data completions."""
     counts: dict[str, int] = {}
-    starts = {cpu: [s for s, _ in v] for cpu, v in bh.items()}
+    starts = {cpu: [s for s, *_ in v] for cpu, v in bh.items()}
     queued_ts = [q[0] for q in queued]
     for ts, cpu, _ in data:
         st = starts.get(cpu, [])
@@ -530,7 +576,7 @@ def port_work_item(data: list, bh: dict, queued: list) -> str | None:
             k += 1
         if k >= len(st):
             continue
-        start, end = bh[cpu][k]
+        start, end = bh[cpu][k][:2]
         q = bisect.bisect_left(queued_ts, max(ts, start))
         while q < len(queued) and queued[q][0] <= end:
             if queued[q][1] == cpu:
@@ -563,6 +609,13 @@ def segments(x: dict) -> dict:
         # No queue event: the work was already pending, so its queue time is
         # unknown. Not a queue wait; reported apart from tty_queue_to_start.
         put("bh_to_tty_start_no_queue", "bh_start", "tty_start")
+    # The TTY work's kernel worker: before its waking, from its waking to
+    # its switch-in (the run queue), from its switch-in to the work.
+    if "tty_queue" in x and "kworker_woken" in x:
+        put("tty_queue_to_kworker_waking", "tty_queue", "kworker_woken")
+        if x.get("kworker_in", -1) >= x["kworker_woken"]:
+            put("kworker_waking_to_switch_in", "kworker_woken", "kworker_in")
+            put("kworker_switch_in_to_tty_start", "kworker_in", "tty_start")
     return s
 
 
@@ -659,11 +712,126 @@ def tr_switch_in(timer: dict) -> list:
     return timer.get("switch_in", [])
 
 
+def placement(rec: list[dict], out) -> None:
+    """Where each read's last completion was handled: the xHCI interrupt's
+    CPU, the USB completion work's context, the TTY work's kernel worker
+    and its CPU, and that worker's waking and switch-in."""
+    if not rec:
+        return
+    print("  placement (each read's last completion):", file=out)
+
+    def counts(values) -> str:
+        c: dict = {}
+        for v in values:
+            c[v] = c.get(v, 0) + 1
+        return ", ".join(f"{k}: {v}" for k, v in sorted(c.items(), key=lambda kv: (-kv[1], str(kv[0]))))
+    print(f"    xHCI interrupt CPUs: {counts(x['irq_cpu'] for x in rec)}", file=out)
+    print("    USB completion work: " + counts(
+        "in ksoftirqd" if x.get("bh_comm", "").startswith("ksoftirqd") else "at interrupt exit"
+        for x in rec if "bh_comm" in x), file=out)
+    segs = [(x, segments(x)) for x in rec]
+    print("    TTY work by CPU (queue wait, us):", file=out)
+    by_cpu: dict[int, list] = {}
+    for x, s in segs:
+        if "tty_cpu" in x and "tty_queue_to_start" in s:
+            by_cpu.setdefault(x["tty_cpu"], []).append(s["tty_queue_to_start"])
+    for cpu in sorted(by_cpu, key=lambda c: -len(by_cpu[c])):
+        w = by_cpu[cpu]
+        print(f"      CPU {cpu:>2}: {len(w):>6} reads, p50 {pct(w, 0.5) / 1e3:8.1f}  p99 {pct(w, 0.99) / 1e3:8.1f}"
+              f"  max {max(w) / 1e3:8.1f}", file=out)
+    woken = [x for x in rec if "kworker_woken" in x]
+    awake = [x for x in rec if x.get("kworker_awake")]
+    print(f"    its kernel worker was woken after the queue in {len(woken)} reads and already awake "
+          f"in {len(awake)}", file=out)
+    for name in ("tty_queue_to_kworker_waking", "kworker_waking_to_switch_in", "kworker_switch_in_to_tty_start"):
+        show(name, [s[name] for _, s in segs if name in s], out)
+    tail = [(x, s) for x, s in segs if s.get("tty_queue_to_start", 0) >= 100_000]
+    if tail:
+        largest: dict[str, int] = {}
+        prev: dict[str, int] = {}
+        for x, s in tail:
+            parts = {k: s[k] for k in ("tty_queue_to_kworker_waking", "kworker_waking_to_switch_in",
+                                       "kworker_switch_in_to_tty_start") if k in s}
+            key = max(parts.items(), key=lambda kv: kv[1])[0] if parts else (
+                "already awake" if x.get("kworker_awake") else "-")
+            largest[key] = largest.get(key, 0) + 1
+            p = re.sub(r"[/:]?\d+$", "", x.get("kworker_prev", "-"))
+            prev[p] = prev.get(p, 0) + 1
+        print(f"    queue waits of 100 us or more: {len(tail)} reads; largest part: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(largest.items(), key=lambda kv: -kv[1])), file=out)
+        print("      the kernel worker was switched in after: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(prev.items(), key=lambda kv: -kv[1])[:6]), file=out)
+
+
+PERF_LINE = re.compile(r"^\s*(?P<comm>.*?)\s+(?P<tid>\d+)\s+\[(?P<cpu>\d+)\]\s+(?P<s>\d+)\.(?P<f>\d+):"
+                       r"\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*?)\s+\((?P<dso>[^()]*)\)\s*$")
+
+
+def load_perf(path: pathlib.Path, tid: int) -> list[tuple]:
+    """The worker's perf samples, (ts, symbol, dso), from perf script text."""
+    samples = []
+    for line in path.read_text(errors="replace").splitlines():
+        m = PERF_LINE.match(line)
+        if m and int(m["tid"]) == tid:
+            f = (m["f"] + "000000000")[:9]
+            samples.append((int(m["s"]) * 1_000_000_000 + int(f), m["sym"], m["dso"]))
+    return sorted(samples)
+
+
+def sleep_timing(run: Run, tr: Trace, timer: dict, perf: list | None, top: int, out) -> None:
+    """A profiled run's sleeps: from each cycle's end stamp to the worker's
+    sleep call, and for the latest wakes the call, the timer's arming, page
+    faults and the worker's perf samples in between."""
+    if not tr.sleep_calls:
+        print("  sleep timing: no sleep-call events (not a profiled run)", file=out)
+        return
+    calls = sorted(tr.sleep_calls)
+    arms = sorted(tr.timer_arms)
+    arm_ts = [a[0] for a in arms]
+    faults = sorted(f[0] for f in tr.faults)
+    perf_ts = [p[0] for p in perf] if perf else []
+    gaps, by_cycle = [], {}
+    for (_, now, _, waking, _), (i, prev_end, sched, wake) in timer["pairs"]:
+        k = bisect.bisect_right(calls, prev_end)
+        if k < len(calls) and calls[k] <= waking:
+            gaps.append(calls[k] - prev_end)
+            if i is not None:
+                by_cycle[i] = (prev_end, calls[k], sched, now)
+    print(f"  sleep timing: {len(calls)} sleep calls of the worker, {len(arms)} timers armed, "
+          f"{len(faults)} page faults{f', {len(perf)} perf samples' if perf is not None else ''}", file=out)
+    show("cycle_end_to_sleep_call", gaps, out)
+    rows = run.rows
+    late = sorted(((int(r["wake_ns"]) - int(r["scheduled_wake_ns"]), i) for i, r in enumerate(rows)
+                   if i in by_cycle), reverse=True)[:top]
+    for lat, i in late:
+        prev_end, call, sched, now = by_cycle[i]
+        a = bisect.bisect_left(arm_ts, call)
+        armed = arms[a] if a < len(arms) else None
+        nf = bisect.bisect_right(faults, call) - bisect.bisect_right(faults, prev_end)
+        line = (f"    cycle {rows[i]['cycle']:>6} wake {lat / 1e3:7.1f}: sleep call "
+                f"{(call - prev_end) / 1e3:+8.1f} after the cycle-end stamp")
+        if armed is not None:
+            line += f", timer armed {(armed[0] - prev_end) / 1e3:+8.1f}"
+            if armed[1] is not None:
+                line += f" for {(armed[1] - sched) / 1e3:+.1f} from the scheduled wake"
+        line += f", expired {(now - sched) / 1e3:+.1f}; {nf} page faults"
+        if perf is not None:
+            p0, p1 = bisect.bisect_right(perf_ts, prev_end), bisect.bisect_right(perf_ts, call)
+            syms: dict[str, int] = {}
+            for _, sym, _ in perf[p0:p1]:
+                syms[sym] = syms.get(sym, 0) + 1
+            line += f"; perf {p1 - p0} samples" + (": " + ", ".join(
+                f"{k} {v}" for k, v in sorted(syms.items(), key=lambda kv: -kv[1])[:3]) if syms else "")
+        print(line, file=out)
+
+
 def write_segments(path: pathlib.Path, rec: list[dict]) -> None:
-    names = ["cycle", "read_len", "completions", "tty_pid", "tty_cpu", "blocked", "kworker_prev"]
+    names = ["cycle", "read_len", "completions", "irq_cpu", "bh_comm", "tty_pid", "tty_cpu", "blocked",
+             "kworker_prev", "kworker_waker", "kworker_target"]
     keys = ["before_send", "instruction_usb", "to_first_completion", "between_completions",
             "after_last_completion", "completion_to_bh", "bh_to_tty_queue", "tty_queue_to_start",
-            "bh_to_tty_start_no_queue", "tty_run", "tty_end_to_last_reply", "tty_end_to_waking",
+            "bh_to_tty_start_no_queue", "tty_queue_to_kworker_waking", "kworker_waking_to_switch_in",
+            "kworker_switch_in_to_tty_start", "tty_run", "tty_end_to_last_reply", "tty_end_to_waking",
             "waking_to_switch_in", "host_transaction"]
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
@@ -693,6 +861,8 @@ def main() -> int:
                         "(default: the run record's adapter line)")
     parser.add_argument("--top", type=int, default=10, help="slowest reads and latest wakes to list")
     parser.add_argument("--segments-csv", type=pathlib.Path, help="write each read's receive path here")
+    parser.add_argument("--perf-txt", type=pathlib.Path,
+                        help="a profiled run's worker samples (default: <run>.csv.perf.txt if it exists)")
     args = parser.parse_args()
     if tomllib is None:
         print("trace_correlate: needs Python 3.11 or later (tomllib)", file=sys.stderr)
@@ -737,6 +907,10 @@ def main() -> int:
         print(f"  {tr.work_anomalies} workqueue executions ended without a recorded start "
               "(begun before the trace)", file=out)
     report(run, rec, timer, args.top, out)
+    placement(rec, out)
+    perf_txt = args.perf_txt or pathlib.Path(str(args.csv) + ".perf.txt")
+    perf = load_perf(perf_txt, run.tid) if perf_txt.exists() else None
+    sleep_timing(run, tr, timer, perf, args.top, out)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
     if failures:
