@@ -879,6 +879,34 @@ tools/trace_session.sh --port <emulator link> --usb-device <adapter sysfs dir> \
   --modes untraced,traced,profiled --runs current:1000:rt-idle:fast-motion --duration 10
 ```
 
+**Rehearsal result (2026-11-06).** The three runs completed. In the profiled
+run:
+- each of the 9,477 sleeps had its sleep call and an arming of its expiring
+  timer, none missing, duplicate or inconsistent;
+- perf stopped cleanly with 8,722 samples of the real-time CPU, none lost and
+  none throttled (`perf report --stats --no-skip-empty`), and the worker's
+  8,609 were written with and without call chains;
+- 8,608 of the worker's samples fall in its on-CPU time in the trace; the
+  other, 0.6 us after its switch-out event, is in the context switch itself.
+  Shifted by 2 us, 39 to 62 fall outside, so the two clocks agree to about
+  1 us (the worker was on its CPU 51% of the time);
+- 8,377 call chains (97%) reach `Probe::run` and the thread's start through
+  the bounded read and the SDK's `readPort`, every kernel frame resolved. Of
+  the rest, 94 taken at a system call's entry or exit have no user
+  registers, and 138 stop at particular instructions (in libc's `read` and
+  system-call code, `steady_clock::now` and the vDSO). None of those is
+  deeper than a complete chain, and the worker's stack spans at most 632
+  bytes, so the 4096-byte copy does not limit them.
+
+The analysis fails its association check over the emulator, as the traced
+run does, because a pty has no USB transfers. The first version of the
+record kept only perf's nonzero counts, so no lost or throttled sample
+showed as an explicit zero; the record now names each count. In this idle
+run the time from a cycle's end stamp to its sleep call stays near 0.2 us,
+so the latest wakes hold no samples. At 999 Hz, a 0.5 to 1.6 ms window of
+the T5 cluster holds 0 to 2 samples, so the cluster's call context comes
+from its cycles together.
+
 Then, torque-off on the arm, each condition untraced, traced and profiled
 (9 runs, about 14 minutes):
 
