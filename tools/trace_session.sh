@@ -1082,8 +1082,17 @@ run_one() {
           >"$perfstacks" 2>>"$tmp/perf-script.err"
         stacks_status=$?
         echo "perf script --tid $wtid (exit $script_status): $(wc -l <"$perftxt") samples; with call chains (exit $stacks_status): $(grep -cE '\[[0-9]+\] +[0-9]+\.[0-9]+:' "$perfstacks") samples" >>"$note"
-        priv "$PERF" report -i "$perfdat" --stats 2>&1 | grep -E 'SAMPLE|LOST|THROTTLE' |
-          sed 's/^ */perf stats: /' >>"$note"
+        # perf report lists only nonzero counts unless --no-skip-empty: the
+        # aggregated counts, each named, and "not reported" for one it omits.
+        local stats_status key n counts=
+        priv "$PERF" report -i "$perfdat" --stats --no-skip-empty >"$tmp/perf-stats.out" 2>&1
+        stats_status=$?
+        for key in SAMPLE LOST LOST_SAMPLES THROTTLE; do
+          n=$(awk -v k="$key" '/^Aggregated stats:/ {a = 1; next} a && /stats:$/ {exit}
+                a && $1 == k && $2 == "events:" {print $3; exit}' "$tmp/perf-stats.out")
+          counts+="${counts:+, }$key ${n:-not reported}"
+        done
+        echo "perf stats: $counts (perf report --stats --no-skip-empty, exit $stats_status)" >>"$note"
         [ "$script_status" -eq 0 ] && [ -s "$perftxt" ] && [ "$stacks_status" -eq 0 ] && [ -s "$perfstacks" ] ||
           tracer_problem+="${tracer_problem:+, }perf script exit $script_status/$stacks_status"
       elif [ "$probe_status" -eq 0 ]; then

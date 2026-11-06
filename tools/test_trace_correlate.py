@@ -247,7 +247,9 @@ class Run:
                 lines.append("")
             pathlib.Path(str(path) + ".perf.stacks.txt").write_text("\n".join(lines) + "\n")
         if self.opt.get("profiled_record"):
-            pathlib.Path(str(path) + ".run.txt").write_text("mode: profiled\nperf stats: LOST events: 0\n")
+            pathlib.Path(str(path) + ".run.txt").write_text(
+                "mode: profiled\nperf stats: SAMPLE 0, LOST 0, LOST_SAMPLES 0, THROTTLE 0 "
+                "(perf report --stats --no-skip-empty, exit 0)\n")
         report = root / f"{name}.report.txt"
         report.write_text("cpus=32\n" + "\n".join(line for _, _, line in sorted(self.events)) + "\n")
         return path

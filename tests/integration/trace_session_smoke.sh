@@ -160,7 +160,9 @@ exit 0
 EOF
 # perf: record writes its file and runs until SIGINT, then reports and dies
 # of that signal, as perf does; script prints one sample of the --tid given
-# (with its call chain unless -G), and report --stats its counts.
+# (with its call chain unless -G), and report --stats its counts as perf 7
+# does: the zero counts only with --no-skip-empty, and the sample count again
+# per event after the aggregated ones.
 cat >"$FAKE/perf" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.perf"
@@ -188,9 +190,17 @@ case "$1" in
     fi
     exit 0 ;;
   report)
-    echo "           SAMPLE events:         12"
-    echo "             LOST events:          0"
-    echo "         THROTTLE events:          0"
+    empty=0
+    for a in "$@"; do [ "$a" = --no-skip-empty ] && empty=1; done
+    echo
+    echo "Aggregated stats:"
+    echo "               TOTAL events:         40"
+    [ "$empty" -eq 1 ] && echo "                LOST events:          0  ( 0.0%)"
+    [ "$empty" -eq 1 ] && echo "            THROTTLE events:          0  ( 0.0%)"
+    echo "              SAMPLE events:         12  (30.0%)"
+    [ "$empty" -eq 1 ] && echo "        LOST_SAMPLES events:          0  ( 0.0%)"
+    echo "cpu_core/cycles/P stats:"
+    echo "              SAMPLE events:         12"
     exit 0 ;;
 esac
 EOF
@@ -707,8 +717,8 @@ grep -Eq "^perf: $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf\\\\?,4
 grep -q '^--- perf (exit 130, a clean stop) ---' "$b.run.txt" || fail "perf's SIGINT stop not accepted" "$b.run.txt"
 grep -q "^perf script --tid $wtid (exit 0): 1 samples; with call chains (exit 0): 1 samples" "$b.run.txt" ||
   fail "the record does not count the worker's samples" "$b.run.txt"
-grep -q '^perf stats: LOST events: *0' "$b.run.txt" && grep -q '^perf stats: THROTTLE events: *0' "$b.run.txt" ||
-  fail "the record lacks perf's counts" "$b.run.txt"
+grep -qx 'perf stats: SAMPLE 12, LOST 0, LOST_SAMPLES 0, THROTTLE 0 (perf report --stats --no-skip-empty, exit 0)' "$b.run.txt" &&
+  [ "$(grep -c '^perf stats:' "$b.run.txt")" -eq 1 ] || fail "the record lacks perf's counts" "$b.run.txt"
 grep -q "probe $wtid \[000\]" "$b.perf.txt" || fail "the worker's samples are not written" "$b.perf.txt"
 grep -q 'Probe::run' "$b.perf.stacks.txt" || fail "the worker's call chains are not written" "$b.perf.stacks.txt"
 grep -q -- "-e timer:hrtimer_start -f comm == \"probe\" .*-e syscalls:sys_enter_clock_nanosleep -f comm == \"probe\" .*-e exceptions:page_fault_user -f comm == \"probe\" .*-e workqueue:workqueue_activate_work" "$ROOT/fake.trace-cmd" ||
