@@ -969,17 +969,115 @@ overhead to be negligible.
   unattributed: an early cycle-end stamp does not show that the sleep call
   followed promptly.
 
-**Next (proposed).** A timer-focused torque-off capture on CPU 3, with C2
-left enabled and an untraced control: CPU 3's idle-state transitions
-(`power:cpu_idle`), the arming and cancellation of the timers that can
-program its clock event device, its deadline-register writes (CPU 3's
-clock event device is `lapic-deadline`, so `msr:write_msr` to the TSC
-deadline MSR 0x6e0), and an SMI count for CPU 3 (`msr/smi/`). The rehearsal
-must validate the MSR tracepoint and the conversion of its TSC deadlines to
-the trace's monotonic time. The capture omits the DWARF sampling. An SMI
-count alone does not locate a particular delay; a C2 on and off comparison
-would be considered, and reviewed apart, only after idle-state transitions
-have been observed.
+**Next.** The timer service diagnostics below, with C2 left enabled.
+
+### Timer service diagnostics (design, torque-off, 1 ms)
+
+These diagnostics follow the late timer service of the profiled matrix: for
+each of the worker's sleeps they lay out, on CPU 3, the sleep call, the
+arming and cancellation of the timers that program its clock event device,
+the deadline that device was programmed with, the CPU's idle-state
+transitions, the timer interrupt's entry and the worker's waking and
+switch-in. They are torque-off diagnostics: C2 stays enabled, the latency
+timer stays at 1 ms, there is no DWARF sampling, and the scheduling
+settings and qualification criteria are unchanged.
+
+**Starting points** (checked 2026-11-07, without root):
+- CPU 3's clock event device is `lapic-deadline`. The TSC is constant,
+  nonstop and of known frequency (3187.2 MHz), and the APIC timer keeps
+  running in idle states (`arat`), so no broadcast timer stands in for it.
+- In the upstream 7.0 source, `lapic_next_deadline` writes the TSC deadline
+  MSR (0x6e0) with `wrmsrq`, which on bare metal reaches the `write_msr`
+  tracepoint; disarming the timer writes 0 there. This kernel's patches may
+  differ, so the rehearsal must show the writes.
+- The kernel has no irq-off tracing (no `irqsoff` tracer), so interrupt
+  masking cannot be observed directly. It has kprobe events and the
+  timerlat and osnoise tracers; the integrity lockdown permits tracefs and
+  perf.
+
+**Capture** (a new session mode, `timer`, on rt-* conditions, paired with
+an untraced control of the same condition):
+- the traced mode's events, so that the existing association checks still
+  apply;
+- the arming and cancellation of every timer (`timer:hrtimer_start` and
+  `timer:hrtimer_cancel`, with the timer's address, function and expiry), on
+  all CPUs, since a timer started elsewhere can later expire on CPU 3;
+- CPU 3's deadline writes (`msr:write_msr`, filtered to MSR 0x6e0), its
+  idle-state entries and exits (`power:cpu_idle`, and `power:cpu_idle_miss`
+  if present), NMIs (`nmi:nmi_handler`), and its system calls and page
+  faults (`raw_syscalls:sys_enter` and `sys_exit`,
+  `exceptions:page_fault_user` and `page_fault_kernel`), so that the task on
+  CPU 3 at a deadline is known to be in user mode or in the kernel. These
+  are restricted to CPU 3 where the event filter allows it, and otherwise
+  recorded on all CPUs;
+- a second trace instance on the `x86-tsc` clock that records an anchor
+  event also recorded in the main, monotonic instance (CPU 3's
+  `local_timer_entry`). Each anchor then has both a TSC and a monotonic
+  time, and the deadlines are converted to monotonic time by piecewise
+  linear interpolation between anchors, independently of the timer path
+  under study;
+- CPU 3's SMI count in 10 ms intervals (`perf stat -e msr/smi/ -C 3 -I 10`),
+  anchored to the monotonic clock at its start. An SMI in the interval of a
+  late service is recorded as such; it does not locate the delay;
+- the CPU time of every process outside the session, the load and the
+  kernel's threads, taken from `/proc` before and after the run, so that a
+  run with a background load such as the earlier `exiftool` is marked as
+  uncontrolled.
+
+**Timeline and classes** (`tools/trace_correlate.py` gains a timer service
+report). For each paired sleep: the cycle-end stamp, the sleep call, the
+arming of the worker's timer (its expiry E), each deadline written on CPU 3
+during the sleep, converted, and the pending timer it matches (the earliest
+one expiring on CPU 3, from the arming, cancellation and expiry events), the
+other timers armed or cancelled there, CPU 3's idle entries and exits, the
+first timer interrupt after E and the expiries it served, the worker's
+waking and switch-in, and the wake stamp. A sleep whose timer is served
+50 us or more late is described by its recorded evidence, not by a proven
+cause:
+1. **deadline late**: the deadline in effect at E was later than E (not
+   reprogrammed for the worker's timer, or reprogrammed late);
+2. **interrupt late from idle**: the deadline was on time and CPU 3 was in
+   an idle state at it (the state and its declared exit latency are given);
+3. **interrupt late while busy**: the deadline was on time and a task ran on
+   CPU 3, with any NMI, SMI interval, system call, page fault or interrupt
+   overlapping the delay. A task in user mode throughout cannot have masked
+   interrupts; one in the kernel may have, which stays unproven;
+4. **served on time, woken or switched in late**;
+5. **late sleep call**: the earlier pattern.
+
+**Rehearsal** over `dxl_emu`, before any run on the arm:
+- **availability**: the session lists each required event and its format
+  in the run record before recording, and refuses if one is missing or if
+  the second instance does not get the `x86-tsc` clock;
+- **an exerciser** (`tools/timer_exerciser.py`, rehearsal only, a
+  normal-priority process pinned to CPU 3) arms CLOCK_MONOTONIC timerfd
+  timers at absolute expiries, cancels some before they expire (the
+  deadline must be rewritten for the next pending timer), replaces some
+  with an earlier or a later expiry, and lets others expire, logging each
+  action with its monotonic time and expiry. This is the ground truth for
+  the deadline writes, their cancellation and their replacement by another
+  timer;
+- **checks**, reported and proposed for the review: every expected write
+  appears and its converted deadline matches the requested expiry (the
+  residuals' distribution, with the clock event device's minimum delta
+  explaining any clamped one); no timer interrupt enters before its
+  converted deadline by more than the conversion's residual at the anchors;
+  the worker's own arming produces writes matching its expiries; the SMI
+  interval series and the `/proc` CPU times are recorded; and the untraced
+  control runs as before.
+
+The rehearsal's results are reviewed before targeted torque-off runs: each
+an untraced control and a `timer` run, at 500 Hz under the full load (busy
+CPU 3) and at 1000 Hz under the `-excl` load (idle CPU 3). A C2 on and off
+comparison would be considered, and reviewed apart, only after idle-state
+transitions have been observed.
+
+**Commits planned:** the session mode (events, the second instance, the SMI
+intervals, the availability checks and the `/proc` CPU times) with its
+smoke test; the exerciser with its tests; the timer service report with
+synthetic regressions (a deadline written late, an on-time deadline with a
+late interrupt from idle and while busy, a cancelled and a replaced timer,
+the interpolation); then the rehearsal procedure.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
