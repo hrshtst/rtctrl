@@ -22,10 +22,27 @@
 # The session first records the host state once: the fair server's
 # settings (read with bpftrace, since the kernel's lockdown refuses the
 # debugfs files), lockdown, boot line, topology and the adapter. Every run
-# record repeats it, with the run's IRQ placement before and after and a
-# task and affinity snapshot halfway through the run. The session changes
-# no scheduler setting; it loads the usbmon module if needed and unloads it
-# at the end.
+# record repeats it, with the run's IRQ placement before and after, the
+# xHCI interrupts around the probe, and a task and affinity snapshot
+# halfway through the run. The session changes no scheduler setting; it
+# loads the usbmon module if needed and unloads it at the end.
+#
+# The adapter experiment: --latency-steps L1,L2,... (for example 1,0,1)
+# makes each listed run once per step, in order, each untraced and traced,
+# with the adapter's USB latency timer at the step's value in ms, set
+# through tools/latency_timer.py. Before the session sends anything it reads
+# the driver's sysfs value, the adapter's own value and the port's
+# low-latency flag (with which the driver writes 1 ms whatever is stored),
+# and refuses if the flag is set or the two values differ. Before and after
+# each run it reads all three again: a run whose adapter does not hold the
+# step's value, with the flag clear, is voided and stops the session. The
+# probe expects the step's value (--expect-latency-timer-ms). The session
+# restores the value it found on every exit: the end, a stop, Ctrl-C,
+# SIGTERM, SIGHUP and any other exit of the script (an EXIT trap backs up
+# the cleanup); only a SIGKILL or a crash skips it. The bounded read's
+# profile check requires 1 ms (only the probe's option relaxes it), but the
+# 100 Hz path does not read the timer: the restoration is what keeps the
+# host's setting. Without --latency-steps the timer is left alone.
 #
 # Conditions: idle, loaded, loaded-excl, rt-idle, rt-loaded, rt-loaded-excl.
 # A loaded run starts stress-ng --cpu <n> --hdd 1; an -excl run pins it to
@@ -48,14 +65,15 @@
 #   <log>.csv.trace.dat     trace-cmd record (traced runs)
 #   <log>.csv.usbmon.pcap   usbmon capture of the adapter (traced runs)
 # with <log> = rate-trace-<profile>-<rate>hz-<condition>-bounded<variant
-# tags>-<untraced|traced>-<date>-<attempt>. A run whose .csv or .run.txt
-# already exists was attempted: it is skipped, never retried.
+# tags>[-lt<ms>-s<step>]-<untraced|traced>-<date>-<attempt>. A run whose
+# .csv or .run.txt already exists was attempted: it is skipped, never
+# retried.
 #
 # Privileged steps (trace-cmd, tcpdump, bpftrace, modprobe) go through sudo;
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
 # runs them directly and TRACE_SESSION_SUDO=<command> uses that command in
-# sudo's place, and TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG and
-# TRACEFS replace the tools and the tracefs path.
+# sudo's place, and TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG,
+# LATENCY_TOOL and TRACEFS replace the tools and the tracefs path.
 set -u
 
 PROBE=./build/apps/x7_bus_timing  # --probe overrides it (the tests do)
@@ -67,6 +85,7 @@ BPFTRACE=${BPFTRACE:-bpftrace}
 MODPROBE=${MODPROBE:-modprobe}
 STRESS_NG=${STRESS_NG:-stress-ng}
 TRACEFS=${TRACEFS:-/sys/kernel/tracing}
+LATENCY_TOOL=${LATENCY_TOOL:-tools/latency_timer.py}
 case "${TRACE_SESSION_SUDO:-sudo}" in
   none) sudo_cmd=() ;;
   *) sudo_cmd=("${TRACE_SESSION_SUDO:-sudo}") ;;
@@ -80,6 +99,7 @@ runs+=,current:500:rt-loaded-excl:fast-motion,current:1000:rt-idle:fast-motion
 runs+=,current:1000:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motion
 runs+=,cbp:1000:rt-idle:fast
 modes=untraced,traced
+latency_steps=
 duration=60
 rt_priority=80
 rt_cpu=3
@@ -109,6 +129,10 @@ usage: $0 [options]
                                 fast-motion or fast-motion-aux0ms (all on
                                 the bounded read path)
   --modes LIST        untraced,traced (default), or one of them
+  --latency-steps L   the adapter experiment: each run once per step of the
+                      adapter's USB latency timer in ms, 0 to 255 (for
+                      example 1,0,1), restored on every exit (default: the
+                      timer is left alone)
   --duration S        seconds per run (default $duration)
   --rt-priority N     SCHED_FIFO priority 1 to 99 for rt-* (default $rt_priority)
   --rt-cpu C          CPU for rt-* (default $rt_cpu)
@@ -140,11 +164,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--outdir|--max-runnable|\
-    --stress-dir|--load-tail)
+    --stress-dir|--load-tail|--latency-steps)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
         --modes) modes=$2 ;;
+        --latency-steps) latency_steps=$2 ;;
         --duration) duration=$2 ;;
         --rt-priority) rt_priority=$2 ;;
         --rt-cpu) rt_cpu=$2 ;;
@@ -224,6 +249,19 @@ done
 for m in "${mode_list[@]}"; do
   case "$m" in untraced) ;; traced) any_traced=1 ;; *) die "unknown mode '$m'" ;; esac
 done
+# The latency steps, as ms:index (one empty step without the experiment).
+lt_list=()
+step_list=("")
+if [ -n "$latency_steps" ]; then
+  IFS=, read -r -a lt_list <<<"$latency_steps"
+  [ ${#lt_list[@]} -gt 0 ] || die "--latency-steps is empty"
+  step_list=()
+  for i in "${!lt_list[@]}"; do
+    l=${lt_list[$i]}
+    is_uint "$l" && [ "$l" -le 255 ] || die "--latency-steps: '$l' is not a latency timer of 0 to 255 ms"
+    step_list+=("$((10#$l)):$((i + 1))")
+  done
+fi
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -gt 0 ] || die "--duration must be a positive integer"
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 is_uint "$rt_priority" && is_uint "$rt_cpu" || die "--rt-priority and --rt-cpu must be integers"
@@ -259,6 +297,14 @@ if [ "$any_traced" -eq 1 ] && [ "$usbmon" -eq 1 ] && [ -z "$usb_device" ]; then
   [ -n "$d" ] && [ -f "$d/devnum" ] && usb_device=$d
 fi
 
+# The port whose latency timer the experiment sets.
+lt_tty=
+if [ ${#lt_list[@]} -gt 0 ]; then
+  lt_path=$port
+  [ -n "$lt_path" ] || lt_path=$(sed -n 's/^port *= *"\(.*\)"/\1/p' "$CONFIG" | head -n 1)
+  lt_tty=$(basename "$(readlink -f "$lt_path")")
+fi
+
 # Prerequisites: every problem is listed, then the script refuses to start
 # (a dry run lists them and goes on).
 problems=()
@@ -268,6 +314,10 @@ problems=()
 command -v taskset >/dev/null || problems+=("taskset is not installed (util-linux)")
 command -v stdbuf >/dev/null || problems+=("stdbuf is not installed (coreutils)")
 command -v python3 >/dev/null || problems+=("python3 is not installed")
+if [ ${#lt_list[@]} -gt 0 ]; then
+  [ -x "$LATENCY_TOOL" ] || problems+=("$LATENCY_TOOL is not executable")
+  [ -n "$lt_tty" ] || problems+=("no port to set the latency timer of")
+fi
 command -v "$BPFTRACE" >/dev/null ||
   problems+=("$BPFTRACE is not installed: it reads the fair server's settings")
 if [ "$any_traced" -eq 1 ]; then
@@ -341,12 +391,14 @@ stress_cmd() {  # condition -> scmd[]
   esac
 }
 
-log_base() {  # profile rate condition variant mode
+log_base() {  # profile rate condition variant mode [ms:step]
+  local lt=
   variant_flags "$4"
-  echo "rate-trace-$1-${2}hz-$3$vtag-$5-$date_tag-$attempt"
+  [ -n "${6:-}" ] && lt="-lt${6%%:*}-s${6##*:}"
+  echo "rate-trace-$1-${2}hz-$3$vtag$lt-$5-$date_tag-$attempt"
 }
 
-probe_cmd() {  # profile rate condition variant mode -> cmd[]
+probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
   local base; base=$(log_base "$@")
   variant_flags "$4"
   cmd=("$PROBE")
@@ -355,22 +407,30 @@ probe_cmd() {  # profile rate condition variant mode -> cmd[]
         --log "$outdir/$base.csv")
   case "$3" in rt-*) cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu") ;; esac
   cmd+=("${vflags[@]}")
+  [ -n "${6:-}" ] && cmd+=(--expect-latency-timer-ms "${6%%:*}")
+  return 0
 }
 
-total=$(( ${#run_list[@]} * ${#mode_list[@]} ))
+total=$(( ${#run_list[@]} * ${#step_list[@]} * ${#mode_list[@]} ))
 
 if [ "$dry_run" -eq 1 ]; then
   echo "plan: $total runs (date $date_tag, attempt $attempt), tracers and -excl load on CPUs $other_cpus:"
   for spec in "${run_list[@]}"; do
     IFS=: read -r p r c v <<<"$spec"
-    for m in "${mode_list[@]}"; do
-      probe_cmd "$p" "$r" "$c" "$v" "$m"
-      stress_cmd "$c"
-      printf '  [%s' "$m"
-      [ ${#scmd[@]} -gt 0 ] && printf '; load: %s' "${scmd[*]}"
-      printf '] '; printf '%q ' "${cmd[@]}"; echo
+    for step in "${step_list[@]}"; do
+      for m in "${mode_list[@]}"; do
+        probe_cmd "$p" "$r" "$c" "$v" "$m" "$step"
+        stress_cmd "$c"
+        printf '  [%s' "$m"
+        [ -n "$step" ] && printf '; latency timer %s ms (step %s)' "${step%%:*}" "${step##*:}"
+        [ ${#scmd[@]} -gt 0 ] && printf '; load: %s' "${scmd[*]}"
+        printf '] '; printf '%q ' "${cmd[@]}"; echo
+      done
     done
   done
+  if [ ${#lt_list[@]} -gt 0 ]; then
+    echo "latency steps $latency_steps on $lt_tty through $LATENCY_TOOL: read before anything is sent, set before each step's runs, read after each run, and restored on every exit"
+  fi
   if [ "$any_traced" -eq 1 ]; then
     printf 'traced runs add: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
     if [ "$usbmon" -eq 1 ]; then
@@ -489,8 +549,41 @@ stop_all() {
   fi
   own_outputs
 }
+# The adapter experiment's latency timer: the value found at the start,
+# the value set last, whether the session changed it, and the record of
+# the last run, where the restoration is written too.
+lt_orig=; lt_now=; lt_changed=0; last_note=
+lt_parse() {  # a latency_timer.py line -> lt_sysfs lt_device lt_low
+  local line
+  line=$(grep -m 1 '^tty ' <<<"$1")
+  lt_sysfs=$(sed -n 's/.* sysfs \([^ ]*\) .*/\1/p' <<<"$line")
+  lt_device=$(sed -n 's/.* device \([^ ]*\) .*/\1/p' <<<"$line")
+  lt_low=$(sed -n 's/.* low_latency \([^ ]*\) .*/\1/p' <<<"$line")
+}
+# Back to the value the session found, once the session changed it. Every
+# exit calls it: finish() for the end, a stop and an interrupt, and the
+# EXIT trap for any other exit (it then does nothing if already restored).
+restore_latency() {
+  local out
+  [ "$lt_changed" -eq 1 ] || return 0
+  if out=$(priv "$LATENCY_TOOL" set "$lt_tty" "$lt_orig" 2>&1); then
+    lt_changed=0
+    echo "trace_session: the adapter's latency timer is restored to $lt_orig ms ($out)"
+    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+      printf '\n--- session end ---\nlatency timer restored to %s ms: %s\n' "$lt_orig" "$out" >>"$last_note"
+    fi
+  else
+    echo "trace_session: RESTORING THE ADAPTER'S LATENCY TIMER TO $lt_orig ms FAILED: $out" >&2
+    echo "  restore it by hand: echo $lt_orig | sudo tee /sys/bus/usb-serial/devices/$lt_tty/latency_timer" >&2
+    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+      printf '\n--- session end ---\nlatency timer NOT restored to %s ms: %s\n' "$lt_orig" "$out" >>"$last_note"
+    fi
+  fi
+  return 0
+}
 finish() {
   stop_all
+  restore_latency
   if [ "$usbmon_loaded_here" -eq 1 ]; then priv "$MODPROBE" -r usbmon; fi
   [ -n "$keepalive_pid" ] && kill "$keepalive_pid" 2>/dev/null
   rm -rf "$tmp"
@@ -503,7 +596,8 @@ on_interrupt() {
   print_table
   exit 130
 }
-trap on_interrupt INT TERM
+trap on_interrupt INT TERM HUP
+trap restore_latency EXIT
 
 if [ ${#sudo_cmd[@]} -gt 0 ]; then
   "${sudo_cmd[@]}" -v || die "sudo is needed for the tracers and the fair-server read"
@@ -543,6 +637,24 @@ if [ "$any_traced" -eq 1 ] && [ "$usbmon" -eq 1 ]; then
     usbmon_loaded_here=1
   fi
 fi
+# The experiment's starting point: the value to restore, and a refusal if
+# the driver would not apply the steps.
+if [ ${#lt_list[@]} -gt 0 ]; then
+  if ! lt_line=$(priv "$LATENCY_TOOL" read "$lt_tty" 2>&1); then
+    finish
+    die "the adapter's latency timer on $lt_tty was not read ($lt_line): nothing was sent"
+  fi
+  lt_parse "$lt_line"
+  if [ "$lt_low" != 0 ]; then
+    finish
+    die "the port's low-latency flag is set ($lt_line): the driver would write 1 ms whatever the step; nothing was sent"
+  fi
+  if [ "$lt_sysfs" != "$lt_device" ]; then
+    finish
+    die "the adapter's latency timer reads $lt_device but sysfs $lt_sysfs ($lt_line): nothing was sent"
+  fi
+  lt_orig=$lt_sysfs; lt_now=$lt_orig
+fi
 {
   echo "--- host state (session) ---"
   echo "kernel: $(uname -srvm)"
@@ -564,6 +676,9 @@ fi
   for lt in /sys/bus/usb-serial/devices/*/latency_timer; do
     [ -f "$lt" ] && echo "latency_timer $(basename "$(dirname "$lt")"): $(cat "$lt")"
   done
+  if [ ${#lt_list[@]} -gt 0 ]; then
+    echo "latency steps: $latency_steps; at the session's start: $(grep -m 1 '^tty ' <<<"$lt_line")"
+  fi
   if [ "$usbmon" -eq 1 ] && [ "$any_traced" -eq 1 ]; then
     echo "usbmon: $([ "$usbmon_loaded_here" -eq 1 ] && echo "loaded by this session" || echo "already loaded")"
   else
@@ -572,6 +687,9 @@ fi
   echo "tracers: $("$TRACE_CMD" -h 2>&1 | grep -m 1 -i version); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
 } >"$tmp/session.txt"
 
+xhci_interrupts() {  # every CPU's count of the xHCI interrupt lines
+  awk '/xhci/ {for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++) s += $i} END {print s + 0}' /proc/interrupts
+}
 irq_state() {
   local i
   grep -E '^ *CPU0|xhci' /proc/interrupts
@@ -631,10 +749,10 @@ wait_quiet() {
 # criteria that did not pass.
 k=0
 run_one() {
-  local profile=$1 rate=$2 cond=$3 variant=$4 mode=$5 base csv note
+  local profile=$1 rate=$2 cond=$3 variant=$4 mode=$5 step=${6:-} base csv note
   local loaded=0 probe_status check_status seen stress_out stress_status snap_pid
-  local dat pcap
-  base=$(log_base "$profile" "$rate" "$cond" "$variant" "$mode")
+  local dat pcap lt_ms=${step%%:*} lt_out lt_status irq_before irq_after t_before t_after
+  base=$(log_base "$profile" "$rate" "$cond" "$variant" "$mode" "$step")
   csv="$outdir/$base.csv"
   note="$csv.run.txt"
   dat="$csv.trace.dat"
@@ -651,7 +769,7 @@ run_one() {
   fi
   case "$cond" in *loaded*) loaded=1 ;; esac
   wait_quiet
-  probe_cmd "$profile" "$rate" "$cond" "$variant" "$mode"
+  probe_cmd "$profile" "$rate" "$cond" "$variant" "$mode" "$step"
   stress_cmd "$cond"
   {
     echo "rtctrl traced torque-off run"
@@ -661,6 +779,9 @@ run_one() {
     echo "condition: $cond"
     echo "variant: $variant (bounded read path: the probe's 35 ms budget and equal guard)"
     echo "mode: $mode"
+    if [ -n "$step" ]; then
+      echo "latency step: $lt_ms ms (step ${step##*:} of ${#step_list[@]}: $latency_steps)"
+    fi
     if [ "$loaded" -eq 1 ]; then echo "load: ${scmd[*]}"; else echo "load: none"; fi
     case "$cond" in
       rt-*) echo "scheduling: --rt-priority $rt_priority --rt-cpu $rt_cpu (rtprio limit $(ulimit -r))" ;;
@@ -682,6 +803,26 @@ run_one() {
     irq_state
     echo
   } >"$note"
+  last_note=$note
+  # The step's latency timer, set if it changes, and checked in effect.
+  if [ -n "$step" ]; then
+    if [ "$lt_ms" != "$lt_now" ]; then
+      lt_changed=1
+      lt_out=$(priv "$LATENCY_TOOL" set "$lt_tty" "$lt_ms" 2>&1); lt_status=$?
+      lt_now=$lt_ms
+    else
+      lt_out=$(priv "$LATENCY_TOOL" read "$lt_tty" 2>&1); lt_status=$?
+    fi
+    echo "latency timer before the run (requested $lt_ms ms): $lt_out" >>"$note"
+    lt_parse "$lt_out"
+    if [ "$lt_status" -ne 0 ] || [ "$lt_sysfs" != "$lt_ms" ] || [ "$lt_device" != "$lt_ms" ] ||
+       [ "$lt_low" != 0 ]; then
+      echo "trace_session: the adapter does not hold the requested $lt_ms ms ($lt_out): session stopped" | tee -a "$note"
+      echo "verdict: not run (latency timer)" >>"$note"
+      outcome=stop
+      return
+    fi
+  fi
   if [ "$mode" = traced ]; then
     run_outputs=("$dat")
     if [ "$usbmon" -eq 1 ]; then run_outputs+=("$pcap"); fi
@@ -754,8 +895,10 @@ run_one() {
   ( taskset -cp "$other_cpus" "$BASHPID" >/dev/null
     sleep $((duration / 2)); tasks_snapshot >"$csv.tasks.txt" ) &
   snap_pid=$!
+  irq_before=$(xhci_interrupts); t_before=$(date +%s.%N)
   "${cmd[@]}" 2>&1 | tee -a "$note"
   probe_status=${PIPESTATUS[0]}
+  irq_after=$(xhci_interrupts); t_after=$(date +%s.%N)
   # The load and the recorders must have lasted the whole run: checked as
   # the probe ends, before anything is stopped.
   local load_problem='' tracer_problem=''
@@ -798,6 +941,18 @@ run_one() {
     fi
   fi
   { echo; echo "--- IRQ placement after ---"; irq_state; } >>"$note"
+  awk -v n=$((irq_after - irq_before)) -v a="$t_before" -v b="$t_after" 'BEGIN {
+    printf "xhci interrupts around the probe: %d in %.3f s (%.0f per s; every device on the controller)\n", n, b - a, n / (b - a)}' >>"$note"
+  local latency_problem=''
+  if [ -n "$step" ]; then
+    lt_out=$(priv "$LATENCY_TOOL" read "$lt_tty" 2>&1); lt_status=$?
+    echo "latency timer after the run: $lt_out" >>"$note"
+    lt_parse "$lt_out"
+    if [ "$lt_status" -ne 0 ] || [ "$lt_sysfs" != "$lt_ms" ] || [ "$lt_device" != "$lt_ms" ] ||
+       [ "$lt_low" != 0 ]; then
+      latency_problem="the adapter's latency timer read $(grep -m 1 '^tty ' <<<"$lt_out") after the run, not $lt_ms ms"
+    fi
+  fi
   if [ "$probe_status" -ne 0 ]; then
     { echo; echo "verdict: probe exit $probe_status"; } >>"$note"
     echo "trace_session: the probe exited $probe_status: session stopped (stop rule). See $note"
@@ -813,6 +968,12 @@ run_one() {
   if [ -n "$load_problem" ]; then
     { echo; echo "verdict: load failure ($load_problem)"; } >>"$note"
     echo "trace_session: $load_problem: session stopped. See $note"
+    outcome=stop
+    return
+  fi
+  if [ -n "$latency_problem" ]; then
+    { echo; echo "verdict: latency timer failure ($latency_problem)"; } >>"$note"
+    echo "trace_session: $latency_problem: session stopped. See $note"
     outcome=stop
     return
   fi
@@ -840,21 +1001,25 @@ run_one() {
 
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v <<<"$spec"
-  for m in "${mode_list[@]}"; do
-    current=$spec; current_mode=$m
-    run_one "$p" "$r" "$c" "$v" "$m"
-    case "$outcome" in
-      pass) add_result "$spec" "$m" "PASS" ;;
-      fail) add_result "$spec" "$m" "FAIL $failed" ;;
-      skip) add_result "$spec" "$m" "skipped (attempted earlier)" ;;
-      stop)
-        add_result "$spec" "$m" "STOPPED the session (see the .run.txt)"
-        current=
-        finish
-        print_table
-        exit 1 ;;
-    esac
-    current=
+  for step in "${step_list[@]}"; do
+    label=$spec
+    [ -n "$step" ] && label="$spec@${step%%:*}ms#${step##*:}"
+    for m in "${mode_list[@]}"; do
+      current=$label; current_mode=$m
+      run_one "$p" "$r" "$c" "$v" "$m" "$step"
+      case "$outcome" in
+        pass) add_result "$label" "$m" "PASS" ;;
+        fail) add_result "$label" "$m" "FAIL $failed" ;;
+        skip) add_result "$label" "$m" "skipped (attempted earlier)" ;;
+        stop)
+          add_result "$label" "$m" "STOPPED the session (see the .run.txt)"
+          current=
+          finish
+          print_table
+          exit 1 ;;
+      esac
+      current=
+    done
   done
 done
 finish

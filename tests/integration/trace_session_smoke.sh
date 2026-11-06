@@ -6,8 +6,11 @@
 # load (a stand-in stress-ng) starting after the recorders and pinned off
 # the excluded CPUs, the stops when the fair server is not read, a
 # tracer does not start, the trace clock is not mono, a recorder or the
-# load ends before the probe does, or the load fails, and an interrupted
-# session (Ctrl-C or SIGTERM) giving its outputs back. Functional only: a
+# load ends before the probe does, or the load fails, an interrupted
+# session (Ctrl-C or SIGTERM) giving its outputs back, and the adapter
+# experiment's latency steps (a stand-in latency tool): the steps in order,
+# their checks before and after each run, the stops when the adapter does
+# not hold a step's value, and the restoration on every exit. Functional only: a
 # pty answers instantly and the tracers record nothing real, so no verdict
 # is asserted. Real-time conditions need a real-time priority limit, so
 # they stay out of this test (the plan is checked with --dry-run).
@@ -124,6 +127,27 @@ cat >"$FAKE/modprobe" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.modprobe"
 EOF
+# The adapter's latency timer, kept in $FAKE_LOG.latency-state as "sysfs
+# device low_latency". set stores the value; the adapter keeps 1 with the
+# low-latency flag set, and its previous value for a request of
+# FAKE_LATENCY_IGNORE.
+cat >"$FAKE/latency" <<'EOF'
+#!/usr/bin/env bash
+state="$FAKE_LOG.latency-state"
+echo "$*" >>"$FAKE_LOG.latency"
+read -r s d l <"$state"
+if [ "$1" = set ]; then
+  s=$3
+  if [ "$l" = 1 ]; then d=1; elif [ "$3" != "${FAKE_LATENCY_IGNORE:-}" ]; then d=$3; fi
+  echo "$s $d $l" >"$state"
+fi
+echo "tty $2 sysfs $s device $d low_latency $l adapter 0403:6014 bcdDevice 0900 channel 1"
+if [ "$1" = set ] && { [ "$s" != "$3" ] || [ "$d" != "$3" ] || [ "$l" != 0 ]; }; then
+  echo "latency_timer: requested $3 ms, but sysfs reads $s, the adapter $d" >&2
+  exit 1
+fi
+exit 0
+EOF
 # In sudo's place (TRACE_SESSION_SUDO): logs each privileged command and
 # runs it as the invoking user; its timestamp checks succeed.
 cat >"$FAKE/sudo" <<'EOF'
@@ -143,6 +167,8 @@ printf '480\n' >"$ROOT/usbdev/speed"
 export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
+export LATENCY_TOOL="$FAKE/latency"
+echo "4 4 0" >"$ROOT/fake.latency-state"
 
 # The quiet-machine gate is lifted: the test suite runs in parallel. The
 # tracers need a CPU outside the excluded set, so CPU 0 alone is excluded
@@ -369,6 +395,158 @@ os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --ye
   done
   [ ! -e "$(base cbp-100hz-idle-bounded-traced "$attempt").run.txt" ] ||
     fail "a run started after SIG$sig" "$ROOT/int-$sig.log"
+done
+
+# The adapter experiment. No session above touched the latency timer.
+[ ! -e "$ROOT/fake.latency" ] || fail "a session without --latency-steps used the latency tool" "$ROOT/fake.latency"
+LT_TTY=$(basename "$(readlink -f "$LINK")")
+latency_state() { cat "$ROOT/fake.latency-state"; }
+
+# Steps 1, 0, 1, each untraced and traced: the timer is set when the step
+# changes, checked before and after every run, the probe expects the step's
+# value, and the value found (4 ms) comes back at the end.
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 13 --latency-steps 1,0,1 \
+  --runs current:100:idle:full </dev/null >"$ROOT/latency.log" 2>&1 ||
+  fail "the latency session failed" "$ROOT/latency.log"
+expected_calls="read $LT_TTY
+set $LT_TTY 1
+read $LT_TTY
+read $LT_TTY
+read $LT_TTY
+set $LT_TTY 0
+read $LT_TTY
+read $LT_TTY
+read $LT_TTY
+set $LT_TTY 1
+read $LT_TTY
+read $LT_TTY
+read $LT_TTY
+set $LT_TTY 4"
+[ "$(cat "$ROOT/fake.latency")" = "$expected_calls" ] ||
+  fail "the latency timer was not set and read as planned" "$ROOT/fake.latency"
+[ "$(latency_state)" = "4 4 0" ] || fail "the latency timer was not restored" "$ROOT/latency.log"
+grep -q "the adapter's latency timer is restored to 4 ms" "$ROOT/latency.log"
+for s in 1:1 0:2 1:3; do
+  ms=${s%%:*}; k=${s##*:}
+  for mode in untraced traced; do
+    b=$(base "current-100hz-idle-bounded-lt$ms-s$k-$mode" 13)
+    note="$b.run.txt"
+    [ -f "$b" ] && [ -f "$note" ] || fail "missing the step $k $mode run" "$ROOT/latency.log"
+    grep -Eq '^verdict: (pass|fail)' "$note" || fail "no verdict in $note" "$note"
+    grep -q "^latency step: $ms ms (step $k of 3: 1,0,1)" "$note"
+    grep -q "^latency timer before the run (requested $ms ms): tty $LT_TTY sysfs $ms device $ms low_latency 0 " "$note" ||
+      fail "$note: no latency check before the run" "$note"
+    grep -q "^latency timer after the run: tty $LT_TTY sysfs $ms device $ms low_latency 0 " "$note" ||
+      fail "$note: no latency check after the run" "$note"
+    grep -q "^command: .* --expect-latency-timer-ms $ms" "$note" || fail "$note: the probe did not expect $ms ms" "$note"
+    grep -Eq '^xhci interrupts around the probe: [0-9]+ in [0-9.]+ s' "$note" || fail "$note: no xHCI count" "$note"
+    grep -q "^latency steps: 1,0,1; at the session's start: tty $LT_TTY sysfs 4 device 4 low_latency 0" "$note"
+  done
+done
+grep -q '^latency timer restored to 4 ms' "$(base current-100hz-idle-bounded-lt1-s3-traced 13).run.txt" ||
+  fail "the restoration is not in the last record" "$(base current-100hz-idle-bounded-lt1-s3-traced 13).run.txt"
+grep -Eq 'current:100:idle:full@0ms#2 +traced' "$ROOT/latency.log"
+
+# Ctrl-C and SIGTERM during a 0 ms step restore the timer too.
+for sig in INT TERM; do
+  case "$sig" in INT) attempt=14; target=group ;; TERM) attempt=15; target=script ;; esac
+  python3 -c '
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --yes \
+    --attempt "$attempt" --duration 4 --modes traced --latency-steps 0 \
+    --runs current:100:idle:full </dev/null >"$ROOT/latency-$sig.log" 2>&1 &
+  pid=$!
+  b=$(base current-100hz-idle-bounded-lt0-s1-traced "$attempt")
+  for _ in $(seq 1 300); do
+    grep -q '^clock pair before' "$b.run.txt" 2>/dev/null && break
+    sleep 0.1
+  done
+  grep -q '^clock pair before' "$b.run.txt" || fail "the probe never started" "$ROOT/latency-$sig.log"
+  [ "$(latency_state)" = "0 0 0" ] || fail "the 0 ms step was not set" "$ROOT/latency-$sig.log"
+  sleep 1
+  if [ "$target" = group ]; then kill -INT -- "-$pid"; else kill -TERM "$pid"; fi
+  status=0
+  wait "$pid" || status=$?
+  [ "$status" -eq 130 ] || fail "the interrupted latency session exited $status" "$ROOT/latency-$sig.log"
+  [ "$(latency_state)" = "4 4 0" ] || fail "SIG$sig left the latency timer at $(latency_state)" "$ROOT/latency-$sig.log"
+  grep -q "the adapter's latency timer is restored to 4 ms" "$ROOT/latency-$sig.log"
+done
+
+# An adapter that keeps its value for a 0 ms request voids the step before
+# its probe runs, stops the session and is restored.
+: >"$ROOT/fake.latency"
+if FAKE_LATENCY_IGNORE=0 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 16 \
+    --modes untraced --latency-steps 1,0 --runs current:100:idle:full,cbp:100:idle:full \
+    </dev/null >"$ROOT/latency-ignored.log" 2>&1; then
+  fail "a step the adapter did not hold was accepted" "$ROOT/latency-ignored.log"
+fi
+b=$(base current-100hz-idle-bounded-lt0-s2-untraced 16)
+[ ! -e "$b" ] || fail "the probe ran with the adapter at another latency" "$ROOT/latency-ignored.log"
+grep -q '^verdict: not run (latency timer)' "$b.run.txt"
+[ -f "$(base current-100hz-idle-bounded-lt1-s1-untraced 16)" ] || fail "the 1 ms step did not run" "$ROOT/latency-ignored.log"
+[ ! -e "$(base cbp-100hz-idle-bounded-lt1-s1-untraced 16).run.txt" ] ||
+  fail "a run started after the latency stop" "$ROOT/latency-ignored.log"
+[ "$(latency_state)" = "4 4 0" ] || fail "the stopped session did not restore the timer" "$ROOT/latency-ignored.log"
+tail -n 1 "$ROOT/fake.latency" | grep -qx "set $LT_TTY 4"
+
+# The adapter's value changing during a run voids it, stops the session and
+# is restored.
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 18 --duration 3 \
+  --modes untraced --latency-steps 0 --runs current:100:idle:full,cbp:100:idle:full \
+  </dev/null >"$ROOT/latency-drift.log" 2>&1 &
+pid=$!
+b=$(base current-100hz-idle-bounded-lt0-s1-untraced 18)
+for _ in $(seq 1 300); do [ -e "$b" ] && break; sleep 0.1; done
+[ -e "$b" ] || fail "the probe never started" "$ROOT/latency-drift.log"
+echo "0 16 0" >"$ROOT/fake.latency-state"
+status=0
+wait "$pid" || status=$?
+[ "$status" -eq 1 ] || fail "a run whose latency timer changed was accepted (exit $status)" "$ROOT/latency-drift.log"
+grep -q '^verdict: latency timer failure (the adapter.s latency timer read tty .* device 16 .* after the run, not 0 ms)' "$b.run.txt" ||
+  fail "no latency failure in $b.run.txt" "$b.run.txt"
+[ "$(latency_state)" = "4 4 0" ] || fail "the drifted timer was not restored" "$ROOT/latency-drift.log"
+
+# The low-latency flag at the start, or values that differ, refuse the
+# session before anything is sent; a startup failure before the read
+# changes nothing.
+for st in "1 1 1" "4 1 0"; do
+  echo "$st" >"$ROOT/fake.latency-state"
+  : >"$ROOT/fake.latency"
+  if setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 17 --modes untraced \
+      --latency-steps 1,0 --runs current:100:idle:full </dev/null >"$ROOT/latency-refused.log" 2>&1; then
+    fail "a session started with the adapter at $st" "$ROOT/latency-refused.log"
+  fi
+  grep -Eq 'low-latency flag is set|reads 1 but sysfs 4' "$ROOT/latency-refused.log" ||
+    fail "no refusal for $st" "$ROOT/latency-refused.log"
+  [ "$(cat "$ROOT/fake.latency")" = "read $LT_TTY" ] || fail "the refused session set the timer" "$ROOT/fake.latency"
+  [ ! -e "$(base current-100hz-idle-bounded-lt1-s1-untraced 17).run.txt" ] || fail "a refused session ran"
+  [ "$(latency_state)" = "$st" ] || fail "the refused session changed the timer"
+done
+echo "4 4 0" >"$ROOT/fake.latency-state"
+: >"$ROOT/fake.latency"
+if FAKE_BPF_FAIL=1 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 19 --modes untraced \
+    --latency-steps 0 --runs current:100:idle:full </dev/null >"$ROOT/latency-startup.log" 2>&1; then
+  fail "a session without the fair-server read started" "$ROOT/latency-startup.log"
+fi
+[ ! -s "$ROOT/fake.latency" ] || fail "a session that failed at startup used the latency tool" "$ROOT/fake.latency"
+
+# The plan names the steps and touches nothing; bad steps are refused.
+setsid tools/trace_session.sh "${COMMON[@]}" --dry-run --latency-steps 1,0,1 \
+  --runs current:1000:rt-idle:fast-motion </dev/null >"$ROOT/latency-plan.log" 2>&1 ||
+  fail "the latency plan failed" "$ROOT/latency-plan.log"
+grep -q '^plan: 6 runs' "$ROOT/latency-plan.log"
+grep -q 'latency timer 0 ms (step 2).*rate-trace-current-1000hz-rt-idle-bounded-fast-motion-lt0-s2-traced-.*--expect-latency-timer-ms 0' "$ROOT/latency-plan.log" ||
+  fail "the plan does not show the 0 ms step" "$ROOT/latency-plan.log"
+grep -q "^latency steps 1,0,1 on $LT_TTY through" "$ROOT/latency-plan.log"
+[ ! -s "$ROOT/fake.latency" ] || fail "the plan used the latency tool" "$ROOT/fake.latency"
+for bad in 1,256 1,x 1,,0; do
+  if setsid tools/trace_session.sh "${COMMON[@]}" --dry-run --latency-steps "$bad" \
+      </dev/null >"$ROOT/latency-bad.log" 2>&1; then
+    fail "--latency-steps $bad was accepted" "$ROOT/latency-bad.log"
+  fi
+  grep -q 'is not a latency timer of 0 to 255 ms' "$ROOT/latency-bad.log"
 done
 
 # An emulator rehearsal traces without usbmon.

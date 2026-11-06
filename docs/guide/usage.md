@@ -1185,7 +1185,9 @@ measured, estimated and envelope quantities. The procedure that uses them is
 `tools/e1_prod.sh` and `tools/e1_cal.sh` run its torque-off E1 step,
 `tools/trace_session.sh` its traced torque-off diagnostics, and
 `tools/trace_correlate.py` checks a traced run's association with its trace
-and locates each read's delay along the receive path.
+and locates each read's delay along the receive path; `tools/latency_timer.py`
+reads and sets the adapter's latency timer for the torque-off experiment
+(`trace_session.sh --latency-steps`).
 
 On the library side, `hw::CraneX7::Options::timing_ring_capacity` enables the
 per-cycle `hw::CycleRecord` ring that `popCycleRecord()` drains, and

@@ -656,6 +656,71 @@ These are exploratory torque-off measurements. They change no setting and
 qualify no rate; the receive budget, the guard and the wake allowance stay
 as decided.
 
+### Adapter latency timer experiment (torque-off)
+
+The traced runs located most of a quiet read's time before the host has the
+data, at the adapter's nominal 1 ms delivery cadence, which is the setting
+of its latency timer. The FT232H documents latency timer values of 0 to
+255 ms and the Linux driver accepts 0, so whether this adapter delivers
+sooner at a lower setting is a question for measurement. This experiment
+answers it torque-off without changing a production default. A lower setting
+is an experimental possibility, not a promise of 1 kHz, and its results
+qualify no rate.
+
+**The setting on this host.** A udev rule sets the timer to 1 ms when the
+adapter is plugged in. The driver's sysfs attribute shows its cached value,
+or 1 whenever the port's low-latency flag is set, and with that flag the
+driver writes 1 ms whatever value is stored. `tools/latency_timer.py read
+<tty>` (as root) therefore reads three values: the sysfs value, the value
+the adapter itself returns to a Get Latency Timer request, and the
+low-latency flag. `set <tty> <ms>` writes the sysfs attribute and reads all
+three back. Opening the port makes the driver send the adapter a reset, so
+the adapter's value is read after the tool's own open, and again after each
+run.
+
+**The session.** `tools/trace_session.sh --latency-steps 1,0,1` makes each
+listed run once per step, in order, each untraced and then traced. A 0 ms
+result is thus bracketed by 1 ms runs of the same condition: an improvement
+that follows the setting goes away again at 1 ms.
+- Before anything is sent, the session reads the starting value, which it
+  restores later, and refuses if the low-latency flag is set or the adapter
+  and sysfs disagree.
+- Before each run it sets the step's value if it changes, and checks that
+  sysfs and the adapter both hold it with the flag clear; after the run it
+  checks again. A run that fails either check is voided and stops the
+  session.
+- The probe expects the step's value (`x7_bus_timing
+  --expect-latency-timer-ms`), so its own bus-profile check refuses any
+  other. Without that option the bounded read's profile check requires
+  1 ms, as before; the 100 Hz path reads no latency timer.
+- So the session restores the starting value on every exit: at the end, on
+  a stop, on Ctrl-C, SIGTERM or SIGHUP, and through an EXIT trap on any
+  other exit of the script. Only a SIGKILL or a crash skips it, leaving the
+  step's value until the timer is set again (the udev rule sets 1 ms at the
+  next plug-in). The run records carry every check and the restoration.
+
+**Measurements.** For each run, compared across the steps: the probe's
+read and complete-cycle timing, criteria, errors and recoveries
+(`tools/timing_summary.py`, as before), its CPU duty (in the summary), and
+the xHCI interrupts around the probe. For each traced run,
+`tools/trace_correlate.py` adds the adapter's delivery cadence, the replies
+split across deliveries, the receive path and the host's USB work (the xHCI
+interrupt handlers and the USB completion work in the run). The xHCI counts
+include every device on the controller.
+
+**Plan.** First, short quiet runs (18 runs, about 15 minutes):
+
+```
+tools/trace_session.sh --latency-steps 1,0,1 --duration 20 \
+  --runs current:500:rt-idle:fast-motion,current:1000:rt-idle:fast-motion,cbp:1000:rt-idle:fast
+```
+
+Then, after those results are reviewed, repeated loaded comparisons, for
+example `--latency-steps 1,0,1,0,1` under rt-loaded and rt-loaded-excl.
+Both watchdogs, the receive budget and guard, and the qualification
+thresholds stay unchanged; a lower setting in production would need its
+own decision and fresh qualification evidence.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
