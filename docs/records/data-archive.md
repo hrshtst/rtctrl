@@ -9,7 +9,8 @@ in-repo under `data/` (one per starred file below). Checksums are
 SHA-256 at the archival date stated by each section; the older tables
 below were archived on 2026-07-28. The control-rate sections (`e0/`,
 `e1_prod/`, `e1_cal/` and `r4_bounded/`, checksums taken 2026-11-04;
-`b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/`, taken 2026-11-06)
+`b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/` and `latency_timer/`,
+taken 2026-11-06)
 are kept on a separate volume of the
 same private archive; their paths are
 relative to that volume's project folder. A citation in the project records
@@ -1483,3 +1484,31 @@ diagnostics; cited in
 | `rate-trace-cbp-1000hz-rt-idle-bounded-fast-traced-20261106-1.csv.tasks.txt` | traced torque-off run (cbp, 1000 Hz, rt-idle, Fast Sync Read of the full window, traced), task snapshot | `1d383b59df20824abd385dca1877370bd67326f353b0e73dbde63732985e5210` |
 | `rate-trace-cbp-1000hz-rt-idle-bounded-fast-traced-20261106-1.csv.trace.dat` | traced torque-off run (cbp, 1000 Hz, rt-idle, Fast Sync Read of the full window, traced), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `8be8e18a99224a40163a29c671ca24476340e163407a6ee99a1ae07010267000` |
 | `rate-trace-cbp-1000hz-rt-idle-bounded-fast-traced-20261106-1.csv.usbmon.pcap` | traced torque-off run (cbp, 1000 Hz, rt-idle, Fast Sync Read of the full window, traced), the adapter's usbmon capture | `f28c97f44d202d9c29c59b3877fea9d50ec84da67673089c2f51883b4c92aaa4` |
+
+## `latency_timer/` — control-rate adapter latency timer experiment, phase 1 (2026-11-06)
+
+Two sessions at `50e1169` (`tools/trace_session.sh --latency-steps`) on
+current at 500 Hz, rt-idle, with Fast Sync Read and the motion-only read:
+attempt 1 with the steps 1, 0 and 1 ms (both 1 ms runs, and the 0 ms run
+that stopped at the probe's startup inventory), and attempt 2, a traced
+repetition of the 0 ms step. The evidence for the phase-1 result; cited in
+[history.md](history.md#control-rate-traced-torque-off-diagnostics-2026-11-06).
+
+| file | role | sha256 |
+|---|---|---|
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-untraced-20261106-1.csv` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, untraced), per-cycle log | `7fa7a40c58829d3a7a5889522c44100f70595e2f6cab2495808ead84c34fa0d9` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-untraced-20261106-1.csv.summary.toml` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, untraced), probe summary | `c8fd1b9bd29acde98ae5f361839208f52b2d077aafd12c846ef34dc8a502d76a` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-untraced-20261106-1.csv.run.txt` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, untraced), session record | `54bbfb9f78177c73e5a92391c5c760a2779e8a11e0736ee5957a70038edc828b` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-untraced-20261106-1.csv.tasks.txt` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, untraced), task snapshot | `4e3f8775ccef2e44e2d2266c2f0c4ea412529f9898d88a9d099e4c985c4d7371` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-traced-20261106-1.csv` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, traced), per-cycle log | `a7d1c5d7b17c987379f139f5b7cd038b439bd93722e24bfacc09d5c15cc119fe` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-traced-20261106-1.csv.summary.toml` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, traced), probe summary | `7af37757fbb427912a7bd2b25445fc8dafe46ec488e000ee178fd42625d65155` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-traced-20261106-1.csv.run.txt` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, traced), session record | `ae6c38f1a1039e1515954ab6b4d8dd6f1a3dfca22c73b695c13ebc9a07511e7a` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-traced-20261106-1.csv.tasks.txt` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, traced), task snapshot | `ec19af9360dda4d1a4c0ecc3fe4272776263998e90f5c93629a0930dccc312e7` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-traced-20261106-1.csv.trace.dat` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, traced), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `44bc8c6ff6845a8de8e13c176dc5b49df582b62cee06f7ae5b575bb54229761a` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt1-s1-traced-20261106-1.csv.usbmon.pcap` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 1 ms step, traced), the adapter's usbmon capture | `8586f41f11051227c6b86af0c3aca38c2dfe4415a4a7433499808fabfa5fc235` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s2-untraced-20261106-1.csv.run.txt` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, untraced, stopped at the probe's startup inventory), session record | `0e45ecb63fec0de8242be8b0b21a87398ea8c9f3591fc7b33ff4013920f36547` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s2-untraced-20261106-1.csv.tasks.txt` | latency timer experiment, attempt 1 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, untraced, stopped at the probe's startup inventory), task snapshot | `6fe2d692e9dda27d4408d776564e0748c116ba761dcfa366e49d6fbf4d77dd48` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.run.txt` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), session record | `a2d1adc3e0d25248892804c1d20cfa235ad27d042b21bbb227ef1ff99bf45168` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.tasks.txt` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), task snapshot | `f575f63475538c770aa538158978e3199ddf4135a99dc11d5d2dd7b278b3bb45` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.trace.dat` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), scheduler, timer, workqueue and xHCI trace (trace-cmd, mono clock) | `7f9bb3b64d4a4a8a01812391db04453309afd90f8e76386eddcc480863e582be` |
+| `rate-trace-current-500hz-rt-idle-bounded-fast-motion-lt0-s1-traced-20261106-2.csv.usbmon.pcap` | latency timer experiment, attempt 2 (current, 500 Hz, rt-idle, Fast Sync Read with the motion-only read; 0 ms step, traced, stopped at the probe's startup inventory), the adapter's usbmon capture | `c85421e5d827d785a9e35095a2df8ead77daa2ef9a0c5e661c175ef36d3063fb` |

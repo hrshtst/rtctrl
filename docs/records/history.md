@@ -804,6 +804,17 @@ reasons the events do not show.
 These are exploratory measurements; the details are in the
 [control-rate qualification](../hardware/control-rate.md#traced-torque-off-diagnostics).
 
+The adapter latency timer experiment followed (`--latency-steps 1,0,1`,
+torque-off, at `50e1169`). At 1 ms the runs completed as before. At 0 ms,
+which the adapter held, the probe's first startup ping got no reply: a
+traced repetition showed the ping accepted over USB and every following
+USB delivery carrying only the adapter's two status bytes, while the same
+startup at 1 ms got its reply 0.58 ms after the ping. The failure lies
+before the adapter delivered any reply byte; whether the servo answered,
+or the adapter held or dropped the reply, is not resolved. 1 ms stays the
+working setting, and a hold diagnostic (`tools/latency_hold.py`) tests
+whether the adapter holds the reply at 0 ms.
+
 ## Consistency audit
 
 A post-closure audit (executed 2026-07-28, two commits) unified

@@ -727,6 +727,55 @@ Both watchdogs, the receive budget and guard, and the qualification
 thresholds stay unchanged; a lower setting in production would need its
 own decision and fresh qualification evidence.
 
+**Phase 1, 2026-11-06.** At `50e1169`, the plan above began with
+current at 500 Hz. Both 1 ms runs completed: 10,000 cycles each, none
+skipped, no transport error, T6a failed (host work p99.9 1.764 and
+1.865 ms). At 0 ms, which the adapter held before and after the run, the
+probe's startup inventory got no matching reply to its first ping (servo
+2), so the probe exited before its timed run and the session stopped; the
+other runs were not made. A traced repetition (attempt 2) recorded that
+startup:
+- the 10-byte ping was submitted over USB and its transfer completed,
+  which shows the adapter accepted it, not that it went out on the RS-485
+  line;
+- all 1,754 bulk IN completions in the next 35 ms, about 49 per
+  millisecond (the xHCI controller took about 16 interrupts per
+  millisecond), carried only the adapter's two status bytes, with no
+  receive-error flag, and the kernel trace's xHCI events agree;
+- the 1 ms run's identical startup received the 14-byte reply 0.58 ms
+  after its ping.
+
+The failure lies before the adapter delivered any reply byte to the host,
+so the TTY handoff cannot explain it. Whether the ping reached the line,
+the servo replied, or the adapter received and held or dropped a reply is
+not resolved, and no receive-only tap of the line is available (D7). The
+failure came before the bounded read and the real-time worker started, so
+it says nothing about cycle timing at 0 ms. Each session's cleanup restored
+1 ms, and 1 ms stays the working setting.
+
+**Hold diagnostic.** `sudo tools/latency_hold.py`, from the repo root,
+asks whether the adapter at 0 ms received the reply and held it. On one
+serial descriptor, open throughout, it:
+1. checks that the adapter holds 1 ms (sysfs, the adapter's own value and
+   the low-latency flag read through that descriptor), and pings servo 2
+   as a baseline that must get a matching reply;
+2. drains and flushes the input, sets 0 ms and reads it back, sends
+   exactly one ping and observes the input for 50 ms;
+3. sending nothing, and with no flush, reset, close or reconfiguration of
+   the port, sets 1 ms, reads it back and observes another 50 ms;
+4. sends a fresh control ping at 1 ms and observes 50 ms.
+
+It sets the timer through sysfs and reads it back without opening the
+port again, and only pings go to the servos. usbmon records the adapter's
+traffic throughout, and every write and read is logged with its raw bytes
+and `CLOCK_MONOTONIC` time (`rate-hold-<date>-<attempt>.csv`, with
+`.csv.run.txt` and `.csv.usbmon.pcap`). A matching reply after the switch,
+before anything further is sent, supports delayed delivery by the adapter,
+though it does not timestamp the adapter's reception; no payload leaves
+reception, transmission and dropping unresolved. The cleanup verifies or
+restores 1 ms on every handled exit, with the session's exit statuses (3
+when the cleanup cannot leave 1 ms).
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
