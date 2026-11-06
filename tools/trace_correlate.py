@@ -99,6 +99,8 @@ import re
 import subprocess
 import sys
 
+import timer_service
+
 try:
     import tomllib
 except ImportError:  # Python < 3.11
@@ -126,9 +128,12 @@ BARRIER_WORK = "wq_barrier_func"
 class Trace:
     """The events of one trace that the checks and the receive path use."""
 
-    def __init__(self, tid: int, adapter: str) -> None:
+    def __init__(self, tid: int, adapter: str, timer: timer_service.TimerEvents | None = None) -> None:
         self.tid = tid
         self.adapter = adapter
+        # A timer-mode run's events (tools/timer_service.py), else None.
+        self.timer = timer
+        self.last_ts = 0
         self.expiring: dict[int, list] = {}   # cpu -> stack of (entry ts, now, wakeup)
         self.timer_wakes: list[tuple] = []    # (entry ts, now, cpu, waking ts, running)
         self.worker_switch: list[tuple] = []  # (ts, cpu, "in"/"out", state)
@@ -167,6 +172,9 @@ class Trace:
         cpu, pid = int(m["cpu"]), int(m["pid"])
         ts = int(m["s"]) * 1_000_000_000 + int(m["ns"])
         flags = m["flags"] or ""
+        self.last_ts = ts
+        if self.timer is not None and ev in timer_service.TIMER_EVENTS:
+            self.timer.feed(ts, cpu, pid, m["comm"], ev, rest, flags)
         if ev == "hrtimer_expire_entry":
             n = NOW.search(rest)
             a = re.search(r"hrtimer=(\S+)", rest)
@@ -198,6 +206,8 @@ class Trace:
             if not s:
                 return
             npid, ppid = int(s["npid"]), int(s["ppid"])
+            if self.timer is not None:
+                self.timer.switch(ts, cpu, ppid, s["prev"], npid, s["next"])
             if npid == self.tid:
                 self.worker_switch.append((ts, cpu, "in", ""))
                 self.running = True
@@ -1048,7 +1058,13 @@ def main() -> int:
     if not adapter:
         print("trace_correlate: no adapter (give --adapter)", file=sys.stderr)
         return 2
-    tr = Trace(run.tid, adapter)
+    record = record_of(args.csv)
+    timer_events = None
+    if any(line.strip() == "mode: timer" for line in record):
+        rc = re.search(r"--rt-cpu (\d+)", "\n".join(record))
+        window = (run.origin + int(run.rows[0]["wake_ns"]), run.origin + int(run.rows[-1]["cycle_end_ns"]))
+        timer_events = timer_service.TimerEvents(run.tid, int(rc[1]) if rc else 3, window)
+    tr = Trace(run.tid, adapter, timer_events)
     if args.report:
         with open(args.report, errors="replace") as f:
             for line in f:
@@ -1080,7 +1096,10 @@ def main() -> int:
     perf = load_perf(perf_txt, run.tid) if perf_txt.exists() else None
     stacks_txt = pathlib.Path(str(perf_txt).removesuffix(".perf.txt") + ".perf.stacks.txt")
     stacks = load_stacks(stacks_txt, run.tid) if stacks_txt.exists() else None
-    sleep_timing(run, tr, timer, perf, stacks, record_of(args.csv), args.top, failures, out)
+    sleep_timing(run, tr, timer, perf, stacks, record, args.top, failures, out)
+    if tr.timer is not None:
+        tr.timer.finish(tr.last_ts)
+        timer_service.report(args.csv, tr.timer, timer["pairs"], record, failures, args.top, out)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
     if failures:

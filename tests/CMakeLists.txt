@@ -300,6 +300,18 @@ set_tests_properties(trace_correlate_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "trace correlate regressions OK"
   LABELS unit)
 
+# The timer mode's analysis (tools/timer_service.py) on synthetic events:
+# the TSC anchors' matching and validated uncertainty, the classes of a
+# late timer service, the exerciser's actions, the background load.
+add_test(NAME timer_service_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_timer_service.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(timer_service_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "timer service regressions OK"
+  LABELS unit)
+
 # The adapter latency timer tool on a fake sysfs tree, its two device reads
 # replaced: no real port is touched.
 add_test(NAME latency_timer_regressions
