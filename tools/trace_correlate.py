@@ -68,7 +68,9 @@ data is in the host, not yet with the worker). For a cycle that overran,
 the largest measured of these parts, its wake lateness and its write is
 reported: where the time went, not what caused it. The adapter's bulk IN
 completions within the run (from the first cycle's wake to the last
-cycle's end) give the cadence at which it delivered data or status.
+cycle's end) give the cadence at which it delivered data or status, and
+the xHCI interrupt handlers and USB completion work in the run (for every
+device on the controller) the host's USB work.
 """
 
 from __future__ import annotations
@@ -125,6 +127,8 @@ class Trace:
         self.tty_queued: list[tuple] = []     # (ts, cpu, work)
         self.work_anomalies = 0               # execute_end without its start
         self.kworker_in: dict[int, list] = {}  # pid -> [(ts, cpu, prev comm, prev state)]
+        self.irq_open: dict[int, tuple] = {}  # cpu -> (entry ts, irq) of an xHCI handler
+        self.xhci_irq: list[tuple] = []        # (entry ts, handler duration)
         self.lines = 0
 
     def feed(self, line: str) -> None:
@@ -179,6 +183,17 @@ class Trace:
                     self.out_done.setdefault(u["urb"], []).append(ts)
             elif ev == "xhci_urb_giveback":
                 self.in_done.append((ts, cpu, int(u["actual"])))
+        elif ev == "irq_handler_entry":
+            if "name=xhci" in rest:
+                n = re.search(r"irq=(\d+)", rest)
+                if n:
+                    self.irq_open[cpu] = (ts, n[1])
+        elif ev == "irq_handler_exit":
+            n = re.search(r"irq=(\d+)", rest)
+            o = self.irq_open.get(cpu)
+            if o and n and n[1] == o[1]:
+                self.xhci_irq.append((o[0], ts - o[0]))
+                del self.irq_open[cpu]
         elif ev == "workqueue_queue_work":
             q = QUEUE.search(rest)
             if q and q["fn"] == TTY_WORK:
@@ -491,6 +506,15 @@ def usb_cadence(run: Run, tr: Trace, out) -> None:
     print(f"  adapter bulk IN completions in the run: {len(ts)} over {(ts[-1] - ts[0]) / 1e9:.6f} s "
           "(first to last); consecutive intervals:", file=out)
     show("in_completion_interval", gaps, out)
+    # The host's USB work, for every device on the controller.
+    span = (hi - lo) / 1e9
+    irqs = [d for s, d in tr.xhci_irq if lo <= s <= hi]
+    works = [e - s for s, e, *_ in tr.executions[BH_WORK] if lo <= s <= hi]
+    print(f"  host USB work in the run (every device on the controller): {len(irqs)} xHCI interrupts "
+          f"({len(irqs) / span:.0f} per s, handlers {sum(irqs) / 1e6:.3f} ms in all), {len(works)} USB "
+          f"completion works ({sum(works) / 1e6:.3f} ms in all)", file=out)
+    show("xhci_interrupt_handler", irqs, out)
+    show("usb_completion_work", works, out)
 
 
 def port_work_item(data: list, bh: dict, queued: list) -> str | None:

@@ -68,6 +68,9 @@ class Run:
 
     def urb(self, us: float, pid: int, comm: str, cpu: int, kind: str, ep: str, urb: str,
             actual: int, length: int) -> None:
+        if kind == "giveback":  # in the controller's interrupt handler
+            self.ev(us - 0.5, comm, pid, cpu, "d.h1.", "irq_handler_entry", "irq=125 name=xhci_hcd")
+            self.ev(us + 0.5, comm, pid, cpu, "d.h1.", "irq_handler_exit", "irq=125 ret=handled")
         self.ev(us, comm, pid, cpu, "....." if kind == "enqueue" else "d.h2.", f"xhci_urb_{kind}",
                 f"1-9 {ep}-bulk: urb {urb} pipe 3221292032 slot 5 length {actual}/{length} "
                 "sgs 0/0 stream 0 flags 0")
@@ -218,6 +221,10 @@ def main() -> int:
         expect("latest 3 wakes" in out and "cycle      1 wake     1.3: the first cycle (begins at once)" in out,
                "the first cycle listed as such", out)
         expect("0 reads whose USB completion work queued no TTY work" in out, "every TTY work queued", out)
+        # Every giveback but the last write's (after the run) in the run;
+        # four data completions, each with its completion work.
+        expect("12 xHCI interrupts (" in out and "handlers 0.012 ms in all), 4 USB completion works "
+               "(0.006 ms in all)" in out, "the host's USB work", out)
         rows = list(csv.DictReader(open(seg)))
         expect(len(rows) == 3, "a segment row per read", out)
         r = rows[1]
