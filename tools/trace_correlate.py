@@ -141,14 +141,20 @@ class Trace:
         self.executions: dict[str, list] = {BH_WORK: [], TTY_WORK: [], BARRIER_WORK: []}
         self.tty_queued: list[tuple] = []     # (ts, cpu, work)
         self.work_anomalies = 0               # execute_end without its start
-        self.kworker_in: dict[int, list] = {}  # pid -> [(ts, cpu, prev comm, prev state)]
+        # Kernel workers' switches: pid -> [(ts, cpu, "in", previous comm) or
+        # (ts, cpu, "out", state)].
+        self.kworker_sched: dict[int, list] = {}
         self.irq_open: dict[int, tuple] = {}  # cpu -> (entry ts, irq) of an xHCI handler
         self.xhci_irq: list[tuple] = []        # (entry ts, handler duration)
         self.kworker_wake: dict[int, list] = {}  # pid -> [(ts, waker comm, waker cpu, target cpu)]
-        # A profiled run's worker events: sleep-call entries, timer arming
-        # (ts, expires) of its hrtimer_wakeup timers, and page faults.
+        # A profiled run's worker events: sleep-call entries and exits, the
+        # arming (ts, hrtimer, expires) of its hrtimer_wakeup timers, their
+        # cancellations (ts, hrtimer, in an interrupt: the expiry's own), and
+        # page faults.
         self.sleep_calls: list[int] = []
+        self.sleep_exits: list[int] = []
         self.timer_arms: list[tuple] = []
+        self.timer_cancels: list[tuple] = []
         self.faults: list[tuple] = []
         self.lines = 0
 
@@ -163,8 +169,9 @@ class Trace:
         flags = m["flags"] or ""
         if ev == "hrtimer_expire_entry":
             n = NOW.search(rest)
+            a = re.search(r"hrtimer=(\S+)", rest)
             self.expiring.setdefault(cpu, []).append(
-                (ts, int(n[1]) if n else None, "function=hrtimer_wakeup" in rest))
+                (ts, int(n[1]) if n else None, "function=hrtimer_wakeup" in rest, a[1] if a else None))
         elif ev == "hrtimer_expire_exit":
             stack = self.expiring.get(cpu)
             if stack:
@@ -181,8 +188,8 @@ class Trace:
                 return
             stack = self.expiring.get(cpu)
             if stack and stack[-1][2] and stack[-1][1] is not None:
-                entry, now, _ = stack[-1]
-                self.timer_wakes.append((entry, now, cpu, ts, self.running))
+                entry, now, _, addr = stack[-1]
+                self.timer_wakes.append((entry, now, cpu, ts, self.running, addr))
             else:
                 work = self.active_work(flags, cpu, pid)
                 self.other_wakes.append((ts, cpu, m["comm"], pid, work))
@@ -198,7 +205,9 @@ class Trace:
                 self.worker_switch.append((ts, cpu, "out", s["state"]))
                 self.running = False
             if s["next"].startswith("kworker/"):
-                self.kworker_in.setdefault(npid, []).append((ts, cpu, s["prev"], s["state"]))
+                self.kworker_sched.setdefault(npid, []).append((ts, cpu, "in", s["prev"]))
+            if s["prev"].startswith("kworker/"):
+                self.kworker_sched.setdefault(ppid, []).append((ts, cpu, "out", s["state"]))
         elif ev in ("xhci_urb_enqueue", "xhci_urb_giveback"):
             u = URB.match(rest)
             if not u or u["dev"] != self.adapter or u["type"] != "bulk":
@@ -213,10 +222,18 @@ class Trace:
         elif ev in ("sys_enter_clock_nanosleep", "sys_enter_nanosleep"):
             if pid == self.tid:
                 self.sleep_calls.append(ts)
+        elif ev in ("sys_exit_clock_nanosleep", "sys_exit_nanosleep"):
+            if pid == self.tid:
+                self.sleep_exits.append(ts)
         elif ev == "hrtimer_start":
             if pid == self.tid and "function=hrtimer_wakeup" in rest:
                 x = re.search(r"\bexpires=(\d+)", rest)
-                self.timer_arms.append((ts, int(x[1]) if x else None))
+                a = re.search(r"hrtimer=(\S+)", rest)
+                self.timer_arms.append((ts, a[1] if a else None, int(x[1]) if x else None))
+        elif ev == "hrtimer_cancel":
+            if pid == self.tid:
+                a = re.search(r"hrtimer=(\S+)", rest)
+                self.timer_cancels.append((ts, a[1] if a else None, len(flags) > 2 and flags[2] in "hH"))
         elif ev in ("page_fault_user", "page_fault_kernel"):
             if pid == self.tid:
                 self.faults.append((ts, ev))
@@ -253,6 +270,16 @@ class Trace:
                     break
             else:
                 self.work_anomalies += 1
+
+    def kworker_index(self, pid: int) -> tuple:
+        """A kernel worker's switches and wakings with their time lists,
+        built once."""
+        cache = self.__dict__.setdefault("_kworker_index", {})
+        if pid not in cache:
+            sched = self.kworker_sched.get(pid, [])
+            kw = self.kworker_wake.get(pid, [])
+            cache[pid] = (sched, [e[0] for e in sched], kw, [e[0] for e in kw])
+        return cache[pid]
 
     @staticmethod
     def context(flags: str, cpu: int, pid: int) -> tuple:
@@ -371,7 +398,7 @@ def check_timer_wakes(run: Run, tr: Trace, failures: list, out) -> dict:
         failures.append(f"timer wakes: {extra} wakes outside every sleep")
     ins = [s[0] for s in tr.worker_switch if s[2] == "in"]
     a, b, c, c_on = [], [], [], []
-    for (entry, now, _, waking, running), (_, _, sched, wake) in pairs:
+    for (entry, now, _, waking, running, _), (_, _, sched, wake) in pairs:
         a.append(entry - now)
         b.append(now - sched)
         if running:
@@ -513,20 +540,9 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
                 n = s + 1
                 if n < len(switches) and switches[n][0] <= last_reply:
                     x["switch_in"] = switches[n][0]
-            # Where the kernel worker came from before it ran the work.
-            kin = tr.kworker_in.get(x["tty_pid"], [])
-            kk = bisect.bisect_right([e[0] for e in kin], x["tty_start"]) - 1
-            if kk >= 0:
-                x["kworker_in"], x["kworker_in_cpu"], x["kworker_prev"], _ = kin[kk]
-            # Its waking after the work was queued, if it slept: else it was
-            # already awake (running or runnable).
-            since = x.get("tty_queue", x.get("bh_start", last))
-            kw = tr.kworker_wake.get(x["tty_pid"], [])
-            kj = bisect.bisect_right([e[0] for e in kw], x["tty_start"]) - 1
-            if kj >= 0 and kw[kj][0] >= since:
-                x["kworker_woken"], x["kworker_waker"], _, x["kworker_target"] = kw[kj]
-            else:
-                x["kworker_awake"] = True
+            # Only a queued work has the time its worker's account starts from.
+            if "tty_queue" in x:
+                kworker_account(x, tr, x["tty_queue"])
         rec.append(x)
     lo, hi = o + int(rows[0]["wake_ns"]), o + int(rows[-1]["cycle_end_ns"])
     stray = [k for k, d in enumerate(data) if lo <= d[0] <= hi and k not in assigned]
@@ -538,6 +554,56 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
     print(f"  replies: {checked} reads checked, {short} not adding up, "
           f"{len(stray)} data completions outside a read", file=out)
     return rec
+
+
+def kworker_account(x: dict, tr: Trace, since: int) -> None:
+    """The TTY work's kernel worker from the work's queueing (since) to its
+    start: its waking, if it slept, and the first switch-in after it (the
+    run queue), then its time running, preempted (off the CPU, runnable)
+    and asleep until the work began."""
+    pid, start = x["tty_pid"], x["tty_start"]
+    sched, sched_ts, kw, kw_ts = tr.kworker_index(pid)
+    kj = bisect.bisect_right(kw_ts, start) - 1
+    state = None
+    if kj >= 0 and kw[kj][0] >= since:
+        x["kworker_woken"], x["kworker_waker"], _, x["kworker_target"] = kw[kj]
+        woken = x["kworker_woken"]
+        x["tty_queue_to_kworker_waking"] = woken - since
+        k = bisect.bisect_left(sched_ts, woken)
+        if k < len(sched) and sched[k][2] == "in" and sched[k][0] <= start:
+            first = sched[k]
+            x["kworker_first_run"], x["kworker_first_cpu"], x["kworker_prev"] = first[0], first[1], first[3]
+            x["kworker_waking_to_first_run"] = first[0] - woken
+            x["kworker_migrated"] = int(first[1] != x["kworker_target"])
+            t0, state, events = first[0], "run", sched[k + 1:]
+        else:  # woken while still on its CPU: running from the waking
+            x["kworker_waking_to_first_run"] = 0
+            t0, state, events = woken, "run", sched[k:]
+    else:
+        x["kworker_awake"] = True
+        k = bisect.bisect_right(sched_ts, since) - 1
+        if k >= 0 and sched[k][2] == "in":
+            state = "run"
+        elif k >= 0:
+            # Off its CPU: runnable if preempted, or woken (before the queue)
+            # and not yet run.
+            w = bisect.bisect_right(kw_ts, since) - 1
+            woke = w >= 0 and kw[w][0] >= sched[k][0]
+            state = "runnable" if sched[k][3].startswith("R") or woke else "asleep"
+        else:
+            state = "run"  # no switch recorded since the trace began
+        t0, events = since, sched[k + 1:]
+    spent = {"run": 0, "runnable": 0, "asleep": 0}
+    for ts, _, kind, info in events:
+        if ts > start:
+            break
+        spent[state] += ts - t0
+        state = "run" if kind == "in" else ("runnable" if info.startswith("R") else "asleep")
+        t0 = ts
+    spent[state] += max(0, start - t0)
+    x["kworker_ran_before_tty"] = spent["run"]
+    x["kworker_preempted_before_tty"] = spent["runnable"]
+    x["kworker_slept_before_tty"] = spent["asleep"]
 
 
 def usb_cadence(run: Run, tr: Trace, out) -> None:
@@ -610,13 +676,16 @@ def segments(x: dict) -> dict:
         # unknown. Not a queue wait; reported apart from tty_queue_to_start.
         put("bh_to_tty_start_no_queue", "bh_start", "tty_start")
     # The TTY work's kernel worker: before its waking, from its waking to
-    # its switch-in (the run queue), from its switch-in to the work.
-    if "tty_queue" in x and "kworker_woken" in x:
-        put("tty_queue_to_kworker_waking", "tty_queue", "kworker_woken")
-        if x.get("kworker_in", -1) >= x["kworker_woken"]:
-            put("kworker_waking_to_switch_in", "kworker_woken", "kworker_in")
-            put("kworker_switch_in_to_tty_start", "kworker_in", "tty_start")
+    # its first run (the run queue), then running, preempted and asleep
+    # until the work (kworker_account).
+    for name in KWORKER_PARTS:
+        if name in x:
+            s[name] = x[name]
     return s
+
+
+KWORKER_PARTS = ("tty_queue_to_kworker_waking", "kworker_waking_to_first_run", "kworker_ran_before_tty",
+                 "kworker_preempted_before_tty", "kworker_slept_before_tty")
 
 
 def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
@@ -686,7 +755,7 @@ def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
         ins_ts = [s[0] for s in ins]
         outs_ts = timer.get("switch_out", [])
         by_cycle = {}
-        for (entry, now, cpu, waking, running), (i, prev_end, sched, wake) in timer["pairs"]:
+        for (entry, now, cpu, waking, running, _), (i, prev_end, sched, wake) in timer["pairs"]:
             if i is not None:
                 by_cycle[i] = (entry, now, cpu, waking, running, prev_end, sched, wake)
         print(f"  latest {len(wl)} wakes (us from the scheduled wake):", file=out)
@@ -741,26 +810,27 @@ def placement(rec: list[dict], out) -> None:
               f"  max {max(w) / 1e3:8.1f}", file=out)
     woken = [x for x in rec if "kworker_woken" in x]
     awake = [x for x in rec if x.get("kworker_awake")]
-    print(f"    its kernel worker was woken after the queue in {len(woken)} reads and already awake "
-          f"in {len(awake)}", file=out)
-    for name in ("tty_queue_to_kworker_waking", "kworker_waking_to_switch_in", "kworker_switch_in_to_tty_start"):
+    migrated = sum(x.get("kworker_migrated", 0) for x in woken)
+    print(f"    its kernel worker was woken after the queue in {len(woken)} reads (first run on another "
+          f"CPU than the waking's target in {migrated}) and already awake in {len(awake)}", file=out)
+    for name in KWORKER_PARTS:
         show(name, [s[name] for _, s in segs if name in s], out)
     tail = [(x, s) for x, s in segs if s.get("tty_queue_to_start", 0) >= 100_000]
     if tail:
         largest: dict[str, int] = {}
         prev: dict[str, int] = {}
         for x, s in tail:
-            parts = {k: s[k] for k in ("tty_queue_to_kworker_waking", "kworker_waking_to_switch_in",
-                                       "kworker_switch_in_to_tty_start") if k in s}
-            key = max(parts.items(), key=lambda kv: kv[1])[0] if parts else (
-                "already awake" if x.get("kworker_awake") else "-")
+            parts = {k: s[k] for k in KWORKER_PARTS if k in s}
+            key = max(parts.items(), key=lambda kv: kv[1])[0] if parts else "-"
             largest[key] = largest.get(key, 0) + 1
-            p = re.sub(r"[/:]?\d+$", "", x.get("kworker_prev", "-"))
-            prev[p] = prev.get(p, 0) + 1
+            if "kworker_prev" in x:
+                p = re.sub(r"[/:]?\d+$", "", x["kworker_prev"])
+                prev[p] = prev.get(p, 0) + 1
         print(f"    queue waits of 100 us or more: {len(tail)} reads; largest part: "
               + ", ".join(f"{k} {v}" for k, v in sorted(largest.items(), key=lambda kv: -kv[1])), file=out)
-        print("      the kernel worker was switched in after: "
-              + ", ".join(f"{k} {v}" for k, v in sorted(prev.items(), key=lambda kv: -kv[1])[:6]), file=out)
+        if prev:
+            print("      its first run after the waking followed: "
+                  + ", ".join(f"{k} {v}" for k, v in sorted(prev.items(), key=lambda kv: -kv[1])[:6]), file=out)
 
 
 PERF_LINE = re.compile(r"^\s*(?P<comm>.*?)\s+(?P<tid>\d+)\s+\[(?P<cpu>\d+)\]\s+(?P<s>\d+)\.(?P<f>\d+):"
@@ -778,61 +848,159 @@ def load_perf(path: pathlib.Path, tid: int) -> list[tuple]:
     return sorted(samples)
 
 
-def sleep_timing(run: Run, tr: Trace, timer: dict, perf: list | None, top: int, out) -> None:
-    """A profiled run's sleeps: from each cycle's end stamp to the worker's
-    sleep call, and for the latest wakes the call, the timer's arming, page
-    faults and the worker's perf samples in between."""
-    if not tr.sleep_calls:
-        print("  sleep timing: no sleep-call events (not a profiled run)", file=out)
+STACK_HEAD = re.compile(r"^\s*(?P<comm>.*?)\s+(?P<tid>\d+)\s+\[(?P<cpu>\d+)\]\s+(?P<s>\d+)\.(?P<f>\d+):\s*$")
+STACK_FRAME = re.compile(r"^\s+(?P<ip>[0-9a-f]+)\s+(?P<sym>.*?)\s+\((?P<dso>[^()]*)\)\s*$")
+
+
+def load_stacks(path: pathlib.Path, tid: int) -> list[tuple]:
+    """The worker's samples with their call chains, (ts, [symbols, leaf
+    first]), from perf script text without -G."""
+    samples, cur = [], None
+    for line in path.read_text(errors="replace").splitlines():
+        h = STACK_HEAD.match(line)
+        if h:
+            cur = None
+            if int(h["tid"]) == tid:
+                f = (h["f"] + "000000000")[:9]
+                cur = (int(h["s"]) * 1_000_000_000 + int(f), [])
+                samples.append(cur)
+            continue
+        fr = STACK_FRAME.match(line)
+        if fr and cur is not None:
+            cur[1].append(fr["sym"])
+    return sorted(samples)
+
+
+def record_of(csv_path: pathlib.Path) -> list[str]:
+    note = pathlib.Path(str(csv_path) + ".run.txt")
+    return note.read_text(errors="replace").splitlines() if note.exists() else []
+
+
+def sleep_timing(run: Run, tr: Trace, timer: dict, perf: list | None, stacks: list | None,
+                 record: list[str], top: int, failures: list, out) -> None:
+    """A profiled run's sleeps. Each paired sleep (the previous cycle's end
+    to the timer's waking) must hold exactly one sleep call of the worker
+    and, after it and before the expiry, an arming of the expiring timer
+    (the same hrtimer) whose expiry lies between the scheduled wake and the
+    expiry's now=; a cancelled and re-armed timer counts its last arming.
+    Missing, duplicate or inconsistent evidence fails the run, as does a
+    profiled run with no such events. Reported: every sleep's time from its
+    cycle-end stamp to its call, and for the latest wakes the call, the
+    arming, page faults and the worker's perf samples in between (sampled
+    instruction pointers, and call chains when exported)."""
+    profiled = any(line.strip() == "mode: profiled" for line in record)
+    if not tr.sleep_calls and not tr.timer_arms:
+        if profiled:
+            failures.append("sleep timing: a profiled run without sleep-call or timer-arming events")
+            print("  sleep timing: no sleep-call or timer-arming events, though the run is profiled", file=out)
+        else:
+            print("  sleep timing: no sleep-call events (not a profiled run)", file=out)
         return
     calls = sorted(tr.sleep_calls)
     arms = sorted(tr.timer_arms)
     arm_ts = [a[0] for a in arms]
+    cancels = sorted((c[0], c[1]) for c in tr.timer_cancels if not c[2])
+    cancel_ts = [c[0] for c in cancels]
     faults = sorted(f[0] for f in tr.faults)
-    perf_ts = [p[0] for p in perf] if perf else []
-    gaps, by_cycle = [], {}
-    for (_, now, _, waking, _), (i, prev_end, sched, wake) in timer["pairs"]:
-        k = bisect.bisect_right(calls, prev_end)
-        if k < len(calls) and calls[k] <= waking:
-            gaps.append(calls[k] - prev_end)
-            if i is not None:
-                by_cycle[i] = (prev_end, calls[k], sched, now)
-    print(f"  sleep timing: {len(calls)} sleep calls of the worker, {len(arms)} timers armed, "
-          f"{len(faults)} page faults{f', {len(perf)} perf samples' if perf is not None else ''}", file=out)
+    missing_call = dup_call = missing_arm = inconsistent = rearmed = other_timer = 0
+    gaps, assoc = [], {}
+    for (entry, now, _, waking, _, addr), (i, prev_end, sched, wake) in timer["pairs"]:
+        c0, c1 = bisect.bisect_right(calls, prev_end), bisect.bisect_right(calls, waking)
+        if c1 - c0 == 0:
+            missing_call += 1
+            continue
+        if c1 - c0 > 1:
+            dup_call += 1
+            continue
+        call = calls[c0]
+        a0, a1 = bisect.bisect_left(arm_ts, call), bisect.bisect_right(arm_ts, entry)
+        mine = [a for a in arms[a0:a1] if a[1] == addr]
+        other_timer += any(a[1] != addr for a in arms[a0:a1])
+        if not mine:
+            missing_arm += 1
+            continue
+        arm = mine[-1]
+        k0, k1 = bisect.bisect_left(cancel_ts, mine[0][0]), bisect.bisect_right(cancel_ts, entry)
+        if len(mine) > 1 or any(c[1] == addr for c in cancels[k0:k1]):
+            rearmed += 1
+        if arm[2] is None or not (sched <= arm[2] <= now):
+            inconsistent += 1
+            continue
+        gaps.append(call - prev_end)
+        if i is not None:
+            assoc[i] = (prev_end, call, arm, sched, now)
+    n = len(timer["pairs"])
+    print(f"  sleep timing: {n} sleeps; {len(gaps)} with their sleep call and "
+          f"timer, {missing_call} without a sleep call, {dup_call} with several, {missing_arm} without an "
+          f"arming of the expiring timer, {inconsistent} whose arming does not fit the expiry; {rearmed} "
+          f"re-armed, {other_timer} with another timer armed; {len(faults)} page faults", file=out)
+    for what, count in (("without a sleep call", missing_call), ("with several sleep calls", dup_call),
+                        ("without an arming of the expiring timer", missing_arm),
+                        ("whose timer arming does not fit the expiry", inconsistent)):
+        if count:
+            failures.append(f"sleep timing: {count} sleeps {what}")
     show("cycle_end_to_sleep_call", gaps, out)
+    for line in record:
+        if line.startswith("perf stats:"):
+            print(f"    {line}", file=out)
+    if perf is not None:
+        # Clock alignment: the worker's samples fall in its on-CPU time.
+        ins = [s for s in tr.worker_switch]
+        spans, start = [], None
+        for ts, _, kind, _ in ins:
+            if kind == "in":
+                start = ts
+            elif start is not None:
+                spans.append((start, ts))
+                start = None
+        if start is not None:
+            spans.append((start, float("inf")))
+        starts = [s for s, _ in spans]
+        inside = 0
+        for ts, _, _ in perf:
+            k = bisect.bisect_right(starts, ts) - 1
+            inside += k >= 0 and ts <= spans[k][1]
+        print(f"    perf: {len(perf)} samples of the worker (sampled instruction pointers), {inside} inside its "
+              f"on-CPU time in the trace{'; ' + str(len(stacks)) + ' with call chains' if stacks is not None else ''}",
+              file=out)
+    perf_ts = [x[0] for x in perf] if perf else []
+    stack_ts = [x[0] for x in stacks] if stacks else []
     rows = run.rows
     late = sorted(((int(r["wake_ns"]) - int(r["scheduled_wake_ns"]), i) for i, r in enumerate(rows)
-                   if i in by_cycle), reverse=True)[:top]
+                   if i in assoc), reverse=True)[:top]
     for lat, i in late:
-        prev_end, call, sched, now = by_cycle[i]
-        a = bisect.bisect_left(arm_ts, call)
-        armed = arms[a] if a < len(arms) else None
+        prev_end, call, arm, sched, now = assoc[i]
         nf = bisect.bisect_right(faults, call) - bisect.bisect_right(faults, prev_end)
         line = (f"    cycle {rows[i]['cycle']:>6} wake {lat / 1e3:7.1f}: sleep call "
-                f"{(call - prev_end) / 1e3:+8.1f} after the cycle-end stamp")
-        if armed is not None:
-            line += f", timer armed {(armed[0] - prev_end) / 1e3:+8.1f}"
-            if armed[1] is not None:
-                line += f" for {(armed[1] - sched) / 1e3:+.1f} from the scheduled wake"
-        line += f", expired {(now - sched) / 1e3:+.1f}; {nf} page faults"
+                f"{(call - prev_end) / 1e3:+8.1f} after the cycle-end stamp, timer armed "
+                f"{(arm[0] - prev_end) / 1e3:+8.1f} for {(arm[2] - sched) / 1e3:+.1f} from the scheduled wake, "
+                f"expired {(now - sched) / 1e3:+.1f}; {nf} page faults")
         if perf is not None:
             p0, p1 = bisect.bisect_right(perf_ts, prev_end), bisect.bisect_right(perf_ts, call)
             syms: dict[str, int] = {}
             for _, sym, _ in perf[p0:p1]:
                 syms[sym] = syms.get(sym, 0) + 1
-            line += f"; perf {p1 - p0} samples" + (": " + ", ".join(
+            line += f"; sampled IPs {p1 - p0}" + (": " + ", ".join(
                 f"{k} {v}" for k, v in sorted(syms.items(), key=lambda kv: -kv[1])[:3]) if syms else "")
         print(line, file=out)
+        if stacks:
+            s0_, s1_ = bisect.bisect_right(stack_ts, prev_end), bisect.bisect_right(stack_ts, call)
+            chains: dict[tuple, int] = {}
+            for _, frames in stacks[s0_:s1_]:
+                key = tuple(frames[:6])
+                chains[key] = chains.get(key, 0) + 1
+            if chains:
+                chain, cnt = max(chains.items(), key=lambda kv: kv[1])
+                print(f"      call context ({cnt} of {s1_ - s0_} samples): " + " < ".join(chain), file=out)
 
 
 def write_segments(path: pathlib.Path, rec: list[dict]) -> None:
     names = ["cycle", "read_len", "completions", "irq_cpu", "bh_comm", "tty_pid", "tty_cpu", "blocked",
-             "kworker_prev", "kworker_waker", "kworker_target"]
+             "kworker_prev", "kworker_waker", "kworker_target", "kworker_first_cpu", "kworker_migrated"]
     keys = ["before_send", "instruction_usb", "to_first_completion", "between_completions",
             "after_last_completion", "completion_to_bh", "bh_to_tty_queue", "tty_queue_to_start",
-            "bh_to_tty_start_no_queue", "tty_queue_to_kworker_waking", "kworker_waking_to_switch_in",
-            "kworker_switch_in_to_tty_start", "tty_run", "tty_end_to_last_reply", "tty_end_to_waking",
-            "waking_to_switch_in", "host_transaction"]
+            "bh_to_tty_start_no_queue", *KWORKER_PARTS, "tty_run", "tty_end_to_last_reply",
+            "tty_end_to_waking", "waking_to_switch_in", "host_transaction"]
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(names + [k + "_ns" for k in keys])
@@ -910,7 +1078,9 @@ def main() -> int:
     placement(rec, out)
     perf_txt = args.perf_txt or pathlib.Path(str(args.csv) + ".perf.txt")
     perf = load_perf(perf_txt, run.tid) if perf_txt.exists() else None
-    sleep_timing(run, tr, timer, perf, args.top, out)
+    stacks_txt = pathlib.Path(str(perf_txt).removesuffix(".perf.txt") + ".perf.stacks.txt")
+    stacks = load_stacks(stacks_txt, run.tid) if stacks_txt.exists() else None
+    sleep_timing(run, tr, timer, perf, stacks, record_of(args.csv), args.top, failures, out)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
     if failures:

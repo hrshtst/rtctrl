@@ -10,9 +10,13 @@ flush_to_ldisc starting first; a waking after the waker's work ended), and
 so is the adapter's completion cadence. A read whose completion work
 queued no TTY work (already pending) reports its wait apart, never as a
 queue wait. Placement: the interrupt's CPU, the completion work's context,
-the TTY worker's CPU, its waking and switch-in. A profiled variant adds
-the worker's sleep calls and timer arming, a late sleep with a page fault
-and perf samples (and another thread's sample, ignored) before it.
+the TTY worker's CPU, its waking, its first run after it, and its time
+running, preempted and asleep until the work (a variant runs 900 us and is
+preempted for 100 us first). A profiled variant adds the worker's sleep
+calls and timer arming, a late sleep with a page fault and perf samples
+(sampled instruction pointers and call chains; another thread's sample is
+ignored) before it; missing, duplicate and inconsistent sleep evidence
+fails the run, while a re-armed timer and another timer do not.
 Every association and alignment failure is then provoked once and must
 fail the run, and the documented exception (a cycle that began without
 sleeping) must not.
@@ -44,6 +48,7 @@ class Run:
     def __init__(self, **opt) -> None:
         self.opt = opt
         self.perf: list[tuple] = []
+        self.stacks: list[tuple] = []
         self.events: list[tuple[int, int, str]] = []
         self.rows: list[dict] = []
         self.build()
@@ -79,7 +84,8 @@ class Run:
                 f"1-9 {ep}-bulk: urb {urb} pipe 3221292032 slot 5 length {actual}/{length} "
                 "sgs 0/0 stream 0 flags 0")
 
-    def completion(self, c: float, actual: int, waking_in_barrier: bool, queue: bool = True) -> float:
+    def completion(self, c: float, actual: int, waking_in_barrier: bool, queue: bool = True,
+                   busy: tuple | None = None) -> float:
         """One data completion and its path to the worker; returns the
         probe's stamp after the worker read the data."""
         self.urb(c, 0, "<idle>", 7, "giveback", "ep1in", "0xin", actual, 512)
@@ -102,24 +108,32 @@ class Run:
                 "comm=kworker/u128:1 pid=777 prio=120 target_cpu=008")
         self.ev(c + 4.0, "<idle>", 0, 8, "d..2.", "sched_switch",
                 "swapper/8:0 [120] R ==> kworker/u128:1:777 [120]")
-        self.ev(c + 4.5, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_start",
+        d = 0.0
+        if busy:  # the worker runs, is preempted, and runs again first
+            run_us, preempted_us = busy
+            self.ev(c + 4.0 + run_us, "kworker/u128:1", 777, 8, "d..2.", "sched_switch",
+                    "kworker/u128:1:777 [120] R ==> competing:999 [120]")
+            self.ev(c + 4.0 + run_us + preempted_us, "competing", 999, 8, "d..2.", "sched_switch",
+                    "competing:999 [120] R ==> kworker/u128:1:777 [120]")
+            d = run_us + preempted_us
+        self.ev(c + d + 4.5, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_start",
                 "work struct 0xtty: function flush_to_ldisc")
-        self.ev(c + 5.0, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_end",
+        self.ev(c + d + 5.0, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_end",
                 "work struct 0xtty: function flush_to_ldisc")
-        self.ev(c + 5.1, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_start",
+        self.ev(c + d + 5.1, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_start",
                 "work struct 0xbar: function wq_barrier_func")
         if waking_in_barrier:
-            self.ev(c + 5.2, "kworker/u128:1", 777, 8, "d..3.", "sched_waking",
+            self.ev(c + d + 5.2, "kworker/u128:1", 777, 8, "d..3.", "sched_waking",
                     f"comm=x7_bus_timing pid={TID} prio=19 target_cpu=003")
-            self.ev(c + 5.3, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_end",
+            self.ev(c + d + 5.3, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_end",
                     "work struct 0xbar: function wq_barrier_func")
         else:
-            self.ev(c + 5.15, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_end",
+            self.ev(c + d + 5.15, "kworker/u128:1", 777, 8, ".....", "workqueue_execute_end",
                     "work struct 0xbar: function wq_barrier_func")
-            self.ev(c + 5.2, "kworker/u128:1", 777, 8, "d..3.", "sched_waking",
+            self.ev(c + d + 5.2, "kworker/u128:1", 777, 8, "d..3.", "sched_waking",
                     f"comm=x7_bus_timing pid={TID} prio=19 target_cpu=003")
-        self.worker_in(c + 6.0)
-        return c + 6.5
+        self.worker_in(c + d + 6.0)
+        return c + d + 6.5
 
     def build(self) -> None:
         o = self.opt
@@ -145,7 +159,8 @@ class Run:
                 if i == 0 and o.get("short"):
                     actual -= 20
                 stamps.append(self.completion(read_start + t, actual, waking_in_barrier=(i != 2),
-                                              queue=not (i == 0 and o.get("no_queue"))))
+                                              queue=not (i == 0 and o.get("no_queue")),
+                                              busy=(900.0, 100.0) if (i == 0 and o.get("preempted")) else None))
             read_end = stamps[-1] + 0.5
             if i == 0 and o.get("stray"):
                 self.urb(read_end + 200.0, 0, "<idle>", 7, "giveback", "ep1in", "0xin", 12, 512)
@@ -160,18 +175,35 @@ class Run:
             # The sleep call (late after cycle 2 in the late_sleep variant).
             call = cycle_end + (500.0 if (i == 1 and o.get("late_sleep")) else 0.3)
             if o.get("profiled") and i < len(REPLIES) - 1:
-                self.ev(call, "x7_bus_timing", TID, 3, ".....", "sys_enter_clock_nanosleep",
-                        "which_clock: 0x00000001, flags: 0x00000000, rqtp: 0x7ffd0000, rmtp: 0x00000000")
+                first = i == 0  # the sleep before cycle 2: the variants' target
+                if not (first and o.get("drop_call")):
+                    self.ev(call, "x7_bus_timing", TID, 3, ".....", "sys_enter_clock_nanosleep",
+                            "which_clock: 0x00000001, flags: 0x00000000, rqtp: 0x7ffd0000, rmtp: 0x00000000")
+                if first and o.get("dup_call"):
+                    self.ev(call + 0.05, "x7_bus_timing", TID, 3, ".....", "sys_enter_clock_nanosleep",
+                            "which_clock: 0x00000001, flags: 0x00000000, rqtp: 0x7ffd0000, rmtp: 0x00000000")
                 nxt = ORIGIN + ns((i + 1) * PERIOD_US)
-                self.ev(call + 0.1, "x7_bus_timing", TID, 3, "d..1.", "hrtimer_start",
-                        f"hrtimer=0xffffcdd1a193fcd8 function=hrtimer_wakeup expires={nxt} softexpires={nxt} "
-                        "mode=REL")
+
+                def arm(us, expires, addr="0xffffcdd1a193fcd8"):
+                    self.ev(us, "x7_bus_timing", TID, 3, "d..1.", "hrtimer_start",
+                            f"hrtimer={addr} function=hrtimer_wakeup expires={expires} softexpires={expires} mode=REL")
+                if first and o.get("rearm"):
+                    arm(call + 0.06, nxt + ns(2000.0))
+                    self.ev(call + 0.08, "x7_bus_timing", TID, 3, "d..1.", "hrtimer_cancel",
+                            "hrtimer=0xffffcdd1a193fcd8")
+                if first and o.get("other_timer"):
+                    arm(call + 0.07, nxt + ns(500.0), addr="0xffffcdd1a193f000")
+                if not (first and o.get("drop_arm")):
+                    arm(call + 0.1, nxt + (ns(3000.0) if (first and o.get("far_expiry")) else 0))
                 if i == 1 and o.get("late_sleep"):
                     self.ev(cycle_end + 100.0, "x7_bus_timing", TID, 3, ".....", "page_fault_user",
                             "address=0x7f0000001000 ip=0x55d000001234 error_code=0x6")
                     self.perf = [(cycle_end + 200.0, TID, "hw::accumulateCycleTiming", "x7_bus_timing"),
                                  (cycle_end + 250.0, 999, "other_thread_fn", "x7_bus_timing"),
                                  (cycle_end + 300.0, TID, "memcpy", "libc.so.6")]
+                    self.stacks = [(cycle_end + 200.0, TID, ["hw::accumulateCycleTiming", "Probe::run", "start_thread"]),
+                                   (cycle_end + 250.0, 999, ["other_thread_fn"]),
+                                   (cycle_end + 300.0, TID, ["memcpy", "hw::accumulateCycleTiming", "Probe::run"])]
             if i < len(REPLIES) - 1 and not (i == 1 and o.get("began_awake")):
                 self.worker_out(call + 0.2, "S")
             prev_end = cycle_end
@@ -206,6 +238,16 @@ class Run:
                 s, n = divmod(ORIGIN + ns(us), 1_000_000_000)
                 lines.append(f"   x7_bus_timing {tid} [003] {s}.{n:09d}:  55d000001234 {sym} ({dso})")
             pathlib.Path(str(path) + ".perf.txt").write_text("\n".join(lines) + "\n")
+        if self.stacks:
+            lines = []
+            for us, tid, frames in self.stacks:
+                s, n = divmod(ORIGIN + ns(us), 1_000_000_000)
+                lines.append(f"   x7_bus_timing {tid} [003] {s}.{n:09d}:")
+                lines += [f"\t55d000001234 {f} (x7_bus_timing)" for f in frames]
+                lines.append("")
+            pathlib.Path(str(path) + ".perf.stacks.txt").write_text("\n".join(lines) + "\n")
+        if self.opt.get("profiled_record"):
+            pathlib.Path(str(path) + ".run.txt").write_text("mode: profiled\nperf stats: LOST events: 0\n")
         report = root / f"{name}.report.txt"
         report.write_text("cpus=32\n" + "\n".join(line for _, _, line in sorted(self.events)) + "\n")
         return path
@@ -253,8 +295,8 @@ def main() -> int:
         expect("xHCI interrupt CPUs: 7: 3" in out and "USB completion work: at interrupt exit: 3" in out,
                "the interrupt and its completion work", out)
         expect("CPU  8:      3 reads" in out, "the TTY work's CPU", out)
-        expect("its kernel worker was woken after the queue in 3 reads and already awake in 0" in out,
-               "the TTY worker's wakings", out)
+        expect("its kernel worker was woken after the queue in 3 reads (first run on another CPU than the "
+               "waking's target in 0) and already awake in 0" in out, "the TTY worker's wakings", out)
         expect("sleep timing: no sleep-call events (not a profiled run)" in out, "no sleep timing traced", out)
         # Every giveback but the last write's (after the run) in the run;
         # four data completions, each with its completion work.
@@ -272,8 +314,9 @@ def main() -> int:
                 "waking_to_switch_in_ns": "800", "host_transaction_ns": "1307000",
                 "kworker_prev": "swapper/8", "irq_cpu": "7", "bh_comm": "<idle>",
                 "kworker_waker": "<idle>", "kworker_target": "8",
-                "tty_queue_to_kworker_waking_ns": "600", "kworker_waking_to_switch_in_ns": "400",
-                "kworker_switch_in_to_tty_start_ns": "500"}
+                "tty_queue_to_kworker_waking_ns": "600", "kworker_waking_to_first_run_ns": "400",
+                "kworker_ran_before_tty_ns": "500", "kworker_preempted_before_tty_ns": "0",
+                "kworker_slept_before_tty_ns": "0", "kworker_first_cpu": "8", "kworker_migrated": "0"}
         for k, v in want.items():
             expect(r[k] == v, f"split reply's {k} is {v} (got {r[k]})", out)
 
@@ -281,13 +324,43 @@ def main() -> int:
         # sleep with a page fault and the worker's perf samples before it.
         code, out, _ = correlate(root, "profiled", profiled=True, late_sleep=True)
         expect(code == 0, "the profiled run passes", out)
-        expect("sleep timing: 2 sleep calls of the worker, 2 timers armed, 1 page faults, 2 perf samples"
-               in out, "the profiled events", out)
+        expect("sleep timing: 2 sleeps; 2 with their sleep call and timer, 0 without a sleep call, 0 with "
+               "several, 0 without an arming of the expiring timer, 0 whose arming does not fit the expiry; "
+               "0 re-armed, 0 with another timer armed; 1 page faults" in out, "the profiled evidence", out)
         expect("cycle_end_to_sleep_call            n=2      min     0.300" in out and "max   500.000" in out,
                "from the cycle-end stamp to the sleep call", out)
+        expect("perf: 2 samples of the worker (sampled instruction pointers), 2 inside its on-CPU time in the "
+               "trace; 2 with call chains" in out, "the samples' alignment and chains", out)
         expect("+500.0 after the cycle-end stamp, timer armed   +500.1 for +0.0 from the scheduled wake, "
-               "expired +0.4; 1 page faults; perf 2 samples: hw::accumulateCycleTiming 1, memcpy 1" in out,
-               "the late sleep's call, arming, fault and samples", out)
+               "expired +0.4; 1 page faults; sampled IPs 2: hw::accumulateCycleTiming 1, memcpy 1" in out,
+               "the late sleep's call, arming, fault and sampled IPs", out)
+        expect("call context (1 of 2 samples): hw::accumulateCycleTiming < Probe::run < start_thread" in out,
+               "the late sleep's call context", out)
+        # Missing, duplicate and inconsistent evidence fails; a re-armed
+        # timer and another timer do not, and nothing is borrowed from the
+        # next sleep.
+        for opt, words in (("drop_arm", "1 sleeps without an arming of the expiring timer"),
+                           ("drop_call", "1 sleeps without a sleep call"),
+                           ("dup_call", "1 sleeps with several sleep calls"),
+                           ("far_expiry", "1 sleeps whose timer arming does not fit the expiry")):
+            code, out, _ = correlate(root, opt, profiled=True, **{opt: True})
+            expect(code == 1 and f"sleep timing: {words}" in out, f"{opt} fails", out)
+        code, out, _ = correlate(root, "rearm", profiled=True, rearm=True, other_timer=True)
+        expect(code == 0 and "1 re-armed, 1 with another timer armed" in out
+               and "for +0.0 from the scheduled wake" in out, "a re-armed timer and another timer", out)
+        code, out, _ = correlate(root, "profiled_empty", profiled_record=True)
+        expect(code == 1 and "a profiled run without sleep-call or timer-arming events" in out,
+               "a profiled run without its events fails", out)
+        # A kernel worker that runs and is preempted before the TTY work:
+        # its run-queue wait is up to its first run only.
+        code, out, seg = correlate(root, "preempted", preempted=True)
+        expect(code == 0, "the preempted worker's run passes", out)
+        r = list(csv.DictReader(open(seg)))[0]
+        want = {"kworker_waking_to_first_run_ns": "400", "kworker_ran_before_tty_ns": "900500",
+                "kworker_preempted_before_tty_ns": "100000", "kworker_slept_before_tty_ns": "0"}
+        for k, v in want.items():
+            expect(r[k] == v, f"preempted: {k} is {v} (got {r[k]})", out)
+        expect("largest part: kworker_ran_before_tty 1" in out, "the tail's largest part: running", out)
 
         code, out, _ = correlate(root, "awake", began_awake=True)
         expect(code == 0, "a cycle that began without sleeping is accepted", out)
