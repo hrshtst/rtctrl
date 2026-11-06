@@ -824,6 +824,21 @@ on this adapter and software configuration. That closes the latency timer
 experiment, with 1 ms kept; it does not establish a general limit of the
 transport.
 
+The profiled torque-off matrix followed (`--modes untraced,traced,profiled`
+at `c766bec`, nine runs at 500 and 1000 Hz under the full and `-excl`
+loads, after an emulator rehearsal of the profiled mode; archived in
+`profiled_torque_off/`). The receive path repeated the earlier result. The
+earlier late-sleep pattern did not recur (no sleep call came more than
+10.4 us after its cycle-end stamp in 101,659 profiled sleeps), so what the
+worker did then stays open. The latest traced wakes came instead from the
+worker's timer being served late on CPU 3 after it had reached its sleep:
+127 cycles 50 us or more late, 50 to 198 us with CPU 3 idle and up to
+941 us with a task running there, with no timer interrupt recorded in
+between. The source of that late service is not established. Two profiles'
+sampling is degraded by lost records, and the two 500 Hz full-load runs
+without profiling had an uncontrolled background load (`exiftool`). A
+timer-focused capture of CPU 3 is proposed next; no rate is qualified.
+
 ## Consistency audit
 
 A post-closure audit (executed 2026-07-28, two commits) unified

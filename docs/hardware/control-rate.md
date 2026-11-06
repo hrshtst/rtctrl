@@ -919,6 +919,68 @@ tools/trace_session.sh --modes untraced,traced,profiled \
 The T5 cluster came from a traced 1000 Hz run under the full load, so the
 loaded conditions are repeated; a profiled run may not reproduce it.
 
+**Matrix result (2026-11-06).** The nine runs completed torque-off, with
+complete logs and no read or write failure, and every traced and profiled
+run passed the association checks with no recorder failure, lost trace
+event or dropped usbmon packet; no rate is qualified by them. Two qualifications apply to
+the data:
+- the 500 Hz full-load untraced and traced runs had an uncontrolled
+  background load (`exiftool` in their task snapshots), so they do not
+  estimate the tracing's cost;
+- the 1000 Hz full-load profile lost no sample, but the 500 Hz and the
+  1000 Hz `-excl` profiles report lost records (72 and 3), so their
+  sampling is degraded: their trace timing stands, and missing samples
+  cannot show that some code did not run. The worker's samples outside its
+  on-CPU time all fall within 5 us after one of its switch-outs.
+
+During the 1000 Hz full-load profile the kernel logged, once, that its
+frame-pointer unwinder met a bad frame pointer in gnome-shell's KMS thread
+(code that includes the out-of-tree NVIDIA module), then lowered perf's
+maximum sample rate to 31,000 Hz after one sampling interrupt took 6.3 us.
+The warning's cause and its effect on timing are not established, and the
+lowered maximum staying above 999 Hz does not show the profiling's
+overhead to be negligible.
+
+- **Receive path.** The earlier result repeats: in the 1000 Hz full-load
+  profile, the TTY kernel worker's wait for its first run after its waking
+  was the largest part of 15,982 of the 17,125 queue waits of 100 us or
+  more (p50 88 us, p99 984 us), and its preemption after it had started
+  the largest in 684.
+- **Late sleeps.** The earlier pattern did not recur: in the three
+  profiles, no sleep call came more than 10.4 us after its cycle-end stamp
+  (101,659 sleeps). What the worker did in the earlier cluster stays open.
+- **Late timer service.** The latest traced wakes came instead from the
+  worker's timer being served late on CPU 3 after the worker had reached its
+  sleep. In each of the 127 traced or profiled cycles whose timer was
+  served 50 us or more late, CPU 3 recorded no timer interrupt between the
+  due time and the service, and in 125 no event at all (two had a few
+  scheduling events). With CPU 3 idle (75 cycles, 72 of them in the
+  1000 Hz `-excl` profile) the delays were 50 to 198 us; with a task
+  running there (52 cycles: stress-ng, `exiftool`, desktop and browser
+  threads, gnome-shell's KMS thread) 51 to 941 us, the longest in the
+  500 Hz full-load traced run. Late service does not establish its source
+  or an interrupts-off duration: interrupt masking, NMIs, SMIs and the
+  timer's programming all remain possible (the kernel's
+  [timerlat documentation](https://docs.kernel.org/trace/timerlat-tracer.html)
+  distinguishes these sources of IRQ latency).
+- **Untraced T5 failures.** The 500 Hz full-load untraced run (42 wakes
+  0.5 ms or more late, all in its first 7.4 s, max 1.765 ms) and the
+  1000 Hz one (max 0.944 ms) failed T5. Without a trace they stay
+  unattributed: an early cycle-end stamp does not show that the sleep call
+  followed promptly.
+
+**Next (proposed).** A timer-focused torque-off capture on CPU 3, with C2
+left enabled and an untraced control: CPU 3's idle-state transitions
+(`power:cpu_idle`), the arming and cancellation of the timers that can
+program its clock event device, its deadline-register writes (CPU 3's
+clock event device is `lapic-deadline`, so `msr:write_msr` to the TSC
+deadline MSR 0x6e0), and an SMI count for CPU 3 (`msr/smi/`). The rehearsal
+must validate the MSR tracepoint and the conversion of its TSC deadlines to
+the trace's monotonic time. The capture omits the DWARF sampling. An SMI
+count alone does not locate a particular delay; a C2 on and off comparison
+would be considered, and reviewed apart, only after idle-state transitions
+have been observed.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
