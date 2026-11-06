@@ -803,6 +803,75 @@ lowest working setting tested on this adapter and software configuration.
 This closes the latency timer experiment and keeps 1 ms as the working
 setting; it does not establish a general limit of the transport.
 
+### Receive placement and late-wake diagnostics (torque-off, 1 ms)
+
+These diagnostics follow the host-side tails that faster USB delivery would
+leave: where the adapter's interrupt, its USB completion and the TTY work
+run, and what the worker did in the T5 cluster's late sleeps. The latency
+timer stays at 1 ms, and the scheduling settings and qualification criteria
+are unchanged.
+
+**Placement.** `tools/trace_correlate.py` follows each read's last USB
+completion by identity: the xHCI interrupt's CPU, the USB completion work's
+context (at interrupt exit or in ksoftirqd), the TTY work's kernel worker and
+its CPU, and that worker's waking after the work was queued (or that it was
+already awake) and its switch-in. The queue wait thus splits into before
+the waking, from the waking to the switch-in (the run queue) and from the
+switch-in to the work, with summaries by CPU and for the waits of 100 us or
+more. The traced runs of 2026-11-06 already show:
+- every xHCI interrupt on CPU 7, and the USB completion work at the
+  interrupt's exit (in ksoftirqd for at most 4 reads per run);
+- the TTY work on 15 to 26 different CPUs per run;
+- in 95% or more of the reads, the kernel worker asleep when the work was
+  queued and woken within about 0.2 us (p50), then waiting in its CPU's
+  run queue: 101 and 307 us at the median under the full load (1000 and
+  500 Hz), up to 3.8 ms;
+- in the waits of 100 us or more, that run-queue wait the largest part
+  (16,967 of 17,909 at 1000 Hz under the full load), behind stress-ng
+  under the full load, and also behind desktop tasks (a browser renderer,
+  the terminal, an editor) under the `-excl` load; idle, after the CPU's
+  idle task, consistent with the CPU leaving an idle state (p99 62 to
+  100 us).
+
+**The profiled mode.** `tools/trace_session.sh --modes ...,profiled` (rt-*
+conditions only) records what a traced run does, plus:
+- the probe threads' timer arming (`hrtimer_start`, `hrtimer_cancel`), sleep
+  calls (`clock_nanosleep` and `nanosleep` entry and exit) and page faults,
+  each filtered to the probe's `comm`, and the workqueue's activations;
+- perf's samples of the real-time CPU with call chains on the mono clock
+  (`perf record -k mono -C <cpu> -F 4999 -g`), the worker's samples then
+  written as text (`perf script --tid`).
+
+`tools/trace_correlate.py` then gives every cycle's time from its cycle-end
+stamp to the worker's sleep call, and for the latest wakes the sleep call,
+the arming of its timer, the page faults and the worker's samples in between.
+The cycle-end stamp precedes the cycle's bookkeeping and the sleep call, and
+not being descheduled does not show that the probe's code ran: the samples
+show where the worker was. The sampling interrupts the real-time CPU, so the
+untraced and traced runs of the same condition are the controls for its
+interference. The traced mode's events are unchanged, so its runs compare
+with the earlier ones.
+
+**Plan.** First a rehearsal over `dxl_emu` of the profiled mode, since its
+events, their `comm` filter and perf are new on this host (with the emulator
+link and the adapter's sysfs directory as before):
+
+```
+tools/trace_session.sh --port <emulator link> --usb-device <adapter sysfs dir> \
+  --modes untraced,traced,profiled --runs current:1000:rt-idle:fast-motion --duration 10
+```
+
+Then, torque-off on the arm, each condition untraced, traced and profiled
+(9 runs, about 14 minutes):
+
+```
+tools/trace_session.sh --modes untraced,traced,profiled \
+  --runs current:1000:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motion,current:500:rt-loaded:fast-motion
+```
+
+The T5 cluster came from a traced 1000 Hz run under the full load, so the
+loaded conditions are repeated; a profiled run may not reproduce it.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
