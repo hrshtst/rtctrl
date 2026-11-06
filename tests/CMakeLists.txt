@@ -311,6 +311,27 @@ set_tests_properties(latency_timer_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "latency timer regressions OK"
   LABELS unit)
 
+# The latency hold diagnostic's sequence, outcomes, cleanup and exit
+# statuses on a stand-in adapter, then its real serial port class on the
+# emulator's pseudo-terminal (only the latency timer stands in there).
+add_test(NAME latency_hold_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_latency_hold.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(latency_hold_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "latency hold regressions OK"
+  LABELS unit)
+add_test(NAME latency_hold_emulator
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_latency_hold.py
+      --emulator $<TARGET_FILE:dxl_emu>
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(latency_hold_emulator PROPERTIES
+  PASS_REGULAR_EXPRESSION "latency hold emulator OK"
+  LABELS integration)
+
 # SI profile flags: strict nonnegative doubles; raw and SI forms of
 # one register are mutually exclusive. Both reject before any bus
 # contact.

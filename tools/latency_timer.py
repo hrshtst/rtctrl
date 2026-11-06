@@ -57,6 +57,17 @@ class CtrlTransfer(ctypes.Structure):
 USBDEVFS_CONTROL = (3 << 30) | (ctypes.sizeof(CtrlTransfer) << 16) | (ord("U") << 8) | 0
 
 
+def low_latency_of(fd: int) -> bool | None:
+    """The ASYNC_LOW_LATENCY flag of an open port (TIOCGSERIAL), or None."""
+    try:
+        buf = bytearray(128)
+        fcntl.ioctl(fd, TIOCGSERIAL, buf)
+    except OSError:
+        return None
+    flags = int.from_bytes(buf[SERIAL_FLAGS_OFFSET:SERIAL_FLAGS_OFFSET + 4], "little", signed=True)
+    return bool(flags & ASYNC_LOW_LATENCY)
+
+
 def channel_for(bcd_device: int, interface: int) -> int | None:
     """The channel ftdi_sio addresses (ftdi_determine_type); None for chips
     without a latency timer (SIO, FT232A)."""
@@ -95,19 +106,16 @@ class Adapter:
         self.attr.write_text(f"{ms}\n")
 
     def read_low_latency(self) -> bool | None:
+        """Opens the port to read its flag (see low_latency_of for a port
+        already open)."""
         try:
             fd = os.open(self.dev / self.tty, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
         except OSError:
             return None
         try:
-            buf = bytearray(128)
-            fcntl.ioctl(fd, TIOCGSERIAL, buf)
-        except OSError:
-            return None
+            return low_latency_of(fd)
         finally:
             os.close(fd)
-        flags = int.from_bytes(buf[SERIAL_FLAGS_OFFSET:SERIAL_FLAGS_OFFSET + 4], "little", signed=True)
-        return bool(flags & ASYNC_LOW_LATENCY)
 
     def read_device(self) -> int | None:
         if self.channel is None:

@@ -1187,7 +1187,8 @@ measured, estimated and envelope quantities. The procedure that uses them is
 `tools/trace_correlate.py` checks a traced run's association with its trace
 and locates each read's delay along the receive path; `tools/latency_timer.py`
 reads and sets the adapter's latency timer for the torque-off experiment
-(`trace_session.sh --latency-steps`).
+(`trace_session.sh --latency-steps`), and `tools/latency_hold.py` is its hold
+diagnostic.
 
 On the library side, `hw::CraneX7::Options::timing_ring_capacity` enables the
 per-cycle `hw::CycleRecord` ring that `popCycleRecord()` drains, and
