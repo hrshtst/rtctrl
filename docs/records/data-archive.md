@@ -10,7 +10,8 @@ SHA-256 at the archival date stated by each section; the older tables
 below were archived on 2026-07-28. The control-rate sections (`e0/`,
 `e1_prod/`, `e1_cal/` and `r4_bounded/`, checksums taken 2026-11-04;
 `b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/`, `latency_timer/`
-and `profiled_torque_off/`, taken 2026-11-06)
+and `profiled_torque_off/`, taken 2026-11-06; `timer_rehearsal/`, an
+emulator rehearsal, taken 2026-11-07)
 are kept on a separate volume of the
 same private archive; their paths are
 relative to that volume's project folder. A citation in the project records
@@ -1605,3 +1606,41 @@ directory. The evidence for the profiled diagnostics; cited in
 | `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.data` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), perf samples of the real-time CPU with DWARF call chains (999 Hz, 4096-byte stack copies, mono clock); degraded sampling (perf reported lost records) | `b3ea0d2a6abca7a9250906bbb97b6dbf26784af856d7b51cbd5282434c881c06` |
 | `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the worker's samples, sampled instruction pointers (perf script -G) | `105ffb5f61ea0c389f28ec395606bb6f63b65a3ba84ba2c8e4cf712e0e7c7d11` |
 | `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-profiled-20261106-1.csv.perf.stacks.txt` | profiled torque-off matrix run (current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read, profiled), the worker's samples with their call chains (perf script) | `4a90c3f7ba4a2ade30cd567e8bcf5f7bc217a9424979afb4244f6c28d34665a3` |
+
+## `timer_rehearsal/` — control-rate timer-mode emulator rehearsal (2026-11-07)
+
+The timer service diagnostics' rehearsal over `dxl_emu` (emulated servos on
+a pty: no servo and no USB adapter), at `bc8413b`
+(`tools/trace_session.sh --modes untraced,timer --exerciser`, current at
+1000 Hz, rt-idle, 10 s). Emulator data, not hardware telemetry, kept with
+checksums at the reviewer's request for the corrected full-run analysis.
+Attempt 1 was refused by the probe before its run (the emulated servos at
+the factory Return Delay Time 250): its session record and task snapshot
+only. Attempt 2 holds the untraced control and the timer run with its trace,
+TSC-clock instance, sampler pairs, SMI counts, exerciser log and process
+listing. For attempt 2 the operator stopped `unattended-upgrades.service`
+and `localsearch-3.service` by hand (15:21:47 to 15:22:39 JST) and restored
+them; no upgrade ran then (the shutdown helper's log) and no indexer process
+appears in the run's listings. The folder also holds a `SHA256SUMS` of
+these files. Described in
+[control-rate.md](../hardware/control-rate.md#timer-service-diagnostics-design-torque-off-1-ms).
+
+| file | role | sha256 |
+|---|---|---|
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), per-cycle log | `ce84b71f574d314046484c1148528f02400df5b9254cf6f31021ff78a9ec1495` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.exerciser.csv` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), timer exerciser log (arm, re-arm, cancel and expiry rows) | `662d0df72fb62ae3ad5a8adb0628bd91be6dc947317c6942e419697a65cf9610` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.procs.txt` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), process listing at the run's start (lineage for the background load) | `02a5b1a6ab991d3903d816670219ee78d6b6936e2ed9c1923a5538c1668dbfd2` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.run.txt` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), session record | `7ef4e6755514db6fe4d77d2f5a90c943d0ac67ba417c9813c68e8f6d2b2cbae1` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.smi.csv` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), CPU 3 SMI counts (perf stat -I 10) | `64a19ddcc98175cbeda0e530c8b289df40c58acdb3d88fde1966d1e55908491b` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.summary.toml` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), probe summary | `1889bce89642037bb2a7b973249d1d45b5eadd3f2d70c078873ced47e795de60` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.tasks.txt` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), task snapshot | `9472fa8ae1b390cfc990798d5847a233aa3bf4823547cd67f38bf9253d89ce42` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.trace.dat` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), timer-mode trace (trace-cmd, mono clock) | `456b94ba63823d24f22e13fca3531d942e9d4b06ec75d70e84bdc6765fdf9ea7` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.tsc-pairs.csv` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `0e288fdf9b2c25b2174a92129caf99dfd042d454de2dbe20e6d85acc550dd98c` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.tsc.txt` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), TSC-clock trace instance (CPU 3 local timer entries) | `1e196a3eebb72905501903e181f0b7860be7302865369ae756570b84abb594c2` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261107-2.csv.usbmon.pcap` | timer-mode emulator rehearsal (timer run; current, 1000 Hz, rt-idle), usbmon capture (empty: no USB adapter behind the emulator's pty) | `c1bbceadf9bffc00a8170314148bc5d8feffbd97cb00000b9885a25d6cf636b9` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-1.csv.run.txt` | timer-mode emulator rehearsal (refused attempt 1 (untraced); current, 1000 Hz, rt-idle), session record | `8f356154c81d05197ec882717a5736c4afa205010befd90230525380f6f23633` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-1.csv.tasks.txt` | timer-mode emulator rehearsal (refused attempt 1 (untraced); current, 1000 Hz, rt-idle), task snapshot | `e1050b28407fda32d8497cb650edb7c684e6b6911c1a7b7b7180e6942673d233` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), per-cycle log | `10e25cc8a0305d663105f6cbcf18ae1111683874c2f49861b406b2cd15dc91b1` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv.run.txt` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), session record | `284e05c8e8050c3593937b89672fc4405e467cc4526d037873cb20ae5a02a58d` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv.summary.toml` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), probe summary | `0f1c86a9a3f23386203a4479623ac50084d44bfeb1bc2d4c690f18bad64d52f6` |
+| `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv.tasks.txt` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), task snapshot | `663272316e99768c9f7f1b6bd24a2dbed4985dd21927d78ba606cbf540c3ebe9` |
