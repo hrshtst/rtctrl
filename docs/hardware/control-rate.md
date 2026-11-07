@@ -1042,9 +1042,28 @@ paired with an untraced control of the same condition):
   or not a number records the count as unknown and stops the session as a
   tracer failure: missing evidence is never recorded as zero losses.
 
-A known unrelated batch workload (by process name: `exiftool`, the package
-tools, compilers and build tools, the desktop indexers) refuses the session
-at its start and stops it before a run; the session never stops a process.
+A known unrelated batch workload (`tools/batch_workloads.sh`, by process
+name: `exiftool`, the package tools, compilers and build tools, the desktop
+indexers and LocalSearch's extractor) refuses the session at its start and
+stops it before a run; the session never stops a process. A process is
+exempt only when it is positively identified, by its NUL-separated
+arguments, as unattended-upgrades' shutdown helper (`unattended-upgrade-shutdown
+--wait-for-signal`, which only holds shutdown while an upgrade runs); an
+upgrade itself, and a process of a listed name whose arguments cannot be
+read while it exists, still refuse. The indexer refuses whatever its CPU
+use, since a session's own output under `$HOME` can wake it. This is a
+check for known workloads, not a guarantee against all background activity.
+
+The operator quiets the resident services with `tools/quiet_host.sh stop`
+and restores them with `tools/quiet_host.sh restore` (reviewer decision,
+2026-11-07). It records each service's state first; it stops
+`unattended-upgrades.service` only once no upgrade is running (its units and
+processes checked, since the helper asks a running upgrade to stop), masks
+`localsearch-3.service` for this boot unless it is masked already, stops it,
+and checks that its extractor has exited. Restoring removes only the
+runtime mask it added and starts only the services it stopped. Its record
+(`$XDG_RUNTIME_DIR/rtctrl-quiet-host.state`, cleared at reboot) goes into
+every run record as the session's temporary host changes.
 
 **Conversion and its validation.** The anchors are matched one-to-one, in
 order, by their interval pattern, which uses only the TSC frequency from
@@ -1167,14 +1186,19 @@ comparisons. A C2 on and off comparison would be considered, and reviewed
 apart, only after idle-state transitions have been observed.
 
 **Rehearsal command.** With the emulator running (`./build/apps/dxl_emu
---link /tmp/rtctrl-rehearsal-tty --firmware 47`, Return Delay Time 0 written
-to the emulated servos as before), the TSC sampler built
-(`cmake --build build --target tsc_mono_pairs`), and the real-time priority
-limit raised in the starting shell:
+--link /tmp/rtctrl-rehearsal-tty --firmware 47`), Return Delay Time 0
+written to its servos after each start (it starts at the factory 250), the
+TSC sampler built (`cmake --build build --target tsc_mono_pairs`), and the
+real-time priority limit raised in the starting shell:
 
 ```
+for id in 2 3 4 5 6 7 8 9; do
+  ./build/apps/dxl_inspect --port /tmp/rtctrl-rehearsal-tty write $id return_delay_time 0
+done
+tools/quiet_host.sh stop
 tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
   --modes untraced,timer --exerciser --runs current:1000:rt-idle:fast-motion --duration 10 --outdir <dir>
+tools/quiet_host.sh restore   # also after a failed or interrupted session
 uv run --project tools tools/trace_correlate.py <dir>/<log>.csv
 ```
 
