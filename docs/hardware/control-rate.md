@@ -1063,7 +1063,15 @@ processes checked, since the helper asks a running upgrade to stop), masks
 and checks that its extractor has exited. Restoring removes only the
 runtime mask it added and starts only the services it stopped. Its record
 (`$XDG_RUNTIME_DIR/rtctrl-quiet-host.state`, cleared at reboot) goes into
-every run record as the session's temporary host changes.
+every run record as the session's temporary host changes. Its record is
+written ahead (the states found, then each intended change before it is
+made, every write checked); a state it cannot read refuses before any change
+or fails a verification; an interrupted stop or restore keeps the record,
+and restore, which checks each unit's actual state, can always follow and
+be repeated. Until these safeguards are reviewed, the reviewed manual
+procedure (confirm that no upgrade runs, stop the upgrade service, mask for
+this boot and stop the indexer, check that its extractor has exited, and
+restore both afterwards, also after a failed session) is the alternative.
 
 **Conversion and its validation.** The anchors are matched one-to-one, in
 order, by their interval pattern, which uses only the TSC frequency from
@@ -1072,13 +1080,16 @@ fails the run. A suspect anchor, one whose two stamps disagree (both of its
 intervals disagree, by equal and opposite amounts), is left out of the
 conversion, its interrupt kept in the timeline, only when the interval
 across it agrees, its disagreement is at most 50 us, it lies more than 50
-anchors after the previous suspect, and the next 50 intervals agree at the
-same offset while no offset of one or two anchors either way agrees with
-them all; at most 0.1% of the anchors may be left out, and each is reported
-(reviewer decision, 2026-11-07). Equal counts and opposing errors do not by
-themselves prove that nothing is missing: the zero loss counts and these
-conditions are the evidence, and missing, extra and compensating anchors
-fail the regressions. The conversion must cover the whole run. A deadline is converted by linear interpolation between the
+anchors after the previous suspect, and the next 50 intervals (at least 5
+when the trace ends sooner) agree at the same offset while no offset of one
+or two anchors either way agrees with them all; at most 0.1% of the anchors
+may be left out, and each is reported (reviewer decision, 2026-11-07).
+Equal counts and opposing errors do not by themselves prove that nothing is
+missing: the zero loss counts and these conditions are the evidence. A
+missing anchor replaced by an extra one close to it cannot be told from a
+stamp disagreement and is left out the same way, its neighbours still paired
+with their own anchors; other missing, extra and compensating anchors fail.
+The conversion must cover the whole run. A deadline is converted by linear interpolation between the
 anchors around it, and never extrapolated (outside them it is
 INDETERMINATE). Interpolation has no residual at its own anchors, so the
 uncertainty U is validated independently: the residuals of held-out
@@ -1218,6 +1229,29 @@ tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/us
 tools/quiet_host.sh restore   # also after a failed or interrupted session
 uv run --project tools tools/trace_correlate.py <dir>/<log>.csv
 ```
+
+**Rehearsal result (2026-11-07, accepted).** At `bc8413b` (current,
+1000 Hz, rt-idle, 10 s, with the exerciser; archived in `timer_rehearsal/`),
+analysed with the conversion and exerciser rules above (`8a68857`). Both
+buffers lost nothing. The kernel's deadline writes trace (38,720 on CPU 3),
+the `CPU ==` filters hold, the instance's stamps are raw TSC counts, and the
+SMI series covers the run with a count of 0. Of 29,117 anchors in each
+buffer, 29,113 are paired and 4 are left out as suspect, their two stamps
+disagreeing by 3.1, 3.3, 3.3 and 11.4 us; in each, the interval from the
+interrupt's entry to its handler's first event was 3.3 to 11.5 us, against
+typically under 1 us: a delay between recorded events whose cause the trace does not
+establish. U is 2,580 ns over the whole run (held-out anchors up to
+1,389 ns; the sampler's median residual -58 ns on a tracer CPU and
+-1,680 ns on CPU 3, whose samples follow wake-ups from idle). Of the
+exerciser's 6,180 actions, 834 are OK, 2,092 need no write, 235 were armed
+after their own expiry (its call delayed by the real-time worker), 3,019 are
+INDETERMINATE for unknown residency (739 with the write hint), and none is
+unexplained. No worker timer service reached the 50 us classification
+threshold (the probe's largest wake lateness was 98.869 us). The association
+check's USB part fails over the pty, as expected, and validates nothing of
+the USB path; the hardware USB checks stay strict. The two resident services
+were stopped by hand for the session and restored. The targeted torque-off
+captures follow.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

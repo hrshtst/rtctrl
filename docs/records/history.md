@@ -839,6 +839,27 @@ sampling is degraded by lost records, and the two 500 Hz full-load runs
 without profiling had an uncontrolled background load (`exiftool`). A
 timer-focused capture of CPU 3 is proposed next; no rate is qualified.
 
+## Control-rate timer service rehearsal (2026-11-07)
+
+A timer-focused capture of CPU 3 (`tools/trace_session.sh --modes timer`)
+was built and reviewed: the TSC deadline writes, idle transitions, timer
+armings and interrupts on CPU 3, with the deadlines converted to the trace's
+clock through a second, TSC-clock trace instance and checked against an
+independent bracketed sampler, and a timer exerciser for the rehearsal. Its
+emulator rehearsal (at `bc8413b`, current at 1000 Hz, rt-idle, 10 s,
+archived in `timer_rehearsal/`) was accepted on review once the analysis
+left four suspect conversion anchors out and counted armings made after
+their own expiry apart (`8a68857`). Both buffers lost nothing; U is
+2,580 ns over the whole run, within its 5 us limit; none of the exerciser's
+6,180 actions is unexplained (3,019 stay INDETERMINATE for unknown
+residency); and no worker timer service reached the 50 us classification
+threshold. The four suspect anchors show a 3 to 11 us delay between
+recorded events in their interrupts, of unestablished cause. The USB part
+of the association check fails over the emulator's pty, as expected. The
+details are in the
+[control-rate qualification](../hardware/control-rate.md#timer-service-diagnostics-design-torque-off-1-ms).
+The targeted torque-off captures follow; no rate is qualified.
+
 ## Consistency audit
 
 A post-closure audit (executed 2026-07-28, two commits) unified
