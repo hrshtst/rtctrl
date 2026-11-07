@@ -999,9 +999,14 @@ settings and qualification criteria are unchanged.
 paired with an untraced control of the same condition):
 - the traced mode's events, so that the existing association checks still
   apply;
+- the worker's sleep calls by name (`syscalls:sys_enter_clock_nanosleep`,
+  `sys_exit_clock_nanosleep` and the `nanosleep` pair, filtered to the
+  probe's command name), as the profiled mode records them: the sleep
+  checker's evidence, which the raw system calls below (numbers only) do
+  not replace;
 - the arming and cancellation of every timer (`timer:hrtimer_start` and
-  `timer:hrtimer_cancel`, with the timer's address, function, expiry and
-  soft expiry) and each timer's clock (`timer:hrtimer_setup`, or
+  `timer:hrtimer_cancel`, with the timer's address, function, expiry, soft
+  expiry and mode) and each timer's clock (`timer:hrtimer_setup`, or
   `hrtimer_init` on older kernels), on all CPUs, since a timer started
   elsewhere can later expire on CPU 3;
 - CPU 3's deadline writes (`msr:write_msr`, filtered to MSR 0x6e0), its
@@ -1015,7 +1020,12 @@ paired with an untraced control of the same condition):
 - a second trace instance (`tools/tsc_instance.sh`, through sudo) on the
   `x86-tsc` clock, restricted to CPU 3, recording its `local_timer_entry`,
   which the main trace records too: the anchors. It starts after the main
-  trace and stops before it, and is removed (verified) on every exit;
+  trace and stops before it. Its start's status says whether it created the
+  instance: one it did not create (it exists, including one another session
+  made after the session's own check) is never removed; one it created is
+  removed (verified) on every exit, even if a later step of the start
+  failed; after a status that does not say (sudo's own failure, an
+  interruption), an instance found is left in place and reported;
 - bracketed TSC and CLOCK_MONOTONIC pairs (`build/apps/tsc_mono_pairs`:
   the tightest of 16 reads every 10 ms) on a tracer CPU throughout, and on
   CPU 3 for 0.5 s before and after the probe;
@@ -1023,9 +1033,14 @@ paired with an untraced control of the same condition):
   anchored by a monotonic time before it starts and the time its first
   interval is seen. An SMI in the interval of a late service is recorded as
   such; it does not locate the delay;
+- the BOOTTIME and TAI offsets from CLOCK_MONOTONIC (with the REALTIME offset
+  of the clock pair), to convert timers on those clocks;
 - each buffer's losses (overrun, commit overrun and dropped events) in the
   run record, for the main trace from `trace-cmd report --stat` (every
-  traced mode) and for the instance from its CPU's stats.
+  traced mode, over every online CPU) and for the instance from its CPU's
+  stats. A failed read, a CPU missing from the stats, or a counter missing
+  or not a number records the count as unknown and stops the session as a
+  tracer failure: missing evidence is never recorded as zero losses.
 
 A known unrelated batch workload (by process name: `exiftool`, the package
 tools, compilers and build tools, the desktop indexers) refuses the session
@@ -1045,30 +1060,66 @@ the two callbacks). A U above 5 us fails the run; it is an engineering
 acceptance target, not an accuracy claim, and the classification's
 boundaries include it.
 
-**Timeline and classes** (`tools/timer_service.py`, through
-`tools/trace_correlate.py` for a run recorded in the timer mode). For each
-paired sleep: the arming of the worker's timer (its expiry E), the deadline
-in effect at E (the last write before it, converted), CPU 3's idle state and
-task there, and the timer interrupt that served the worker. The observed
-MSR timeline is primary: each deadline write is attributed to the one
-pending timer whose expiry, in its own clock domain, lies within U of it, and
-otherwise reported as INDETERMINATE. A sleep whose timer is served 50 us or
-more late is described by its recorded evidence, not by a proven cause:
-1. **late sleep call**: the worker armed its timer after the expiry;
-2. **deadline late**: the deadline in effect at E was more than U later than
-   E, or the device was disarmed;
-3. **interrupt late from idle**: the deadline was on time and CPU 3 was in
-   an idle state at it (the state, and since when);
-4. **interrupt late while busy**: the deadline was on time and a task ran
-   on CPU 3 (in a system call, or not, or with no system call recorded, or
-   a kernel thread), with any NMI, device interrupt, other timer interrupt
-   or SMI interval overlapping the delay. A task outside a system call may
-   still have been in a page fault or an interrupt; one in the kernel may
-   have masked interrupts, which stays unproven;
-5. **INDETERMINATE**: the deadline cannot be converted (outside the anchors,
-   or U not validated).
+**The deadline timeline** (`tools/timer_service.py`, through
+`tools/trace_correlate.py` for a run recorded in the timer mode). The
+observed MSR timeline is primary, and it follows the device's state, not
+only its last write: a write arms the device for its deadline, a write of 0
+disarms it, and a failed write leaves its state unknown. A TSC deadline
+disarms itself when it raises its interrupt (Intel SDM, volume 3, the local
+APIC timer's TSC-deadline mode), so the first local timer interrupt at or
+after the deadline (less U) serves it, and the device stays unarmed until
+the next write. An interrupt before the armed deadline (one pending from
+before the write) leaves it armed; before the first write the state is
+unknown.
 
-A late service is a diagnostic result, not a failure of the run.
+**Residency and attribution.** Each timer arming is followed to its end:
+the timer's next cancellation, expiry or arming. Its residency (the CPU
+whose device it is queued on) comes only from the trace's evidence: the
+CPU of its expiry; the arming CPU of a pinned arming; or CPU 3, for an
+arming there directly followed there (no other timer event or interrupt in
+between, within 50 us) by a deadline write matching its expiry, which only
+a timer queued there causes. The CPU that recorded an unpinned arming is
+not its residency. Each deadline write is attributed to the one pending
+timer resident on CPU 3 whose expiry, converted from its own clock, lies
+within U of it. A timer resident elsewhere cannot be it; a matching timer
+of unknown residency, a pending one whose clock cannot be converted, no
+match and several leave the write INDETERMINATE. Timers armed before the
+trace began are not seen.
+
+**Classes.** For each paired sleep: the worker's sleep call, the arming of
+its timer (its expiry E), the deadline whose interrupt served it (the one
+armed just before the last local timer interrupt before the expiry, due at
+the later of its value and its write), the device's state at E, CPU 3's
+idle state and task. A sleep whose timer is served 50 us or more late is
+described by its recorded evidence, not by a proven cause:
+1. **late sleep call**: the worker entered its sleep call after E;
+2. **timer armed late**: the call entered before E, but its timer was armed
+   after it (the delay is inside the kernel's timer setup); without a
+   recorded call entry, only the late arming is stated;
+3. **deadline late**: the serving deadline was due more than U after E. The
+   detail gives the device's state at E: armed for a later deadline,
+   disarmed, or not armed because its last deadline had been served;
+4. **interrupt late from idle**: the serving deadline was on time and CPU 3
+   was in an idle state at it (the state, and since when);
+5. **interrupt late while busy**: the serving deadline was on time and a
+   task ran on CPU 3 (in a system call, or not, or with no system call
+   recorded, or a kernel thread), with any NMI, device interrupt, other
+   timer interrupt or SMI interval overlapping the delay. A task outside a
+   system call may still have been in a page fault or an interrupt; one in
+   the kernel may have masked interrupts, which stays unproven;
+6. **INDETERMINATE**: the deadline cannot be converted (outside the anchors,
+   or U not validated), the device's state at E is unknown, the serving
+   interrupt follows no armed deadline, or it came before the armed
+   deadline (an interrupt pending from before its write).
+
+A late service is a diagnostic result, not a failure of the run. The run
+fails instead when the evidence the mode records is missing: CPU 3's
+deadline writes, local timer interrupts and system calls, the worker's
+sleep calls and timer armings, a valid loss count of zero for each buffer,
+the TSC instance, sampler pairs on a tracer CPU and on CPU 3 before and
+after the run (inside the anchors), a valid SMI count series covering the
+run (a count perf could not take, or a gap, fails it), and the exerciser's
+file when the record says it ran.
 
 **Rehearsal** over `dxl_emu`, before any run on the arm:
 - **availability**: the session refuses before anything is sent if a
@@ -1080,20 +1131,24 @@ A late service is a diagnostic result, not a failure of the run.
   to CPU 3 that arms CLOCK_MONOTONIC timerfd timers at absolute expiries,
   cancels some before they expire, re-arms some earlier or later, and lets
   others expire, logging each action with its monotonic times and expiry.
-  Each action must match its trace events (an arm one start, a re-arm a
-  cancellation and a start, a cancellation one cancellation unless the
-  timer had expired). An action need not write the deadline: after an arm,
-  the deadline in effect must cover its expiry, and a missing write is
-  legitimate when an earlier deadline already covers it; a cancellation may
-  leave the device armed (a spurious interrupt follows) or reprogram it. A
-  timer's destination is shown by its expiry or by a matching write during
-  its arming, not by the CPU that recorded the start (a timerfd timer is
-  not pinned and may migrate); without either it is INDETERMINATE;
+  Each action is followed through its timer's armings: an arm is one
+  arming for the requested expiry, no earlier arming pending; a re-arm is
+  one, ending the round's pending arming by one cancellation in its call
+  (none if that arming had already expired); a cancellation ends the
+  pending arming of its expiry by one cancellation in its call, or finds it
+  already expired (an earlier round's expiry does not count). An action
+  need not write the deadline: while the arming is pending (at the call's
+  end, or at its expiry if that came inside the call), the device must be
+  armed (or, at the expiry, served) for a deadline no later than its expiry
+  plus U, and a missing write is legitimate when an earlier deadline
+  already covers it; after a cancellation the device may stay armed (a
+  spurious interrupt follows) or be reprogrammed, but not disarmed. An
+  arming whose residency is unknown or another CPU is INDETERMINATE;
 - **requirements**, for the review: zero losses in both buffers; the anchors
   matched one-to-one with none missing or duplicated; U at most 5 us; every
   exerciser action explained by the observed timer state, legitimate
-  no-write cases included (the INDETERMINATE ones counted); and the untraced
-  control as before.
+  no-write cases included (the INDETERMINATE ones counted); the mode's
+  evidence complete; and the untraced control as before.
 
 The rehearsal's results are reviewed before targeted torque-off runs: each
 an untraced control and a `timer` run, at 500 Hz under the full load (busy
