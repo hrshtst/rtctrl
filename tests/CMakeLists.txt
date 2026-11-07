@@ -691,6 +691,16 @@ if(TARGET tsc_mono_pairs)
     LABELS integration)
 endif()
 
+# The batch-workload check and the operator's reversible host quieting
+# (tools/batch_workloads.sh, tools/quiet_host.sh), with stand-in processes
+# under test-only names and a stand-in systemctl.
+add_test(NAME quiet_host_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/quiet_host_smoke.sh ${CMAKE_BINARY_DIR}/quiet_host_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(quiet_host_smoke PROPERTIES
+  PASS_REGULAR_EXPRESSION "quiet host smoke OK"
+  LABELS integration)
+
 # The traced torque-off session (tools/trace_session.sh) over the emulator,
 # with stand-in tracers and no sudo.
 add_test(NAME trace_session_script_smoke
