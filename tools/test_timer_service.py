@@ -211,6 +211,8 @@ def exerciser() -> None:
     t += 1_000_000
     rows.append({"round": 8, "kind": "expire", "action": "arm", "before": t, "after": t + 10_000,
                  "expiry": t + 400_000})                                # no event at all
+    rows.append({"round": 1, "kind": "expire", "action": "expired", "before": base + 600_000,
+                 "after": base + 600_000, "expiry": base + 500_000})  # an observation, not an action
     ev.starts, ev.cancels, ev.expiries = starts, cancels, expiries
     ev.writes.sort()
     r = ts.explain_exerciser(ev, conv, u, head, rows)
@@ -256,8 +258,10 @@ def files() -> None:
         expect(ts.load_pairs(pf) == [(100, 5000, 140, 1), (200, 5300, 230, 3)], "pairs")
         sf = p / "smi.csv"
         sf.write_text("# started\n0.010000000,0,,msr/smi/,1,100.00,,\n0.020000000,2,,msr/smi/,1,100.00,,\n")
-        s = ts.load_smi(sf, 1_000_000_000, slack_ns=0)
-        expect(s == [(1_000_000_000, 1_010_000_000, 0), (1_010_000_000, 1_020_000_000, 2)], f"smi {s}")
+        # perf started between 1.000 s (before) and 1.015 s - 0.010 s (its
+        # first interval, at +0.010 s, was seen at 1.015 s).
+        s = ts.load_smi(sf, (1_000_000_000, 1_015_000_000))
+        expect(s == [(1_000_000_000, 1_015_000_000, 0), (1_010_000_000, 1_025_000_000, 2)], f"smi {s}")
 
 
 def main() -> int:

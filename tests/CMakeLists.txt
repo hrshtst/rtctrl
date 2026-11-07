@@ -698,7 +698,8 @@ add_test(NAME trace_session_script_smoke
     UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
     bash ${CMAKE_SOURCE_DIR}/tests/integration/trace_session_smoke.sh
       $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
-      ${CMAKE_BINARY_DIR}/trace_session_smoke $<TARGET_FILE:dxl_inspect>)
+      ${CMAKE_BINARY_DIR}/trace_session_smoke $<TARGET_FILE:dxl_inspect>
+      $<$<TARGET_EXISTS:tsc_mono_pairs>:$<TARGET_FILE:tsc_mono_pairs>>)
 set_tests_properties(trace_session_script_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "trace session script OK"

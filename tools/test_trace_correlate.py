@@ -267,7 +267,7 @@ class Run:
         if self.opt.get("timer") or self.opt.get("timer_record"):
             pathlib.Path(str(path) + ".run.txt").write_text(
                 "mode: timer\nscheduling: --rt-priority 80 --rt-cpu 3 (rtprio limit 90)\n"
-                "trace overruns: 0 (trace-cmd report --stat)\nsession pid: 1\n")
+                "trace overruns: 0 (trace-cmd report --stat)\ntsc instance overruns: 0\nsession pid: 1\n")
         if self.opt.get("timer") and not self.opt.get("no_instance"):
             marks = sorted(e[0] for e in self.events if ": local_timer_entry:" in e[2])
             lines = [f"# entries-in-buffer/entries-written: {len(marks)}/{len(marks)}   #P:32"]

@@ -14,7 +14,13 @@
 # profiled mode (a stand-in perf and a stand-in probe replaying a real run,
 # since rt-* conditions need a real-time priority limit the test cannot
 # have): its recorders, the worker's samples, and the stops when perf does
-# not start or ends early. Functional only: a
+# not start or ends early; the refusal while an unrelated batch workload
+# runs; and the timer mode (a stand-in for the TSC instance's tool, the real
+# TSC sampler): its events with their CPU filters, the instance inside the
+# trace, the sampler's pairs, the SMI count's anchors, the losses counted in
+# the record, the refusals for a missing event and a stale instance, the
+# instance's removal on every exit (status 3 when it fails), and the
+# exerciser of the rehearsal. Functional only: a
 # pty answers instantly and the tracers record nothing real, so no verdict
 # is asserted. Real-time conditions need a real-time priority limit, so
 # they stay out of this test (the plan is checked with --dry-run).
@@ -24,6 +30,7 @@ EMU="$1"
 PROBE="$2"
 ROOT="$3"
 INSPECT="$4"
+SAMPLER="${5:-}"  # tsc_mono_pairs (x86-64 builds); without it the timer mode is not run
 LINK="$ROOT/tty"
 OUT="$ROOT/out"
 FAKE="$ROOT/fake"
@@ -55,6 +62,23 @@ cat >"$FAKE/trace-cmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.trace-cmd"
 [ "$1" = -h ] && { echo "trace-cmd version 0.0 (stand-in)"; exit 1; }
+# report --stat: the buffers' losses (FAKE_TRACE_OVERRUN); list -e: the
+# events (all the timer mode needs, less FAKE_MISSING_EVENT), or a format.
+if [ "$1" = report ]; then
+  printf 'CPU: 0\nentries: 10\noverrun: %s\ncommit overrun: 0\ndropped events: 0\n' "${FAKE_TRACE_OVERRUN:-0}"
+  exit 0
+fi
+if [ "$1" = list ]; then
+  if [ $# -ge 3 ]; then echo "name: $3 (stand-in format)"; exit 0; fi
+  for e in timer:hrtimer_start timer:hrtimer_cancel timer:hrtimer_setup timer:hrtimer_expire_entry \
+           msr:write_msr power:cpu_idle power:cpu_idle_miss nmi:nmi_handler raw_syscalls:sys_enter \
+           raw_syscalls:sys_exit exceptions:page_fault_user exceptions:page_fault_kernel \
+           sched:sched_process_fork sched:sched_process_exec sched:sched_process_exit \
+           irq_vectors:local_timer_entry sched:sched_switch; do
+    [ "$e" = "${FAKE_MISSING_EVENT:-}" ] || echo "$e"
+  done
+  exit 0
+fi
 [ "${FAKE_TRACE_FAIL:-0}" = 1 ] && { echo "stand-in trace-cmd: failing as asked"; exit 1; }
 out=; clock=local
 while [ $# -gt 0 ]; do
@@ -63,8 +87,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "${FAKE_TRACE_CLOCK:-}" ] && clock=$FAKE_TRACE_CLOCK
 case "$clock" in
-  mono) echo "local global counter uptime perf [mono] mono_raw boot" >"$TRACEFS/trace_clock" ;;
-  *) echo "[local] global counter uptime perf mono mono_raw boot" >"$TRACEFS/trace_clock" ;;
+  mono) echo "local global counter uptime perf [mono] mono_raw boot tai x86-tsc" >"$TRACEFS/trace_clock" ;;
+  *) echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$TRACEFS/trace_clock" ;;
 esac
 stop=0
 trap 'stop=1' INT
@@ -189,6 +213,17 @@ case "$1" in
       printf '   probe %s [000]  1000.000100000:\n\tffffffff81000000 do_nanosleep ([kernel.kallsyms])\n\t55d000001234 Probe::run (/x7_bus_timing)\n\n' "$tid"
     fi
     exit 0 ;;
+  stat)  # -o FILE: a header, then an interval line every 10 ms until SIGINT
+    out=
+    while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; esac; shift; done
+    echo "# started on (stand-in)" >"$out"
+    stop=0; trap 'stop=1' INT TERM
+    t=0
+    while [ "$stop" -eq 0 ]; do
+      sleep 0.01; t=$((t + 1))
+      printf '%d.%02d0000000,0,,msr/smi/,10000000,100.00,,\n' $((t / 100)) $((t % 100)) >>"$out"
+    done
+    exit 0 ;;
   report)
     empty=0
     for a in "$@"; do [ "$a" = --no-skip-empty ] && empty=1; done
@@ -226,8 +261,25 @@ case "$1" in -v|-n) exit 0 ;; esac
 echo "$*" >>"$FAKE_LOG.sudo"
 exec "$@"
 EOF
+# The TSC instance's tool: a marker file stands for the instance
+# (FAKE_TSC_REMOVE_FAIL: its removal fails).
+cat >"$FAKE/tsc_instance" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.tsc_instance"
+mark="$FAKE_LOG.tsc_instance_exists"
+case "$1" in
+  start) [ -e "$mark" ] && exit 2; : >"$mark"
+         echo "tsc instance $3: clock [x86-tsc], cpumask 1, buffer $5 kB per CPU, event irq_vectors:local_timer_entry" ;;
+  stop) echo "# entries-in-buffer/entries-written: 1/1   #P:2"
+        echo "          <idle>-0       [000] d.h1. 123456789: local_timer_entry: vector=236" ;;
+  stats) printf 'entries: 1\noverrun: 0\ncommit overrun: 0\ndropped events: 0\n' ;;
+  remove) [ "${FAKE_TSC_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
+          rm -f "$mark" ;;
+  exists) [ -e "$mark" ] ;;
+esac
+EOF
 chmod +x "$FAKE"/*
-echo "[local] global counter uptime perf mono mono_raw boot" >"$ROOT/tracefs/trace_clock"
+echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
 printf '1\n' >"$ROOT/usbdev/busnum"
 printf '9\n' >"$ROOT/usbdev/devnum"
 printf '0403\n' >"$ROOT/usbdev/idVendor"
@@ -237,7 +289,9 @@ printf '480\n' >"$ROOT/usbdev/speed"
 export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
-export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf"
+export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
+export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch
+if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
 
 # The quiet-machine gate is lifted: the test suite runs in parallel. The
@@ -304,6 +358,20 @@ setsid tools/trace_session.sh "${COMMON[@]}" --dry-run --runs "$RUNS" --manifest
   </dev/null >"$ROOT/archived-plan.log" 2>&1 || fail "the dry run with an archived name failed" "$ROOT/archived-plan.log"
 grep -q 'is already in the archive manifest' "$ROOT/archived-plan.log" && grep -q '^plan: 4 runs' "$ROOT/archived-plan.log" ||
   fail "the dry run does not list the archived name with its plan" "$ROOT/archived-plan.log"
+
+# An unrelated batch workload refuses the session; it is not stopped.
+python3 -c 'import time; open("/proc/self/comm", "w").write("rtctrl-batchjob"); time.sleep(30)' &
+batch_pid=$!
+for _ in $(seq 1 50); do pgrep -x rtctrl-batchjob >/dev/null && break; sleep 0.1; done
+if TRACE_SESSION_BATCH_LIST=dpkg,rtctrl-batchjob setsid tools/trace_session.sh "${COMMON[@]}" --yes --runs "$RUNS" \
+    </dev/null >"$ROOT/batch.log" 2>&1; then
+  fail "a session started beside a batch workload" "$ROOT/batch.log"
+fi
+grep -q 'unrelated batch workloads are running (rtctrl-batchjob)' "$ROOT/batch.log" ||
+  fail "no refusal of the batch workload" "$ROOT/batch.log"
+kill -0 "$batch_pid" 2>/dev/null || fail "the session stopped the batch workload"
+kill "$batch_pid"; wait "$batch_pid" 2>/dev/null || true
+[ -z "$(ls -A "$OUT")" ] || fail "a session beside a batch workload left files"
 
 # The pairs: each run leaves its log, summary, record and task snapshot;
 # only a traced run has a trace and a usbmon capture.
@@ -797,6 +865,76 @@ TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --dr
 grep -q '^plan: 3 runs' "$ROOT/profiled-plan.log"
 grep -q "^                      $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf,4096 -o <log>.csv.perf.data" "$ROOT/profiled-plan.log" ||
   fail "the plan does not name the perf command" "$ROOT/profiled-plan.log"
+
+# The timer mode (with the real TSC sampler): its events with the CPU
+# filters, the TSC instance started inside the trace and removed, the
+# sampler's pairs on both CPUs, the SMI count with its anchors, the losses in
+# the record, and the lineage listing.
+if [ -n "$SAMPLER" ]; then
+  : >"$ROOT/fake.trace-cmd"
+  TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 30 \
+    --duration 2 --modes timer --runs current:100:rt-idle:fast-motion \
+    </dev/null >"$ROOT/timer.log" 2>&1 || fail "the timer session failed" "$ROOT/timer.log"
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 30)
+  for f in "$b" "$b.run.txt" "$b.trace.dat" "$b.tsc.txt" "$b.tsc-pairs.csv" "$b.smi.csv" "$b.procs.txt"; do
+    [ -s "$f" ] || fail "missing $f" "$ROOT/timer.log"
+  done
+  grep -q '^mode: timer' "$b.run.txt" && grep -q '^tsc instance rtctrl_tsc: clock \[x86-tsc\]' "$b.run.txt" &&
+    grep -q '^tsc instance overruns: 0 ' "$b.run.txt" && grep -q '^trace overruns: 0 ' "$b.run.txt" &&
+    grep -Eq '^smi anchor monotonic_ns: [0-9]+ [0-9]+ ' "$b.run.txt" && grep -q "^session pid: " "$b.run.txt" ||
+    fail "the timer record" "$b.run.txt"
+  grep -q -- '-e timer:hrtimer_start -e timer:hrtimer_cancel -e timer:hrtimer_setup -e msr:write_msr -f msr == 0x6e0 && CPU == 0 -e power:cpu_idle -f cpu_id == 0 -e power:cpu_idle_miss -f cpu_id == 0 -e nmi:nmi_handler -f CPU == 0 .*-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit' "$ROOT/fake.trace-cmd" ||
+    fail "trace-cmd was not given the timer events" "$ROOT/fake.trace-cmd"
+  grep -q "^start $ROOT/tracefs rtctrl_tsc 0 16384" "$ROOT/fake.tsc_instance" &&
+    grep -q '^stop ' "$ROOT/fake.tsc_instance" && grep -q '^remove ' "$ROOT/fake.tsc_instance" ||
+    fail "the TSC instance's start, stop and removal" "$ROOT/fake.tsc_instance"
+  [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "the TSC instance remains"
+  awk -F, '!/^#/ {seen[$4] = 1} END {exit !(seen[0] && length(seen) >= 1)}' "$b.tsc-pairs.csv" ||
+    fail "no sampler pairs on the real-time CPU" "$b.tsc-pairs.csv"
+  [ "$(grep -c '^# tsc_mono_pairs' "$b.tsc-pairs.csv")" -eq 3 ] || fail "three sampler runs expected" "$b.tsc-pairs.csv"
+  grep -q 'local_timer_entry' "$b.tsc.txt" || fail "the TSC instance's trace" "$b.tsc.txt"
+  # A missing event refuses the session; so does a stale instance.
+  if FAKE_MISSING_EVENT=msr:write_msr TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" \
+      --yes --attempt 31 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion \
+      </dev/null >"$ROOT/timer-missing.log" 2>&1; then
+    fail "a timer session without msr:write_msr started" "$ROOT/timer-missing.log"
+  fi
+  grep -q "the timer mode's events are not available (msr:write_msr): nothing was sent" "$ROOT/timer-missing.log" ||
+    fail "no refusal for the missing event" "$ROOT/timer-missing.log"
+  [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer 31)" ] || fail "a refused timer session ran"
+  : >"$ROOT/fake.tsc_instance_exists"
+  if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 32 --duration 2 \
+      --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/timer-stale.log" 2>&1; then
+    fail "a timer session beside a stale instance started" "$ROOT/timer-stale.log"
+  fi
+  grep -q 'the trace instance rtctrl_tsc remains from an earlier session' "$ROOT/timer-stale.log" ||
+    fail "no refusal for the stale instance" "$ROOT/timer-stale.log"
+  rm -f "$ROOT/fake.tsc_instance_exists"
+  # A failed removal fails an otherwise successful session (status 3).
+  set +e
+  FAKE_TSC_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 33 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/timer-rmfail.log" 2>&1
+  st=$?
+  set -e
+  [ "$st" -eq 3 ] && grep -q 'CLEANUP FAILED: the trace instance rtctrl_tsc was not removed' "$ROOT/timer-rmfail.log" ||
+    fail "a failed removal gave status $st" "$ROOT/timer-rmfail.log"
+  grep -q 'cleanup: trace instance rtctrl_tsc NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 33).run.txt" ||
+    fail "the record lacks the failed removal" "$ROOT/timer-rmfail.log"
+  rm -f "$ROOT/fake.tsc_instance_exists"
+  # The exerciser: refused without --port; over the emulator it runs.
+  if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh --probe "$FAKE/probe" --outdir "$OUT" --date "$DATE" \
+      --rt-cpu 0 --exclude-cpus 0 --dry-run --exerciser --modes timer --runs current:100:rt-idle:full \
+      </dev/null >"$ROOT/ex-noport.log" 2>&1; then
+    fail "--exerciser without --port was accepted" "$ROOT/ex-noport.log"
+  fi
+  grep -q 'is for the rehearsal: pass the emulator' "$ROOT/ex-noport.log" || fail "no exerciser refusal" "$ROOT/ex-noport.log"
+  TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 34 --duration 2 \
+    --exerciser --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/ex.log" 2>&1 ||
+    fail "the exerciser session failed" "$ROOT/ex.log"
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 34)
+  grep -q '^exerciser: exit 0, ' "$b.run.txt" && grep -q '^# timer_exerciser tid=' "$b.exerciser.csv" ||
+    fail "the exerciser's run" "$b.run.txt"
+fi
 
 # An emulator rehearsal traces without usbmon.
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \

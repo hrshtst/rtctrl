@@ -116,6 +116,14 @@ STRESS_NG=${STRESS_NG:-stress-ng}
 TRACEFS=${TRACEFS:-/sys/kernel/tracing}
 LATENCY_TOOL=${LATENCY_TOOL:-tools/latency_timer.py}
 PERF=${PERF:-perf}
+TSC_INSTANCE_TOOL=${TSC_INSTANCE_TOOL:-tools/tsc_instance.sh}
+TSC_SAMPLER=${TSC_SAMPLER:-./build/apps/tsc_mono_pairs}
+EXERCISER=tools/timer_exerciser.py
+TSC_INSTANCE=rtctrl_tsc
+# Unrelated batch workloads that refuse the session (process names, as the
+# kernel truncates them to 15 characters); TRACE_SESSION_BATCH_LIST
+# replaces the list. The session never stops a process.
+batch_list=${TRACE_SESSION_BATCH_LIST-exiftool,updatedb,updatedb.plocat,apt,apt-get,dpkg,unattended-upgr,cc1,cc1plus,ninja,make,rustc,cargo,localsearch-3,tracker-extract,tracker-miner-f,baloo_file,baloo_file_extr}
 case "${TRACE_SESSION_SUDO:-sudo}" in
   none) sudo_cmd=() ;;
   *) sudo_cmd=("${TRACE_SESSION_SUDO:-sudo}") ;;
@@ -149,6 +157,7 @@ load_tail=15
 stress_dir="$HOME/.cache/rtctrl-stress"
 dry_run=0
 assume_yes=0
+exerciser=0
 
 usage() {
   cat <<EOF
@@ -161,10 +170,18 @@ usage: $0 [options]
                       variant   full, motion, motion-aux0ms, fast,
                                 fast-motion or fast-motion-aux0ms (all on
                                 the bounded read path)
-  --modes LIST        untraced,traced (default), any of untraced, traced and
+  --modes LIST        untraced,traced (default), any of untraced, traced,
                       profiled (traced, plus timer arming, sleep calls, page
                       faults and perf samples of the real-time CPU; rt-*
-                      conditions only)
+                      conditions only) and timer (traced, plus every timer's
+                      arming and cancellation, the real-time CPU's TSC
+                      deadline writes, idle transitions, NMIs, system calls
+                      and page faults, process lifecycle, a TSC-clock trace
+                      instance of its timer interrupts, bracketed TSC and
+                      monotonic pairs and its SMI count; rt-* only)
+  --exerciser         the timer mode's rehearsal: the timer exerciser runs on
+                      the real-time CPU during each timer run (refused
+                      without --port and on a serial device)
   --perf-hz N         a profiled run's perf sampling frequency (default $perf_hz)
   --perf-stack B      bytes of user stack perf copies per sample for its DWARF
                       unwinding, a multiple of 8 (default $perf_stack)
@@ -231,6 +248,7 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     --no-usbmon) usbmon=0; shift ;;
+    --exerciser) exerciser=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     --yes) assume_yes=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -276,7 +294,7 @@ variant_flags() {
 IFS=, read -r -a run_list <<<"$runs"
 IFS=, read -r -a mode_list <<<"$modes"
 [ ${#run_list[@]} -gt 0 ] || die "--runs is empty"
-any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; all_rt=1
+any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; any_timer=0; all_rt=1
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v extra <<<"$spec"
   [ -z "${extra:-}" ] && [ -n "${v:-}" ] || die "run '$spec' is not profile:rate:condition:variant"
@@ -295,6 +313,7 @@ for m in "${mode_list[@]}"; do
     untraced) ;;
     traced) any_traced=1 ;;
     profiled) any_traced=1; any_profiled=1 ;;
+    timer) any_traced=1; any_timer=1 ;;
     *) die "unknown mode '$m'" ;;
   esac
 done
@@ -318,6 +337,16 @@ is_uint "$perf_stack" && [ "$perf_stack" -ge 1024 ] && [ "$perf_stack" -le 65528
   [ $((perf_stack % 8)) -eq 0 ] || die "--perf-stack must be a multiple of 8 from 1024 to 65528"
 if [ "$any_profiled" -eq 1 ] && [ "$all_rt" -ne 1 ]; then
   die "the profiled mode samples the real-time CPU: use it with rt-* conditions only"
+fi
+if [ "$any_timer" -eq 1 ] && [ "$all_rt" -ne 1 ]; then
+  die "the timer mode traces the real-time CPU: use it with rt-* conditions only"
+fi
+# The exerciser loads the real-time CPU: a rehearsal over the emulator only.
+if [ "$exerciser" -eq 1 ]; then
+  [ "$any_timer" -eq 1 ] || die "--exerciser needs the timer mode"
+  [ -n "$port" ] || die "--exerciser is for the rehearsal: pass the emulator's --port"
+  ex_tty=$(basename "$(readlink -f "$port")")
+  [ ! -e "/sys/class/tty/$ex_tty/device" ] || die "--exerciser is for the rehearsal: $port is a serial device ($ex_tty)"
 fi
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 is_uint "$rt_priority" && is_uint "$rt_cpu" || die "--rt-priority and --rt-cpu must be integers"
@@ -405,6 +434,24 @@ if [ "$any_loaded" -eq 1 ]; then
   [ "$(stat -f -c %T "$probe_dir")" != tmpfs ] ||
     problems+=("--stress-dir $stress_dir is on tmpfs, so --hdd would load memory, not a disk")
 fi
+if [ "$any_timer" -eq 1 ]; then
+  command -v "$PERF" >/dev/null || problems+=("$PERF is not installed (linux-tools): it counts SMIs")
+  [ -x "$TSC_INSTANCE_TOOL" ] || problems+=("$TSC_INSTANCE_TOOL is not executable")
+  [ -x "$TSC_SAMPLER" ] || problems+=("$TSC_SAMPLER is not built (cmake --build build --target tsc_mono_pairs)")
+  [ -f "$EXERCISER" ] || [ "$exerciser" -eq 0 ] || problems+=("$EXERCISER is missing")
+  [ -e /sys/bus/event_source/devices/msr/events/smi ] || problems+=("no msr/smi/ perf event: the SMI count needs it")
+fi
+# Known unrelated batch workloads refuse the session; it never stops one.
+batch_running() {
+  local n names found=()
+  IFS=, read -r -a names <<<"$batch_list"
+  for n in "${names[@]}"; do
+    [ -n "$n" ] && pgrep -x -- "${n:0:15}" >/dev/null && found+=("$n")
+  done
+  echo "${found[*]}"
+}
+running_batch=$(batch_running)
+[ -z "$running_batch" ] || problems+=("unrelated batch workloads are running ($running_batch): let them finish or stop them yourself (the session never stops a process)")
 if [ -f "$SUMMARY_TOOL" ] &&
    ! uv run --project tools "$SUMMARY_TOOL" --help >/dev/null 2>&1; then
   problems+=("uv run --project tools $SUMMARY_TOOL --help failed")
@@ -537,6 +584,12 @@ if [ "$dry_run" -eq 1 ]; then
   fi
   if [ "$any_traced" -eq 1 ]; then
     printf 'traced runs add: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
+    if [ "$any_timer" -eq 1 ]; then
+      printf 'timer runs record: the traced events, plus (after the availability check) every timer arming and cancellation, CPU %s deadline writes, idle, NMIs, system calls and page faults, and process lifecycle;\n' "$rt_cpu"
+      printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
+        "$TSC_INSTANCE_TOOL" "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" "$TSC_SAMPLER" "${others[0]}" "$rt_cpu" \
+        "$PERF" "$rt_cpu" "$([ "$exerciser" -eq 1 ] && echo "; the exerciser on CPU $rt_cpu")"
+    fi
     if [ "$any_profiled" -eq 1 ]; then
       printf 'profiled runs record: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${profile_args[*]}"
       printf '                      %s %s -o <log>.csv.perf.data\n' "$PERF" "${perf_args[*]}"
@@ -635,6 +688,8 @@ recorders_ended() {  # the run's recorders that are no longer running
   alive "$trace_job" || gone="trace-cmd ended"
   if [ "$usbmon" -eq 1 ]; then alive "$usbmon_job" || gone+="${gone:+, }tcpdump ended"; fi
   if [ -n "$perf_job" ]; then alive "$perf_job" || gone+="${gone:+, }perf ended"; fi
+  if [ -n "$smi_job" ]; then alive "$smi_job" || gone+="${gone:+, }perf stat ended"; fi
+  if [ -n "$sampler_pid" ]; then alive "$sampler_pid" || gone+="${gone:+, }the TSC sampler ended"; fi
   echo "$gone"
 }
 wait_file() {  # name job file seconds -> 0 once the recorder wrote its file
@@ -658,6 +713,10 @@ own_outputs() {
   return 0
 }
 stop_all() {
+  if [ -n "$ex_pid" ]; then kill -TERM "$ex_pid" 2>/dev/null; wait "$ex_pid" 2>/dev/null; ex_pid=; fi
+  if [ -n "$sampler_pid" ]; then kill -TERM "$sampler_pid" 2>/dev/null; wait "$sampler_pid" 2>/dev/null; sampler_pid=; fi
+  if [ -n "$smi_job" ]; then stop_tracer smi "$smi_job"; smi_job=; fi
+  remove_tsc_instance
   if [ -n "$trace_job" ]; then stop_tracer trace "$trace_job"; trace_job=; fi
   if [ -n "$usbmon_job" ]; then stop_tracer usbmon "$usbmon_job"; usbmon_job=; fi
   if [ -n "$perf_job" ]; then stop_tracer perf "$perf_job"; perf_job=; fi
@@ -668,6 +727,25 @@ stop_all() {
   fi
   own_outputs
 }
+# The timer mode's TSC instance: owed from its start's attempt on, removed
+# (and its removal verified) on every path that stops the recorders and on
+# every exit; a failed removal is a cleanup failure (status 3).
+tsc_owed=0; ex_pid=; sampler_pid=; smi_job=
+remove_tsc_instance() {
+  local out
+  [ "$tsc_owed" -eq 1 ] || return 0
+  if out=$(priv "$TSC_INSTANCE_TOOL" remove "$TRACEFS" "$TSC_INSTANCE" 2>&1); then
+    tsc_owed=0
+    return 0
+  fi
+  echo "trace_session: CLEANUP FAILED: the trace instance $TSC_INSTANCE was not removed: $out" >&2
+  echo "  remove it by hand: sudo rmdir $TRACEFS/instances/$TSC_INSTANCE" >&2
+  if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+    printf '\n--- session end ---\ncleanup: trace instance %s NOT removed: %s\n' "$TSC_INSTANCE" "$out" >>"$last_note"
+  fi
+  return 1
+}
+
 # The adapter experiment's latency timer: the value found at the start,
 # the value set last, whether the session owes the starting value back (from
 # the first stepped run on, set or not), and the record of the last run,
@@ -720,10 +798,16 @@ cleanup_note() {  # what happened, the tool's output
 on_exit() {
   local status=$?
   trap '' INT TERM HUP
+  local cleanup_ok=1
   if ! restore_latency; then
     echo "trace_session: the session fails: its cleanup did not restore the adapter's latency timer" >&2
-    [ "$status" -eq 0 ] && exit 3
+    cleanup_ok=0
   fi
+  if [ "$tsc_owed" -eq 1 ] && ! remove_tsc_instance; then
+    echo "trace_session: the session fails: its cleanup did not remove the trace instance" >&2
+    cleanup_ok=0
+  fi
+  [ "$cleanup_ok" -eq 1 ] || { [ "$status" -eq 0 ] && exit 3; }
   return 0
 }
 finish() {
@@ -799,6 +883,56 @@ if [ ${#lt_list[@]} -gt 0 ]; then
   fi
   lt_orig=$lt_sysfs; lt_now=$lt_orig
 fi
+# The timer mode's events, its trace clock and a free instance name, checked
+# before anything is sent; the trace arguments follow from what the kernel
+# offers (hrtimer_setup or hrtimer_init; cpu_idle_miss if present).
+timer_args=()
+if [ "$any_timer" -eq 1 ]; then
+  priv "$TRACE_CMD" list -e >"$tmp/events.txt" 2>&1 || { finish; die "trace-cmd list -e failed: nothing was sent"; }
+  missing=()
+  for e in timer:hrtimer_start timer:hrtimer_cancel msr:write_msr power:cpu_idle nmi:nmi_handler \
+           raw_syscalls:sys_enter raw_syscalls:sys_exit exceptions:page_fault_user exceptions:page_fault_kernel \
+           sched:sched_process_fork sched:sched_process_exec sched:sched_process_exit irq_vectors:local_timer_entry; do
+    grep -qx -- "$e" "$tmp/events.txt" || missing+=("$e")
+  done
+  init_ev=
+  for e in timer:hrtimer_setup timer:hrtimer_init; do
+    if grep -qx -- "$e" "$tmp/events.txt"; then init_ev=$e; break; fi
+  done
+  [ -n "$init_ev" ] || missing+=("timer:hrtimer_setup or timer:hrtimer_init")
+  [ ${#missing[@]} -eq 0 ] || { finish; die "the timer mode's events are not available (${missing[*]}): nothing was sent"; }
+  case "$(priv cat "$TRACEFS/trace_clock" 2>&1)" in
+    *x86-tsc*) ;;
+    *) finish; die "the kernel offers no x86-tsc trace clock: nothing was sent" ;;
+  esac
+  if priv "$TSC_INSTANCE_TOOL" exists "$TRACEFS" "$TSC_INSTANCE"; then
+    finish
+    die "the trace instance $TSC_INSTANCE remains from an earlier session (sudo rmdir $TRACEFS/instances/$TSC_INSTANCE): nothing was sent"
+  fi
+  timer_args=("${trace_args[@]}" -e timer:hrtimer_start -e timer:hrtimer_cancel -e "$init_ev"
+              -e msr:write_msr -f "msr == 0x6e0 && CPU == $rt_cpu"
+              -e power:cpu_idle -f "cpu_id == $rt_cpu")
+  if grep -qx power:cpu_idle_miss "$tmp/events.txt"; then
+    timer_args+=(-e power:cpu_idle_miss -f "cpu_id == $rt_cpu")
+  fi
+  for e in nmi:nmi_handler raw_syscalls:sys_enter raw_syscalls:sys_exit exceptions:page_fault_user \
+           exceptions:page_fault_kernel; do
+    timer_args+=(-e "$e" -f "CPU == $rt_cpu")
+  done
+  timer_args+=(-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit)
+  {
+    echo "--- timer mode events (trace-cmd list -e ... -F) ---"
+    for e in msr:write_msr power:cpu_idle nmi:nmi_handler timer:hrtimer_start timer:hrtimer_cancel "$init_ev" \
+             sched:sched_process_fork sched:sched_process_exec; do
+      priv "$TRACE_CMD" list -e "^$e\$" -F 2>&1
+    done
+    echo "--- CPU $rt_cpu idle states (name, latency us, target residency us, disabled) ---"
+    for s in /sys/devices/system/cpu/cpu"$rt_cpu"/cpuidle/state*; do
+      [ -d "$s" ] && echo "$(basename "$s"): $(cat "$s/name" 2>&1) $(cat "$s/latency" 2>&1) $(cat "$s/residency" 2>&1) $(cat "$s/disable" 2>&1)"
+    done
+    echo "clock event device of CPU $rt_cpu: $(cat "/sys/devices/system/clockevents/clockevent$rt_cpu/current_device" 2>&1)"
+  } >"$tmp/timer_events.txt"
+fi
 {
   echo "--- host state (session) ---"
   echo "kernel: $(uname -srvm)"
@@ -830,6 +964,9 @@ fi
     echo "usbmon: not used"
   fi
   echo "tracers: $("$TRACE_CMD" -h 2>&1 | grep -m 1 -i version); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
+  echo "session pid: $$"
+  echo "batch workloads: $batch_list"
+  [ "$any_timer" -eq 1 ] && cat "$tmp/timer_events.txt"
 } >"$tmp/session.txt"
 
 xhci_interrupts() {  # every CPU's count of the xHCI interrupt lines
@@ -868,6 +1005,8 @@ EOF
 
 commit="$(git rev-parse --short HEAD 2>/dev/null) ($(git status --porcelain --untracked-files=no 2>/dev/null | wc -l) tracked files modified)"
 
+mono_ns() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }
+
 runnable_mean() {  # mean runnable tasks over 2 s, this script included
   local sum=0 r
   for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -897,8 +1036,8 @@ run_one() {
   local profile=$1 rate=$2 cond=$3 variant=$4 mode=$5 step=${6:-} base csv note
   local loaded=0 probe_status check_status seen stress_out stress_status snap_pid
   local dat pcap lt_ms=${step%%:*} lt_out lt_status irq_before irq_after t_before t_after
-  local traced=0 profiled=0 perfdat perftxt perfstacks targs
-  case "$mode" in traced) traced=1 ;; profiled) traced=1; profiled=1 ;; esac
+  local traced=0 profiled=0 timered=0 perfdat perftxt perfstacks targs tsc_txt tsc_pairs
+  case "$mode" in traced) traced=1 ;; profiled) traced=1; profiled=1 ;; timer) traced=1; timered=1 ;; esac
   base=$(log_base "$profile" "$rate" "$cond" "$variant" "$mode" "$step")
   csv="$outdir/$base.csv"
   note="$csv.run.txt"
@@ -907,8 +1046,11 @@ run_one() {
   perfdat="$csv.perf.data"
   perftxt="$csv.perf.txt"
   perfstacks="$csv.perf.stacks.txt"
+  tsc_txt="$csv.tsc.txt"
+  tsc_pairs="$csv.tsc-pairs.csv"
   targs=("${trace_args[@]}")
   [ "$profiled" -eq 1 ] && targs=("${profile_args[@]}")
+  [ "$timered" -eq 1 ] && targs=("${timer_args[@]}")
   run_outputs=()
   failed=
   k=$((k + 1))
@@ -917,6 +1059,13 @@ run_one() {
   if [ -e "$csv" ] || [ -e "$note" ]; then
     echo "already attempted, skipped"
     outcome=skip
+    return
+  fi
+  local batch
+  batch=$(batch_running)
+  if [ -n "$batch" ]; then
+    echo "trace_session: unrelated batch workloads are running ($batch): session stopped before the run"
+    outcome=stop
     return
   fi
   case "$cond" in *loaded*) loaded=1 ;; esac
@@ -946,6 +1095,14 @@ run_one() {
       printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${targs[@]}"; printf ' -o %q\n' "$dat"
       if [ "$profiled" -eq 1 ]; then
         printf 'perf: %s' "$PERF"; printf ' %q' "${perf_args[@]}"; printf ' -o %q\n' "$perfdat"
+      fi
+      if [ "$timered" -eq 1 ]; then
+        echo "tsc instance: $TSC_INSTANCE_TOOL start $TRACEFS $TSC_INSTANCE $rt_cpu $buffer_kb (x86-tsc, local_timer_entry on CPU $rt_cpu)"
+        echo "tsc sampler: $TSC_SAMPLER on CPU ${others[0]} throughout, and on CPU $rt_cpu for 0.5 s before and after the probe"
+        echo "smi: $PERF stat -e msr/smi/ -C $rt_cpu -I 10 -x , -o $csv.smi.csv"
+        if [ "$exerciser" -eq 1 ]; then
+          echo "exerciser: python3 $EXERCISER --cpu $rt_cpu --duration $((duration + 60)) --seed $k (rehearsal; stopped after the probe)"
+        fi
       fi
       if [ "$usbmon" -eq 1 ]; then
         printf 'usbmon: %s' "$TCPDUMP"; printf ' %q' "${usbmon_opts[@]}" -w "$pcap" "$usbmon_filter"; echo
@@ -979,6 +1136,9 @@ run_one() {
       outcome=stop
       return
     fi
+  fi
+  if [ "$timered" -eq 1 ]; then
+    ps -eo pid,ppid,comm >"$csv.procs.txt"
   fi
   if [ "$traced" -eq 1 ]; then
     run_outputs=("$dat")
@@ -1030,6 +1190,47 @@ run_one() {
       fi
       sleep 1
     fi
+    if [ "$timered" -eq 1 ]; then
+      # The TSC instance, inside the main trace's span; the sampler,
+      # throughout on a tracer CPU and briefly on the real-time CPU; the SMI
+      # count, anchored before its start and when its first interval is seen.
+      local inst_line smi_before smi_seen i
+      tsc_owed=1
+      if ! inst_line=$(priv "$TSC_INSTANCE_TOOL" start "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" 2>&1); then
+        { echo "--- the TSC instance did not start ---"; echo "$inst_line"; } | tee -a "$note"
+        echo "verdict: not run (TSC instance)" >>"$note"
+        stop_all
+        outcome=stop
+        return
+      fi
+      echo "$inst_line" >>"$note"
+      "$TSC_SAMPLER" --cpu "${others[0]}" --output "$tsc_pairs" &
+      sampler_pid=$!
+      if ! "$TSC_SAMPLER" --cpu "$rt_cpu" --duration-ms 500 --output "$tsc_pairs"; then
+        echo "trace_session: the TSC sampler failed on CPU $rt_cpu: session stopped" | tee -a "$note"
+        echo "verdict: not run (TSC sampler)" >>"$note"
+        stop_all
+        outcome=stop
+        return
+      fi
+      run_outputs+=("$csv.smi.csv")
+      smi_before=$(mono_ns)
+      start_tracer smi "$PERF" stat -e msr/smi/ -C "$rt_cpu" -I 10 -x , -o "$csv.smi.csv"
+      for ((i = 0; i < 6000; i++)); do
+        grep -qv '^#' "$csv.smi.csv" 2>/dev/null && break
+        alive "$smi_job" || break
+        sleep 0.005
+      done
+      smi_seen=$(mono_ns)
+      if ! grep -qv '^#' "$csv.smi.csv" 2>/dev/null; then
+        stop_all
+        { echo "--- perf stat did not start ---"; cat "$tmp/smi.out"; } | tee -a "$note"
+        echo "verdict: not run (tracer)" >>"$note"
+        outcome=stop
+        return
+      fi
+      echo "smi anchor monotonic_ns: $smi_before $smi_seen (before perf stat started; when its first interval was seen)" >>"$note"
+    fi
   fi
   # The load starts once the recorders are recording, so their startup
   # takes none of its time, and it must outlast the probe.
@@ -1062,6 +1263,12 @@ run_one() {
       return
     fi
     echo "clock pair before: $(clock_pair)" >>"$note"
+    if [ "$timered" -eq 1 ] && [ "$exerciser" -eq 1 ]; then
+      # It outlasts the probe, so the stop (SIGTERM, status 0) always finds
+      # it running: a signal during its own exit would kill it.
+      python3 "$EXERCISER" --cpu "$rt_cpu" --duration $((duration + 60)) --seed "$k" --output "$csv.exerciser.csv" &
+      ex_pid=$!
+    fi
   fi
   ( taskset -cp "$other_cpus" "$BASHPID" >/dev/null
     sleep $((duration / 2)); tasks_snapshot >"$csv.tasks.txt" ) &
@@ -1083,11 +1290,42 @@ run_one() {
   wait "$snap_pid" 2>/dev/null
   if [ "$traced" -eq 1 ]; then
     echo "clock pair after: $(clock_pair)" >>"$note"
-    local trace_status usbmon_status=0
+    if [ "$timered" -eq 1 ]; then
+      local ex_status samp_status smi_status inst_out n_over
+      if [ -n "$ex_pid" ]; then
+        kill -TERM "$ex_pid" 2>/dev/null; wait "$ex_pid"; ex_status=$?; ex_pid=
+        echo "exerciser: exit $ex_status, $(grep -cvE '^(#|round)' "$csv.exerciser.csv" 2>/dev/null) rows" >>"$note"
+        [ "$ex_status" -eq 0 ] || tracer_problem+="${tracer_problem:+, }exerciser exit $ex_status"
+      fi
+      "$TSC_SAMPLER" --cpu "$rt_cpu" --duration-ms 500 --output "$tsc_pairs" ||
+        tracer_problem+="${tracer_problem:+, }the TSC sampler failed on CPU $rt_cpu after the probe"
+      kill -TERM "$sampler_pid" 2>/dev/null; wait "$sampler_pid"; samp_status=$?; sampler_pid=
+      [ "$samp_status" -eq 0 ] || tracer_problem+="${tracer_problem:+, }TSC sampler exit $samp_status"
+      echo "tsc sampler pairs: $(grep -cv '^#' "$tsc_pairs" 2>/dev/null)" >>"$note"
+      stop_tracer smi "$smi_job"; smi_status=$?; smi_job=
+      { echo; echo "--- perf stat (exit $smi_status) ---"; cat "$tmp/smi.out"; } >>"$note"
+      { [ "$smi_status" -eq 0 ] || [ "$smi_status" -eq 130 ]; } && grep -qv '^#' "$csv.smi.csv" 2>/dev/null ||
+        tracer_problem+="${tracer_problem:+, }perf stat exit $smi_status"
+      priv "$TSC_INSTANCE_TOOL" stop "$TRACEFS" "$TSC_INSTANCE" >"$tsc_txt" 2>"$tmp/tsc_stop.err" ||
+        tracer_problem+="${tracer_problem:+, }the TSC instance was not read ($(cat "$tmp/tsc_stop.err"))"
+      inst_out=$(priv "$TSC_INSTANCE_TOOL" stats "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" 2>&1)
+      { echo; echo "--- TSC instance stats (CPU $rt_cpu) ---"; echo "$inst_out"; } >>"$note"
+      n_over=$(awk -F: '/^[[:space:]]*(overrun|commit overrun|dropped events):/ {s += $2} END {print s + 0}' <<<"$inst_out")
+      echo "tsc instance overruns: $n_over (overrun, commit overrun and dropped events)" >>"$note"
+      # Its evidence is read; a failed removal is a cleanup failure, which
+      # ends the session after this run (status 3 if it would succeed).
+      remove_tsc_instance
+    fi
+    local trace_status usbmon_status=0 stat_out n_trace
     stop_tracer trace "$trace_job"; trace_status=$?; trace_job=
     { echo; echo "--- trace-cmd (exit $trace_status) ---"; cat "$tmp/trace.out"; } >>"$note"
     [ "$trace_status" -eq 0 ] && [ -s "$dat" ] ||
       tracer_problem+="${tracer_problem:+, }trace-cmd exit $trace_status"
+    # The buffers' losses, as trace-cmd recorded them at the end.
+    stat_out=$(priv "$TRACE_CMD" report --stat -i "$dat" 2>&1)
+    n_trace=$(awk -F: '/^[[:space:]]*(overrun|commit overrun|dropped events):/ {s += $2} END {print s + 0}' <<<"$stat_out")
+    { echo "--- trace-cmd report --stat ---"; echo "$stat_out"; } >>"$note"
+    echo "trace overruns: $n_trace (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
     if [ "$usbmon" -eq 1 ]; then
       stop_tracer usbmon "$usbmon_job"; usbmon_status=$?; usbmon_job=
       { echo; echo "--- tcpdump (exit $usbmon_status) ---"; cat "$tmp/usbmon.out"; } >>"$note"
@@ -1233,6 +1471,12 @@ for spec in "${run_list[@]}"; do
           exit 1 ;;
       esac
       current=
+      if [ "$tsc_owed" -eq 1 ]; then
+        echo "trace_session: the trace instance was not removed: no further run (the cleanup is retried at exit)" >&2
+        finish
+        print_table
+        exit 0
+      fi
     done
   done
 done

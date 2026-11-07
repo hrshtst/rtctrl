@@ -29,7 +29,8 @@ from idle or while busy (the deadline on time); and INDETERMINATE when the
 deadline cannot be converted. A late service is a result, not a failure.
 
 A rehearsal's exerciser (tools/timer_exerciser.py) arms, replaces and
-cancels timerfd timers; each action must match its trace events, and the
+cancels timerfd timers (its "expired" rows are its own observations, not
+actions); each action must match its trace events, and the
 deadline in effect after it must cover the earliest known pending expiry
 on the real-time CPU (a missing write is legitimate when an earlier
 deadline already covers it). A timer whose destination CPU is not shown by
@@ -558,6 +559,7 @@ def explain_exerciser(ev: TimerEvents, conv: TscMap, u: float, head: dict, rows:
                     return ev.rt_cpu
         return None
 
+    rows = [r for r in rows if r["action"] != "expired"]  # the exerciser's own observations
     for r in rows:
         st, cn = within(starts, r), within(cancels, r)
         if r["action"] == "cancel":
@@ -675,22 +677,29 @@ def background(ev: TimerEvents, session_pid: int | None, procs: dict[int, tuple]
 # --- SMI counts --------------------------------------------------------------------------------
 
 
-def load_smi(path: pathlib.Path, anchor: int | None, slack_ns: int = 20_000_000) -> list[tuple]:
-    """perf stat -I intervals: (start, end, count) in monotonic time, widened
-    by the anchor's uncertainty (perf's start follows the anchor)."""
-    out = []
-    if anchor is None or not path.exists():
-        return out
-    prev = 0.0
+def load_smi(path: pathlib.Path, anchors: tuple[int, int] | None) -> list[tuple]:
+    """perf stat -I intervals: (start, end, count) in monotonic time. perf's
+    times are relative to its own start s, which lies between the anchor
+    taken before it started and the time its first interval (at s + t1) was
+    seen, minus t1; each interval is widened to cover both ends."""
+    rows = []
+    if anchors is None or not path.exists():
+        return rows
     for line in path.read_text().splitlines():
         if not line or line.startswith("#"):
             continue
         f = line.split(",")
         try:
-            t, n = float(f[0]), int(float(f[1]))
+            rows.append((float(f[0]), int(float(f[1]))))
         except (ValueError, IndexError):
             continue
-        out.append((anchor + int(prev * 1e9) - slack_ns, anchor + int(t * 1e9) + slack_ns, n))
+    if not rows:
+        return rows
+    before, seen = anchors
+    lo, hi = before, max(before, seen - int(rows[0][0] * 1e9))
+    out, prev = [], 0.0
+    for t, n in rows:
+        out.append((lo + int(prev * 1e9), hi + int(t * 1e9), n))
         prev = t
     return out
 
@@ -720,12 +729,13 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             print("  timer service: no timer-mode events, though the run is in the timer mode", file=out)
         return
     print("  timer service (the real-time CPU's deadlines, idle transitions and interrupts):", file=out)
-    over = record_value(record, "trace overruns:")
-    if over is None:
-        failures.append("timer service: the record has no trace overrun count")
-    elif over.split()[0] != "0":
-        failures.append(f"timer service: the trace lost events ({over})")
-    print(f"    trace overruns: {over}", file=out)
+    for key, what in (("trace overruns:", "the trace"), ("tsc instance overruns:", "the TSC instance")):
+        over = record_value(record, key)
+        if over is None:
+            failures.append(f"timer service: the record has no count of {what}'s losses")
+        elif over.split()[0] != "0":
+            failures.append(f"timer service: {what} lost events ({over})")
+        print(f"    {key} {over}", file=out)
     # The conversion.
     inst = pathlib.Path(str(csv_path) + ".tsc.txt")
     samp = load_pairs(pathlib.Path(str(csv_path) + ".tsc-pairs.csv"))
@@ -769,7 +779,11 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             offset = int(m[1])
             break
     anchor = record_value(record, "smi anchor monotonic_ns:")
-    smi = load_smi(pathlib.Path(str(csv_path) + ".smi.csv"), int(anchor.split()[0]) if anchor else None)
+    smi_anchors = None
+    parts = anchor.split() if anchor else []
+    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        smi_anchors = (int(parts[0]), int(parts[1]))
+    smi = load_smi(pathlib.Path(str(csv_path) + ".smi.csv"), smi_anchors)
     arms = sorted((s[0], s[4], s[6]) for s in ev.starts if s[2] == ev.tid and s[5] == "hrtimer_wakeup")
     arm_ts = [a[0] for a in arms]
     results = []
