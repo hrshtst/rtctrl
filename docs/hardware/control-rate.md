@@ -1068,7 +1068,17 @@ every run record as the session's temporary host changes.
 **Conversion and its validation.** The anchors are matched one-to-one, in
 order, by their interval pattern, which uses only the TSC frequency from
 the sampler, never the conversion's offset; a missing or duplicate anchor
-fails the run. A deadline is converted by linear interpolation between the
+fails the run. A suspect anchor, one whose two stamps disagree (both of its
+intervals disagree, by equal and opposite amounts), is left out of the
+conversion, its interrupt kept in the timeline, only when the interval
+across it agrees, its disagreement is at most 50 us, it lies more than 50
+anchors after the previous suspect, and the next 50 intervals agree at the
+same offset while no offset of one or two anchors either way agrees with
+them all; at most 0.1% of the anchors may be left out, and each is reported
+(reviewer decision, 2026-11-07). Equal counts and opposing errors do not by
+themselves prove that nothing is missing: the zero loss counts and these
+conditions are the evidence, and missing, extra and compensating anchors
+fail the regressions. The conversion must cover the whole run. A deadline is converted by linear interpolation between the
 anchors around it, and never extrapolated (outside them it is
 INDETERMINATE). Interpolation has no residual at its own anchors, so the
 uncertainty U is validated independently: the residuals of held-out
@@ -1167,13 +1177,20 @@ file when the record says it ran.
   end, or at its expiry if that came inside the call), the device must be
   armed (or, at the expiry, served) for a deadline no later than its expiry
   plus U, and a missing write is legitimate when an earlier deadline
-  already covers it; after a cancellation the device may stay armed (a
+  already covers it. An arming made after its own expiry (its arming at or
+  after the expiry, less U; the exerciser's call came late) is counted
+  apart, as armed after its expiry, when a successful deadline write after
+  the arming and before the evaluation point has a deadline already due at
+  that write (within U): the kernel's programming of an expired timer. A
+  stale write or a future deadline leaves it unexplained (reviewer
+  decision, 2026-11-07). After a cancellation the device may stay armed (a
   spurious interrupt follows) or be reprogrammed, but not disarmed. An
   arming whose residency is unknown (it neither expired nor was pinned) or
   another CPU is INDETERMINATE once its events have matched, and the report
   counts the INDETERMINATE results by reason;
 - **requirements**, for the review: zero losses in both buffers; the anchors
-  matched one-to-one with none missing or duplicated; U at most 5 us; every
+  matched one-to-one with none missing or duplicated, any suspect anchors
+  listed; the conversion covering the whole run; U at most 5 us; every
   exerciser action explained by the observed timer state, legitimate
   no-write cases included (the INDETERMINATE ones counted); the mode's
   evidence complete; and the untraced control as before.
