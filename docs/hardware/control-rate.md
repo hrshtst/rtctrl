@@ -1068,18 +1068,24 @@ disarms it, and a failed write leaves its state unknown. A TSC deadline
 disarms itself when it raises its interrupt (Intel SDM, volume 3, the local
 APIC timer's TSC-deadline mode), so the first local timer interrupt at or
 after the deadline (less U) serves it, and the device stays unarmed until
-the next write. An interrupt before the armed deadline (one pending from
-before the write) leaves it armed; before the first write the state is
-unknown.
+the next write. An interrupt before the armed deadline leaves it armed;
+before the first write the state is unknown. Firing and service are
+separate observations: a deadline may fire while interrupts are masked, its
+interrupt pending. So a write that replaces an armed deadline already due
+(within U), or an unknown state, with no interrupt seen since, carries that
+earlier generation as possibly pending, and the next local timer interrupt
+may be its. A write's time is its tracepoint's, which follows the WRMSR
+instruction; the record states it as traced.
 
 **Residency and attribution.** Each timer arming is followed to its end:
 the timer's next cancellation, expiry or arming. Its residency (the CPU
 whose device it is queued on) comes only from the trace's evidence: the
-CPU of its expiry; the arming CPU of a pinned arming; or CPU 3, for an
-arming there directly followed there (no other timer event or interrupt in
-between, within 50 us) by a deadline write matching its expiry, which only
-a timer queued there causes. The CPU that recorded an unpinned arming is
-not its residency. Each deadline write is attributed to the one pending
+CPU of its expiry, or the arming CPU of a pinned arming. The CPU that
+recorded an unpinned arming is not its residency. A matching deadline write
+on CPU 3 just after an arming there is noted as a hint, and the residency
+stays unknown: the trace does not show that no device interrupt, NMI or
+other context ran between them (the reviewer's decision of 2026-11-07; a
+stronger rule would need a validated execution-context contract). Each deadline write is attributed to the one pending
 timer resident on CPU 3 whose expiry, converted from its own clock, lies
 within U of it. A timer resident elsewhere cannot be it; a matching timer
 of unknown residency, a pending one whose clock cannot be converted, no
@@ -1109,8 +1115,9 @@ described by its recorded evidence, not by a proven cause:
    the kernel may have masked interrupts, which stays unproven;
 6. **INDETERMINATE**: the deadline cannot be converted (outside the anchors,
    or U not validated), the device's state at E is unknown, the serving
-   interrupt follows no armed deadline, or it came before the armed
-   deadline (an interrupt pending from before its write).
+   interrupt follows no armed deadline, it came before the armed deadline,
+   or an earlier deadline's interrupt may have been pending (the trace
+   cannot tell which generation raised it).
 
 A late service is a diagnostic result, not a failure of the run. The run
 fails instead when the evidence the mode records is missing: CPU 3's
@@ -1143,7 +1150,9 @@ file when the record says it ran.
   plus U, and a missing write is legitimate when an earlier deadline
   already covers it; after a cancellation the device may stay armed (a
   spurious interrupt follows) or be reprogrammed, but not disarmed. An
-  arming whose residency is unknown or another CPU is INDETERMINATE;
+  arming whose residency is unknown (it neither expired nor was pinned) or
+  another CPU is INDETERMINATE once its events have matched, and the report
+  counts the INDETERMINATE results by reason;
 - **requirements**, for the review: zero losses in both buffers; the anchors
   matched one-to-one with none missing or duplicated; U at most 5 us; every
   exerciser action explained by the observed timer state, legitimate
