@@ -1068,10 +1068,12 @@ written ahead (the states found, then each intended change before it is
 made, every write checked); a state it cannot read refuses before any change
 or fails a verification; an interrupted stop or restore keeps the record,
 and restore, which checks each unit's actual state, can always follow and
-be repeated. Until these safeguards are reviewed, the reviewed manual
-procedure (confirm that no upgrade runs, stop the upgrade service, mask for
-this boot and stop the indexer, check that its extractor has exited, and
-restore both afterwards, also after a failed session) is the alternative.
+be repeated. These safeguards were reviewed and the tool cleared for this
+workflow (reviewer decision, 2026-11-08). The reviewed manual procedure
+remains an alternative: confirm that no upgrade runs, stop the upgrade
+service, mask for this boot and stop the indexer, and check that its
+extractor has exited. Either way, the services are restored after every
+session, also after a failed or interrupted one.
 
 **Conversion and its validation.** The anchors are matched one-to-one, in
 order, by their interval pattern, which uses only the TSC frequency from
@@ -1252,6 +1254,26 @@ check's USB part fails over the pty, as expected, and validates nothing of
 the USB path; the hardware USB checks stay strict. The two resident services
 were stopped by hand for the session and restored. The targeted torque-off
 captures follow.
+
+**Targeted torque-off runs (approved 2026-11-08).** The reviewer approved
+the four runs planned above: an untraced control and a `timer` run at
+500 Hz under the full load and at 1000 Hz under the `-excl` load. The
+exerciser is not used on the arm. The settings stay as they were: the
+adapter's latency timer at 1 ms (no `--latency-steps`), C2 enabled, no DWARF
+unwinding (no profiled run), and the criteria unchanged. The approval
+covers this diagnostic workflow, not a higher powered control rate. Before
+the session, every servo is torque-off, the arm is at rest and supported,
+and the power cutoff is within reach; the TSC sampler is built and the
+real-time priority limit raised in the starting shell (the session checks
+both). Each run lasts the default 60 s, as in the matrix:
+
+```
+tools/quiet_host.sh stop
+tools/trace_session.sh --modes untraced,timer \
+  --runs current:500:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motion
+tools/quiet_host.sh restore   # also after a failed or interrupted session
+uv run --project tools tools/trace_correlate.py <log>.csv   # each timer run
+```
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
