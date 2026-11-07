@@ -7,6 +7,8 @@
 #include <fstream>
 #include <string>
 
+#include <unistd.h>
+
 #include "plan/ptp_config.hpp"
 
 using Catch::Approx;
@@ -27,11 +29,17 @@ position = [0.21, 0.0, 0.25]
 rpy_rad = [0.0, 0.0, 0.0]
 )";
 
+// A config file of its own in build/ptp_config_test/: ctest runs the test
+// cases as parallel processes, so the name carries the process ID and a
+// per-process count (one shared name let the cases overwrite and remove
+// each other's file).
 class ConfigFile {
  public:
   explicit ConfigFile(const std::string& content) {
+    static int count = 0;
     fs::create_directories("build/ptp_config_test");
-    path_ = "build/ptp_config_test/plan.toml";
+    path_ = "build/ptp_config_test/plan-" + std::to_string(getpid()) + "-" +
+            std::to_string(count++) + ".toml";
     std::ofstream output(path_);
     output << content;
   }
