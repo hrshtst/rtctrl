@@ -319,7 +319,7 @@ export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
-export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch
+export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
 
@@ -396,7 +396,7 @@ if TRACE_SESSION_BATCH_LIST=dpkg,rtctrl-batchjob setsid tools/trace_session.sh "
     </dev/null >"$ROOT/batch.log" 2>&1; then
   fail "a session started beside a batch workload" "$ROOT/batch.log"
 fi
-grep -q 'unrelated batch workloads are running (rtctrl-batchjob)' "$ROOT/batch.log" ||
+grep -q 'unrelated batch workloads are running (rtctrl-batchjob): let them finish or stop them yourself (the session never stops a process)$' "$ROOT/batch.log" ||
   fail "no refusal of the batch workload" "$ROOT/batch.log"
 kill -0 "$batch_pid" 2>/dev/null || fail "the session stopped the batch workload"
 kill "$batch_pid"; wait "$batch_pid" 2>/dev/null || true
@@ -1042,6 +1042,17 @@ setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \
 b=$(base current-100hz-idle-bounded-fast-traced 4)
 [ -s "$b.trace.dat" ] && [ ! -e "$b.usbmon.pcap" ] || fail "--no-usbmon captured usbmon" "$b.run.txt"
 grep -q '^usbmon: not used (--no-usbmon)' "$b.run.txt"
+grep -q '^temporary host changes: none recorded by tools/quiet_host.sh$' "$b.run.txt" ||
+  fail "the record does not say that no host changes were recorded" "$b.run.txt"
+# tools/quiet_host.sh's record of its temporary host changes goes into the
+# run record.
+printf 'started=2000-01-01T00:00:00+0000\nunattended-upgrades.service_stopped=1\n' >"$QUIET_HOST_STATE"
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 50 --no-usbmon \
+  --modes traced --runs current:100:idle:fast </dev/null >"$ROOT/qh-run.log" 2>&1 ||
+  fail "the session with a quiet_host record failed" "$ROOT/qh-run.log"
+rm -f "$QUIET_HOST_STATE"
+grep -q "^temporary host changes (tools/quiet_host.sh, $QUIET_HOST_STATE): started=2000-01-01T00:00:00+0000 unattended-upgrades.service_stopped=1" \
+  "$(base current-100hz-idle-bounded-fast-traced 50).run.txt" || fail "the record lacks the host changes" "$(base current-100hz-idle-bounded-fast-traced 50).run.txt"
 
 # Without a USB adapter behind the port, a traced plan names the problem.
 setsid tools/trace_session.sh --probe "$PROBE" --port "$LINK" --outdir "$OUT" \

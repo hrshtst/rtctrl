@@ -459,6 +459,11 @@ def load() -> None:
     procs = {100: (1, "bash"), 50: (1, "gnome-shell"), 400: (50, "renderer"), 9: (2, "kworker/u128:1")}
     b = ts.background(ev, 100, procs, {"exiftool"})
     expect(set(b["by_comm"]) == {"exiftool", "renderer"} and b["batch"] == ["exiftool"], f"background {b}")
+    # The record's list, with and without its exemption.
+    for line in ("batch workloads: exiftool,localsearch-ext (exempt: unattended-upgr|^/usr/bin/python3$|/x --y)",
+                 "batch workloads: exiftool,localsearch-ext"):
+        got = ts.record_batch([line])
+        expect(got == {"exiftool", "localsearch-ext"}, f"the record's batch list: {got}")
     # Accounting inside the window only.
     ev2 = ts.TimerEvents(TID, RT, window=(1_000, 10_000))
     ev2.switch(500, 0, 0, "swapper/0", 300, "exiftool")

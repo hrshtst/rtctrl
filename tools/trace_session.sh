@@ -120,10 +120,15 @@ TSC_INSTANCE_TOOL=${TSC_INSTANCE_TOOL:-tools/tsc_instance.sh}
 TSC_SAMPLER=${TSC_SAMPLER:-./build/apps/tsc_mono_pairs}
 EXERCISER=tools/timer_exerciser.py
 TSC_INSTANCE=rtctrl_tsc
-# Unrelated batch workloads that refuse the session (process names, as the
-# kernel truncates them to 15 characters); TRACE_SESSION_BATCH_LIST
-# replaces the list. The session never stops a process.
-batch_list=${TRACE_SESSION_BATCH_LIST-exiftool,updatedb,updatedb.plocat,apt,apt-get,dpkg,unattended-upgr,cc1,cc1plus,ninja,make,rustc,cargo,localsearch-3,tracker-extract,tracker-miner-f,baloo_file,baloo_file_extr}
+# Unrelated batch workloads that refuse the session (tools/batch_workloads.sh:
+# process names, as the kernel truncates them to 15 characters, less the
+# positively identified upgrade shutdown helper; TRACE_SESSION_BATCH_LIST
+# and TRACE_SESSION_BATCH_EXEMPT replace them for tests). The session never
+# stops a process; tools/quiet_host.sh is the operator's reversible stop of
+# the resident ones, and its record goes into every run record.
+# shellcheck source=tools/batch_workloads.sh
+. "$(dirname "$0")/batch_workloads.sh"
+batch_list=$BATCH_LIST
 case "${TRACE_SESSION_SUDO:-sudo}" in
   none) sudo_cmd=() ;;
   *) sudo_cmd=("${TRACE_SESSION_SUDO:-sudo}") ;;
@@ -443,16 +448,8 @@ if [ "$any_timer" -eq 1 ]; then
   [ -e /sys/bus/event_source/devices/msr/events/smi ] || problems+=("no msr/smi/ perf event: the SMI count needs it")
 fi
 # Known unrelated batch workloads refuse the session; it never stops one.
-batch_running() {
-  local n names found=()
-  IFS=, read -r -a names <<<"$batch_list"
-  for n in "${names[@]}"; do
-    [ -n "$n" ] && pgrep -x -- "${n:0:15}" >/dev/null && found+=("$n")
-  done
-  echo "${found[*]}"
-}
-running_batch=$(batch_running)
-[ -z "$running_batch" ] || problems+=("unrelated batch workloads are running ($running_batch): let them finish or stop them yourself (the session never stops a process)")
+running_batch=$(batch_running "$batch_list")
+[ -z "$running_batch" ] || problems+=("unrelated batch workloads are running ($running_batch): let them finish or stop them yourself (the session never stops a process)$(batch_hint "$running_batch")")
 if [ -f "$SUMMARY_TOOL" ] &&
    ! uv run --project tools "$SUMMARY_TOOL" --help >/dev/null 2>&1; then
   problems+=("uv run --project tools $SUMMARY_TOOL --help failed")
@@ -986,7 +983,12 @@ fi
   fi
   echo "tracers: $("$TRACE_CMD" -h 2>&1 | grep -m 1 -i version); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
   echo "session pid: $$"
-  echo "batch workloads: $batch_list"
+  echo "batch workloads: $batch_list (exempt: $BATCH_EXEMPT)"
+  if [ -e "$QUIET_HOST_STATE" ]; then
+    echo "temporary host changes (tools/quiet_host.sh, $QUIET_HOST_STATE): $(tr '\n' ' ' <"$QUIET_HOST_STATE")"
+  else
+    echo "temporary host changes: none recorded by tools/quiet_host.sh"
+  fi
   [ "$any_timer" -eq 1 ] && cat "$tmp/timer_events.txt"
 } >"$tmp/session.txt"
 
@@ -1133,9 +1135,9 @@ run_one() {
     return
   fi
   local batch
-  batch=$(batch_running)
+  batch=$(batch_running "$batch_list")
   if [ -n "$batch" ]; then
-    echo "trace_session: unrelated batch workloads are running ($batch): session stopped before the run"
+    echo "trace_session: unrelated batch workloads are running ($batch): session stopped before the run$(batch_hint "$batch")"
     outcome=stop
     return
   fi

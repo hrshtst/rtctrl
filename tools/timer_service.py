@@ -983,6 +983,13 @@ def record_value(record: list[str], key: str) -> str | None:
     return None
 
 
+def record_batch(record: list[str]) -> set[str]:
+    """The batch workloads' names from the run record ("a,b,c", followed by
+    " (exempt: ...)" since the exemption was added)."""
+    v = (record_value(record, "batch workloads:") or "").split(" (exempt:")[0]
+    return {n.strip() for n in v.split(",")} - {""}
+
+
 def record_offsets(record: list[str]) -> dict:
     """REALTIME, BOOTTIME and TAI minus MONOTONIC (ns) from the run record's
     clock pair and clock offsets lines; None where not recorded."""
@@ -1140,7 +1147,7 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             if not x["actions"]:
                 failures.append("timer service: the exerciser's file has no actions")
     # Background load.
-    batch = set((record_value(record, "batch workloads:") or "").split(",")) - {""}
+    batch = record_batch(record)
     sp = record_value(record, "session pid:")
     bg = background(ev, int(sp) if sp and sp.isdigit() else None,
                     load_procs(pathlib.Path(str(csv_path) + ".procs.txt")), batch)
