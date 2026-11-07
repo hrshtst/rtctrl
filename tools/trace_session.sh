@@ -176,9 +176,10 @@ usage: $0 [options]
                       conditions only) and timer (traced, plus every timer's
                       arming and cancellation, the real-time CPU's TSC
                       deadline writes, idle transitions, NMIs, system calls
-                      and page faults, process lifecycle, a TSC-clock trace
-                      instance of its timer interrupts, bracketed TSC and
-                      monotonic pairs and its SMI count; rt-* only)
+                      and page faults, the worker's sleep calls, process
+                      lifecycle, a TSC-clock trace instance of its timer
+                      interrupts, bracketed TSC and monotonic pairs and its
+                      SMI count; rt-* only)
   --exerciser         the timer mode's rehearsal: the timer exerciser runs on
                       the real-time CPU during each timer run (refused
                       without --port and on a serial device)
@@ -485,10 +486,12 @@ for e in "${trace_events[@]}"; do trace_args+=(-e "$e"); done
 # faults (filtered to the probe's comm: the kernel truncates it to 15
 # characters) and the workqueue's activations.
 probe_comm=$(basename "$PROBE" | cut -c 1-15)
-profile_events=(
-  timer:hrtimer_start timer:hrtimer_cancel
+sleep_events=(
   syscalls:sys_enter_clock_nanosleep syscalls:sys_exit_clock_nanosleep
   syscalls:sys_enter_nanosleep syscalls:sys_exit_nanosleep
+)
+profile_events=(
+  timer:hrtimer_start timer:hrtimer_cancel "${sleep_events[@]}"
   exceptions:page_fault_user exceptions:page_fault_kernel
 )
 profile_args=("${trace_args[@]}")
@@ -585,7 +588,7 @@ if [ "$dry_run" -eq 1 ]; then
   if [ "$any_traced" -eq 1 ]; then
     printf 'traced runs add: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
     if [ "$any_timer" -eq 1 ]; then
-      printf 'timer runs record: the traced events, plus (after the availability check) every timer arming and cancellation, CPU %s deadline writes, idle, NMIs, system calls and page faults, and process lifecycle;\n' "$rt_cpu"
+      printf 'timer runs record: the traced events, plus (after the availability check) every timer arming and cancellation, CPU %s deadline writes, idle, NMIs, system calls and page faults, the worker'"'"'s sleep calls by name, and process lifecycle;\n' "$rt_cpu"
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
         "$TSC_INSTANCE_TOOL" "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" "$TSC_SAMPLER" "${others[0]}" "$rt_cpu" \
         "$PERF" "$rt_cpu" "$([ "$exerciser" -eq 1 ] && echo "; the exerciser on CPU $rt_cpu")"
@@ -727,13 +730,27 @@ stop_all() {
   fi
   own_outputs
 }
-# The timer mode's TSC instance: owed from its start's attempt on, removed
+# The timer mode's TSC instance: tsc_owed is 1 once this session's start
+# created it, 2 while a start's outcome is unknown (during the start, or
+# after a status that does not say), else 0. An owed instance is removed
 # (and its removal verified) on every path that stops the recorders and on
-# every exit; a failed removal is a cleanup failure (status 3).
+# every exit; a failed removal is a cleanup failure (status 3). An instance
+# of unknown ownership is left in place, since it may be another session's,
+# and reported: never removed on a guess.
 tsc_owed=0; ex_pid=; sampler_pid=; smi_job=
 remove_tsc_instance() {
   local out
-  [ "$tsc_owed" -eq 1 ] || return 0
+  [ "$tsc_owed" -ne 0 ] || return 0
+  if [ "$tsc_owed" -eq 2 ]; then
+    tsc_owed=0
+    priv "$TSC_INSTANCE_TOOL" exists "$TRACEFS" "$TSC_INSTANCE" || return 0
+    echo "trace_session: the trace instance $TSC_INSTANCE exists after a start whose outcome is unknown; it was left in place (it may be another session's)" >&2
+    echo "  if it is this session's, remove it by hand: sudo rmdir $TRACEFS/instances/$TSC_INSTANCE" >&2
+    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+      printf '\n--- session end ---\ncleanup: trace instance %s left in place (the outcome of its start unknown)\n' "$TSC_INSTANCE" >>"$last_note"
+    fi
+    return 1
+  fi
   if out=$(priv "$TSC_INSTANCE_TOOL" remove "$TRACEFS" "$TSC_INSTANCE" 2>&1); then
     tsc_owed=0
     return 0
@@ -803,7 +820,7 @@ on_exit() {
     echo "trace_session: the session fails: its cleanup did not restore the adapter's latency timer" >&2
     cleanup_ok=0
   fi
-  if [ "$tsc_owed" -eq 1 ] && ! remove_tsc_instance; then
+  if [ "$tsc_owed" -ne 0 ] && ! remove_tsc_instance; then
     echo "trace_session: the session fails: its cleanup did not remove the trace instance" >&2
     cleanup_ok=0
   fi
@@ -892,7 +909,8 @@ if [ "$any_timer" -eq 1 ]; then
   missing=()
   for e in timer:hrtimer_start timer:hrtimer_cancel msr:write_msr power:cpu_idle nmi:nmi_handler \
            raw_syscalls:sys_enter raw_syscalls:sys_exit exceptions:page_fault_user exceptions:page_fault_kernel \
-           sched:sched_process_fork sched:sched_process_exec sched:sched_process_exit irq_vectors:local_timer_entry; do
+           sched:sched_process_fork sched:sched_process_exec sched:sched_process_exit irq_vectors:local_timer_entry \
+           "${sleep_events[@]}"; do
     grep -qx -- "$e" "$tmp/events.txt" || missing+=("$e")
   done
   init_ev=
@@ -920,6 +938,9 @@ if [ "$any_timer" -eq 1 ]; then
     timer_args+=(-e "$e" -f "CPU == $rt_cpu")
   done
   timer_args+=(-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit)
+  # The worker's sleep calls by name, as a profiled run records them (the
+  # sleep checker's evidence; the raw system calls carry only numbers).
+  for e in "${sleep_events[@]}"; do timer_args+=(-e "$e" -f "comm == \"$probe_comm\""); done
   {
     echo "--- timer mode events (trace-cmd list -e ... -F) ---"
     for e in msr:write_msr power:cpu_idle nmi:nmi_handler timer:hrtimer_start timer:hrtimer_cancel "$init_ev" \
@@ -986,6 +1007,23 @@ tasks_snapshot() {
   echo "--- Cpus_allowed_list per task (/proc/<pid>/task/<tid>/status) ---"
   awk '/^Cpus_allowed_list/ {print FILENAME, $2}' /proc/[0-9]*/task/[0-9]*/status 2>/dev/null
 }
+clock_offsets() {  # BOOTTIME and TAI minus MONOTONIC, for timers on those clocks (timer mode)
+  python3 - <<'EOF'
+import time
+M, B, T = time.CLOCK_MONOTONIC, time.CLOCK_BOOTTIME, time.CLOCK_TAI
+best = None
+for _ in range(2000):
+    a = time.clock_gettime_ns(M)
+    b = time.clock_gettime_ns(B)
+    t = time.clock_gettime_ns(T)
+    c = time.clock_gettime_ns(M)
+    if best is None or c - a < best[3] - best[0]:
+        best = (a, b, t, c)
+a, b, t, c = best
+m = (a + c) // 2
+print(f"boottime_minus_monotonic_ns {b - m} tai_minus_monotonic_ns {t - m} bracket_ns {c - a}")
+EOF
+}
 clock_pair() {  # the tightest of 2000 CLOCK_MONOTONIC/REALTIME/MONOTONIC reads
   python3 - <<'EOF'
 import time
@@ -1006,6 +1044,39 @@ EOF
 commit="$(git rev-parse --short HEAD 2>/dev/null) ($(git status --porcelain --untracked-files=no 2>/dev/null | wc -l) tracked files modified)"
 
 mono_ns() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }
+
+# A buffer's losses from per-CPU stats in "CPU: N" blocks (as trace-cmd
+# report --stat prints them, and tsc_instance.sh stats): the sum of the
+# overrun, commit overrun and dropped events counters over the CPUs given,
+# or status 1 with the reason when one of those CPUs, or one of its
+# counters, is missing or not a number. A failed or empty read is never a
+# count of zero.
+loss_sum() {  # stats text, CPUs (space-separated)
+  awk -v want="$2" '
+    BEGIN {
+      n = split(want, w, " "); for (i = 1; i <= n; i++) need[w[i]] = 1
+      nk = split("overrun|commit overrun|dropped events", keys, "|")
+    }
+    /^[[:space:]]*CPU:[[:space:]]*[0-9]+[[:space:]]*$/ { cpu = $2; seen[cpu] = 1; next }
+    cpu != "" {
+      for (k = 1; k <= nk; k++) {
+        p = "^[[:space:]]*" keys[k] ":"
+        if ($0 ~ p) {
+          v = $0; sub(p "[[:space:]]*", "", v); sub(/[[:space:]]+$/, "", v)
+          got[cpu, k] = 1
+          if (v ~ /^[0-9]+$/) s += v; else bad = bad sprintf("CPU %s %s is \"%s\"; ", cpu, keys[k], v)
+        }
+      }
+    }
+    END {
+      for (c in need) {
+        if (!(c in seen)) { bad = bad "no stats for CPU " c "; "; continue }
+        for (k = 1; k <= nk; k++) if (!((c, k) in got)) bad = bad sprintf("CPU %s has no %s count; ", c, keys[k])
+      }
+      if (bad != "") { sub(/; $/, "", bad); print bad; exit 1 }
+      printf "%d\n", s
+    }' <<<"$1"
+}
 
 runnable_mean() {  # mean runnable tasks over 2 s, this script included
   local sum=0 r
@@ -1194,10 +1265,18 @@ run_one() {
       # The TSC instance, inside the main trace's span; the sampler,
       # throughout on a tracer CPU and briefly on the real-time CPU; the SMI
       # count, anchored before its start and when its first interval is seen.
-      local inst_line smi_before smi_seen i
-      tsc_owed=1
-      if ! inst_line=$(priv "$TSC_INSTANCE_TOOL" start "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" 2>&1); then
-        { echo "--- the TSC instance did not start ---"; echo "$inst_line"; } | tee -a "$note"
+      local inst_line inst_start smi_before smi_seen i
+      # Its start's status says whether it created the instance: 0 and 4
+      # (created, then a step failed) make it this session's to remove; 2
+      # (not created: it exists, or cannot be made) leaves it alone, so
+      # another session's is never removed; any other status (sudo's own
+      # failure, an interruption) leaves the ownership unknown.
+      tsc_owed=2
+      inst_line=$(priv "$TSC_INSTANCE_TOOL" start "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" 2>&1)
+      inst_start=$?
+      case "$inst_start" in 0|4) tsc_owed=1 ;; 2) tsc_owed=0 ;; *) tsc_owed=2 ;; esac
+      if [ "$inst_start" -ne 0 ]; then
+        { echo "--- the TSC instance did not start (exit $inst_start) ---"; echo "$inst_line"; } | tee -a "$note"
         echo "verdict: not run (TSC instance)" >>"$note"
         stop_all
         outcome=stop
@@ -1263,6 +1342,7 @@ run_one() {
       return
     fi
     echo "clock pair before: $(clock_pair)" >>"$note"
+    [ "$timered" -eq 1 ] && echo "clock offsets: $(clock_offsets)" >>"$note"
     if [ "$timered" -eq 1 ] && [ "$exerciser" -eq 1 ]; then
       # It outlasts the probe, so the stop (SIGTERM, status 0) always finds
       # it running: a signal during its own exit would kill it.
@@ -1291,7 +1371,7 @@ run_one() {
   if [ "$traced" -eq 1 ]; then
     echo "clock pair after: $(clock_pair)" >>"$note"
     if [ "$timered" -eq 1 ]; then
-      local ex_status samp_status smi_status inst_out n_over
+      local ex_status samp_status smi_status inst_out inst_status n_over
       if [ -n "$ex_pid" ]; then
         kill -TERM "$ex_pid" 2>/dev/null; wait "$ex_pid"; ex_status=$?; ex_pid=
         echo "exerciser: exit $ex_status, $(grep -cvE '^(#|round)' "$csv.exerciser.csv" 2>/dev/null) rows" >>"$note"
@@ -1308,24 +1388,34 @@ run_one() {
         tracer_problem+="${tracer_problem:+, }perf stat exit $smi_status"
       priv "$TSC_INSTANCE_TOOL" stop "$TRACEFS" "$TSC_INSTANCE" >"$tsc_txt" 2>"$tmp/tsc_stop.err" ||
         tracer_problem+="${tracer_problem:+, }the TSC instance was not read ($(cat "$tmp/tsc_stop.err"))"
-      inst_out=$(priv "$TSC_INSTANCE_TOOL" stats "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" 2>&1)
-      { echo; echo "--- TSC instance stats (CPU $rt_cpu) ---"; echo "$inst_out"; } >>"$note"
-      n_over=$(awk -F: '/^[[:space:]]*(overrun|commit overrun|dropped events):/ {s += $2} END {print s + 0}' <<<"$inst_out")
+      inst_out=$(priv "$TSC_INSTANCE_TOOL" stats "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" 2>&1); inst_status=$?
+      { echo; echo "--- TSC instance stats (CPU $rt_cpu, exit $inst_status) ---"; echo "$inst_out"; } >>"$note"
+      if [ "$inst_status" -ne 0 ]; then
+        n_over="unknown (the stats read exited $inst_status)"
+      elif ! n_over=$(loss_sum "$inst_out" "$rt_cpu"); then
+        n_over="unknown ($n_over)"
+      fi
       echo "tsc instance overruns: $n_over (overrun, commit overrun and dropped events)" >>"$note"
+      [[ $n_over =~ ^[0-9]+$ ]] || tracer_problem+="${tracer_problem:+, }the TSC instance's loss counts: $n_over"
       # Its evidence is read; a failed removal is a cleanup failure, which
       # ends the session after this run (status 3 if it would succeed).
       remove_tsc_instance
     fi
-    local trace_status usbmon_status=0 stat_out n_trace
+    local trace_status usbmon_status=0 stat_out stat_status n_trace
     stop_tracer trace "$trace_job"; trace_status=$?; trace_job=
     { echo; echo "--- trace-cmd (exit $trace_status) ---"; cat "$tmp/trace.out"; } >>"$note"
     [ "$trace_status" -eq 0 ] && [ -s "$dat" ] ||
       tracer_problem+="${tracer_problem:+, }trace-cmd exit $trace_status"
     # The buffers' losses, as trace-cmd recorded them at the end.
-    stat_out=$(priv "$TRACE_CMD" report --stat -i "$dat" 2>&1)
-    n_trace=$(awk -F: '/^[[:space:]]*(overrun|commit overrun|dropped events):/ {s += $2} END {print s + 0}' <<<"$stat_out")
-    { echo "--- trace-cmd report --stat ---"; echo "$stat_out"; } >>"$note"
+    stat_out=$(priv "$TRACE_CMD" report --stat -i "$dat" 2>&1); stat_status=$?
+    { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
+    if [ "$stat_status" -ne 0 ]; then
+      n_trace="unknown (trace-cmd report --stat exited $stat_status)"
+    elif ! n_trace=$(loss_sum "$stat_out" "$online"); then
+      n_trace="unknown ($n_trace)"
+    fi
     echo "trace overruns: $n_trace (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
+    [[ $n_trace =~ ^[0-9]+$ ]] || tracer_problem+="${tracer_problem:+, }the trace's loss counts: $n_trace"
     if [ "$usbmon" -eq 1 ]; then
       stop_tracer usbmon "$usbmon_job"; usbmon_status=$?; usbmon_job=
       { echo; echo "--- tcpdump (exit $usbmon_status) ---"; cat "$tmp/usbmon.out"; } >>"$note"

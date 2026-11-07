@@ -7,14 +7,17 @@
 #
 # usage: tsc_instance.sh start  TRACEFS NAME CPU BUFFER_KB
 #        tsc_instance.sh stop   TRACEFS NAME      stops recording, prints the trace
-#        tsc_instance.sh stats  TRACEFS NAME CPU  prints the CPU's buffer stats
+#        tsc_instance.sh stats  TRACEFS NAME CPU  prints the CPU's buffer stats ("CPU: N" first)
 #        tsc_instance.sh remove TRACEFS NAME      removes it (verified; 0 if absent)
 #        tsc_instance.sh exists TRACEFS NAME      status 0 if it exists
 #
-# start refuses an existing instance (exit 2), then creates it, sets and
-# verifies its clock ([x86-tsc]) and CPU mask, sets its buffer, enables
-# irq_vectors:local_timer_entry and turns it on, and prints what it set; a
-# failure exits 1 and leaves what it made for remove.
+# start creates the instance, sets and verifies its clock ([x86-tsc]) and
+# CPU mask, sets its buffer, enables irq_vectors:local_timer_entry and turns
+# it on, and prints what it set. Its status says whether it created the
+# instance: 2 when it did not (the instance exists, including one another
+# session created first, or cannot be made), so the caller must leave it
+# alone; 4 when a step after creating it failed, leaving it to the caller's
+# remove; 0 when it is ready. Other commands exit 1 on a failure.
 set -u
 usage() { echo "usage: $0 start|stop|stats|remove|exists TRACEFS NAME [CPU [BUFFER_KB]]" >&2; exit 2; }
 [ $# -ge 3 ] || usage
@@ -28,7 +31,13 @@ case "$cmd" in
     cpu=$4; kb=$5
     [[ $cpu =~ ^[0-9]+$ && $kb =~ ^[0-9]+$ ]] || usage
     if [ -e "$inst" ]; then echo "tsc_instance: $inst already exists" >&2; exit 2; fi
-    mkdir "$inst" || fail "cannot create $inst"
+    # mkdir is the test that matters: it fails if another session made the
+    # instance after the check above.
+    if ! mkdir "$inst"; then
+      echo "tsc_instance: $inst was not created ($( [ -e "$inst" ] && echo "it exists" || echo "mkdir failed"))" >&2
+      exit 2
+    fi
+    fail() { echo "tsc_instance: $*" >&2; exit 4; }  # from here on, the instance is the caller's
     echo x86-tsc >"$inst/trace_clock" || fail "cannot set the clock"
     grep -q '\[x86-tsc\]' "$inst/trace_clock" || fail "the clock is not x86-tsc: $(cat "$inst/trace_clock")"
     # The CPU's bit, in the kernel's comma-separated 32-bit groups.
@@ -48,6 +57,7 @@ case "$cmd" in
     ;;
   stats)
     [ $# -eq 4 ] || usage
+    echo "CPU: $4"
     cat "$inst/per_cpu/cpu$4/stats" || fail "cannot read CPU $4's stats"
     ;;
   remove)

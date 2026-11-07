@@ -62,10 +62,28 @@ cat >"$FAKE/trace-cmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.trace-cmd"
 [ "$1" = -h ] && { echo "trace-cmd version 0.0 (stand-in)"; exit 1; }
-# report --stat: the buffers' losses (FAKE_TRACE_OVERRUN); list -e: the
-# events (all the timer mode needs, less FAKE_MISSING_EVENT), or a format.
+# report --stat: the buffers' losses on every online CPU
+# (FAKE_TRACE_OVERRUN on the first; FAKE_STATS=fail fails the read, nocpu
+# leaves the last CPU out, bad prints a counter that is not a number); list
+# -e: the events (all the timer mode needs, less FAKE_MISSING_EVENT), or a
+# format.
 if [ "$1" = report ]; then
-  printf 'CPU: 0\nentries: 10\noverrun: %s\ncommit overrun: 0\ndropped events: 0\n' "${FAKE_TRACE_OVERRUN:-0}"
+  [ "${FAKE_STATS:-}" = fail ] && { echo "stand-in: cannot read the buffer statistics" >&2; exit 1; }
+  cpus=()
+  IFS=, read -r -a parts </sys/devices/system/cpu/online
+  for part in "${parts[@]}"; do
+    if [[ $part == *-* ]]; then for ((c = ${part%-*}; c <= ${part#*-}; c++)); do cpus+=("$c"); done
+    else cpus+=("$part"); fi
+  done
+  [ "${FAKE_STATS:-}" = nocpu ] && unset 'cpus[-1]'
+  first=1
+  for c in "${cpus[@]}"; do
+    over=0
+    [ "$first" = 1 ] && over=${FAKE_TRACE_OVERRUN:-0}
+    [ "$first" = 1 ] && [ "${FAKE_STATS:-}" = bad ] && over="n/a"
+    printf 'CPU: %s\nentries: 10\noverrun: %s\ncommit overrun: 0\nbytes: 4096\ndropped events: 0\nread events: 10\n\n' "$c" "$over"
+    first=0
+  done
   exit 0
 fi
 if [ "$1" = list ]; then
@@ -74,7 +92,8 @@ if [ "$1" = list ]; then
            msr:write_msr power:cpu_idle power:cpu_idle_miss nmi:nmi_handler raw_syscalls:sys_enter \
            raw_syscalls:sys_exit exceptions:page_fault_user exceptions:page_fault_kernel \
            sched:sched_process_fork sched:sched_process_exec sched:sched_process_exit \
-           irq_vectors:local_timer_entry sched:sched_switch; do
+           irq_vectors:local_timer_entry sched:sched_switch syscalls:sys_enter_clock_nanosleep \
+           syscalls:sys_exit_clock_nanosleep syscalls:sys_enter_nanosleep syscalls:sys_exit_nanosleep; do
     [ "$e" = "${FAKE_MISSING_EVENT:-}" ] || echo "$e"
   done
   exit 0
@@ -262,17 +281,27 @@ echo "$*" >>"$FAKE_LOG.sudo"
 exec "$@"
 EOF
 # The TSC instance's tool: a marker file stands for the instance
-# (FAKE_TSC_REMOVE_FAIL: its removal fails).
+# (FAKE_TSC_REMOVE_FAIL: its removal fails; FAKE_TSC_STATS=fail: its stats
+# read fails; FAKE_TSC_START: race, another session creates it first and
+# the start exits 2; partial, the start creates it and fails, 4; unknown,
+# it creates it and exits 1, a status that does not say).
 cat >"$FAKE/tsc_instance" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.tsc_instance"
 mark="$FAKE_LOG.tsc_instance_exists"
 case "$1" in
-  start) [ -e "$mark" ] && exit 2; : >"$mark"
+  start) [ -e "$mark" ] && exit 2
+         case "${FAKE_TSC_START:-}" in
+           race) : >"$mark"; echo "tsc_instance: it exists (another session's)" >&2; exit 2 ;;
+           partial) : >"$mark"; echo "tsc_instance: cannot set the clock" >&2; exit 4 ;;
+           unknown) : >"$mark"; echo "sudo: a stand-in failure" >&2; exit 1 ;;
+         esac
+         : >"$mark"
          echo "tsc instance $3: clock [x86-tsc], cpumask 1, buffer $5 kB per CPU, event irq_vectors:local_timer_entry" ;;
   stop) echo "# entries-in-buffer/entries-written: 1/1   #P:2"
         echo "          <idle>-0       [000] d.h1. 123456789: local_timer_entry: vector=236" ;;
-  stats) printf 'entries: 1\noverrun: 0\ncommit overrun: 0\ndropped events: 0\n' ;;
+  stats) [ "${FAKE_TSC_STATS:-}" = fail ] && { echo "stand-in: cannot read the stats" >&2; exit 1; }
+         printf 'CPU: %s\nentries: 1\noverrun: 0\ncommit overrun: 0\ndropped events: 0\n' "$4" ;;
   remove) [ "${FAKE_TSC_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
           rm -f "$mark" ;;
   exists) [ -e "$mark" ] ;;
@@ -866,6 +895,26 @@ grep -q '^plan: 3 runs' "$ROOT/profiled-plan.log"
 grep -q "^                      $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf,4096 -o <log>.csv.perf.data" "$ROOT/profiled-plan.log" ||
   fail "the plan does not name the perf command" "$ROOT/profiled-plan.log"
 
+# tools/tsc_instance.sh on a scratch tree, plain directories standing for
+# tracefs: an instance that exists, and one mkdir cannot make, are status 2
+# (not created: never the caller's to remove); one created whose clock then
+# cannot be set is status 4 (created: the caller's); its stats name the CPU
+# first.
+T="$ROOT/tsc-tree"
+rm -rf "$T"
+mkdir -p "$T/instances/held" "$T/instances/s/per_cpu/cpu3"
+printf 'entries: 1\noverrun: 0\n' >"$T/instances/s/per_cpu/cpu3/stats"
+set +e
+tools/tsc_instance.sh start "$T" held 0 64 2>/dev/null; st_held=$?
+tools/tsc_instance.sh start "$T/absent" x 0 64 2>/dev/null; st_mkdir=$?
+tools/tsc_instance.sh start "$T" fresh 0 64 2>/dev/null; st_fresh=$?
+set -e
+[ "$st_held" -eq 2 ] && [ -d "$T/instances/held" ] || fail "an existing instance: status $st_held"
+[ "$st_mkdir" -eq 2 ] || fail "an instance mkdir cannot make: status $st_mkdir"
+[ "$st_fresh" -eq 4 ] && [ -d "$T/instances/fresh" ] || fail "a created instance whose clock failed: status $st_fresh"
+stats=$(tools/tsc_instance.sh stats "$T" s 3) && [ "${stats%%$'\n'*}" = "CPU: 3" ] ||
+  fail "the instance's stats do not name the CPU"
+
 # The timer mode (with the real TSC sampler): its events with the CPU
 # filters, the TSC instance started inside the trace and removed, the
 # sampler's pairs on both CPUs, the SMI count with its anchors, the losses in
@@ -883,8 +932,17 @@ if [ -n "$SAMPLER" ]; then
     grep -q '^tsc instance overruns: 0 ' "$b.run.txt" && grep -q '^trace overruns: 0 ' "$b.run.txt" &&
     grep -Eq '^smi anchor monotonic_ns: [0-9]+ [0-9]+ ' "$b.run.txt" && grep -q "^session pid: " "$b.run.txt" ||
     fail "the timer record" "$b.run.txt"
-  grep -q -- '-e timer:hrtimer_start -e timer:hrtimer_cancel -e timer:hrtimer_setup -e msr:write_msr -f msr == 0x6e0 && CPU == 0 -e power:cpu_idle -f cpu_id == 0 -e power:cpu_idle_miss -f cpu_id == 0 -e nmi:nmi_handler -f CPU == 0 .*-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit' "$ROOT/fake.trace-cmd" ||
+  grep -q -- '-e timer:hrtimer_start -e timer:hrtimer_cancel -e timer:hrtimer_setup -e msr:write_msr -f msr == 0x6e0 && CPU == 0 -e power:cpu_idle -f cpu_id == 0 -e power:cpu_idle_miss -f cpu_id == 0 -e nmi:nmi_handler -f CPU == 0 .*-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit -e syscalls:sys_enter_clock_nanosleep -f comm == "probe" .*-e syscalls:sys_exit_nanosleep -f comm == "probe"' "$ROOT/fake.trace-cmd" ||
     fail "trace-cmd was not given the timer events" "$ROOT/fake.trace-cmd"
+  grep -Eq '^clock offsets: boottime_minus_monotonic_ns -?[0-9]+ tai_minus_monotonic_ns -?[0-9]+ bracket_ns [0-9]+$' "$b.run.txt" ||
+    fail "the timer record has no clock offsets" "$b.run.txt"
+  # The analysis's timer-mode fixture uses only events the session records.
+  rec_events=$(grep -m 1 -- '-e msr:write_msr' "$ROOT/fake.trace-cmd" | grep -oE -- '-e [a-z_-]+:[a-z_0-9]+' | sed 's/.*://' | sort -u)
+  fixture_events=$(python3 tools/test_trace_correlate.py --timer-events | tr ' ' '\n')
+  [ -n "$fixture_events" ] || fail "the fixture listed no events"
+  for e in $fixture_events; do
+    grep -qx -- "$e" <<<"$rec_events" || fail "the timer fixture uses $e, which the timer mode does not record" "$ROOT/fake.trace-cmd"
+  done
   grep -q "^start $ROOT/tracefs rtctrl_tsc 0 16384" "$ROOT/fake.tsc_instance" &&
     grep -q '^stop ' "$ROOT/fake.tsc_instance" && grep -q '^remove ' "$ROOT/fake.tsc_instance" ||
     fail "the TSC instance's start, stop and removal" "$ROOT/fake.tsc_instance"
@@ -920,6 +978,47 @@ if [ -n "$SAMPLER" ]; then
     fail "a failed removal gave status $st" "$ROOT/timer-rmfail.log"
   grep -q 'cleanup: trace instance rtctrl_tsc NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 33).run.txt" ||
     fail "the record lacks the failed removal" "$ROOT/timer-rmfail.log"
+  rm -f "$ROOT/fake.tsc_instance_exists"
+  # Loss counts that cannot be read are not counts of zero: a failed read
+  # of each buffer's stats, a missing CPU and a malformed counter stop the
+  # session with the count unknown.
+  for c in "35 FAKE_STATS=fail trace overruns: unknown (trace-cmd report --stat exited 1)" \
+           "36 FAKE_STATS=nocpu trace overruns: unknown (no stats for CPU" \
+           "37 FAKE_STATS=bad trace overruns: unknown (CPU 0 overrun is \"n/a\")" \
+           "38 FAKE_TSC_STATS=fail tsc instance overruns: unknown (the stats read exited 1)"; do
+    read -r att envv want <<<"$c"
+    set +e
+    env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" \
+      --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/timer-stats-$att.log" 2>&1
+    st=$?
+    set -e
+    b=$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att")
+    [ "$st" -eq 1 ] && grep -qF -- "$want" "$b.run.txt" && grep -q '^verdict: tracer failure (.*loss counts' "$b.run.txt" ||
+      fail "$envv: status $st, or the record lacks '$want' and the tracer failure" "$b.run.txt"
+    # The buffer whose read failed has no count of zero.
+    if grep -q "^${want%%: *}: 0 " "$b.run.txt"; then fail "$envv: the record still claims zero losses" "$b.run.txt"; fi
+  done
+  # The instance's ownership: another session's instance, made after the
+  # session's check, is left alone; one this session's start made and then
+  # failed is removed; one after a status that does not say is left and
+  # reported.
+  for c in "39 race 1 left" "40 partial 1 removed" "41 unknown 1 left"; do
+    read -r att how want_st want_mark <<<"$c"
+    rm -f "$ROOT/fake.tsc_instance_exists"
+    set +e
+    FAKE_TSC_START=$how TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+      --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/timer-own-$how.log" 2>&1
+    st=$?
+    set -e
+    [ "$st" -eq "$want_st" ] || fail "start $how: status $st" "$ROOT/timer-own-$how.log"
+    if [ "$want_mark" = left ]; then
+      [ -e "$ROOT/fake.tsc_instance_exists" ] || fail "start $how: the instance was removed" "$ROOT/timer-own-$how.log"
+    else
+      [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "start $how: the instance remains" "$ROOT/timer-own-$how.log"
+    fi
+  done
+  grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/timer-own-unknown.log" ||
+    fail "the unknown start's instance was not reported" "$ROOT/timer-own-unknown.log"
   rm -f "$ROOT/fake.tsc_instance_exists"
   # The exerciser: refused without --port; over the emulator it runs.
   if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh --probe "$FAKE/probe" --outdir "$OUT" --date "$DATE" \
