@@ -17,7 +17,7 @@
 # Requires bear and compdb on PATH for the mi-lib capture.
 set -eu
 
-REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 META="$REPO_ROOT/third_party/mi-lib"
 MILIB_DB="$META/compile_commands.json"
 

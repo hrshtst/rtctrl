@@ -30,7 +30,7 @@
 # (plus X11/GL dev packages for zx11/roki-gl).
 set -eu
 
-REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 META="$REPO_ROOT/third_party/mi-lib"
 
 if [ ! -f "$META/clone.sh" ]; then
