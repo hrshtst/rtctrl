@@ -10,11 +10,12 @@ detects a systematic offset of the instance's timestamps; each class of a
 late service (a deadline written late or disarmed, an interrupt late from
 idle and while busy in user mode and in a system call, a late sleep call,
 a timer armed late, and INDETERMINATE deadlines), on a deadline timeline
-that a firing disarms (an already-served deadline is not in effect); the
+that a firing disarms (an already-served deadline is not in effect) and
+that keeps an overwritten due deadline's interrupt as possibly pending; the
 deadline writes' attribution, which needs the timer's residency on the
-real-time CPU (its expiry there, a pinned arming, or the write that
-followed its arming), never a matching expiry alone, and converts other
-clocks by their recorded offsets; the exerciser's actions followed through
+real-time CPU (its expiry there or a pinned arming; a matching write after
+an arming is a hint only), never a matching expiry alone, and converts
+other clocks by their recorded offsets; the exerciser's actions followed through
 each arming's lifetime (a needed write, a legitimate no-write, re-arms
 earlier and after an expiry, cancellations with and without a write and
 after an expiry, an expiry inside the arming call, a missing write, a timer
@@ -121,9 +122,13 @@ def classes() -> None:
     def case(writes, served, setup=None, arm_at=None, call=None, extra=(), uu=None):
         """writes: (ts, deadline or 0[, failed]) in order; served: the local
         timer interrupt that served the expiry; extra: other interrupts."""
-        ev.writes = [(w[0], tsc(w[1]) if w[1] else 0, len(w) > 2 and w[2]) for w in writes]
+        # A known state first, as in a trace long before the run: an earlier
+        # deadline, served by its interrupt.
+        first = writes[0][0]
+        ev.writes = [(first - 100_000, tsc(first - 90_000), False)]
+        ev.writes += [(w[0], tsc(w[1]) if w[1] else 0, len(w) > 2 and w[2]) for w in writes]
         ev.idle, ev.rt_switches, ev.syscalls, ev.nmis = [], [], [], []
-        ev.anchors = sorted([x for x in a if x < writes[0][0]] + [served, *extra])
+        ev.anchors = sorted([x for x in a if x < first - 100_000] + [first - 90_000, served, *extra])
         if setup:
             setup()
         tl = ts.Timeline(ev, conv, u if uu is None else uu)
@@ -133,12 +138,31 @@ def classes() -> None:
     r = case([(e - 400_000, e + 900_000)], e + 941_000)
     expect(r["class"] == "deadline late" and "the deadline in effect was +900.0 us" in r["detail"], f"deadline late: {r}")
     r = case([(e - 400_000, 0), (e + 900_000, e + 940_000)], e + 941_000)
-    expect(r["class"] == "deadline late" and "disarmed (written -400.0 us)" in r["detail"], f"disarmed: {r}")
+    expect(r["class"] == "deadline late" and "disarmed (its write traced at -400.0 us)" in r["detail"], f"disarmed: {r}")
     # A deadline already served is not still armed (the reviewer's case):
     # the next one was written at E+90 us for E+100 us.
     r = case([(e - 400_000, e - 300_000), (e + 90_000, e + 100_000)], e + 100_000, extra=[e - 300_000])
     expect(r["class"] == "deadline late" and "was served by the interrupt at -300.0 us" in r["detail"]
-           and "written +90.0 us" in r["detail"], f"already served: {r}")
+           and "had its write traced at +90.0 us" in r["detail"], f"already served: {r}")
+    # A deadline due and overwritten with no interrupt seen after it may
+    # still have its interrupt pending (the reviewer's case): the serving
+    # interrupt cannot be told apart, so INDETERMINATE; overwritten before it
+    # was due, or with an interrupt seen in between, it is not pending.
+    r = case([(e - 400_000, e - 300_000), (e + 90_000, e + 100_000)], e + 150_000)
+    expect(r["class"] == "INDETERMINATE" and "pending one" in r["detail"] and "was due when it was overwritten"
+           in r["detail"], f"overwritten, pending: {r}")
+    r = case([(e - 400_000, e + 50_000), (e - 100_000, e + 100_000)], e + 100_000)
+    expect(r["class"] == "deadline late" and "the deadline in effect was +100.0 us" in r["detail"],
+           f"overwritten before it was due: {r}")
+    r = case([(e - 400_000, e - 300_000), (e + 90_000, e + 100_000)], e + 150_000, extra=[e + 95_000])
+    expect(r["class"] == "deadline late" and "had its write traced at +90.0 us" in r["detail"],
+           f"the pending interrupt seen first: {r}")
+    # The state before the trace's first write is unknown: its first serving
+    # interrupt may be a pending one.
+    ev.writes = [(e - 400_000, tsc(e), False)]
+    ev.anchors = [e + 100_000]
+    r = ts.classify(ev, ts.Timeline(ev, conv, u), (e - 500_000, e), (e + 100_300, e + 100_200), [])
+    expect(r["class"] == "INDETERMINATE" and "first deadline write" in r["detail"], f"before the first write: {r}")
     # An interrupt after a served deadline with no write, one before the
     # deadline armed (pending from before its write), and one after a failed
     # write are INDETERMINATE.
@@ -189,8 +213,8 @@ def classes() -> None:
     expect(r["class"] == "timer armed late" and "not recorded" in r["detail"], f"armed late, no call: {r}")
     r = case([(e - 400_000, e)], e + 2_000)
     expect(r["class"] == "on time", f"on time: {r}")
-    ev.writes = [(e - 400_000, conv.t[-1] + 10, False)]
-    ev.anchors = sorted([x for x in a if x < e - 400_000] + [e + 100_000])
+    ev.writes = [(e - 500_000, tsc(e - 490_000), False), (e - 400_000, conv.t[-1] + 10, False)]
+    ev.anchors = sorted([x for x in a if x < e - 500_000] + [e - 490_000, e + 100_000])
     r = ts.classify(ev, ts.Timeline(ev, conv, u), (e - 500_000, e), (e + 100_300, e + 100_200), [])
     expect(r["class"] == "INDETERMINATE", f"outside the anchors: {r}")
     r = case([(e - 400_000, e)], e + 100_000, uu=9_000.0)
@@ -239,6 +263,24 @@ def residency() -> None:
     r = att()
     expect(r == "INDETERMINATE (2 pending timers at that expiry)", f"two on CPU 3: {r}")
     ev.starts.pop()
+    # The reviewer's case: an unpinned arming on CPU 3, cancelled, with a
+    # matching CPU-3 write 10 us later and a switch, a device interrupt and
+    # an NMI in between: a hint, never residency.
+    ev2, _, _ = base_events()
+    ev2.anchors = []
+    near = "0xffff00001111"
+    ev2.starts = [(t, RT, 111, "exerciser", near, "timerfd_tmrproc", e, e, "ABS")]
+    ev2.cancels = [(t + 100_000, RT, 111, near, False)]
+    ev2.writes = [(t + 10_000, tsc(e), False)]
+    ev2.rt_switches = [(t + 500, 222, "other-task")]
+    ev2.irqs = [(t + 1_000, t + 3_000)]
+    ev2.nmis = [(t + 4_000, t + 5_000, "perf_event_nmi_handler")]
+    lt2 = ts.Lifetimes(ev2, conv, u, recorded)
+    g = lt2.gens[0]
+    expect(g["cpu"] is None and g["evidence"] == "unknown" and g["hint"], f"the write hint: {g}")
+    r = ts.attribute(ev2, lt2, conv, u)[0][2]
+    expect(r == "INDETERMINATE (1 matching timers of unknown residency; 1 followed by a matching write on this CPU, "
+           "a hint only)", f"the hint does not attribute: {r}")
     # A CLOCK_BOOTTIME timer of unknown residency: unconvertible without its
     # offset; with it, matching or not.
     boot = "0xffff0000eeee"
@@ -395,8 +437,14 @@ def exerciser() -> None:
     tl = ts.Timeline(ev, conv, u)
     r = ts.explain_exerciser(ev, tl, ts.Lifetimes(ev, conv, u, {"BOOTTIME": 0}), head, rows)
     expect(r["actions"] == 22, f"actions {r}")
-    expect(r["OK"] == 14 and r["no write needed"] == 2 and r["INDETERMINATE"] == 3 and r["UNEXPLAINED"] == 3,
+    # The armings that never expire and are not pinned (rounds 3, 4, 5, 13
+    # and 15's arms, and the cancellations of 4, 5 and 13) are of unknown
+    # residency, the write after an arming a hint only.
+    expect(r["OK"] == 8 and r["no write needed"] == 2 and r["INDETERMINATE"] == 9 and r["UNEXPLAINED"] == 3,
            f"exerciser classes: {r}")
+    expect(r["indeterminate"] == {"residency unknown, its events matched (a write hint)": 6,
+                                  "residency unknown, its events matched": 2, "on another CPU": 1},
+           f"exerciser INDETERMINATE reasons: {r['indeterminate']}")
     for n in (6, 8, 15):
         expect(any(f"round {n} " in m for m in r["notes"]), f"round {n} noted: {r['notes']}")
     expect(any("round 15 cancel: its arming stayed pending" in m for m in r["notes"]), f"round 15: {r['notes']}")
