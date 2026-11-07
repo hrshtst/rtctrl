@@ -312,6 +312,17 @@ set_tests_properties(timer_service_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timer service regressions OK"
   LABELS unit)
 
+# The timer mode's rehearsal exerciser: its rounds, rows and stop (no timing
+# bound; it never touches the bus).
+add_test(NAME timer_exerciser_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_timer_exerciser.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(timer_exerciser_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "timer exerciser regressions OK"
+  LABELS unit)
+
 # The adapter latency timer tool on a fake sysfs tree, its two device reads
 # replaced: no real port is touched.
 add_test(NAME latency_timer_regressions
