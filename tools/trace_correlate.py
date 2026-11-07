@@ -1099,7 +1099,8 @@ def main() -> int:
     sleep_timing(run, tr, timer, perf, stacks, record, args.top, failures, out)
     if tr.timer is not None:
         tr.timer.finish(tr.last_ts)
-        timer_service.report(args.csv, tr.timer, timer["pairs"], record, failures, args.top, out)
+        timer_service.report(args.csv, tr.timer, timer["pairs"], record, failures, args.top, out,
+                             sleep_calls=tr.sleep_calls)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
     if failures:

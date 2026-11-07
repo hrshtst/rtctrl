@@ -16,7 +16,10 @@ preempted for 100 us first). A profiled variant adds the worker's sleep
 calls and timer arming, a late sleep with a page fault and perf samples
 (sampled instruction pointers and call chains; another thread's sample is
 ignored) before it; missing, duplicate and inconsistent sleep evidence
-fails the run, while a re-armed timer and another timer do not.
+fails the run, while a re-armed timer and another timer do not. A
+timer-mode variant uses exactly the events the session's timer mode
+records (--timer-events lists them for its smoke test, which checks them
+against the session's own), and fails without any of its evidence.
 Every association and alignment failure is then provoked once and must
 fail the run, and the documented exception (a cycle that began without
 sleeping) must not.
@@ -59,9 +62,11 @@ class Run:
         self.stacks: list[tuple] = []
         self.events: list[tuple[int, int, str]] = []
         self.rows: list[dict] = []
+        self.names: set[str] = set()
         self.build()
 
     def ev(self, us: float, comm: str, pid: int, cpu: int, flags: str, event: str, rest: str) -> None:
+        self.names.add(event)
         t = ORIGIN + ns(us)
         s, n = divmod(t, 1_000_000_000)
         line = f"{comm:>16}-{pid:<7} [{cpu:03d}] {flags} {s}.{n:09d}: {event}: {rest}"
@@ -190,9 +195,14 @@ class Run:
             cycle_end = write_return + 0.1
             # The sleep call (late after cycle 2 in the late_sleep variant).
             call = cycle_end + (500.0 if (i == 1 and o.get("late_sleep")) else 0.3)
-            if o.get("profiled") and i < len(REPLIES) - 1:
+            if (o.get("profiled") or o.get("timer")) and i < len(REPLIES) - 1:
                 first = i == 0  # the sleep before cycle 2: the variants' target
-                if not (first and o.get("drop_call")):
+                nxt_us = (i + 1) * PERIOD_US
+                if o.get("timer"):  # raw_syscalls, filtered to CPU 3 (every task's)
+                    self.ev(call - 0.01, "x7_bus_timing", TID, 3, ".....", "sys_enter",
+                            "NR 230 (1, 0, 7ffd0000, 0, 0, 0)")
+                    self.ev(nxt_us + 1.05, "x7_bus_timing", TID, 3, ".....", "sys_exit", "NR 230 = 0")
+                if not (first and o.get("drop_call")) and not o.get("drop_named"):
                     self.ev(call, "x7_bus_timing", TID, 3, ".....", "sys_enter_clock_nanosleep",
                             "which_clock: 0x00000001, flags: 0x00000000, rqtp: 0x7ffd0000, rmtp: 0x00000000")
                 if first and o.get("dup_call"):
@@ -211,7 +221,7 @@ class Run:
                     arm(call + 0.07, nxt + ns(500.0), addr="0xffffcdd1a193f000")
                 if not (first and o.get("drop_arm")):
                     arm(call + 0.1, nxt + (ns(3000.0) if (first and o.get("far_expiry")) else 0))
-                if o.get("timer"):  # the deadline written for the worker's expiry
+                if o.get("timer") and not o.get("no_writes"):  # the deadline written for the worker's expiry
                     self.ev(call + 0.12, "x7_bus_timing", TID, 3, "d..1.", "write_msr", f"6e0, value {tsc_of(nxt):x}")
                 if i == 1 and o.get("late_sleep"):
                     self.ev(cycle_end + 100.0, "x7_bus_timing", TID, 3, ".....", "page_fault_user",
@@ -265,9 +275,22 @@ class Run:
                 lines.append("")
             pathlib.Path(str(path) + ".perf.stacks.txt").write_text("\n".join(lines) + "\n")
         if self.opt.get("timer") or self.opt.get("timer_record"):
+            smi_before = ORIGIN - 2_000_000  # perf stat started 2 ms before the origin
             pathlib.Path(str(path) + ".run.txt").write_text(
                 "mode: timer\nscheduling: --rt-priority 80 --rt-cpu 3 (rtprio limit 90)\n"
-                "trace overruns: 0 (trace-cmd report --stat)\ntsc instance overruns: 0\nsession pid: 1\n")
+                f"trace overruns: {self.opt.get('trace_overruns', '0')} (trace-cmd report --stat)\n"
+                "tsc instance overruns: 0\nsession pid: 1\n"
+                "clock pair before: monotonic_before_ns 1 realtime_ns 2 monotonic_after_ns 3 "
+                "realtime_minus_monotonic_ns 1700000000000000000 bracket_ns 40\n"
+                "clock offsets: boottime_minus_monotonic_ns 0 tai_minus_monotonic_ns 1700000037000000000 "
+                "bracket_ns 40\n"
+                f"smi anchor monotonic_ns: {smi_before} {smi_before + 10_100_000} (before perf stat started; "
+                "when its first interval was seen)\n")
+            if not self.opt.get("no_smi"):
+                pathlib.Path(str(path) + ".smi.csv").write_text(
+                    "# started on Sat Nov  7 12:00:00 2026\n\n"
+                    "     0.010000000,0,,msr/smi/,10000000,100.00,,\n"
+                    "     0.020000000,0,,msr/smi/,10000000,100.00,,\n")
         if self.opt.get("timer") and not self.opt.get("no_instance"):
             marks = sorted(e[0] for e in self.events if ": local_timer_entry:" in e[2])
             lines = [f"# entries-in-buffer/entries-written: {len(marks)}/{len(marks)}   #P:32"]
@@ -278,6 +301,9 @@ class Run:
             for k in range(40):
                 m = marks[0] + (marks[-1] - marks[0]) * (k + 0.5) / 40
                 pairs.append(f"{round(m) - 20},{tsc_of(round(m))},{round(m) + 20},1")
+            # The real-time CPU's windows, before and after the run.
+            for m in ([] if self.opt.get("no_rt_pairs") else [ORIGIN - ns(200.0), ORIGIN + ns(6200.0)]):
+                pairs.append(f"{m - 20},{tsc_of(m)},{m + 20},3")
             pathlib.Path(str(path) + ".tsc-pairs.csv").write_text("\n".join(pairs) + "\n")
         if self.opt.get("profiled_record"):
             pathlib.Path(str(path) + ".run.txt").write_text(
@@ -304,6 +330,11 @@ def expect(cond: bool, what: str, out: str) -> None:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--timer-events"]:
+        # The event names a timer-mode run's fixture uses, for the session's
+        # smoke test: each must be one the timer mode records.
+        print(" ".join(sorted(Run(timer=True).names)))
+        return 0
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
 
@@ -386,19 +417,33 @@ def main() -> int:
         code, out, _ = correlate(root, "profiled_empty", profiled_record=True)
         expect(code == 1 and "a profiled run without sleep-call or timer-arming events" in out,
                "a profiled run without its events fails", out)
-        # A timer-mode run: the deadline timeline through the TSC instance's
-        # anchors, validated by the sampler; without its events, or without
-        # the instance, the run fails.
-        code, out, _ = correlate(root, "timer", profiled=True, timer=True)
+        # A timer-mode run, with exactly the events the session's timer mode
+        # records (TIMER_EVENTS_RUN): the deadline timeline through the TSC
+        # instance's anchors, validated by the sampler. Its missing evidence
+        # fails the run: the events, the named sleep calls (raw system calls
+        # alone do not show them), the deadline writes, the instance, the
+        # sampler's windows on the real-time CPU, the SMI series and a valid
+        # loss count.
+        code, out, _ = correlate(root, "timer", timer=True)
         expect(code == 0 and "timer service (the real-time CPU's deadlines" in out
+               and "sleep timing: 2 sleeps; 2 with their sleep call and timer" in out
                and "matched one-to-one" in out and "conversion uncertainty U:" in out
-               and "sleeps: 2; on time 2" in out and "deadline writes: 2, 0 disarming, 0 INDETERMINATE" in out,
-               "the timer-mode run", out)
-        code, out, _ = correlate(root, "timer_bare", timer_record=True)
-        expect(code == 1 and "a timer-mode run without its deadline, idle or lifecycle events" in out,
-               "a timer-mode record without its events fails", out)
-        code, out, _ = correlate(root, "timer_noinst", profiled=True, timer=True, no_instance=True)
-        expect(code == 1 and "no TSC instance or sampler pairs" in out, "a timer-mode run without the instance fails", out)
+               and "sleeps: 2; on time 2" in out and "deadline writes: 2, 0 disarming" in out
+               and "SMIs 0" in out and "MISSING" not in out, "the timer-mode run", out)
+        for name, opt, words in (
+                ("timer_bare", {"timer_record": True}, "the timer-mode run has no deadline writes on CPU 3"),
+                ("timer_raw_only", {"timer": True, "drop_named": True}, "sleep timing: 2 sleeps without a sleep call"),
+                ("timer_raw_only2", {"timer": True, "drop_named": True}, "the timer-mode run has no sleep calls"),
+                ("timer_no_writes", {"timer": True, "no_writes": True},
+                 "the timer-mode run has no deadline writes on CPU 3"),
+                ("timer_noinst", {"timer": True, "no_instance": True}, "no TSC instance or sampler pairs"),
+                ("timer_no_rt_pairs", {"timer": True, "no_rt_pairs": True},
+                 "no sampler pairs on CPU 3 inside the anchors both before and after the run"),
+                ("timer_no_smi", {"timer": True, "no_smi": True}, "timer service: no SMI count file"),
+                ("timer_bad_losses", {"timer": True, "trace_overruns": "unknown (stats unreadable)"},
+                 "the record has no valid count of the trace's losses")):
+            code, out, _ = correlate(root, name, **opt)
+            expect(code == 1 and words in out, f"{name} fails ({words})", out)
         # A kernel worker that runs and is preempted before the TTY work:
         # its run-queue wait is up to its first run only.
         code, out, seg = correlate(root, "preempted", preempted=True)

@@ -21,21 +21,36 @@ CLOCK_MONOTONIC sampler (tools' tsc_mono_pairs), each bounded by its
 bracket. The classification uses U in its boundaries, and a U above 5 us
 fails the run.
 
-A sleep whose timer was served 50 us or more late (the expiry's now= minus
-the timer's expiry, both monotonic) is described by its recorded evidence,
-not by a cause: a late sleep call; a deadline late (the deadline in effect
-at the expiry later than it by more than U, or disarmed); an interrupt late
-from idle or while busy (the deadline on time); and INDETERMINATE when the
-deadline cannot be converted. A late service is a result, not a failure.
+The deadline in effect is followed as a timeline: a write arms the device
+for its deadline (0 disarms it; a failed write leaves it unknown), and a
+TSC deadline disarms itself when it fires, so the first local timer
+interrupt at or after it serves it. A sleep whose timer was served 50 us or
+more late (the expiry's now= minus the timer's expiry, both monotonic) is
+described by its recorded evidence, not by a cause: a late sleep call (the
+call entered after the expiry); a timer armed late (the call entered before
+the expiry, its timer armed after it); a deadline late (the deadline that
+raised the serving interrupt was due, at the later of its value and its
+write, more than U after the expiry); an interrupt late from idle or while
+busy (that deadline on time); and INDETERMINATE when the deadline cannot be
+converted, the state at the expiry is unknown, or the serving interrupt
+follows no armed deadline. A late service is a result, not a failure.
 
-A rehearsal's exerciser (tools/timer_exerciser.py) arms, replaces and
-cancels timerfd timers (its "expired" rows are its own observations, not
-actions); each action must match its trace events, and the
-deadline in effect after it must cover the earliest known pending expiry
-on the real-time CPU (a missing write is legitimate when an earlier
-deadline already covers it). A timer whose destination CPU is not shown by
-its expiry or by a matching write is INDETERMINATE; an action its events
-or the observed state do not explain fails.
+Each timer arming is followed to its end (its cancellation, expiry or next
+arming), and its residency (the CPU it is queued on) is taken only from the
+trace's evidence: its expiry's CPU, a pinned arming's CPU, or a deadline
+write on the real-time CPU directly following its arming there and
+matching its expiry. A deadline write is attributed to the one pending
+timer resident on the real-time CPU at its value; a matching timer of
+unknown residency leaves it INDETERMINATE. A rehearsal's exerciser
+(tools/timer_exerciser.py) arms, replaces and cancels timerfd timers (its
+"expired" rows are its own observations, not actions); each action must
+match its timer's lifetime, and while the arming is pending the device must
+cover it (a missing write is legitimate when an earlier deadline already
+covers it). An arming of unknown or foreign residency is INDETERMINATE; an
+action its events or the device's state do not explain fails.
+
+A timer-mode run must hold the evidence the mode records (report()); its
+absence fails the run.
 """
 
 from __future__ import annotations
@@ -45,6 +60,7 @@ import csv
 import pathlib
 import re
 import statistics
+from typing import NamedTuple
 
 U_LIMIT_NS = 5_000       # the provisional bound on the validated uncertainty
 LATE_NS = 50_000         # a timer service this late is classified
@@ -211,9 +227,6 @@ class TimerEvents:
             self._account(pid, since, end)
         self._cur.clear()
 
-    def present(self) -> bool:
-        return bool(self.writes or "cpu_idle" in self.seen or "sched_process_fork" in self.seen)
-
 
 # --- The TSC to CLOCK_MONOTONIC conversion -------------------------------------------------
 
@@ -345,22 +358,75 @@ def validate(pairs: list[tuple], samples: list[tuple]) -> dict:
     return {"anchors": len(pairs), "held": held, "by_cpu": by_cpu, "bounds": bounds, "u": u}
 
 
-# --- Timers and deadlines ----------------------------------------------------------------
+# --- The clock event device ------------------------------------------------------------------
 
 
-def domain(ev: TimerEvents, addr: str, expires: int) -> str:
-    """A timer's clock: from its hrtimer_init/setup, else by magnitude (an
-    expiry past 1e18 ns is on a calendar clock)."""
-    c = ev.clockid.get(addr)
-    if c:
-        return c
-    return "CLOCK_REALTIME?" if expires > 10**18 else "CLOCK_MONOTONIC?"
+class Device(NamedTuple):
+    """The real-time CPU's TSC deadline timer at some time."""
+
+    kind: str                  # "unknown", "disarmed", "armed" or "served"
+    write: tuple | None        # the deadline write that set it
+    d: float | None = None     # its deadline in monotonic time (None outside the anchors)
+    served: int | None = None  # the local timer interrupt that served it
+    why: str = ""              # why the state is unknown
 
 
-def deadline_at(ev: TimerEvents, t: float) -> tuple | None:
-    """The deadline write in effect at t (the last before it)."""
-    k = bisect.bisect_left([w[0] for w in ev.writes], t) - 1
-    return ev.writes[k] if k >= 0 else None
+BEFORE_WRITES = Device("unknown", None, why="before the first deadline write")
+
+
+class Timeline:
+    """The real-time CPU's clock event device, from its deadline writes and
+    local timer interrupts. A write of 0 disarms it; a failed write leaves
+    its state unknown; any other write arms it for that deadline. A TSC
+    deadline disarms itself when it fires (Intel SDM vol. 3, the TSC-deadline
+    mode of the local APIC timer): the first local timer interrupt at or
+    after the deadline (less U) serves it, and the device stays unarmed until
+    the next write. An interrupt before the armed deadline (one pending from
+    before the write) leaves it armed; one after a deadline outside the
+    anchors leaves the state unknown, as is the state before the first
+    write."""
+
+    def __init__(self, ev: TimerEvents, conv: TscMap, u: float | None) -> None:
+        self.conv, self.u = conv, u
+        marks = sorted([(a, 0, None) for a in ev.anchors] + [(w[0], 1, w) for w in ev.writes],
+                       key=lambda m: (m[0], m[1]))
+        st = BEFORE_WRITES
+        self.ts: list[int] = []
+        self.states: list[Device] = []
+        for ts, kind, w in marks:
+            if kind == 1:
+                if w[2]:
+                    st = Device("unknown", w, why="a failed deadline write")
+                elif w[1] == 0:
+                    st = Device("disarmed", w)
+                else:
+                    st = Device("armed", w, conv.mono(w[1]))
+            elif st.kind == "armed" and st.d is None:
+                st = Device("unknown", st.write, served=ts, why="an interrupt after a deadline outside the anchors")
+            elif st.kind == "armed" and u is not None and ts >= st.d - u:
+                st = Device("served", st.write, st.d, ts)
+            else:
+                continue
+            self.ts.append(ts)
+            self.states.append(st)
+
+    def at(self, t: float) -> Device:
+        """The device just before t (the events at t excluded)."""
+        k = bisect.bisect_left(self.ts, t) - 1
+        return self.states[k] if k >= 0 else BEFORE_WRITES
+
+
+def describe(s: Device, e: float) -> str:
+    """The device's state, its times relative to e."""
+    if s.kind == "armed":
+        what = "a deadline outside the anchors" if s.d is None else f"{(s.d - e) / 1e3:+.1f} us"
+        return f"armed for {what} (written {(s.write[0] - e) / 1e3:+.1f} us)"
+    if s.kind == "served":
+        return (f"not armed: its deadline ({(s.d - e) / 1e3:+.1f} us) was served by the interrupt at "
+                f"{(s.served - e) / 1e3:+.1f} us")
+    if s.kind == "disarmed":
+        return f"disarmed (written {(s.write[0] - e) / 1e3:+.1f} us)"
+    return f"in an unknown state ({s.why})"
 
 
 def state_at(ev: TimerEvents, t: float) -> tuple:
@@ -392,49 +458,76 @@ def overlapping(spans: list[tuple], a: float, b: float) -> list[tuple]:
     return [s for s in spans if s[0] <= b and s[1] >= a]
 
 
-def classify(ev: TimerEvents, conv: TscMap, u: float | None, arm: tuple, expiry: tuple,
-             smi: list[tuple]) -> dict:
-    """One worker sleep: arm (ts, expires), expiry (entry ts, now). The
-    class of a late service, with its evidence."""
+def classify(ev: TimerEvents, tl: Timeline, arm: tuple, expiry: tuple, smi: list[tuple],
+             call: int | None = None) -> dict:
+    """One worker sleep: arm (the arming's ts, its expiry E), expiry (the
+    expiry's entry ts, its now=), call (its sleep call's entry, if
+    recorded). The class of a late service, with its evidence. The
+    interrupt that served the expiry (the last local timer interrupt before
+    it) was raised by the deadline armed just before it, which was due at
+    the later of its value and its write."""
     arm_ts, e = arm
     entry, now = expiry
+    u = tl.u
     late = now - e
     out = {"late": late, "e": e}
-    anchors_before = [a for a in ev.anchors if a <= entry]
-    irq_entry = anchors_before[-1] if anchors_before else entry
-    out["irq_entry"] = irq_entry
+    k = bisect.bisect_right(ev.anchors, entry) - 1
+    irq_entry = ev.anchors[k] if k >= 0 else None
+    out["irq_entry"] = irq_entry if irq_entry is not None else entry
     if late < LATE_NS:
         out["class"] = "on time"
         return out
-    if arm_ts > e:
+    if call is not None and call > e:
         out["class"] = "late sleep call"
-        out["detail"] = f"armed {(arm_ts - e) / 1e3:.1f} us after its expiry"
+        out["detail"] = f"its sleep call entered {(call - e) / 1e3:.1f} us after its expiry"
         return out
-    w = deadline_at(ev, e)
-    if w is None or u is None or u > U_LIMIT_NS:
+    if arm_ts > e:
+        out["class"] = "timer armed late"
+        out["detail"] = ((f"its sleep call entered {(e - call) / 1e3:.1f} us before its expiry, " if call is not None
+                          else "its sleep call's entry is not recorded; ")
+                         + f"its timer was armed {(arm_ts - e) / 1e3:.1f} us after it")
+        return out
+    if u is None or u > U_LIMIT_NS:
         out["class"] = "INDETERMINATE"
-        out["detail"] = "no deadline write before the expiry" if w is None else "conversion not validated"
+        out["detail"] = "conversion not validated"
         return out
-    if w[1] == 0:
-        out["class"] = "deadline late"
-        out["detail"] = f"the device was disarmed (written {(e - w[0]) / 1e3:.1f} us before the expiry)"
-        return out
-    d = conv.mono(w[1])
-    if d is None:
+    if irq_entry is None:
         out["class"] = "INDETERMINATE"
-        out["detail"] = "the deadline lies outside the anchors (no extrapolation)"
+        out["detail"] = "no local timer interrupt before the expiry"
+        return out
+    s = tl.at(irq_entry)
+    if s.kind != "armed" or s.d is None:
+        out["class"] = "INDETERMINATE"
+        out["detail"] = f"the interrupt that served it followed no convertible armed deadline: the device was {describe(s, e)}"
+        return out
+    d, w = s.d, s.write[0]
+    if irq_entry < d - u:
+        out["class"] = "INDETERMINATE"
+        out["detail"] = (f"the interrupt that served it came {(d - irq_entry) / 1e3:.1f} us before the deadline armed "
+                         "(an interrupt pending from before its write)")
         return out
     out["deadline"] = d
-    if d - e > u:
+    due = max(d, w)
+    if due - e > u:
+        se = tl.at(e)
+        if se.kind == "unknown":
+            out["class"] = "INDETERMINATE"
+            out["detail"] = f"the device was {describe(se, e)} at the expiry"
+            return out
         out["class"] = "deadline late"
-        out["detail"] = f"the deadline in effect was {(d - e) / 1e3:+.1f} us from the expiry (U {u / 1e3:.1f} us)"
+        if se.write == s.write:
+            out["detail"] = f"the deadline in effect was {(d - e) / 1e3:+.1f} us from the expiry (U {u / 1e3:.1f} us)"
+        else:
+            out["detail"] = (f"at the expiry the device was {describe(se, e)}; the deadline that served it, "
+                             f"{(d - e) / 1e3:+.1f} us from the expiry, was written {(w - e) / 1e3:+.1f} us from it "
+                             f"(U {u / 1e3:.1f} us)")
         return out
-    due = max(d, e) if d >= e - u else d
+    due = max(due, e) if d >= e - u else due
     idle, idle_since, pid, comm = state_at(ev, due)
     others = [a for a in ev.anchors if due + u < a < irq_entry]
     nmis = overlapping(ev.nmis, due, irq_entry)
     irqs = overlapping(ev.irqs, due, irq_entry)
-    smis = [s for s in smi if s[0] <= irq_entry and s[1] >= due and s[2] > 0]
+    smis = [x for x in smi if x[0] <= irq_entry and x[1] >= due and x[2] > 0]
     ev_detail = []
     if others:
         ev_detail.append(f"{len(others)} timer interrupts in between")
@@ -462,24 +555,112 @@ def classify(ev: TimerEvents, conv: TscMap, u: float | None, arm: tuple, expiry:
     return out
 
 
-def attribute(ev: TimerEvents, conv: TscMap, u: float, rt_offset: int | None) -> list[tuple]:
+# --- Timer lifetimes ---------------------------------------------------------------------------
+
+
+def mono_values(ev: TimerEvents, addr: str, x: int, offsets: dict) -> list[float] | None:
+    """A timer's expiry in CLOCK_MONOTONIC: one value for a clock known from
+    its hrtimer_init/setup, the values of both possible clocks for one
+    inferred from the expiry's magnitude (past 1e18 ns: REALTIME or TAI;
+    else MONOTONIC or BOOTTIME), None when an offset needed is not recorded.
+    offsets: REALTIME, BOOTTIME and TAI minus MONOTONIC, in ns."""
+    c = ev.clockid.get(addr)
+    names = [c] if c else (["REALTIME", "TAI"] if x > 10**18 else ["MONOTONIC", "BOOTTIME"])
+    out = []
+    for n in names:
+        if "MONOTONIC" in n:
+            out.append(float(x))
+            continue
+        key = next((k for k in ("REALTIME", "BOOTTIME", "TAI") if k in n), None)
+        if key is None or offsets.get(key) is None:
+            return None
+        out.append(float(x - offsets[key]))
+    return out
+
+
+class Lifetimes:
+    """Every timer arming (an hrtimer_start) to its end: the timer's next
+    cancellation, expiry or arming ("cancel", "expiry", "rearm"), or None
+    while it stays pending to the trace's end. Each arming's residency, the
+    CPU whose clock event device it is queued on, where the trace shows one:
+    the CPU of its expiry; the arming CPU of a pinned arming; or the
+    real-time CPU, for an arming there directly followed there (no other
+    timer event or interrupt between, within 50 us) by a deadline write
+    matching its expiry within U, which only a timer queued there causes.
+    Otherwise unknown: the CPU that recorded an unpinned arming is not its
+    residency (the timer may be queued on another CPU)."""
+
+    def __init__(self, ev: TimerEvents, conv: TscMap, u: float | None, offsets: dict) -> None:
+        self.ev = ev
+        by_addr: dict[str, list] = {}
+        for x in ev.expiries:
+            by_addr.setdefault(x[2], []).append((x[0], 0, "expiry", x))
+        for c in ev.cancels:
+            by_addr.setdefault(c[3], []).append((c[0], 1, "cancel", c))
+        for s in ev.starts:
+            by_addr.setdefault(s[4], []).append((s[0], 2, "start", s))
+        rt = ev.rt_cpu
+        seq = sorted([(a, 0, "anchor", None) for a in ev.anchors]
+                     + [(x[0], 1, "expiry", x) for x in ev.expiries if x[1] == rt]
+                     + [(c[0], 2, "cancel", c) for c in ev.cancels if c[1] == rt]
+                     + [(s[0], 3, "start", s) for s in ev.starts if s[1] == rt]
+                     + [(w[0], 4, "write", w) for w in ev.writes], key=lambda m: (m[0], m[1]))
+        following = {id(seq[i][3]): seq[i + 1] for i in range(len(seq) - 1) if seq[i][2] == "start"}
+        self.gens: list[dict] = []
+        for addr, lst in by_addr.items():
+            lst.sort(key=lambda m: (m[0], m[1]))
+            for i, (_, _, kind, s) in enumerate(lst):
+                if kind != "start":
+                    continue
+                nxt = lst[i + 1] if i + 1 < len(lst) else None
+                g = {"start": s, "end": None, "end_ts": None, "end_cpu": None,
+                     "x": mono_values(ev, addr, s[6], offsets)}
+                if nxt:
+                    g["end"] = "rearm" if nxt[2] == "start" else nxt[2]
+                    g["end_ts"], g["end_cpu"] = nxt[0], nxt[3][1]
+                g["cpu"], g["evidence"] = self._residency(g, following.get(id(s)), conv, u)
+                self.gens.append(g)
+        self.gens.sort(key=lambda g: g["start"][0])
+
+    def _residency(self, g: dict, nxt: tuple | None, conv: TscMap, u: float | None) -> tuple:
+        s = g["start"]
+        if g["end"] == "expiry":
+            return g["end_cpu"], "its expiry"
+        if "PINNED" in s[8]:
+            return s[1], "a pinned arming"
+        if (s[1] == self.ev.rt_cpu and u is not None and g["x"] and nxt and nxt[2] == "write"
+                and nxt[0] - s[0] <= 50_000 and nxt[3][1] and not nxt[3][2]):
+            d = conv.mono(nxt[3][1])
+            if d is not None and any(abs(d - x) <= u for x in g["x"]):
+                return self.ev.rt_cpu, "the deadline write that followed its arming"
+        return None, "unknown"
+
+
+def attribute(ev: TimerEvents, lt: Lifetimes, conv: TscMap, u: float) -> list[tuple]:
     """Each deadline write: (ts, converted deadline or None, attribution).
-    The attribution is the one pending timer whose expiry (in monotonic
-    time) is within U of the deadline, else INDETERMINATE (none, several,
-    or a clock that cannot be converted)."""
-    events = sorted([(s[0], 0, s) for s in ev.starts] + [(c[0], 1, c) for c in ev.cancels] +
-                    [(x[0], 2, x) for x in ev.expiries])
-    pending: dict[str, tuple] = {}
+    The attribution is the one pending timer resident on the real-time CPU
+    whose expiry (in monotonic time) is within U of the deadline. A timer
+    resident on another CPU cannot be it; a matching timer of unknown
+    residency, or a pending one whose clock cannot be converted, leaves the
+    write INDETERMINATE, as do no match and several. Timers armed before
+    the trace began are not seen."""
+    rt = ev.rt_cpu
+    marks = sorted([(g["start"][0], 0, i) for i, g in enumerate(lt.gens)]
+                   + [(g["end_ts"], 1, i) for i, g in enumerate(lt.gens) if g["end_ts"] is not None])
+    pending: set[int] = set()
     k = 0
     out = []
-    for ts, value, _ in ev.writes:
-        while k < len(events) and events[k][0] <= ts:
-            _, kind, e = events[k]
+    for ts, value, failed in ev.writes:
+        while k < len(marks) and marks[k][0] <= ts:
+            _, kind, i = marks[k]
             if kind == 0:
-                pending[e[4]] = e
+                pending.add(i)
             else:
-                pending.pop(e[3] if kind == 1 else e[2], None)
+                pending.discard(i)
             k += 1
+        if failed:
+            out.append((ts, None, "INDETERMINATE (a failed write)"))
+            continue
         if value == 0:
             out.append((ts, None, "disarmed"))
             continue
@@ -487,25 +668,29 @@ def attribute(ev: TimerEvents, conv: TscMap, u: float, rt_offset: int | None) ->
         if d is None:
             out.append((ts, None, "INDETERMINATE (outside the anchors)"))
             continue
-        cands = []
-        for s in pending.values():
-            dom = domain(ev, s[4], s[6])
-            x = s[6]
-            if "REALTIME" in dom or "TAI" in dom:
-                if rt_offset is None:
-                    continue
-                x -= rt_offset
-            elif "BOOTTIME" in dom:
+        here, unknown, unconverted = [], 0, 0
+        for i in pending:
+            g = lt.gens[i]
+            if g["cpu"] is not None and g["cpu"] != rt:
                 continue
-            if abs(x - d) <= u:
-                cands.append(s)
-        if len(cands) == 1:
-            s = cands[0]
+            if g["x"] is None:
+                unconverted += 1
+            elif any(abs(x - d) <= u for x in g["x"]):
+                if g["cpu"] == rt:
+                    here.append(g)
+                else:
+                    unknown += 1
+        if unknown:
+            out.append((ts, d, f"INDETERMINATE ({unknown} matching timers of unknown residency)"))
+        elif unconverted:
+            out.append((ts, d, f"INDETERMINATE ({unconverted} pending timers whose clock cannot be converted)"))
+        elif len(here) == 1:
+            s = here[0]["start"]
             out.append((ts, d, f"{s[5]} of {s[3]} ({s[2]})"))
-        elif not cands:
-            out.append((ts, d, "INDETERMINATE (no pending timer at that expiry)"))
+        elif not here:
+            out.append((ts, d, "INDETERMINATE (no pending timer on this CPU at that expiry)"))
         else:
-            out.append((ts, d, f"INDETERMINATE ({len(cands)} pending timers at that expiry)"))
+            out.append((ts, d, f"INDETERMINATE ({len(here)} pending timers at that expiry)"))
     return out
 
 
@@ -525,100 +710,106 @@ def load_exerciser(path: pathlib.Path) -> tuple[dict, list[dict]]:
     return head, rows
 
 
-def explain_exerciser(ev: TimerEvents, conv: TscMap, u: float, head: dict, rows: list[dict]) -> dict:
-    """Each exerciser action: its trace events (an arm one hrtimer_start of
-    timerfd_tmrproc, a re-arm a cancellation then a start, a cancellation
-    one hrtimer_cancel unless the timer had expired), its timer's
-    destination (shown by an expiry or a matching write), and whether the
-    deadline in effect after it covers the earliest known pending expiry on
-    the real-time CPU. OK, legitimate no-write, INDETERMINATE or
-    UNEXPLAINED."""
+def explain_exerciser(ev: TimerEvents, tl: Timeline, lt: Lifetimes, head: dict, rows: list[dict]) -> dict:
+    """Each exerciser action, followed through its timer's armings
+    (Lifetimes). An arm is one hrtimer_start of timerfd_tmrproc for the
+    requested expiry, no earlier arming pending; a re-arm is one, ending the
+    round's pending arming by one cancellation in its call, or none if that
+    arming had expired; a cancellation ends the pending arming of its expiry
+    by one hrtimer_cancel in its call, or finds it expired (before or in the
+    call). The arming's residency is its destination: another CPU, or
+    unknown, is INDETERMINATE. The device must then cover the arming, at the
+    call's end or at the arming's expiry if that came first: armed (or, at
+    its expiry, served) for a deadline no later than its expiry plus U; OK
+    when written after the arming, "no write needed" when an earlier write
+    covers it. After a cancellation the device must not be disarmed. Anything
+    else is UNEXPLAINED; the exerciser's "expired" rows are its own
+    observations, not actions."""
+    u = tl.u
+    rt = ev.rt_cpu
     tid = int(head.get("tid", -1))
-    starts = [s for s in ev.starts if s[2] == tid and s[5] == "timerfd_tmrproc"]
-    addrs = {s[4] for s in starts}
+    gens = [g for g in lt.gens if g["start"][2] == tid and g["start"][5] == "timerfd_tmrproc"]
+    addrs = {g["start"][4] for g in gens}
     cancels = [c for c in ev.cancels if c[2] == tid and c[3] in addrs]
-    expiries = [x for x in ev.expiries if x[2] in addrs]
     result = {"OK": 0, "no write needed": 0, "INDETERMINATE": 0, "UNEXPLAINED": 0}
-    notes = []
+    notes: list[str] = []
 
-    def within(lst, r):
-        return [x for x in lst if r["before"] <= x[0] <= r["after"]]
+    def unexplained(r: dict, why: str) -> None:
+        result["UNEXPLAINED"] += 1
+        notes.append(f"round {r['round']} {r['action']}: {why}")
 
-    def destination(start: tuple) -> int | None:
-        """An arming's CPU: its expiry's (before the timer's next arming), or
-        the real-time CPU if a deadline matching its expiry was written there
-        during the arming call (within 50 us of its start event)."""
-        nxt = min([s[0] for s in starts if s[4] == start[4] and s[0] > start[0]] + [float("inf")])
-        exp = [x for x in expiries if x[2] == start[4] and start[0] < x[0] < nxt]
-        if exp:
-            return exp[0][1]
-        for w in ev.writes:
-            if start[0] <= w[0] <= start[0] + 50_000 and w[1]:
-                d = conv.mono(w[1])
-                if d is not None and abs(d - start[6]) <= u:
-                    return ev.rt_cpu
-        return None
+    def rel(t: float, r: dict) -> str:
+        return f"{(t - r['before']) / 1e3:+.1f} us from the call"
 
-    rows = [r for r in rows if r["action"] != "expired"]  # the exerciser's own observations
+    rows = [r for r in rows if r["action"] != "expired"]
     for r in rows:
-        st, cn = within(starts, r), within(cancels, r)
+        b, a = r["before"], r["after"]
+        st = [g for g in gens if b <= g["start"][0] <= a]
+        cn = [c for c in cancels if b <= c[0] <= a]
         if r["action"] == "cancel":
-            if len(st) or len(cn) > 1:
-                result["UNEXPLAINED"] += 1
-                notes.append(f"round {r['round']} cancel: {len(st)} starts, {len(cn)} cancellations")
+            prior = [g for g in gens if g["start"][0] < b]
+            g = prior[-1] if prior else None
+            if st or len(cn) > 1:
+                unexplained(r, f"{len(st)} armings, {len(cn)} cancellations")
                 continue
-            if not cn:
-                gone = [x for x in expiries if x[0] < r["before"]]
-                if gone:
-                    result["OK"] += 1  # the timer had expired before the cancellation
-                    continue
-                result["UNEXPLAINED"] += 1
-                notes.append(f"round {r['round']} cancel: no cancellation and no earlier expiry")
+            if g is None or g["start"][6] != r["expiry"]:
+                unexplained(r, "the last arming before it is not of its expiry")
                 continue
-            ts, addr = cn[0][0], cn[0][3]
+            if not cn and g["end"] == "expiry" and g["end_ts"] <= a:
+                result["OK"] += 1  # it had expired: there was nothing to cancel
+                continue
+            if not (cn and g["end"] == "cancel" and g["end_ts"] == cn[0][0]):
+                unexplained(r, "its arming stayed pending through it" if g["end_ts"] is None or g["end_ts"] > a
+                            else f"its arming ended by {g['end']} {rel(g['end_ts'], r)}")
+                continue
+            target, t_check = g, a + 1
         else:
-            if len(st) != 1 or (r["action"] == "arm" and cn) or (r["action"] == "rearm" and len(cn) > 1):
-                result["UNEXPLAINED"] += 1
-                notes.append(f"round {r['round']} {r['action']}: {len(st)} starts, {len(cn)} cancellations")
+            if len(st) != 1:
+                unexplained(r, f"{len(st)} armings, {len(cn)} cancellations")
                 continue
-            if st[0][6] != r["expiry"]:
-                result["UNEXPLAINED"] += 1
-                notes.append(f"round {r['round']} {r['action']}: armed for {st[0][6]}, not {r['expiry']}")
+            g = st[0]
+            if g["start"][6] != r["expiry"]:
+                unexplained(r, f"armed for {g['start'][6]}, not {r['expiry']}")
                 continue
-            ts, addr = st[0][0], st[0][4]
-        # The destination: that of the arming (this one, or for a
-        # cancellation the one it cancels).
-        if r["action"] == "cancel":
-            armed = [s for s in starts if s[4] == addr and s[0] < ts]
-            dest = destination(armed[-1]) if armed else None
-        else:
-            dest = destination(st[0])
-        after = deadline_at(ev, r["after"] + 1)
-        before = deadline_at(ev, ts)
-        if dest is None or dest != ev.rt_cpu:
+            prev = [p for p in gens if p["start"][4] == g["start"][4] and p["start"][0] < g["start"][0]]
+            p = prev[-1] if prev else None
+            pending = p is not None and (p["end_ts"] is None or p["end_ts"] >= b)
+            by_cancel = pending and p["end"] == "cancel" and p["end_ts"] <= g["start"][0]
+            want = [p["end_ts"]] if by_cancel else []
+            if r["action"] == "arm" and pending:
+                unexplained(r, f"an earlier arming was pending (it ended by {p['end']})")
+                continue
+            if [c[0] for c in cn] != want or (pending and not by_cancel and p["end"] != "expiry"):
+                unexplained(r, f"{len(cn)} cancellations; the arming before it "
+                            + ("was pending" if pending else "had ended") + f" (it ended by {p['end'] if p else '-'})")
+                continue
+            target = g
+            t_check = g["end_ts"] if g["end"] == "expiry" and g["end_ts"] <= a else a + 1
+        if target["cpu"] != rt:
             result["INDETERMINATE"] += 1
-            if dest is not None:
-                notes.append(f"round {r['round']} {r['action']}: the timer expired on CPU {dest}")
+            if target["cpu"] is not None:
+                notes.append(f"round {r['round']} {r['action']}: its timer was on CPU {target['cpu']} "
+                             f"({target['evidence']})")
             continue
-        if after is None or (after[1] and conv.mono(after[1]) is None):
+        s = tl.at(t_check)
+        if s.kind == "unknown" or (s.kind in ("armed", "served") and s.d is None):
             result["INDETERMINATE"] += 1
             continue
-        d_after = conv.mono(after[1]) if after[1] else None
         if r["action"] == "cancel":
-            # Removing a timer may leave the device armed for it (a spurious
-            # interrupt follows) or reprogram it later: either is explained
-            # unless the device was disarmed while timers stayed pending.
-            result["OK" if d_after is not None else "UNEXPLAINED"] += 1
-            if d_after is None:
-                notes.append(f"round {r['round']} cancel: the device was disarmed")
+            if s.kind == "disarmed":
+                unexplained(r, "the device was disarmed after it")
+            else:
+                result["OK"] += 1
             continue
-        if d_after is not None and d_after <= r["expiry"] + u:
-            wrote = before is None or after[0] != before[0]
-            result["OK" if wrote else "no write needed"] += 1
+        x = r["expiry"]
+        at_expiry = t_check != a + 1
+        if s.kind == "armed" or (s.kind == "served" and at_expiry):
+            if s.d <= x + u:
+                result["OK" if s.write[0] >= target["start"][0] else "no write needed"] += 1
+            else:
+                unexplained(r, f"the deadline covering it is {(s.d - x) / 1e3:+.1f} us from its expiry")
         else:
-            result["UNEXPLAINED"] += 1
-            where = "disarmed" if d_after is None else f"{(d_after - r['expiry']) / 1e3:+.1f} us from its expiry"
-            notes.append(f"round {r['round']} {r['action']}: the deadline after it is {where}")
+            unexplained(r, f"while it was pending the device was {describe(s, x)}")
     return {**result, "notes": notes, "actions": len(rows)}
 
 
@@ -677,31 +868,53 @@ def background(ev: TimerEvents, session_pid: int | None, procs: dict[int, tuple]
 # --- SMI counts --------------------------------------------------------------------------------
 
 
-def load_smi(path: pathlib.Path, anchors: tuple[int, int] | None) -> list[tuple]:
-    """perf stat -I intervals: (start, end, count) in monotonic time. perf's
-    times are relative to its own start s, which lies between the anchor
-    taken before it started and the time its first interval (at s + t1) was
-    seen, minus t1; each interval is widened to cover both ends."""
-    rows = []
-    if anchors is None or not path.exists():
-        return rows
-    for line in path.read_text().splitlines():
-        if not line or line.startswith("#"):
+def load_smi(path: pathlib.Path, anchors: tuple[int, int] | None,
+             window: tuple[int, int] | None = None) -> tuple[list[tuple], list[str]]:
+    """perf stat -I intervals: (start, end, count) in monotonic time, and the
+    series' problems. perf's times are relative to its own start s, which
+    lies between the anchor taken before it started and the time its first
+    interval (at s + t1) was seen, minus t1; each interval is widened to
+    cover both ends. A count that is not a number (perf's "<not counted>"),
+    times that do not advance, a gap over three median intervals and a
+    series not covering the run's window are problems, as are a missing
+    anchor or file."""
+    if anchors is None:
+        return [], ["the record has no valid SMI anchor"]
+    if not path.exists():
+        return [], ["no SMI count file"]
+    rows, problems = [], []
+    for line in path.read_text(errors="replace").splitlines():
+        if not line.strip() or line.startswith("#"):
             continue
         f = line.split(",")
         try:
-            rows.append((float(f[0]), int(float(f[1]))))
+            t = float(f[0])
         except (ValueError, IndexError):
+            problems.append(f"an SMI count line without a time: {line[:60]}")
             continue
+        n = f[1].strip() if len(f) > 1 else ""
+        if not n.isdigit():
+            problems.append(f"an SMI count that is not a number ({n or 'none'}) at {t:.3f} s")
+            continue
+        rows.append((t, int(n)))
     if not rows:
-        return rows
+        return [], problems + ["no SMI counts"]
     before, seen = anchors
+    if seen < before:
+        problems.append("the SMI anchor's times go backwards")
+    steps = [b[0] - a[0] for a, b in zip(rows, rows[1:])]
+    if any(d <= 0 for d in steps):
+        problems.append("the SMI intervals' times do not advance")
+    elif steps and max(steps) > 3 * statistics.median(steps):
+        problems.append(f"a gap of {max(steps):.3f} s in the SMI counts")
     lo, hi = before, max(before, seen - int(rows[0][0] * 1e9))
     out, prev = [], 0.0
     for t, n in rows:
         out.append((lo + int(prev * 1e9), hi + int(t * 1e9), n))
         prev = t
-    return out
+    if window and (out[0][0] > window[0] or out[-1][1] < window[1]):
+        problems.append("the SMI counts do not cover the run")
+    return out, problems
 
 
 # --- The report --------------------------------------------------------------------------------
@@ -719,21 +932,47 @@ def record_value(record: list[str], key: str) -> str | None:
     return None
 
 
+def record_offsets(record: list[str]) -> dict:
+    """REALTIME, BOOTTIME and TAI minus MONOTONIC (ns) from the run record's
+    clock pair and clock offsets lines; None where not recorded."""
+    text = "\n".join(record)
+    out = {}
+    for key, name in (("REALTIME", "realtime"), ("BOOTTIME", "boottime"), ("TAI", "tai")):
+        m = re.search(rf"\b{name}_minus_monotonic_ns (-?\d+)", text)
+        out[key] = int(m[1]) if m else None
+    return out
+
+
 def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple], record: list[str],
-           failures: list, top: int, out) -> None:
-    """The timer service section of trace_correlate's report."""
-    mode_timer = any(line.strip() == "mode: timer" for line in record)
-    if not ev.present():
-        if mode_timer:
-            failures.append("timer service: a timer-mode run without its deadline, idle or lifecycle events")
-            print("  timer service: no timer-mode events, though the run is in the timer mode", file=out)
-        return
+           failures: list, top: int, out, sleep_calls: list[int] | None = None) -> None:
+    """The timer service section of trace_correlate's report, for a run
+    recorded in the timer mode. The evidence the mode records must be
+    there: the deadline writes, local timer interrupts and system calls on
+    the real-time CPU, the worker's sleep calls and timer armings, both
+    buffers' loss counts (zero), the TSC instance, sampler pairs on a
+    tracer CPU and on the real-time CPU before and after the run, a valid
+    SMI count series, and the exerciser's file when the record says it ran.
+    A late service is a result, not a failure."""
+    rt = ev.rt_cpu
+    calls = sorted(sleep_calls or [])
     print("  timer service (the real-time CPU's deadlines, idle transitions and interrupts):", file=out)
+    for what, ok in ((f"deadline writes on CPU {rt}", ev.writes),
+                     (f"local timer interrupts on CPU {rt}", len(ev.anchors) >= 3),
+                     (f"system calls on CPU {rt}", ev.syscalls),
+                     ("sleep calls of the worker", calls),
+                     ("timer armings of the worker",
+                      any(s[2] == ev.tid and s[5] == "hrtimer_wakeup" for s in ev.starts))):
+        if not ok:
+            failures.append(f"timer service: the timer-mode run has no {what}")
+            print(f"    MISSING: {what}", file=out)
     for key, what in (("trace overruns:", "the trace"), ("tsc instance overruns:", "the TSC instance")):
         over = record_value(record, key)
+        tok = over.split()[0] if over else ""
         if over is None:
             failures.append(f"timer service: the record has no count of {what}'s losses")
-        elif over.split()[0] != "0":
+        elif not tok.isdigit():
+            failures.append(f"timer service: the record has no valid count of {what}'s losses ({over})")
+        elif tok != "0":
             failures.append(f"timer service: {what} lost events ({over})")
         print(f"    {key} {over}", file=out)
     # The conversion.
@@ -745,7 +984,7 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
     if not inst.exists() or rate is None:
         failures.append("timer service: no TSC instance or sampler pairs")
     else:
-        tsc, problems = load_instance(inst, ev.rt_cpu)
+        tsc, problems = load_instance(inst, rt)
         pairs, mp = match_anchors(ev.anchors, tsc, rate)
         problems += mp
         for p in problems:
@@ -763,6 +1002,16 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             res = [r for r, _ in rs]
             print(f"    sampler on CPU {cpu}: n={len(rs)} residual median {statistics.median(res):+.0f} ns, "
                   f"|residual| + half bracket max {max(abs(r) + h for r, h in rs):.0f} ns", file=out)
+        # The sampler's promised windows, inside the anchors: a tracer CPU,
+        # and the real-time CPU before and after the run.
+        lo, hi = (pairs[0][1], pairs[-1][1]) if pairs else (0, -1)
+        inside = [s for s in samp if lo <= s[0] and s[2] <= hi]
+        if not any(s[3] != rt for s in inside):
+            failures.append("timer service: no sampler pairs on a tracer CPU inside the anchors")
+        if ev.window and not (any(s[3] == rt and s[2] < ev.window[0] for s in inside)
+                              and any(s[3] == rt and s[0] > ev.window[1] for s in inside)):
+            failures.append(f"timer service: no sampler pairs on CPU {rt} inside the anchors both before and after "
+                            "the run")
         if u is None:
             failures.append("timer service: the conversion's uncertainty is not validated (no held-out anchors "
                             "or sampler pairs inside the anchors)")
@@ -771,19 +1020,18 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             print(f"    conversion uncertainty U: {u:.0f} ns (limit {U_LIMIT_NS} ns)", file=out)
             if u > U_LIMIT_NS:
                 failures.append(f"timer service: the conversion's uncertainty {u:.0f} ns exceeds {U_LIMIT_NS} ns")
-    # The worker's sleeps.
-    offset = None
-    for line in record:
-        m = re.search(r"realtime_minus_monotonic_ns (-?\d+)", line)
-        if m:
-            offset = int(m[1])
-            break
+    tl = Timeline(ev, conv, u)
+    offsets = record_offsets(record)
+    lt = Lifetimes(ev, conv, u, offsets)
+    # SMIs.
     anchor = record_value(record, "smi anchor monotonic_ns:")
-    smi_anchors = None
     parts = anchor.split() if anchor else []
-    if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-        smi_anchors = (int(parts[0]), int(parts[1]))
-    smi = load_smi(pathlib.Path(str(csv_path) + ".smi.csv"), smi_anchors)
+    smi_anchors = (int(parts[0]), int(parts[1])) if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit() \
+        else None
+    smi, smi_problems = load_smi(pathlib.Path(str(csv_path) + ".smi.csv"), smi_anchors, ev.window)
+    for p in smi_problems:
+        failures.append(f"timer service: {p}")
+    # The worker's sleeps.
     arms = sorted((s[0], s[4], s[6]) for s in ev.starts if s[2] == ev.tid and s[5] == "hrtimer_wakeup")
     arm_ts = [a[0] for a in arms]
     results = []
@@ -793,7 +1041,9 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
         if not mine:
             results.append({"class": "INDETERMINATE", "late": now - sched, "detail": "no arming recorded", "i": i})
             continue
-        r = classify(ev, conv, u, (mine[-1][0], mine[-1][2]), (entry, now), smi)
+        c0, c1 = bisect.bisect_right(calls, prev_end), bisect.bisect_right(calls, mine[-1][0])
+        call = calls[c1 - 1] if c1 > c0 else None
+        r = classify(ev, tl, (mine[-1][0], mine[-1][2]), (entry, now), smi, call)
         r["i"] = i
         results.append(r)
     counts: dict[str, int] = {}
@@ -806,31 +1056,35 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
               + (f" ({r['detail']})" if r.get("detail") else ""), file=out)
     # The deadline writes and their attribution.
     if u is not None and u <= U_LIMIT_NS:
-        att = attribute(ev, conv, u, offset)
+        att = attribute(ev, lt, conv, u)
         ind = sum(1 for a in att if a[2].startswith("INDETERMINATE"))
         print(f"    deadline writes: {len(att)}, {sum(1 for a in att if a[2] == 'disarmed')} disarming, "
               f"{ind} INDETERMINATE in attribution", file=out)
-    # Idle states and SMIs.
+    # Idle states, NMIs and SMIs.
     states: dict[int, int] = {}
     for _, s in ev.idle:
         if s != IDLE_EXIT:
             states[s] = states.get(s, 0) + 1
     print(f"    idle entries by state: {dict(sorted(states.items()))}; idle misses {len(ev.idle_miss)}; "
-          f"NMIs {len(ev.nmis)}; SMIs {sum(s[2] for s in smi) if smi else 'not counted'}", file=out)
+          f"NMIs {len(ev.nmis)}; SMIs {sum(x[2] for x in smi) if smi else 'not counted'}", file=out)
     # The exerciser.
     exf = pathlib.Path(str(csv_path) + ".exerciser.csv")
+    if record_value(record, "exerciser:") is not None and not exf.exists():
+        failures.append("timer service: the record says the exerciser ran, but its file is missing")
     if exf.exists():
         if u is None or u > U_LIMIT_NS:
             failures.append("timer service: the exerciser cannot be checked without a validated conversion")
         else:
             head, rows = load_exerciser(exf)
-            x = explain_exerciser(ev, conv, u, head, rows)
+            x = explain_exerciser(ev, tl, lt, head, rows)
             print(f"    exerciser: {x['actions']} actions: OK {x['OK']}, no write needed {x['no write needed']}, "
                   f"INDETERMINATE {x['INDETERMINATE']}, UNEXPLAINED {x['UNEXPLAINED']}", file=out)
             for n in x["notes"][:top]:
                 print(f"      {n}", file=out)
             if x["UNEXPLAINED"]:
                 failures.append(f"timer service: {x['UNEXPLAINED']} exerciser actions unexplained")
+            if not x["actions"]:
+                failures.append("timer service: the exerciser's file has no actions")
     # Background load.
     batch = set((record_value(record, "batch workloads:") or "").split(",")) - {""}
     sp = record_value(record, "session pid:")

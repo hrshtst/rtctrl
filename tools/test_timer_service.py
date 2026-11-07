@@ -9,11 +9,19 @@ uncertainty from held-out anchors and the bracketed sampler, which alone
 detects a systematic offset of the instance's timestamps; each class of a
 late service (a deadline written late or disarmed, an interrupt late from
 idle and while busy in user mode and in a system call, a late sleep call,
-and an INDETERMINATE deadline); the exerciser's actions (a needed write,
-a legitimate no-write, a re-arm, cancellations with and without a write, a
-missing write, a timer that expired on another CPU, an action with no
-event); the background load by lineage, with a batch workload; and the
-instance, sampler and SMI files.
+a timer armed late, and INDETERMINATE deadlines), on a deadline timeline
+that a firing disarms (an already-served deadline is not in effect); the
+deadline writes' attribution, which needs the timer's residency on the
+real-time CPU (its expiry there, a pinned arming, or the write that
+followed its arming), never a matching expiry alone, and converts other
+clocks by their recorded offsets; the exerciser's actions followed through
+each arming's lifetime (a needed write, a legitimate no-write, re-arms
+earlier and after an expiry, cancellations with and without a write and
+after an expiry, an expiry inside the arming call, a missing write, a timer
+on another CPU or of unknown residency, a pinned arming, an action with no
+event, and a cancellation without its event while its arming is pending);
+the background load by lineage, with a batch workload; and the instance,
+sampler and SMI files, with the SMI series' problems.
 """
 
 from __future__ import annotations
@@ -110,116 +118,289 @@ def classes() -> None:
     a = ev.anchors
     e = a[50] + 100_000  # an expiry between anchors
 
-    def case(write_at, deadline, served, setup=None, arm_at=None):
-        ev.writes = [(write_at, tsc(deadline) if deadline else 0, False)]
+    def case(writes, served, setup=None, arm_at=None, call=None, extra=(), uu=None):
+        """writes: (ts, deadline or 0[, failed]) in order; served: the local
+        timer interrupt that served the expiry; extra: other interrupts."""
+        ev.writes = [(w[0], tsc(w[1]) if w[1] else 0, len(w) > 2 and w[2]) for w in writes]
         ev.idle, ev.rt_switches, ev.syscalls, ev.nmis = [], [], [], []
-        ev.anchors = sorted(set(a) | {served})
+        ev.anchors = sorted([x for x in a if x < writes[0][0]] + [served, *extra])
         if setup:
             setup()
-        return ts.classify(ev, conv, u, (arm_at if arm_at is not None else e - 500_000, e), (served + 300, served + 200), [])
+        tl = ts.Timeline(ev, conv, u if uu is None else uu)
+        return ts.classify(ev, tl, (arm_at if arm_at is not None else e - 500_000, e), (served + 300, served + 200),
+                           [], call)
 
-    r = case(e - 400_000, e + 900_000, e + 941_000)
-    expect(r["class"] == "deadline late", f"deadline late: {r}")
-    r = case(e - 400_000, None, e + 941_000)
-    expect(r["class"] == "deadline late" and "disarmed" in r["detail"], f"disarmed: {r}")
+    r = case([(e - 400_000, e + 900_000)], e + 941_000)
+    expect(r["class"] == "deadline late" and "the deadline in effect was +900.0 us" in r["detail"], f"deadline late: {r}")
+    r = case([(e - 400_000, 0), (e + 900_000, e + 940_000)], e + 941_000)
+    expect(r["class"] == "deadline late" and "disarmed (written -400.0 us)" in r["detail"], f"disarmed: {r}")
+    # A deadline already served is not still armed (the reviewer's case):
+    # the next one was written at E+90 us for E+100 us.
+    r = case([(e - 400_000, e - 300_000), (e + 90_000, e + 100_000)], e + 100_000, extra=[e - 300_000])
+    expect(r["class"] == "deadline late" and "was served by the interrupt at -300.0 us" in r["detail"]
+           and "written +90.0 us" in r["detail"], f"already served: {r}")
+    # An interrupt after a served deadline with no write, one before the
+    # deadline armed (pending from before its write), and one after a failed
+    # write are INDETERMINATE.
+    r = case([(e - 400_000, e - 300_000)], e + 100_000, extra=[e - 300_000])
+    expect(r["class"] == "INDETERMINATE" and "not armed" in r["detail"], f"served, then an interrupt: {r}")
+    r = case([(e - 400_000, e + 300_000)], e + 100_000)
+    expect(r["class"] == "INDETERMINATE" and "pending from before" in r["detail"], f"interrupt before: {r}")
+    r = case([(e - 400_000, e), (e - 200_000, e + 300_000, True)], e + 300_000)
+    expect(r["class"] == "INDETERMINATE" and "failed" in r["detail"], f"a failed write: {r}")
 
     def idle():
         ev.idle = [(e - 300_000, 2)]
-    r = case(e - 400_000, e, e + 150_000, idle)
+    r = case([(e - 400_000, e)], e + 150_000, idle)
     expect(r["class"] == "interrupt late from idle" and "idle state 2" in r["detail"], f"idle: {r}")
 
     def busy():
         ev.rt_switches = [(e - 300_000, 999, "stress-ng-cpu")]
         ev.syscalls = [(e - 250_000, 999, False)]
         ev.nmis = [(e + 10_000, e + 14_000, "perf_event_nmi_handler")]
-    r = case(e - 400_000, e, e + 600_000, busy)
+    r = case([(e - 400_000, e)], e + 600_000, busy)
     expect(r["class"] == "interrupt late while busy" and "stress-ng-cpu" in r["detail"]
            and "in user mode or a fault" in r["detail"] and "1 NMIs" in r["detail"], f"busy user: {r}")
 
     def kernel():
         ev.rt_switches = [(e - 300_000, 777, "KMS thread")]
         ev.syscalls = [(e - 200_000, 777, True)]
-    r = case(e - 400_000, e, e + 300_000, kernel)
+    r = case([(e - 400_000, e)], e + 300_000, kernel)
     expect(r["class"] == "interrupt late while busy" and "in a system call" in r["detail"], f"busy kernel: {r}")
 
     def entered_elsewhere():
         ev.rt_switches = [(e - 300_000, 777, "KMS thread")]
         ev.syscalls = [(e + 200_000, 777, False)]
-    r = case(e - 400_000, e, e + 300_000, entered_elsewhere)
+    r = case([(e - 400_000, e)], e + 300_000, entered_elsewhere)
     expect("in a system call" in r["detail"], f"a call entered on another CPU: {r}")
 
     def unknown():
         ev.rt_switches = [(e - 300_000, 999, "stress-ng-cpu")]
-    r = case(e - 400_000, e, e + 300_000, unknown)
+    r = case([(e - 400_000, e)], e + 300_000, unknown)
     expect("mode unknown" in r["detail"], f"no system call recorded: {r}")
-    r = case(e - 400_000, e, e + 300_000, arm_at=e + 50_000)
-    expect(r["class"] == "late sleep call", f"late sleep call: {r}")
-    r = case(e - 400_000, e, e + 2_000)
+    # A sleep call entered after the expiry, and one entered before it whose
+    # timer was armed after it (the reviewer's case), are told apart.
+    r = case([(e - 400_000, e)], e + 300_000, arm_at=e + 50_000, call=e + 20_000)
+    expect(r["class"] == "late sleep call" and "entered 20.0 us after" in r["detail"], f"late sleep call: {r}")
+    r = case([(e - 400_000, e)], e + 300_000, arm_at=e + 50_000, call=e - 100_000)
+    expect(r["class"] == "timer armed late" and "entered 100.0 us before its expiry" in r["detail"]
+           and "armed 50.0 us after" in r["detail"], f"timer armed late: {r}")
+    r = case([(e - 400_000, e)], e + 300_000, arm_at=e + 50_000)
+    expect(r["class"] == "timer armed late" and "not recorded" in r["detail"], f"armed late, no call: {r}")
+    r = case([(e - 400_000, e)], e + 2_000)
     expect(r["class"] == "on time", f"on time: {r}")
     ev.writes = [(e - 400_000, conv.t[-1] + 10, False)]
-    r = ts.classify(ev, conv, u, (e - 500_000, e), (e + 100_300, e + 100_200), [])
+    ev.anchors = sorted([x for x in a if x < e - 400_000] + [e + 100_000])
+    r = ts.classify(ev, ts.Timeline(ev, conv, u), (e - 500_000, e), (e + 100_300, e + 100_200), [])
     expect(r["class"] == "INDETERMINATE", f"outside the anchors: {r}")
-    r = ts.classify(ev, conv, 9_000.0, (e - 500_000, e), (e + 100_300, e + 100_200), [])
-    expect(r["class"] == "INDETERMINATE", f"U above the limit: {r}")
+    r = case([(e - 400_000, e)], e + 100_000, uu=9_000.0)
+    expect(r["class"] == "INDETERMINATE" and "not validated" in r["detail"], f"U above the limit: {r}")
     # The boundary includes U: a deadline 400 ns after the expiry is on time.
-    r = case(e - 400_000, e + 400, e + 100_000, busy)
+    r = case([(e - 400_000, e + 400)], e + 100_000, busy)
     expect(r["class"] == "interrupt late while busy", f"within U: {r}")
-    r = case(e - 400_000, e + 600, e + 100_000, busy)
+    r = case([(e - 400_000, e + 600)], e + 100_000, busy)
     expect(r["class"] == "deadline late", f"beyond U: {r}")
+
+
+def residency() -> None:
+    """Deadline attribution needs the timer's residency on the real-time
+    CPU, not only a matching expiry."""
+    ev, conv, u = base_events()
+    t = ev.anchors[20] + 100_000
+    e = t + 400_000
+    other, worker, tick = "0xffff0000bbbb", "0xffff0000cccc", "0xffff0000dddd"
+    ev.writes = [(t + 10_000, tsc(e), False)]
+
+    # The run record's clock offsets (no suspend: BOOTTIME is MONOTONIC).
+    recorded = {"REALTIME": 1_700_000_000_000_000_000, "BOOTTIME": 0, "TAI": 1_700_000_037_000_000_000}
+
+    def att(offsets=None):
+        return ts.attribute(ev, ts.Lifetimes(ev, conv, u, {**recorded, **(offsets or {})}), conv, u)[0][2]
+
+    # The reviewer's case: armed and expired on CPU 7 at the deadline's value.
+    ev.starts = [(t, 7, 777, "other-task", other, "timerfd_tmrproc", e, e, "ABS")]
+    ev.expiries = [(e + 1_000, 7, other, e + 900, "timerfd_tmrproc")]
+    r = att()
+    expect(r == "INDETERMINATE (no pending timer on this CPU at that expiry)", f"expired on CPU 7: {r}")
+    # Armed on CPU 7 and cancelled: its residency is unknown.
+    ev.expiries, ev.cancels = [], [(e - 50_000, 7, 777, other, False)]
+    r = att()
+    expect(r == "INDETERMINATE (1 matching timers of unknown residency)", f"unknown residency: {r}")
+    # The worker's timer, expiring on CPU 3, with another CPU's pinned tick at
+    # the same expiry: the worker's.
+    ev.cancels = []
+    ev.starts = [(t, RT, TID, "x7_bus_timing", worker, "hrtimer_wakeup", e, e, "REL"),
+                 (t, 5, 0, "swapper/5", tick, "tick_nohz_handler", e, e, "ABS|PINNED|HARD")]
+    ev.expiries = [(e + 1_000, RT, worker, e + 900, "hrtimer_wakeup")]
+    r = att()
+    expect(r == f"hrtimer_wakeup of x7_bus_timing ({TID})", f"the worker's: {r}")
+    # A pinned arming on CPU 3 is resident there: two matching timers.
+    ev.starts.append((t, RT, 0, "swapper/3", tick + "3", "tick_nohz_handler", e, e, "ABS|PINNED|HARD"))
+    r = att()
+    expect(r == "INDETERMINATE (2 pending timers at that expiry)", f"two on CPU 3: {r}")
+    ev.starts.pop()
+    # A CLOCK_BOOTTIME timer of unknown residency: unconvertible without its
+    # offset; with it, matching or not.
+    boot = "0xffff0000eeee"
+    ev.clockid[boot] = "CLOCK_BOOTTIME"
+    ev.clockid[worker] = "CLOCK_MONOTONIC"  # its hrtimer_setup was traced
+    ev.starts.append((t, 9, 55, "systemd", boot, "hrtimer_wakeup", e + 5_000_000_000, e + 5_000_000_000, "ABS"))
+    r = att({"BOOTTIME": None})
+    expect(r == "INDETERMINATE (1 pending timers whose clock cannot be converted)", f"boottime, no offset: {r}")
+    r = att({"BOOTTIME": 5_000_000_000})
+    expect(r == "INDETERMINATE (1 matching timers of unknown residency)", f"boottime matching: {r}")
+    r = att({"BOOTTIME": 4_000_000_000})
+    expect(r == f"hrtimer_wakeup of x7_bus_timing ({TID})", f"boottime elsewhere in time: {r}")
+    # A clock inferred from the expiry's magnitude takes both readings.
+    expect(ts.mono_values(ev, "0xnone", 1_000, {"BOOTTIME": 7}) == [1_000.0, 993.0], "magnitude: monotonic or boottime")
+    expect(ts.mono_values(ev, "0xnone", 2 * 10**18, {"REALTIME": 10**18, "TAI": None}) is None, "TAI offset missing")
 
 
 def exerciser() -> None:
     ev, conv, u = base_events()
-    a = ev.anchors
+    base = ev.anchors[20]
+    ev.anchors = []
     x = 777
     head = {"tid": str(x)}
     addr = "0xffff0000aaaa"
-    base = a[20]
-    ev.writes = [(base, tsc(base + 5_000_000), False)]  # a far deadline in effect
-    rows, starts, cancels, expiries = [], [], [], []
+    rows: list[dict] = []
+    starts, cancels, expiries, writes = [], [], [], []
 
-    def add(rnd, kind, action, t, expiry, write=None, start=True, cancel=False, exp_cpu: int | None = RT):
-        rows.append({"round": rnd, "kind": kind, "action": action, "before": t, "after": t + 10_000,
-                     "expiry": expiry})
-        if cancel:
-            cancels.append((t + 2_000, RT, x, addr, False))
-        if start:
-            starts.append((t + 3_000, RT, x, "timer_exerci", addr, "timerfd_tmrproc", expiry, expiry, "ABS"))
-        if write is not None:
-            ev.writes.append((t + 4_000, tsc(write) if write else 0, False))
-        if exp_cpu is not None and action != "cancel":
-            expiries.append((expiry + 1_000, exp_cpu, addr, expiry + 900, "timerfd_tmrproc"))
+    def row(rnd, kind, action, t, expiry, dur=10_000):
+        rows.append({"round": rnd, "kind": kind, "action": action, "before": t, "after": t + dur, "expiry": expiry})
+
+    def start(t, expiry, mode="ABS"):
+        starts.append((t, RT, x, "timer_exerci", addr, "timerfd_tmrproc", expiry, expiry, mode))
+
+    def cancel(t):
+        cancels.append((t, RT, x, addr, False))
+
+    def write(t, d):
+        writes.append((t, tsc(d) if d else 0, False))
+
+    def expire(at, cpu=RT):
+        if cpu == RT:
+            ev.anchors.append(at - 500)  # the interrupt it runs in
+        expiries.append((at, cpu, addr, at - 100, "timerfd_tmrproc"))
 
     t = base + 100_000
-    add(1, "expire", "arm", t, t + 400_000, write=t + 400_000)          # earlier: written
+    # 1: a write needed.
+    row(1, "expire", "arm", t, t + 400_000)
+    start(t + 3_000, t + 400_000)
+    write(t + 4_000, t + 400_000)
+    expire(t + 401_000)
     t += 1_000_000
-    ev.writes.append((t - 1_000, tsc(t + 200_000), False))              # an earlier timer armed
-    add(2, "expire", "arm", t, t + 600_000)                             # later: no write needed
+    # 2: an earlier timer's deadline in effect: no write needed (its
+    # interrupt then reprograms for this one).
+    write(t - 1_000, t + 200_000)
+    row(2, "expire", "arm", t, t + 600_000)
+    start(t + 3_000, t + 600_000)
+    ev.anchors.append(t + 200_000)
+    write(t + 201_000, t + 600_000)
+    expire(t + 601_000)
     t += 1_000_000
-    add(3, "earlier", "rearm", t, t + 300_000, write=t + 300_000, cancel=True)
+    # 3: armed, then re-armed earlier (a cancellation, then the arming).
+    row(3, "earlier", "arm", t, t + 800_000)
+    start(t + 3_000, t + 800_000)
+    write(t + 4_000, t + 800_000)
+    row(3, "earlier", "rearm", t + 60_000, t + 400_000)
+    cancel(t + 62_000)
+    start(t + 63_000, t + 400_000)
+    write(t + 64_000, t + 400_000)
+    expire(t + 401_000)
     t += 1_000_000
-    add(4, "cancel", "arm", t, t + 500_000, write=t + 500_000, exp_cpu=None)
-    add(4, "cancel", "cancel", t + 100_000, t + 500_000, start=False, cancel=True, write=t + 3_000_000)
+    # 4: cancelled; the device stays armed for it (a spurious interrupt follows).
+    row(4, "cancel", "arm", t, t + 500_000)
+    start(t + 3_000, t + 500_000)
+    write(t + 4_000, t + 500_000)
+    row(4, "cancel", "cancel", t + 100_000, t + 500_000)
+    cancel(t + 102_000)
     t += 1_000_000
-    add(5, "cancel", "arm", t, t + 500_000, write=t + 500_000, exp_cpu=None)
-    add(5, "cancel", "cancel", t + 100_000, t + 500_000, start=False, cancel=True)  # no write: spurious path
+    # 5: cancelled; the device reprogrammed.
+    row(5, "cancel", "arm", t, t + 500_000)
+    start(t + 3_000, t + 500_000)
+    write(t + 4_000, t + 500_000)
+    row(5, "cancel", "cancel", t + 100_000, t + 500_000)
+    cancel(t + 102_000)
+    write(t + 103_000, t + 5_000_000)
     t += 1_000_000
-    ev.writes.append((t - 1_000, tsc(t + 900_000), False))
-    add(6, "expire", "arm", t, t + 400_000)                             # earlier, but no write: unexplained
+    # 6: a later deadline in effect and no write: unexplained.
+    write(t - 1_000, t + 900_000)
+    row(6, "expire", "arm", t, t + 400_000)
+    start(t + 3_000, t + 400_000)
+    expire(t + 901_000)
     t += 1_000_000
-    add(7, "expire", "arm", t, t + 400_000, exp_cpu=5)                  # expired elsewhere: indeterminate
+    # 7: expired on another CPU: indeterminate.
+    row(7, "expire", "arm", t, t + 400_000)
+    start(t + 3_000, t + 400_000)
+    expire(t + 401_000, cpu=5)
     t += 1_000_000
-    rows.append({"round": 8, "kind": "expire", "action": "arm", "before": t, "after": t + 10_000,
-                 "expiry": t + 400_000})                                # no event at all
+    # 8: no event at all.
+    row(8, "expire", "arm", t, t + 400_000)
+    t += 1_000_000
+    # 9: the reviewer's case: it expires and is served inside its arming call,
+    # and the next deadline is written before the call returns.
+    row(9, "expire", "arm", t, t + 5_000)
+    start(t + 1_000, t + 5_000)
+    write(t + 2_000, t + 5_000)
+    expire(t + 6_000)
+    write(t + 7_000, t + 1_000_000)
+    t += 1_000_000
+    # 11: a cancellation after the timer had expired: nothing to cancel.
+    row(11, "cancel", "arm", t, t + 300_000)
+    start(t + 3_000, t + 300_000)
+    write(t + 4_000, t + 300_000)
+    expire(t + 301_000)
+    row(11, "cancel", "cancel", t + 400_000, t + 300_000)
+    t += 1_000_000
+    # 12: re-armed later after the first arming had expired (an overrun
+    # sleep): no cancellation.
+    row(12, "later", "arm", t, t + 200_000)
+    start(t + 3_000, t + 200_000)
+    write(t + 4_000, t + 200_000)
+    expire(t + 201_000)
+    row(12, "later", "rearm", t + 250_000, t + 700_000)
+    start(t + 253_000, t + 700_000)
+    write(t + 254_000, t + 700_000)
+    expire(t + 701_000)
+    t += 1_000_000
+    # 13: an arming covered by an earlier deadline and then cancelled: its
+    # residency is unknown (no expiry, no write after it, not pinned).
+    write(t - 1_000, t + 100_000)
+    row(13, "cancel", "arm", t, t + 500_000)
+    start(t + 3_000, t + 500_000)
+    ev.anchors.append(t + 100_000)
+    write(t + 101_000, t + 500_000)
+    row(13, "cancel", "cancel", t + 200_000, t + 500_000)
+    cancel(t + 202_000)
+    t += 1_000_000
+    # 14: a pinned arming is resident on its CPU: no write needed.
+    write(t - 1_000, t + 300_000)
+    row(14, "cancel", "arm", t, t + 500_000)
+    start(t + 3_000, t + 500_000, mode="ABS|PINNED")
+    row(14, "cancel", "cancel", t + 100_000, t + 500_000)
+    cancel(t + 102_000)
+    t += 1_000_000
+    # 15: the reviewer's case: a cancellation without its event while the
+    # arming is pending (an earlier round's expiry does not excuse it).
+    row(15, "cancel", "arm", t, t + 500_000)
+    start(t + 3_000, t + 500_000)
+    write(t + 4_000, t + 500_000)
+    row(15, "cancel", "cancel", t + 100_000, t + 500_000)
     rows.append({"round": 1, "kind": "expire", "action": "expired", "before": base + 600_000,
                  "after": base + 600_000, "expiry": base + 500_000})  # an observation, not an action
     ev.starts, ev.cancels, ev.expiries = starts, cancels, expiries
-    ev.writes.sort()
-    r = ts.explain_exerciser(ev, conv, u, head, rows)
-    expect(r["actions"] == 10, f"actions {r}")
-    expect(r["OK"] == 6 and r["no write needed"] == 1 and r["INDETERMINATE"] == 1 and r["UNEXPLAINED"] == 2,
+    ev.writes = sorted(writes)
+    ev.anchors.sort()
+    tl = ts.Timeline(ev, conv, u)
+    r = ts.explain_exerciser(ev, tl, ts.Lifetimes(ev, conv, u, {"BOOTTIME": 0}), head, rows)
+    expect(r["actions"] == 22, f"actions {r}")
+    expect(r["OK"] == 14 and r["no write needed"] == 2 and r["INDETERMINATE"] == 3 and r["UNEXPLAINED"] == 3,
            f"exerciser classes: {r}")
-    expect(any("round 6" in n for n in r["notes"]) and any("round 8" in n for n in r["notes"]), f"notes {r['notes']}")
+    for n in (6, 8, 15):
+        expect(any(f"round {n} " in m for m in r["notes"]), f"round {n} noted: {r['notes']}")
+    expect(any("round 15 cancel: its arming stayed pending" in m for m in r["notes"]), f"round 15: {r['notes']}")
+    expect(any("round 7 arm: its timer was on CPU 5 (its expiry)" in m for m in r["notes"]), f"round 7: {r['notes']}")
 
 
 def load() -> None:
@@ -260,13 +441,25 @@ def files() -> None:
         sf.write_text("# started\n0.010000000,0,,msr/smi/,1,100.00,,\n0.020000000,2,,msr/smi/,1,100.00,,\n")
         # perf started between 1.000 s (before) and 1.015 s - 0.010 s (its
         # first interval, at +0.010 s, was seen at 1.015 s).
-        s = ts.load_smi(sf, (1_000_000_000, 1_015_000_000))
-        expect(s == [(1_000_000_000, 1_015_000_000, 0), (1_010_000_000, 1_025_000_000, 2)], f"smi {s}")
-
+        s, pr = ts.load_smi(sf, (1_000_000_000, 1_015_000_000), (1_002_000_000, 1_020_000_000))
+        expect(s == [(1_000_000_000, 1_015_000_000, 0), (1_010_000_000, 1_025_000_000, 2)] and not pr, f"smi {s} {pr}")
+        _, pr = ts.load_smi(sf, (1_000_000_000, 1_015_000_000), (1_002_000_000, 1_030_000_000))
+        expect(pr == ["the SMI counts do not cover the run"], f"smi coverage {pr}")
+        _, pr = ts.load_smi(sf, None)
+        expect(pr == ["the record has no valid SMI anchor"], f"smi anchor {pr}")
+        _, pr = ts.load_smi(p / "absent.csv", (1, 2))
+        expect(pr == ["no SMI count file"], f"smi file {pr}")
+        sf.write_text("0.010000000,<not counted>,,msr/smi/,0,0.00,,\n0.020000000,1,,msr/smi/,1,100.00,,\n"
+                      "0.030000000,0,,msr/smi/,1,100.00,,\n0.040000000,0,,msr/smi/,1,100.00,,\n"
+                      "0.050000000,0,,msr/smi/,1,100.00,,\n0.110000000,0,,msr/smi/,1,100.00,,\n")
+        _, pr = ts.load_smi(sf, (1_000_000_000, 1_015_000_000))
+        expect(any("not a number (<not counted>)" in x for x in pr) and any("a gap of 0.060 s" in x for x in pr),
+               f"smi problems {pr}")
 
 def main() -> int:
     conversion()
     classes()
+    residency()
     exerciser()
     load()
     files()
