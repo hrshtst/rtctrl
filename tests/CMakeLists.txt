@@ -669,6 +669,17 @@ set_tests_properties(e1_session_scripts_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "e1 session scripts OK"
   LABELS integration)
 
+# The timer service diagnostics' TSC sampler: bracketed pairs on one CPU,
+# a clean stop on SIGTERM, refused arguments.
+if(TARGET tsc_mono_pairs)
+  add_test(NAME tsc_mono_pairs_smoke
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/tsc_mono_pairs_smoke.sh
+      $<TARGET_FILE:tsc_mono_pairs> ${CMAKE_BINARY_DIR}/tsc_mono_pairs_smoke)
+  set_tests_properties(tsc_mono_pairs_smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION "tsc_mono_pairs smoke OK"
+    LABELS integration)
+endif()
+
 # The traced torque-off session (tools/trace_session.sh) over the emulator,
 # with stand-in tracers and no sudo.
 add_test(NAME trace_session_script_smoke

@@ -20,6 +20,12 @@ add_executable(x7_bus_timing bus/x7_bus_timing.cpp)
 target_link_libraries(x7_bus_timing PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_bus_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# The timer service diagnostics' bracketed TSC/CLOCK_MONOTONIC sampler
+# (rdtscp: x86-64 only).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+  add_executable(tsc_mono_pairs bus/tsc_mono_pairs.cpp)
+endif()
+
 set(PTP_GIT_REV_SRC ${CMAKE_BINARY_DIR}/generated/ptp_git_rev.cpp)
 add_custom_target(ptp_git_rev
   COMMAND ${CMAKE_COMMAND} -DOUT=${PTP_GIT_REV_SRC}
