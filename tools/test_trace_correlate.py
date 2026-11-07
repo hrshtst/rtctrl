@@ -293,6 +293,8 @@ class Run:
                     "     0.020000000,0,,msr/smi/,10000000,100.00,,\n")
         if self.opt.get("timer") and not self.opt.get("no_instance"):
             marks = sorted(e[0] for e in self.events if ": local_timer_entry:" in e[2])
+            if self.opt.get("short_instance"):  # an instance that stopped halfway through the run
+                marks = [m for m in marks if m < ORIGIN + ns(len(REPLIES) * PERIOD_US / 2)]
             lines = [f"# entries-in-buffer/entries-written: {len(marks)}/{len(marks)}   #P:32"]
             lines += [f"          <idle>-0       [003] d.h1. {tsc_of(m)}: local_timer_entry: vector=236"
                       for m in marks]
@@ -440,6 +442,8 @@ def main() -> int:
                 ("timer_no_rt_pairs", {"timer": True, "no_rt_pairs": True},
                  "no sampler pairs on CPU 3 inside the anchors both before and after the run"),
                 ("timer_no_smi", {"timer": True, "no_smi": True}, "timer service: no SMI count file"),
+                ("timer_short_instance", {"timer": True, "short_instance": True},
+                 "timer service: the conversion's anchors do not cover the run"),
                 ("timer_bad_losses", {"timer": True, "trace_overruns": "unknown (stats unreadable)"},
                  "the record has no valid count of the trace's losses")):
             code, out, _ = correlate(root, name, **opt)

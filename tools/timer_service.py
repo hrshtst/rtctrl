@@ -12,8 +12,10 @@ anchors: the real-time CPU's local timer interrupts, recorded both in the
 main trace (mono clock) and in a second trace instance on the x86-tsc
 clock. The anchors are matched one-to-one by their interval pattern,
 which uses only the TSC frequency (from the independent sampler), never
-the conversion under test, and a missing or duplicate anchor fails. A
-deadline is converted by linear interpolation between the anchors around
+the conversion under test, and a missing or duplicate anchor fails; an
+isolated suspect anchor, whose own two stamps disagree, is left out of the
+conversion under match_anchors' conditions, and the conversion must cover
+the run. A deadline is converted by linear interpolation between the anchors around
 it, never extrapolated. The conversion's uncertainty U is validated
 independently: the residuals of held-out anchors (every second anchor,
 predicted from the others), and the residuals of a bracketed TSC and
@@ -69,6 +71,9 @@ RES_NS = 1               # timestamp resolution added to U (mono 1 ns; the TSC f
 MSR_TSC_DEADLINE = "6e0"
 IDLE_EXIT = 4294967295   # power:cpu_idle's state on leaving idle
 ANCHOR_CHECK = 50        # intervals compared when aligning the anchors
+SUSPECT_CAP = 0.001      # the most anchors left out of the conversion as suspect (a fraction)
+SUSPECT_MAX_NS = 50_000  # the largest disagreement of a suspect anchor's two stamps
+MIN_CONTINUATION = 5     # the fewest clean intervals after a suspect anchor (at the trace's end)
 TIMER_EVENTS = {"write_msr", "local_timer_entry", "cpu_idle", "cpu_idle_miss", "nmi_handler",
                 "sys_enter", "sys_exit", "page_fault_user", "page_fault_kernel", "hrtimer_start",
                 "hrtimer_cancel", "hrtimer_expire_entry", "hrtimer_init", "hrtimer_setup",
@@ -282,40 +287,98 @@ def fit_rate(pairs: list[tuple]) -> tuple[float, float] | None:
     return my - slope * mx, slope
 
 
-def match_anchors(mono: list[int], tsc: list[int], rate: tuple[float, float]) -> tuple[list[tuple], list[str]]:
+def match_anchors(mono: list[int], tsc: list[int],
+                  rate: tuple[float, float]) -> tuple[list[tuple], list[str], list[tuple]]:
     """Pairs the instance's anchors one-to-one with the main trace's, in
     order, by their interval pattern: the instance's first anchors' intervals
     (TSC counts times the sampler's slope) must match one place in the main
-    trace, and every following interval must match the next main interval.
-    A mismatch is a missing or duplicate anchor. The offset of the
-    conversion is never used."""
+    trace, and every following interval must match the next main interval
+    at the same offset. The offset of the conversion is never used.
+
+    A suspect anchor, one whose own two stamps disagree (both of its
+    intervals disagree, opposite and equal), is left out of the conversion
+    (its interrupt stays in the timeline) only when: the interval across it
+    agrees; it lies more than ANCHOR_CHECK intervals after the previous
+    suspect; its disagreement is at most SUSPECT_MAX_NS; and the next
+    ANCHOR_CHECK intervals (at least MIN_CONTINUATION, at the trace's end)
+    agree at the same offset while no offset of 1 or 2 anchors either way
+    agrees with all of them. At most SUSPECT_CAP of the anchors may be left
+    out. Any other disagreement is a missing or duplicate anchor and fails.
+    Equal counts and opposing errors do not prove that nothing is missing:
+    the zero loss counts of both buffers, and these conditions, are the
+    evidence. Returns the pairs, the problems and the suspects (instance
+    index, main stamp, disagreement in ns: the main interval into it minus
+    the instance's)."""
     slope = rate[1]
-    problems: list[str] = []
     if len(tsc) < 3 or len(mono) < 3:
-        return [], ["fewer than three anchors in an instance"]
+        return [], ["fewer than three anchors in an instance"], []
+
+    def dev(i: int, j: int) -> float:  # the interval into instance anchor i, main anchor j
+        return (mono[j] - mono[j - 1]) - (tsc[i] - tsc[i - 1]) * slope
 
     def close(dm: float, dt: float) -> bool:
         return abs(dm - dt) <= 2_000 + 1e-4 * abs(dt)
+
+    def agrees(i: int, j: int) -> bool:
+        return 1 <= j < len(mono) and close(mono[j] - mono[j - 1], (tsc[i] - tsc[i - 1]) * slope)
 
     k = min(ANCHOR_CHECK, len(tsc) - 1)
     want = [(tsc[i + 1] - tsc[i]) * slope for i in range(k)]
     starts = [j for j in range(len(mono) - k)
               if all(close(mono[j + i + 1] - mono[j + i], want[i]) for i in range(k))]
     if len(starts) != 1:
-        return [], [f"the anchors' interval pattern matched {len(starts)} places in the main trace (one required)"]
+        return [], [f"the anchors' interval pattern matched {len(starts)} places in the main trace (one required)"], []
     j0 = starts[0]
-    pairs = []
-    for i in range(len(tsc)):
+
+    def suspect(i: int, j: int, last: int) -> str | None:
+        """None if instance anchor i (main anchor j) is an isolated suspect,
+        else why not."""
+        if i + 1 >= len(tsc) or j + 1 >= len(mono):
+            return "it is the last anchor"
+        if i - last <= ANCHOR_CHECK:
+            return f"another suspect anchor {i - last} anchors before it"
+        if agrees(i + 1, j + 1):
+            return "only the interval into it disagrees"
+        across = (mono[j + 1] - mono[j - 1]) - (tsc[i + 1] - tsc[i - 1]) * slope
+        if abs(across) > 2_000 + 1e-4 * abs((tsc[i + 1] - tsc[i - 1]) * slope):
+            return f"the interval across it disagrees by {across:+.0f} ns"
+        if abs(dev(i, j)) > SUSPECT_MAX_NS:
+            return f"its stamps disagree by {dev(i, j):+.0f} ns, more than {SUSPECT_MAX_NS} ns"
+        n = min(ANCHOR_CHECK, len(tsc) - (i + 2), len(mono) - (j + 2))
+        if n < MIN_CONTINUATION:
+            return f"only {max(n, 0)} intervals follow it"
+        after = range(i + 2, i + 2 + n)
+        if not all(agrees(ii, j0 + ii) for ii in after):
+            return "the anchors after it disagree"
+        for d in (-2, -1, 1, 2):
+            if all(agrees(ii, j0 + ii + d) for ii in after):
+                return f"the anchors after it also agree {d:+d} anchors off (ambiguous)"
+        return None
+
+    pairs, problems, suspects = [], [], []
+    last = -10**9
+    i = 0
+    while i < len(tsc):
         j = j0 + i
         if j >= len(mono):
             problems.append(f"{len(tsc) - i} TSC anchors after the main trace's last")
             break
-        if i and not close(mono[j] - mono[j - 1], (tsc[i] - tsc[i - 1]) * slope):
-            problems.append(f"anchor {i}: the intervals disagree (a missing or duplicate anchor near "
-                            f"monotonic {mono[j - 1]})")
+        if i == 0 or agrees(i, j):
+            pairs.append((tsc[i], mono[j]))
+            i += 1
+            continue
+        why = suspect(i, j, last)
+        if why is not None:
+            problems.append(f"anchor {i}: the intervals disagree (a missing or duplicate anchor near monotonic "
+                            f"{mono[j - 1]}; not an isolated suspect anchor: {why})")
             break
-        pairs.append((tsc[i], mono[j]))
-    return pairs, problems
+        suspects.append((i, mono[j], dev(i, j)))
+        last = i
+        pairs.append((tsc[i + 1], mono[j + 1]))  # its successor, checked across it
+        i += 2
+    if len(suspects) > SUSPECT_CAP * len(tsc):
+        problems.append(f"{len(suspects)} suspect anchors, more than {SUSPECT_CAP:.1%} of {len(tsc)}")
+    return pairs, problems, suspects
 
 
 class TscMap:
@@ -766,18 +829,23 @@ def explain_exerciser(ev: TimerEvents, tl: Timeline, lt: Lifetimes, head: dict, 
     call's end or at the arming's expiry if that came first: armed (or, at
     its expiry, served) for a deadline no later than its expiry plus U; OK
     when written after the arming, "no write needed" when an earlier write
-    covers it. After a cancellation the device must not be disarmed. Anything
-    else is UNEXPLAINED; the exerciser's "expired" rows are its own
-    observations, not actions."""
+    covers it. An arming made after its own expiry (its hrtimer_start at or
+    after the expiry, less U) is counted apart, "armed after its expiry",
+    when a successful deadline write after it and before the evaluation point
+    has a deadline already due at that write (within U): the kernel's
+    programming of an expired timer. After a cancellation the device must
+    not be disarmed. Anything else is UNEXPLAINED; the exerciser's "expired"
+    rows are its own observations, not actions."""
     u = tl.u
     rt = ev.rt_cpu
     tid = int(head.get("tid", -1))
     gens = [g for g in lt.gens if g["start"][2] == tid and g["start"][5] == "timerfd_tmrproc"]
     addrs = {g["start"][4] for g in gens}
     cancels = [c for c in ev.cancels if c[2] == tid and c[3] in addrs]
-    result = {"OK": 0, "no write needed": 0, "INDETERMINATE": 0, "UNEXPLAINED": 0}
+    result = {"OK": 0, "no write needed": 0, "armed after its expiry": 0, "INDETERMINATE": 0, "UNEXPLAINED": 0}
     why_indet: dict[str, int] = {}
     notes: list[str] = []
+    write_ts = [w[0] for w in ev.writes]
 
     def indeterminate(why: str) -> None:
         result["INDETERMINATE"] += 1
@@ -842,6 +910,23 @@ def explain_exerciser(ev: TimerEvents, tl: Timeline, lt: Lifetimes, head: dict, 
             notes.append(f"round {r['round']} {r['action']}: its timer was on CPU {target['cpu']} "
                          f"({target['evidence']})")
             continue
+        x = r["expiry"]
+        if r["action"] != "cancel" and target["start"][0] >= x - u:
+            # Armed after its own expiry: the kernel programs a deadline that
+            # is already due. A successful write after the arming, before the
+            # evaluation point, whose deadline is due at its write (within U)
+            # shows it; a stale write or a future deadline does not.
+            lo, hi = bisect.bisect_right(write_ts, target["start"][0]), bisect.bisect_left(write_ts, t_check)
+            cands = [w for w in ev.writes[lo:hi] if w[1] and not w[2]]
+            due = [w for w in cands if tl.conv.mono(w[1]) is not None and tl.conv.mono(w[1]) <= w[0] + u]
+            if due:
+                result["armed after its expiry"] += 1
+            elif any(tl.conv.mono(w[1]) is None for w in cands):
+                indeterminate("the device's state unknown")
+            else:
+                unexplained(r, f"armed {(target['start'][0] - x) / 1e3:+.1f} us from its expiry, with no deadline "
+                            "write after it already due at its write")
+            continue
         s = tl.at(t_check)
         if s.kind == "unknown" or (s.kind in ("armed", "served") and s.d is None):
             indeterminate("the device's state unknown")
@@ -852,7 +937,6 @@ def explain_exerciser(ev: TimerEvents, tl: Timeline, lt: Lifetimes, head: dict, 
             else:
                 result["OK"] += 1
             continue
-        x = r["expiry"]
         at_expiry = t_check != a + 1
         if s.kind == "armed" or (s.kind == "served" and at_expiry):
             if s.d <= x + u:
@@ -1043,15 +1127,21 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
         failures.append("timer service: no TSC instance or sampler pairs")
     else:
         tsc, problems = load_instance(inst, rt)
-        pairs, mp = match_anchors(ev.anchors, tsc, rate)
+        pairs, mp, suspects = match_anchors(ev.anchors, tsc, rate)
         problems += mp
+        if pairs and ev.window and not (pairs[0][1] <= ev.window[0] and pairs[-1][1] >= ev.window[1]):
+            problems.append("the conversion's anchors do not cover the run")
         for p in problems:
             failures.append(f"timer service: {p}")
         conv = TscMap(pairs)
         v = validate(pairs, samp)
         u = v["u"]
         print(f"    anchors: {len(tsc)} in the TSC instance, {len(ev.anchors)} in the main trace, {len(pairs)} "
-              f"matched one-to-one; TSC {1e3 / rate[1]:.4f} MHz from {len(samp)} sampler pairs", file=out)
+              f"matched one-to-one, {len(suspects)} suspect left out of the conversion; TSC {1e3 / rate[1]:.4f} MHz "
+              f"from {len(samp)} sampler pairs", file=out)
+        for si, sm, sd in suspects:
+            print(f"      suspect anchor {si} at monotonic {sm}: its two stamps disagree by {sd:+.0f} ns "
+                  "(kept in the timeline)", file=out)
         held = v["held"]
         if held:
             print(f"    held-out anchors: n={len(held)} p50 {pct(held, .5):.0f} p99 {pct(held, .99):.0f} "
@@ -1136,7 +1226,8 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             head, rows = load_exerciser(exf)
             x = explain_exerciser(ev, tl, lt, head, rows)
             print(f"    exerciser: {x['actions']} actions: OK {x['OK']}, no write needed {x['no write needed']}, "
-                  f"INDETERMINATE {x['INDETERMINATE']}, UNEXPLAINED {x['UNEXPLAINED']}", file=out)
+                  f"armed after its expiry {x['armed after its expiry']}, INDETERMINATE {x['INDETERMINATE']}, "
+                  f"UNEXPLAINED {x['UNEXPLAINED']}", file=out)
             if x["indeterminate"]:
                 print("      INDETERMINATE: " + ", ".join(f"{k} {v}" for k, v in sorted(x["indeterminate"].items())),
                       file=out)

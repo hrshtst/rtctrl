@@ -81,11 +81,11 @@ def conversion() -> None:
     samp = sampler((mono[0], mono[-1]))
     rate = ts.fit_rate(samp)
     expect(rate is not None and abs(1e9 / rate[1] - HZ) < 1_000, f"sampler rate {rate}")
-    pairs, problems = ts.match_anchors(mono, t, rate)
-    expect(not problems and len(pairs) == len(t), f"matching: {problems}, {len(pairs)}")
+    pairs, problems, susp = ts.match_anchors(mono, t, rate)
+    expect(not problems and not susp and len(pairs) == len(t), f"matching: {problems}, {len(pairs)}")
     # Extra main anchors before and after the instance's span still match.
     pre = [mono[0] - 700_000, mono[0] - 300_000]
-    pairs2, problems2 = ts.match_anchors(pre + mono + [mono[-1] + 900_000], t, rate)
+    pairs2, problems2, _ = ts.match_anchors(pre + mono + [mono[-1] + 900_000], t, rate)
     expect(not problems2 and pairs2 == pairs, f"matching inside a longer main trace: {problems2}")
     m = ts.TscMap(pairs)
     mid = (mono[100] + mono[101]) / 2
@@ -94,23 +94,100 @@ def conversion() -> None:
     v = ts.validate(pairs, samp)
     expect(v["u"] is not None and v["u"] < 1_000, f"U {v['u']}")
     # A missing instance anchor, and a duplicate main anchor, are refused.
-    _, p = ts.match_anchors(mono, t[:200] + t[201:], rate)
+    _, p, _ = ts.match_anchors(mono, t[:200] + t[201:], rate)
     expect(any("missing or duplicate" in x for x in p), f"missing anchor: {p}")
-    _, p = ts.match_anchors(mono[:150] + [mono[150] - 40_000] + mono[150:], t, rate)
+    _, p, _ = ts.match_anchors(mono[:150] + [mono[150] - 40_000] + mono[150:], t, rate)
     expect(any("missing or duplicate" in x for x in p), f"duplicate anchor: {p}")
     # A constant skew of the instance's stamps: held-out anchors cannot see
     # it, the bracketed sampler does.
     skew = [x + round(10_000 * HZ / 1e9) for x in t]
-    pairs3, _ = ts.match_anchors(mono, skew, rate)
+    pairs3, _, _ = ts.match_anchors(mono, skew, rate)
     v3 = ts.validate(pairs3, samp)
     expect(max(v3["held"]) < 1_000 and v3["u"] > ts.U_LIMIT_NS, f"skew: held {max(v3['held'])}, U {v3['u']}")
+
+
+def suspects() -> None:
+    """Suspect anchors: an isolated anchor whose two stamps disagree is left
+    out of the conversion only under every condition; missing and extra
+    anchors, in either buffer, and compensating pairs still fail."""
+    mono, t = anchors(n=3000, jitter=50, seed=2)
+    rate = ts.fit_rate(sampler((mono[0], mono[-1])))
+    c = round(3_000 * HZ / 1e9)  # 3 us of TSC counts
+    truth = dict(zip(t, mono))
+
+    def match(m, tt):
+        return ts.match_anchors(m, tt, rate)
+
+    def pass_(what, m, tt, n_susp):
+        pairs, p, s = match(m, tt)
+        expect(not p and len(s) == n_susp and len(pairs) == len(tt) - n_susp, f"{what}: {p} {s} {len(pairs)}")
+        return pairs, s
+
+    def fails(what, m, tt, words):
+        _, p, _ = match(m, tt)
+        expect(any(words in x for x in p), f"{what} should fail with '{words}': {p}")
+
+    # One instance stamp late by 3 us: left out, every other anchor paired
+    # with its own main anchor.
+    t1 = list(t)
+    t1[1500] += c
+    pairs, s = pass_("one suspect", mono, t1, 1)
+    expect(s[0][0] == 1500 and -3_200 < s[0][2] < -2_800 and t1[1500] not in dict(pairs), f"the suspect: {s}")
+    expect(all(truth.get(a) == b for a, b in pairs), "the pairs around a suspect")
+    # Two far apart, within the cap (3 of 3000).
+    t2 = list(t)
+    t2[500] += c
+    t2[2000] -= c
+    pass_("two suspects", mono, t2, 2)
+    # Over the cap.
+    t3 = list(t)
+    for i in (300, 900, 1500, 2100):
+        t3[i] += c
+    fails("four suspects", mono, t3, "4 suspect anchors, more than 0.1% of 3000")
+    # Not isolated: adjacent, or another within ANCHOR_CHECK anchors; or a
+    # disagreement too large for a stamp.
+    t4 = list(t)
+    t4[1500] += c
+    t4[1501] += 2 * c
+    fails("adjacent suspects", mono, t4, "the interval across it disagrees")
+    t5 = list(t)
+    t5[1500] += c
+    t5[1530] += c
+    fails("a suspect 30 anchors after another", mono, t5, "not an isolated suspect anchor: the anchors after it disagree")
+    t6 = list(t)
+    t6[1500] += round(60_000 * HZ / 1e9)
+    fails("a 60 us disagreement", mono, t6, "more than 50000 ns")
+    # Missing and extra anchors, in either buffer.
+    fails("a missing instance anchor", mono, t[:1500] + t[1501:], "missing or duplicate")
+    fails("a missing main anchor", mono[:1500] + mono[1501:], t, "missing or duplicate")
+    fails("an extra instance anchor", mono, t[:1500] + [(t[1499] + t[1500]) // 2] + t[1500:], "missing or duplicate")
+    fails("an extra main anchor", mono[:1500] + [mono[1500] - 40_000] + mono[1500:], t, "missing or duplicate")
+    # A missing anchor and an extra one 200 anchors later: equal counts, and
+    # still a failure.
+    fails("a compensating pair far apart", mono[:1000] + mono[1001:1200] + [mono[1200] - 30_000] + mono[1200:], t,
+          "missing or duplicate")
+    # A missing main anchor replaced by an extra one 5 us away: the same
+    # shape as a stamp disagreement, left out, and the rest stay paired
+    # with their own anchors.
+    pairs, s = pass_("an adjacent replacement", mono[:1500] + [mono[1500] + 5_000] + mono[1501:], t, 1)
+    expect(all(truth.get(a) == b for a, b in pairs), "the pairs around a replaced anchor")
+    # The continuation must be unambiguous: after a suspect, periodic
+    # anchors agree at shifted offsets too.
+    mp, tp = list(mono[:1000]), list(t[:1000])
+    m = mono[999]
+    for _ in range(200):
+        m += 500_000
+        mp.append(m)
+        tp.append(tsc(m))
+    tp[1001] += c
+    fails("a suspect before periodic anchors", mp, tp, "ambiguous")
 
 
 def base_events() -> tuple[ts.TimerEvents, ts.TscMap, float]:
     mono, t = anchors(n=200, jitter=0)
     ev = ts.TimerEvents(TID, RT)
     ev.anchors = list(mono)
-    pairs, _ = ts.match_anchors(mono, t, ts.fit_rate(sampler((mono[0], mono[-1]))))
+    pairs, _, _ = ts.match_anchors(mono, t, ts.fit_rate(sampler((mono[0], mono[-1]))))
     return ev, ts.TscMap(pairs), 500.0
 
 
@@ -423,6 +500,25 @@ def exerciser() -> None:
     row(14, "cancel", "cancel", t + 100_000, t + 500_000)
     cancel(t + 102_000)
     t += 1_000_000
+    # 16: armed after its own expiry (its call came late): the kernel writes
+    # a deadline already due, and the timer expires at once.
+    row(16, "expire", "arm", t, t - 50_000)
+    start(t + 3_000, t - 50_000)
+    write(t + 4_000, t + 4_000 - 300)
+    expire(t + 5_000)
+    t += 1_000_000
+    # 17: the same with only a stale write before the arming: unexplained.
+    row(17, "expire", "arm", t, t - 50_000)
+    write(t + 1_000, t - 40_000)
+    start(t + 3_000, t - 50_000)
+    expire(t + 5_000)
+    t += 1_000_000
+    # 18: the same with a future deadline written after it: unexplained.
+    row(18, "expire", "arm", t, t - 50_000)
+    start(t + 3_000, t - 50_000)
+    write(t + 4_000, t + 400_000)
+    expire(t + 401_000)
+    t += 1_000_000
     # 15: the reviewer's case: a cancellation without its event while the
     # arming is pending (an earlier round's expiry does not excuse it).
     row(15, "cancel", "arm", t, t + 500_000)
@@ -436,12 +532,15 @@ def exerciser() -> None:
     ev.anchors.sort()
     tl = ts.Timeline(ev, conv, u)
     r = ts.explain_exerciser(ev, tl, ts.Lifetimes(ev, conv, u, {"BOOTTIME": 0}), head, rows)
-    expect(r["actions"] == 22, f"actions {r}")
+    expect(r["actions"] == 25, f"actions {r}")
     # The armings that never expire and are not pinned (rounds 3, 4, 5, 13
     # and 15's arms, and the cancellations of 4, 5 and 13) are of unknown
     # residency, the write after an arming a hint only.
-    expect(r["OK"] == 8 and r["no write needed"] == 2 and r["INDETERMINATE"] == 9 and r["UNEXPLAINED"] == 3,
-           f"exerciser classes: {r}")
+    expect(r["OK"] == 8 and r["no write needed"] == 2 and r["armed after its expiry"] == 1
+           and r["INDETERMINATE"] == 9 and r["UNEXPLAINED"] == 5, f"exerciser classes: {r}")
+    for n in (17, 18):
+        expect(any(f"round {n} arm: armed +53.0 us from its expiry, with no deadline write after it already due" in m
+                   for m in r["notes"]), f"round {n}: {r['notes']}")
     expect(r["indeterminate"] == {"residency unknown, its events matched (a write hint)": 6,
                                   "residency unknown, its events matched": 2, "on another CPU": 1},
            f"exerciser INDETERMINATE reasons: {r['indeterminate']}")
@@ -511,6 +610,7 @@ def files() -> None:
 
 def main() -> int:
     conversion()
+    suspects()
     classes()
     residency()
     exerciser()
