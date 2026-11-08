@@ -91,13 +91,16 @@ def definition_checks(lay: dict) -> None:
     expect(d[2] == "p:rtctrl_fs/rtfs_fs_pick fair_server_pick_task se=$arg1:x64 srv_rq=+216($arg1):x64 "
                   "srv_cpu=+3688(+216($arg1)):s32 bits=+84($arg1):x32 runtime=+64($arg1):s64 "
                   "deadline=+72($arg1):u64", f"the fair server's pick: {d[2]}")
-    expect(d[3].startswith("r:rtctrl_fs/rtfs_fs_pick_ret fair_server_pick_task task=$retval:x64 "),
-           "the fair server pick's return")
-    expect(d[6].startswith("p:rtctrl_fs/rtfs_srv_timer dl_server_timer se=$arg2:x64 srv_rq=+216($arg2):x64 "
-                           "srv_cpu=+3688(+216($arg2)):s32"), f"the timer's server is its second argument: {d[6]}")
-    expect(all("$arg1" not in line for line in d[6:]), "the timer reads no first argument")
+    expect(d[3] == "r:rtctrl_fs/rtfs_fs_pick_ret fair_server_pick_task task=$retval:x64",
+           f"the fair server pick's return records the pointer alone (it can be NULL): {d[3]}")
+    expect(d[4] == "p:rtctrl_fs/rtfs_set_next set_next_task_fair task=$arg2:x64 pid=+2800($arg2):s32 "
+                  "policy=+1356($arg2):u32", f"the task identity from set_next_task_fair's p, never NULL: {d[4]}")
+    expect(all("($retval)" not in line for line in d), "no return probe reads through its pointer")
+    expect(d[7].startswith("p:rtctrl_fs/rtfs_srv_timer dl_server_timer se=$arg2:x64 srv_rq=+216($arg2):x64 "
+                           "srv_cpu=+3688(+216($arg2)):s32"), f"the timer's server is its second argument: {d[7]}")
+    expect(all("$arg1" not in line for line in d[7:]), "the timer reads no first argument")
     f = dict(fs.filters(3))
-    expect(f["rtfs_dl_pick"] == "CPU == 3" and f["rtfs_fs_pick_ret"] == "CPU == 3" and
+    expect(f["rtfs_dl_pick"] == "CPU == 3" and f["rtfs_fs_pick_ret"] == "CPU == 3" and f["rtfs_set_next"] == "CPU == 3" and
            f["rtfs_srv_start"] == "srv_cpu == 3" and f["rtfs_srv_timer"] == "srv_cpu == 3",
            f"the filters: {f}")
 
@@ -127,12 +130,20 @@ def sw(ev, ts: int, prev: str, ppid: int, pprio: int, state: str, nxt: str, npid
     ev.feed(ts, 3, ppid, prev, "sched_switch", f"{prev}:{ppid} [{pprio}] {state} ==> {nxt}:{npid} [{nprio}]")
 
 
-def sel(ev, ts: int, pid: int, bits: int = VALID, task: int = 0xA0, cpu: int = 3) -> None:
+def set_next(ev, ts: int, pid: int, task: int = 0xA0, cpu: int = 3) -> None:
+    ev.feed(ts, cpu, 1, "x", "rtfs_set_next", f"(set_next_task_fair+0x0/0x10) task={hex(task)} pid={pid} policy=0")
+
+
+def sel(ev, ts: int, pid: int, bits: int = VALID, task: int = 0xA0, cpu: int = 3, identify: bool = True) -> None:
+    """A fair-server selection of the task, then (identify) its set_next
+    with its pid, as the kernel orders them before the switch."""
     ev.feed(ts, cpu, 1, "x", "rtfs_dl_pick", "(pick_task_dl+0x0/0x10) rq=0xff00 rq_cpu=3 fs_bits=0x0")
     ev.feed(ts + 100, cpu, 1, "x", "rtfs_fs_pick",
             f"(fair_server_pick_task+0x0/0x10) se=0x10 srv_rq=0xff00 srv_cpu=3 bits={hex(bits)} runtime=1 deadline=2")
-    ev.feed(ts + 200, cpu, 1, "x", "rtfs_fs_pick_ret", f"(a <- b) task={hex(task)} pid={pid} policy=0")
-    ev.feed(ts + 300, cpu, 1, "x", "rtfs_dl_pick_ret", f"(a <- b) task={hex(task)} pid={pid} policy=0 prio=120")
+    ev.feed(ts + 200, cpu, 1, "x", "rtfs_fs_pick_ret", f"(a <- b) task={hex(task)}")
+    ev.feed(ts + 300, cpu, 1, "x", "rtfs_dl_pick_ret", f"(a <- b) task={hex(task)}")
+    if identify:
+        set_next(ev, ts + 400, pid, task, cpu)
 
 
 def waking(ev, ts: int, waker: str = "swapper/3", cpu: int = 3) -> None:
@@ -173,8 +184,8 @@ def analysis_checks(lay: dict) -> None:
     sw(ev, 0, "w", W, 19, "S", "swapper/3", 0, 120)
     ev.feed(1 * us, 3, 1, "x", "rtfs_dl_pick", "rq=0xff00 rq_cpu=3 fs_bits=0x0")
     ev.feed(1 * us + 100, 3, 1, "x", "rtfs_fs_pick", f"se=0x10 srv_rq=0xff00 srv_cpu=3 bits={hex(VALID)}")
-    ev.feed(1 * us + 200, 3, 1, "x", "rtfs_fs_pick_ret", "task=0x0 pid=0 policy=0")
-    ev.feed(1 * us + 300, 3, 1, "x", "rtfs_dl_pick_ret", "task=0x0 pid=0 policy=0 prio=0")
+    ev.feed(1 * us + 200, 3, 1, "x", "rtfs_fs_pick_ret", "(a <- b) task=0x0")  # the legitimate no-task return
+    ev.feed(1 * us + 300, 3, 1, "x", "rtfs_dl_pick_ret", "(a <- b) task=0x0")
     waking(ev, 10 * us)
     sw(ev, 20 * us, "swapper/3", 0, 120, "R", "b", 101, 120)
     sw(ev, 80 * us, "b", 101, 120, "S", "w", W, 19)
@@ -230,15 +241,41 @@ def analysis_checks(lay: dict) -> None:
 
     # A re-selection of the running task: from the pick on, server-backed.
     ev = new(lay)
+    set_next(ev, 0, 100)  # its identity, from when it was set next
     sw(ev, 0, "w", W, 19, "S", "a", 100, 120)
     waking(ev, 10 * us)
-    sel(ev, 11 * us, 100)
+    sel(ev, 11 * us, 100, identify=False)  # still running: no set_next this time
     ev.feed(13 * us, 3, 1, "x", "rtfs_dl_pick", "rq=0xff00 rq_cpu=3 fs_bits=0x0")
     sw(ev, 80 * us, "a", 100, 120, "S", "w", W, 19)
     w = one_wait(ev)
     expect(ev.counts["re-selected"] == 1 and w["by"]["preemption delay"] == 1300 and
            w["by"]["server-backed"] == 70 * us - 1300 and w["class"] == "server-backed",
            f"a re-selection: {w} {ev.counts}")
+
+    # A selection whose task was never set next on the CPU: unidentified, never server-backed.
+    ev = new(lay)
+    sw(ev, 0, "w", W, 19, "S", "swapper/3", 0, 120)
+    sel(ev, 1 * us, 100, identify=False)
+    sw(ev, 2 * us, "swapper/3", 0, 120, "R", "a", 100, 120)
+    waking(ev, 10 * us)
+    sw(ev, 70 * us, "a", 100, 120, "S", "w", W, 19)
+    w = one_wait(ev)
+    expect(ev.counts["unidentified"] == 1 and w["by"]["server-backed"] == 0 and w["class"] == "INDETERMINATE",
+           f"an unidentified selection: {w} {ev.counts}")
+
+    # A kernel fault at a NULL-page address on the CPU (a probe's read through
+    # NULL) is counted, and fails a capture with the probes.
+    for layout_, fails in ((lay, True), (None, False)):
+        ev = fs.FairServerEvents(3, layout_, W, (0, 10**9))
+        ev.feed(5, 3, W, "w", "page_fault_kernel", "address=0xaf0 ip=0xffffffffad000000 error_code=0x0")
+        ev.feed(6, 3, W, "w", "page_fault_kernel", "address=0x7f0000001000 ip=0xffffffffad000000 error_code=0x0")
+        ev.feed(7, 2, W, "w", "page_fault_kernel", "address=0x6c ip=0xffffffffad000000 error_code=0x0")
+        ev.finish(10**9)
+        out = io.StringIO()
+        failures = []
+        fs.report(ev, 0, 10, out, failures)
+        expect("kernel page faults at NULL-page addresses on CPU 3 during the run: 1" in out.getvalue()
+               and bool(failures) == fails, f"NULL-page faults (probes {layout_ is not None}): {failures}")
 
     # A normal task left running after the wake, then the stopper (the 54.2 us
     # case's shape): another mechanism with complete probes, INDETERMINATE without.
@@ -292,13 +329,16 @@ MS = 1_000_000
 ARMED = 0xF1    # dl_throttled (0), dl_server (4), dl_server_active (5), dl_defer (6), dl_defer_armed (7): deferred, waiting (the rehearsal's bits)
 
 
-def control_events(fifo_prio: int = 89, settled: bool = True, last_running: bool = False,
-                   pick_in_gap: bool = False, neg_dispatch: bool = False) -> list[tuple]:
+def control_events(fifo_prio: int = 89, settled: bool = True, read: bool = True, last_running: bool = False,
+                   change_after_read: bool = False, pick_in_gap: bool = False,
+                   neg_dispatch: bool = False) -> list[tuple]:
     """A control CPU's trace: the positive test (a FIFO loop, pid 700, and a
     normal task, pid 600, that the fair server dispatches twice), then the
-    normal task (pid 601) alone, and the idle CPU; in each settle between
-    them the server's timer records it deferred, armed and throttled (as the
-    kernel showed in the rehearsal of 2026-11-08). Times in ms from 0."""
+    normal task (pid 601) alone, and the idle CPU. In each settle between
+    them the server's timer or start entry records it deferred, armed and
+    throttled (as the kernel showed in the rehearsal of 2026-11-08), and then
+    (read) the state check's pick reads that state after the call. Times in
+    ms from 0."""
     e: list[tuple] = []
 
     def add(t: float, ev: str, rest: str, pid: int = 1, comm: str = "x") -> None:
@@ -308,10 +348,15 @@ def control_events(fifo_prio: int = 89, settled: bool = True, last_running: bool
         add(t, "sched_switch", f"{prev}:{ppid} [{pprio}] R ==> {nxt}:{npid} [{nprio}]", ppid, prev)
 
     def select(t: float, pid: int) -> None:
-        add(t, "rtfs_dl_pick", f"rq={hex(RQ)} rq_cpu={C} fs_bits=0x0")
+        add(t, "rtfs_dl_pick", f"rq={hex(RQ)} rq_cpu={C} fs_bits={hex(VALID)}")
         add(t + 0.001, "rtfs_fs_pick", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
-        add(t + 0.002, "rtfs_fs_pick_ret", f"task=0xa{pid} pid={pid} policy=0")
-        add(t + 0.003, "rtfs_dl_pick_ret", f"task=0xa{pid} pid={pid} policy=0 prio=120")
+        add(t + 0.002, "rtfs_fs_pick_ret", f"task=0xa{pid}")
+        add(t + 0.003, "rtfs_dl_pick_ret", f"task=0xa{pid}")
+        add(t + 0.004, "rtfs_set_next", f"task=0xa{pid} pid={pid} policy=0")
+
+    def state_read(t: float, bits: int) -> None:  # the state check's pick
+        add(t, "rtfs_dl_pick", f"rq={hex(RQ)} rq_cpu={C} fs_bits={hex(bits)}")
+        add(t + 0.001, "rtfs_dl_pick_ret", "task=0x0")
 
     switch(0, "swapper/5", 0, 120, "py", 600, 120)
     switch(10, "py", 600, 120, "py", 700, fifo_prio)          # the loop takes the CPU
@@ -323,8 +368,10 @@ def control_events(fifo_prio: int = 89, settled: bool = True, last_running: bool
     switch(3500, "py", 600, 120, "swapper/5", 0, 120)
     if settled:
         add(3600, "rtfs_srv_timer", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(ARMED)}")
-    if last_running:
-        add(3700, "rtfs_srv_start", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
+    if read:
+        state_read(5500, VALID if last_running else ARMED)
+    if change_after_read:
+        add(5520, "rtfs_srv_start", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(ARMED)}")
     if pick_in_gap:
         select(3800, 9)
     switch(5600, "swapper/5", 0, 120, "py", 601, 120)
@@ -334,6 +381,8 @@ def control_events(fifo_prio: int = 89, settled: bool = True, last_running: bool
     switch(8600, "py", 601, 120, "swapper/5", 0, 120)
     if settled:  # and again once the normal task has gone
         add(8700, "rtfs_srv_start", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(ARMED)}")
+    if read:
+        state_read(10600, ARMED)
     return sorted(e)
 
 
@@ -365,16 +414,18 @@ def control_checks(lay: dict) -> None:
     expect(v["positive"][0] == "PASS" and "dispatched by the fair server 2 times" in v["positive"][1]
            and "(2 samples)" in v["positive"][1], f"the positive control passes: {v}")
     expect(v["negative-normal"][0] == "PASS" and v["negative-idle"][0] == "PASS"
-           and "(throttled,server,server_active,defer,defer_armed, at rtfs_srv_timer): not running"
-           in v["negative-normal"][1], f"the negative controls pass with their preconditions: {v}")
+           and "after its last start, stop or timer call (throttled,server,server_active,defer,defer_armed): "
+           "not running" in v["negative-normal"][1], f"the negative controls pass with their preconditions: {v}")
     v = judged(lay, fifo_prio=120)
     expect(v["positive"][0] == "FAIL" and "did not run at a real-time priority" in v["positive"][1],
            f"a loop without a real-time priority fails: {v}")
     v = judged(lay, text=control_text(fifo_exit=-9, killed="yes"))
     expect(v["positive"][0] == "FAIL" and "did not run to its deadline" in v["positive"][1],
            f"a killed loop fails: {v}")
-    for kw, misses, words in (({"settled": False}, 0, "no state of the CPU's fair server was recorded"),
-                              ({"last_running": True}, 0, "last seen in its running mode"),
+    no_read = "no state of the server was read at a deadline-class pick after its last start, stop or timer call"
+    for kw, misses, words in (({"read": False}, 0, no_read),  # the timer's entry state alone
+                              ({"change_after_read": True}, 0, no_read),  # a start after the read
+                              ({"last_running": True}, 0, "last read in its running mode"),
                               ({}, None, "misses are unknown"), ({}, 2, "missed 2 hits"),
                               ({"pick_in_gap": True}, 0, "the server selected a task 1 times")):
         v = judged(lay, misses, **kw)

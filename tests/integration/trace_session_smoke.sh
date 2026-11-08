@@ -98,7 +98,7 @@ if [ "$1" = list ]; then
   done
   # The fair server's probe events, once the stand-in group exists.
   if [ -e "$FAKE_LOG.fs_group_exists" ]; then
-    for e in rtfs_dl_pick rtfs_dl_pick_ret rtfs_fs_pick rtfs_fs_pick_ret rtfs_srv_start rtfs_srv_stop rtfs_srv_timer; do
+    for e in rtfs_dl_pick rtfs_dl_pick_ret rtfs_fs_pick rtfs_fs_pick_ret rtfs_set_next rtfs_srv_start rtfs_srv_stop rtfs_srv_timer; do
       echo "rtctrl_fs:$e"
     done
   fi
@@ -1059,7 +1059,7 @@ if [ -n "$SAMPLER" ]; then
   # record, removed at the end.
   grep -q '^--- fair-server probes (group rtctrl_fs, defined by this session; tools/fair_server.py) ---$' "$b.run.txt" &&
     grep -q '^fair-server probe layout: rq.ext_server=2952 rq.fair_server=3192 rq.cpu=3688 ' "$b.run.txt" &&
-    grep -q '^fair-server probes rtctrl_fs: 7 events defined (rtfs_dl_pick rtfs_dl_pick_ret ' "$b.run.txt" &&
+    grep -q '^fair-server probes rtctrl_fs: 8 events defined (rtfs_dl_pick rtfs_dl_pick_ret rtfs_fs_pick rtfs_fs_pick_ret rtfs_set_next ' "$b.run.txt" &&
     grep -q '^  p:rtctrl_fs/rtfs_dl_pick pick_task_dl rq=\$arg1:x64 rq_cpu=+3688(\$arg1):s32 fs_bits=+3276(\$arg1):x32 ' "$b.run.txt" &&
     grep -q '^--- fair-server probes (hits misses) right before the probe (exit 0) ---$' "$b.run.txt" &&
     grep -q '^fair-server probe hits during the run: rtfs_dl_pick 10, .*; misses during the run: 0$' "$b.run.txt" ||
@@ -1270,7 +1270,7 @@ if [ -n "$SAMPLER" ]; then
       grep -q '^fair-server probe hits during the controls: rtfs_dl_pick 10, .*; misses during the controls: 0$' "$fb.run.txt" &&
       grep -q '^trace overruns: 0 ' "$fb.run.txt" &&
       grep -q '^  positive: FAIL (the loop (pid [0-9]*) did not run at a real-time priority on CPU 1 in the trace)$' "$fb.run.txt" &&
-      grep -q "^  negative-normal: INCONCLUSIVE (preconditions not established: no state of the CPU's fair server was recorded" "$fb.run.txt" &&
+      grep -q "^  negative-normal: INCONCLUSIVE (preconditions not established: no state of the server was read at a deadline-class pick after its last start, stop or timer call" "$fb.run.txt" &&
       grep -q '^verdict: controls fail$' "$fb.run.txt" ||
       fail "the controls' record" "$fb.run.txt"
     grep -q '^phase negative-idle ' "$fb.controls.txt" && grep -q '^# fifo: test mode no-rt, no SCHED_FIFO$' "$fb.controls.txt" ||

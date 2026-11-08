@@ -6,10 +6,14 @@ On one spare CPU, in order:
   positive        a normal task that records its progress, and a SCHED_FIFO
                   busy loop beside it, both pinned to the CPU: the fair
                   server should give the normal task some time;
-  settle-1        nothing of the tool's on the CPU;
+  settle-1        nothing of the tool's on the CPU, then a state check;
   negative-normal the normal task alone;
-  settle-2        nothing;
+  settle-2        nothing, then a state check;
   negative-idle   nothing (the idle CPU).
+A state check runs `true` under SCHED_FIFO on the CPU (taskset, chrt): when
+it exits, the scheduler takes its slow path, and the deadline class's pick
+reads the fair server's state after the settle, the confirming observation
+a negative control's preconditions need.
 The FIFO loop stops itself at its deadline (CLOCK_MONOTONIC). This process is
 its supervisor, pinned to another CPU: it kills the loop with SIGKILL at the
 deadline plus a margin if the loop still runs, and says so. A normal task
@@ -25,9 +29,10 @@ bounded, and a signal to the supervisor kills and reaps every running child
 usage: fair_server_control.py run --cpu N --supervisor-cpu M --output FILE
            [--fifo-priority P] [--phase-s S] [--settle-s S] [--margin-s S]
 
-For tests only, FAIR_SERVER_CONTROL_TEST=no-rt runs the loop without
-SCHED_FIFO (honouring its deadline) and =ignore-deadline without SCHED_FIFO
-and past its deadline (the supervisor's kill). The analysis checks in the
+For tests only, FAIR_SERVER_CONTROL_TEST=no-rt runs the loop and the state
+checks without SCHED_FIFO (honouring the loop's deadline) and
+=ignore-deadline without SCHED_FIFO and past its deadline (the supervisor's
+kill). The analysis checks in the
 trace that the loop ran at a real-time priority, so neither passes a
 control.
 """
@@ -154,6 +159,23 @@ def run(cpu: int, sup: int, prio: int, phase_ns: int, settle_ns: int, margin_ns:
         if code != 0 or killed:
             status = 1
 
+    def state_check(phase: str) -> None:
+        """A brief SCHED_FIFO task on the CPU, so that its exit's pick reads
+        the fair server's state."""
+        nonlocal status
+        cmd = ["taskset", "-c", str(cpu)]
+        if os.environ.get("FAIR_SERVER_CONTROL_TEST", "") not in ("no-rt", "ignore-deadline"):
+            cmd += ["chrt", "-f", str(prio)]
+        t0 = now()
+        try:
+            code = subprocess.run(cmd + ["true"], timeout=5, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode
+        except subprocess.TimeoutExpired:
+            code = -9
+        print(f"check {phase} start={t0} end={now()} exit={code}", file=out)
+        if code != 0:
+            status = 1
+
     def interrupted(signum, _frame) -> None:
         raise Interrupted(signum)
 
@@ -192,6 +214,8 @@ def run(cpu: int, sup: int, prio: int, phase_ns: int, settle_ns: int, margin_ns:
                 report_normal(nt, phase, *result)
             else:
                 time.sleep(dur / 1e9)
+                if phase.startswith("settle"):
+                    state_check(phase)
                 t1 = now()
             print(f"phase {phase} {t0} {t1}", file=out, flush=True)
     except Interrupted as e:

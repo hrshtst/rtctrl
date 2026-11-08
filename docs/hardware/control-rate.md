@@ -1066,11 +1066,15 @@ paired with an untraced control of the same condition):
   `tools/fair_server.py` from offsets in the kernel's BTF and written by
   `tools/fair_server_probes.sh` through sudo. They record the deadline
   class's pick (`pick_task_dl`, with CPU 3's fair-server state at its entry
-  and the task pointer it returns, nothing read through it), the fair
-  server's own pick (`fair_server_pick_task`, its state and the task it
-  returns, with the task's pid), and
+  and the task pointer it returns), the fair server's own pick
+  (`fair_server_pick_task`, its state and the task pointer it returns),
+  `set_next_task_fair` (the fair task about to run, its pointer never NULL,
+  with its pid: the task's identity), and
   `dl_server_start`, `dl_server_stop` and `dl_server_timer` with the
-  server's state before each call. The picks are filtered to CPU 3, the
+  server's state before each call. No probe reads through a pointer that
+  can be NULL: the two return probes record the pointer alone (the first
+  rehearsal's 56,712 kernel page faults of the worker came from such reads).
+  The picks are filtered to CPU 3, the
   server's calls to CPU 3's server, wherever they run. The session defines
   them once, before anything is sent, and refuses a group left by an
   earlier session; it records the layout, the definitions and each event's
@@ -1218,11 +1222,14 @@ too. CPU 3's time inside the wait is split into overlapping execution
 intervals at its switches, interrupts and softirqs, and each interval is
 labelled by what occupied the CPU:
 - **server-backed**: a normal task in validated server-backed dispatch. A
-  selection is the fair server's own pick returning a task that the
-  deadline class's pick then returns; it is dispatched when the next switch
-  on CPU 3 runs that task, or when the task was already running and stays
-  on (a re-selection). Its interval may begin before the wake. The server's
-  state read at the selection must show it active and not throttled;
+  selection is the fair server's own pick returning a task pointer that the
+  deadline class's pick then returns; the pointer's pid comes from
+  `set_next_task_fair`. It is dispatched when the next switch on CPU 3 runs
+  that pid, or when the task was already running and stays on (a
+  re-selection). Its interval may begin before the wake. The server's state
+  read at the selection must show it active and not throttled;
+- **unidentified**: a selection whose task's pid is not known (it was never
+  set next on CPU 3): perhaps server-backed, never preemption delay;
 - **contradictory**: a dispatch whose server state does not;
 - **preemption delay**: a normal task already running at the wake and left
   running with no selection, only when the probes are in the capture and
@@ -1236,14 +1243,16 @@ A wait of 50 us or more is classed **server-backed** only when server-backed
 intervals cover it apart from interrupt and switching time (a 2 us
 tolerance per label); **mixed** when they cover part of it beside another
 mechanism; **other mechanism** when they cover none; and **INDETERMINATE**
-when normal unvalidated or contradictory time covers more than the
-tolerance. The class says what occupied CPU 3, never a sole cause. A pick
+when normal unvalidated, unidentified or contradictory time covers more
+than the tolerance. The class says what occupied CPU 3, never a sole cause. A pick
 returning no task, a selection followed by another switch, and a
 contradictory state are counted apart, with the server's start, stop and
 timer calls and CPU 3's deadline-class timers as context. Normal tasks
 running without a recorded `dl_server_start` never invalidate a capture;
 probes defined for a run that recorded no pick on CPU 3 do (their evidence
-is missing). A capture without the probes, such as the earlier ones, gets
+is missing), and so does any kernel page fault at a NULL-page address on
+CPU 3 during the run (a read through a NULL pointer, in practice a
+probe's), which the analysis counts in every capture. A capture without the probes, such as the earlier ones, gets
 the same waits with its normal-task time unattributed.
 
 **Rehearsal** over `dxl_emu`, before any run on the arm:
@@ -1472,8 +1481,10 @@ runs, `tools/fair_server_control.py` runs, on that CPU:
    a SCHED\_FIFO busy loop (priority 10) that stops itself at a deadline on
    `CLOCK_MONOTONIC` (3 s). Its supervisor, pinned to another CPU, kills the
    loop at the deadline plus 0.5 s if it still runs, and says so;
-2. a settle of 2 s, then **negative-normal**: the normal task alone (3 s);
-3. a settle of 2 s, then **negative-idle**: the idle CPU (3 s).
+2. a settle of 2 s ending in a state check, then **negative-normal**: the
+   normal task alone (3 s);
+3. a settle of 2 s ending in a state check, then **negative-idle**: the idle
+   CPU (3 s).
 
 The phases are traced with the same probe definitions, filtered to that CPU,
 with the tracers kept off it. The record holds the probes' hit and miss
@@ -1484,11 +1495,16 @@ counts and both buffers' losses (the loss rule applies), and
   server while the loop ran. No fixed share (such as 50 ms per second) is
   required;
 - a **negative** control's preconditions must be established first, from
-  the server's recorded states: no probe misses; at least one recorded state
-  of that CPU's fair server between the previous test and the control; no
-  fair-server selection in that gap; and the latest of those states showing
+  the server's state as read after the last call that could change it: no
+  probe misses; no fair-server selection between the previous test and the
+  control; and a state read at a deadline-class pick in that gap after the
+  last `dl_server_start`, `dl_server_stop` or `dl_server_timer` entry there
+  (an entry state precedes a call that may change it: the timer can set
+  deferred-running and enqueue the server), the latest such state showing
   the server not in its running mode (a deferred server not
-  deferred-running, or an inactive one). Without them it is INCONCLUSIVE,
+  deferred-running, or an inactive one). The tool ends each settle with a
+  state check, `true` run under SCHED\_FIFO on that CPU, whose exit makes
+  such a pick read the state. Without them it is INCONCLUSIVE,
   since the server's state can carry over from the positive test (active,
   throttled and deferred states differ). With them it passes when the
   server dispatched nothing while the normal task ran alone (which must have
@@ -1496,7 +1512,8 @@ counts and both buffers' losses (the loss rule applies), and
   rule required a recorded stop of the server; this kernel never called
   `dl_server_stop` in the rehearsal of 2026-11-08, its server going back to
   deferred, armed and throttled, or inactive, so the rule could never be
-  met.)
+  met. A second accepted any recorded state, entry states included, which
+  can precede an activation; reviewer findings, 2026-11-08.)
 
 A failed control stops the session before the timer runs; an inconclusive
 one is reported. The supervisor drains each child's output while it waits

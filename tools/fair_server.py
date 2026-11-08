@@ -5,24 +5,38 @@ The fair server (rq->fair_server) is a deadline-class entity that runs
 normal tasks ahead of real-time ones while it is active. Its entry into a
 CPU's schedule is observed, not inferred from function entry:
 
-- a selection: fair_server_pick_task returned a task (a return probe, with
-  the task's pid read through it), and the deadline class's pick
-  (pick_task_dl, entry and return probes) returned that same task pointer in
-  the same pick; a pick returning no task is counted apart. The deadline
-  class's return probe reads nothing through the pointer it records: it
-  returns no task on nearly every pick, and a read through that NULL
-  pointer would fault in the kernel at every schedule (the rehearsal of
-  2026-11-08 counted 56,717 such faults on the real-time CPU in 10 s);
+- a selection: fair_server_pick_task returned a task (a return probe), and
+  the deadline class's pick (pick_task_dl, entry and return probes) returned
+  that same task pointer in the same pick; a pick returning no task is
+  counted apart. Neither return probe reads anything through the pointer it
+  records, since either may return NULL: a read through NULL faults in the
+  kernel (the rehearsal of 2026-11-08 counted 56,712 kernel page faults of
+  the worker within the probe's run, at the NULL-page offsets of the fields
+  then read through the deadline class's return);
+- the task's identity: set_next_task_fair(rq, p, first) runs for every fair
+  task about to run on the CPU, a server-dispatched one included, with p
+  never NULL; its probe records the pointer and the pid read through it, so
+  each pointer's pid is known once the task has been set next there. A
+  selected task whose pid is not known is counted as unidentified, never as
+  server-backed;
 - the server's state at the selection: the fair server's flags word (active,
   throttled, deferred, armed, running...), runtime and deadline, read at the
   fair server pick's entry and at the deadline class's pick entry;
 - dispatch: the selection is followed, on that CPU, by the sched_switch to
-  the selected task (or, when it was already running, by that task staying
-  on until its next switch).
+  the selected task, identified by its pid (or, when it was already running,
+  by that task staying on until its next switch).
 
 dl_server_start, dl_server_stop and dl_server_timer are probed with the
 server's state before each call, as context only: a start can return without
-enqueueing the server, so its entry is never counted as activation.
+enqueueing the server, so its entry is never counted as activation, and any
+of the three may change the state just recorded (the timer can set
+deferred-running and enqueue the server), so their entry states never
+establish the state after them. The state read at the deadline class's pick
+entry is the state at that moment.
+
+A kernel page fault at a NULL-page address on the CPU during the run (a read
+through a NULL pointer: in practice a probe's) is counted, and in a capture
+with the probes it fails the run.
 
 The probes are kprobe events whose arguments are memory offsets read from the
 kernel's BTF at each session (they change with the kernel's build), so a
@@ -38,14 +52,16 @@ CPU: a normal task in validated server-backed dispatch (which may have
 begun before the wake); a normal task already running at the wake and left
 running with no selection (preemption delay, only when the probes are in the
 capture and missed nothing); a normal task without validated dispatch
-otherwise; a contradictory server state; a higher-class task (real-time,
+otherwise; a task the server selected but that was never identified
+(unidentified: perhaps server-backed, never preemption delay); a
+contradictory server state; a higher-class task (real-time,
 stopper, or deadline-class not selected by the fair server); interrupts and
 softirqs; or idle and switching. A wait of 50 us or more is server-backed
 only when server-backed intervals cover it apart from interrupt and
 switching time; it is mixed when they cover part of it beside another
 mechanism, other mechanism when none of it, and INDETERMINATE when
-normal-task time without validated dispatch, or a contradictory server
-state, covers more than the tolerance. The result says
+normal-task time without validated dispatch, unidentified time, or a
+contradictory server state, covers more than the tolerance. The result says
 what occupied the CPU, never a sole cause. A capture without the probes (an
 earlier one) gets the same waits, its normal-task time unattributed; normal
 tasks running without a recorded dl_server_start never invalidate a
@@ -57,16 +73,20 @@ definitions filtered to that CPU. The positive control passes when the
 trace shows the FIFO loop at a real-time priority there, and the normal
 task both progressing and dispatched by the fair server while the loop ran;
 no fixed share is required. A negative control's preconditions must be
-established first, from the server's recorded states (this kernel never
-calls dl_server_stop in these runs: the rehearsal of 2026-11-08 recorded
-none, the server going back to deferred, armed and throttled, or inactive):
-no probe misses; at least one recorded state of that CPU's fair server
-between the previous test and the control; no fair-server selection in
-that gap; and the latest state showing the server not in its running mode
-(a deferred server not deferred-running, or an inactive one). Without them
-it is INCONCLUSIVE; with them it passes when the server dispatched nothing
-(the normal task alone, which must have run) or selected nothing (the idle
-CPU), and fails otherwise.
+established first, from the server's state as read after the last call
+that could change it (this kernel never calls dl_server_stop in these runs:
+the rehearsal of 2026-11-08 recorded none, the server going back to
+deferred, armed and throttled, or inactive): no probe misses; no
+fair-server selection between the previous test and the control; and a
+state read at a deadline-class pick in that gap after the last
+dl_server_start, dl_server_stop or dl_server_timer entry there (an entry
+state precedes a call that may change it), the latest such state showing
+the server not in its running mode (a deferred server not deferred-running,
+or an inactive one). The controls tool runs a brief SCHED_FIFO task on the
+CPU at the end of each settle, so that such a pick reads the state. Without
+them the control is INCONCLUSIVE; with them it passes when the server
+dispatched nothing (the normal task alone, which must have run) or
+selected nothing (the idle CPU), and fails otherwise.
 
 usage: fair_server.py layout [--btf-raw FILE]
        fair_server.py definitions --group GROUP [--btf-raw FILE]
@@ -84,11 +104,11 @@ import subprocess
 import sys
 
 GROUP = "rtctrl_fs"
-EVENTS = ("rtfs_dl_pick", "rtfs_dl_pick_ret", "rtfs_fs_pick", "rtfs_fs_pick_ret",
+EVENTS = ("rtfs_dl_pick", "rtfs_dl_pick_ret", "rtfs_fs_pick", "rtfs_fs_pick_ret", "rtfs_set_next",
           "rtfs_srv_start", "rtfs_srv_stop", "rtfs_srv_timer")
 # Events filtered by the CPU they run on (picks are local to their CPU), and
 # those filtered by the server's own CPU (a start or stop can run on another).
-CPU_FILTERED = ("rtfs_dl_pick", "rtfs_dl_pick_ret", "rtfs_fs_pick", "rtfs_fs_pick_ret")
+CPU_FILTERED = ("rtfs_dl_pick", "rtfs_dl_pick_ret", "rtfs_fs_pick", "rtfs_fs_pick_ret", "rtfs_set_next")
 SERVER_FILTERED = ("rtfs_srv_start", "rtfs_srv_stop", "rtfs_srv_timer")
 FLAGS = ("dl_throttled", "dl_non_contending", "dl_server", "dl_server_active", "dl_defer",
          "dl_defer_armed", "dl_defer_running", "dl_defer_idle")
@@ -111,9 +131,10 @@ WAKE = re.compile(r"\bpid=(\d+)\b.*?\btarget_cpu=(\d+)")
 WAKEUP = re.compile(r":(\d+) \[-?\d+\](?: success=\d+)? CPU:(\d+)")
 IRQ_EVENTS = {"irq_handler", "softirq", "local_timer", "reschedule", "call_function", "call_function_single"}
 DL_TIMERS = ("dl_task_timer", "inactive_task_timer")
-LABELS = ("server-backed", "preemption delay", "normal unvalidated", "contradictory", "higher class",
-          "interrupt", "idle/switching")
+LABELS = ("server-backed", "preemption delay", "normal unvalidated", "unidentified", "contradictory",
+          "higher class", "interrupt", "idle/switching")
 FEED_EVENTS = {"sched_switch", "sched_waking", "sched_wakeup", "hrtimer_start", "hrtimer_expire_entry",
+               "page_fault_kernel",
                *(f"{e}_{x}" for e in ("irq_handler", "softirq", "local_timer", "reschedule", "call_function",
                                       "call_function_single") for x in ("entry", "exit"))}
 
@@ -187,7 +208,6 @@ def definitions(lay: dict[str, int], group: str = GROUP) -> list[str]:
     se_state = (f"bits=+{lay['se.flags_word']}($A):x32 runtime=+{lay['se.runtime']}($A):s64 "
                 f"deadline=+{lay['se.deadline']}($A):u64")
     se_where = f"srv_rq=+{lay['se.rq']}($A):x64 srv_cpu=+{lay['rq.cpu']}(+{lay['se.rq']}($A)):s32"
-    task = f"task=$retval:x64 pid=+{lay['task.pid']}($retval):s32 policy=+{lay['task.policy']}($retval):u32"
 
     def server(event: str, func: str, arg: str) -> str:
         return (f"p:{group}/{event} {func} se={arg}:x64 {se_where.replace('$A', arg)} "
@@ -199,7 +219,9 @@ def definitions(lay: dict[str, int], group: str = GROUP) -> list[str]:
          f"fs_deadline=+{fs + lay['se.deadline']}($arg1):u64"),
         f"r:{group}/rtfs_dl_pick_ret pick_task_dl task=$retval:x64",
         server("rtfs_fs_pick", "fair_server_pick_task", "$arg1"),
-        f"r:{group}/rtfs_fs_pick_ret fair_server_pick_task {task}",
+        f"r:{group}/rtfs_fs_pick_ret fair_server_pick_task task=$retval:x64",
+        (f"p:{group}/rtfs_set_next set_next_task_fair task=$arg2:x64 pid=+{lay['task.pid']}($arg2):s32 "
+         f"policy=+{lay['task.policy']}($arg2):u32"),
         server("rtfs_srv_start", "dl_server_start", "$arg1"),
         server("rtfs_srv_stop", "dl_server_stop", "$arg1"),
         server("rtfs_srv_timer", "dl_server_timer", "$arg2"),
@@ -228,12 +250,13 @@ def fields(rest: str) -> dict[str, int]:
 
 
 class Selection:
-    """A fair-server selection on the CPU: the task, its pick's time and the
-    server's state read at the fair server pick's entry."""
+    """A fair-server selection on the CPU: the task pointer, its pid (None
+    until known), its pick's time and the server's state read at the fair
+    server pick's entry."""
 
     __slots__ = ("ts", "task", "pid", "bits", "valid")
 
-    def __init__(self, ts: int, task: int, pid: int, bits: int | None, valid: bool) -> None:
+    def __init__(self, ts: int, task: int, pid: int | None, bits: int | None, valid: bool) -> None:
         self.ts, self.task, self.pid, self.bits, self.valid = ts, task, pid, bits, valid
 
 
@@ -259,8 +282,10 @@ class FairServerEvents:
         self._fs_bits: int | None = None
         self.pending: Selection | None = None
         self.counts = {k: 0 for k in ("dl picks", "fair selections", "dispatched", "re-selected",
-                                      "not dispatched", "contradictory", "no task",
-                                      "other deadline-class selections")}
+                                      "not dispatched", "unidentified", "contradictory", "no task",
+                                      "other deadline-class selections", "set next")}
+        self.ptr_pid: dict[int, int] = {}   # task pointer -> pid, from set_next_task_fair on the CPU
+        self.null_faults: list[int] = []    # kernel page faults at NULL-page addresses on the CPU
         self.server_calls = {"rtfs_srv_start": 0, "rtfs_srv_stop": 0, "rtfs_srv_timer": 0}
         self.server_states: list[tuple] = []  # (ts, event, bits) of the CPU's fair server
         self.selection_log: list[tuple] = []  # (ts, pid, valid) of each fair-server selection
@@ -287,6 +312,11 @@ class FairServerEvents:
                     self.wakeups.append(ts)
             return
         if cpu != self.cpu:
+            return
+        if ev == "page_fault_kernel":
+            a = re.search(r"\baddress=(0x[0-9a-f]+|\d+)", rest)
+            if a and num(a[1]) is not None and num(a[1]) < 4096:
+                self.null_faults.append(ts)
             return
         if ev == "sched_switch":
             self.switch(ts, rest)
@@ -323,7 +353,10 @@ class FairServerEvents:
         sel = self.pending
         if sel is not None:
             self.pending = None
-            if sel.pid == npid:
+            if sel.pid is None:
+                self.counts["unidentified"] += 1
+                label = "unidentified"  # perhaps server-backed: never preemption delay
+            elif sel.pid == npid:
                 self.counts["dispatched"] += 1
                 self.dispatch_log.append((ts, npid, sel.valid))
                 label = "server-backed" if sel.valid else "contradictory"
@@ -352,7 +385,16 @@ class FairServerEvents:
             sel = self.pending
             if sel is not None:
                 self.pending = None
-                if self._open is not None and self._open[2] == sel.pid:
+                if sel.pid is None:
+                    self.counts["unidentified"] += 1
+                    if self._open is not None and self._open[3] != "swapper" and self._open[2] != 0:
+                        seg = self._open
+                        if sel.ts > seg[0]:
+                            seg[1] = sel.ts
+                            self.segments.append(seg)
+                            self._open = [sel.ts, None, seg[2], seg[3], seg[4]]
+                        self._open[4] = "unidentified"
+                elif self._open is not None and self._open[2] == sel.pid:
                     self.counts["re-selected"] += 1
                     self.dispatch_log.append((sel.ts, sel.pid, sel.valid))
                     seg = self._open
@@ -376,17 +418,25 @@ class FairServerEvents:
                 self.counts["no task"] += 1
                 self._fs_ret = None
             else:
-                self._fs_ret = (task, f.get("pid", -1))
+                self._fs_ret = task
+        elif ev == "rtfs_set_next":
+            task, pid = f.get("task", 0), f.get("pid")
+            if task and pid is not None:
+                self.counts["set next"] += 1
+                self.ptr_pid[task] = pid
+                if self.pending is not None and self.pending.task == task:
+                    self.pending.pid = pid
         elif ev == "rtfs_dl_pick_ret":
             task = f.get("task", 0)
-            if task and self._fs_ret is not None and self._fs_ret[0] == task:
+            if task and self._fs_ret is not None and self._fs_ret == task:
                 bits = self._fs_bits
                 self.counts["fair selections"] += 1
                 valid = self.state_valid(bits)
                 if not valid:
                     self.counts["contradictory"] += 1
-                self.pending = Selection(ts, task, self._fs_ret[1], bits, valid)
-                self.selection_log.append((ts, self._fs_ret[1], valid))
+                pid = self.ptr_pid.get(task)
+                self.pending = Selection(ts, task, pid, bits, valid)
+                self.selection_log.append((ts, pid, valid))
             elif task:
                 self.counts["other deadline-class selections"] += 1
             self._pick = None
@@ -482,7 +532,7 @@ class FairServerEvents:
 def classify(w: dict) -> str:
     by = w["by"]
     sb = by["server-backed"]
-    unknown = by["normal unvalidated"] + by["contradictory"]
+    unknown = by["normal unvalidated"] + by["unidentified"] + by["contradictory"]
     other = by["higher class"] + by["idle/switching"] + by["preemption delay"]
     if unknown > TOLERANCE_NS:
         return "INDETERMINATE"
@@ -516,8 +566,9 @@ def report(ev: FairServerEvents, misses: int | None, top: int, out, failures: li
         print(f"    fair-server probes: {ev.probe_events} events on CPU {ev.cpu}; deadline-class picks "
               f"{c['dl picks']}; fair-server selections {c['fair selections']} (dispatched {c['dispatched']}, "
               f"re-selected while running {c['re-selected']}, not dispatched {c['not dispatched']}, "
-              f"contradictory state {c['contradictory']}); fair-server picks returning no task {c['no task']}; "
-              f"other deadline-class selections {c['other deadline-class selections']}", file=out)
+              f"unidentified {c['unidentified']}, contradictory state {c['contradictory']}); fair-server picks "
+              f"returning no task {c['no task']}; other deadline-class selections "
+              f"{c['other deadline-class selections']}; fair tasks set next {c['set next']}", file=out)
         sc = ev.server_calls
         print(f"    CPU {ev.cpu}'s fair server: start {sc['rtfs_srv_start']}, stop {sc['rtfs_srv_stop']}, "
               f"timer {sc['rtfs_srv_timer']} (entries; a start is not an activation)", file=out)
@@ -530,6 +581,11 @@ def report(ev: FairServerEvents, misses: int | None, top: int, out, failures: li
     t = ev.dl_timers
     print("    deadline-class timers on CPU " + str(ev.cpu) + ": " + ", ".join(f"{k} {v}" for k, v in t.items()),
           file=out)
+    nf = [x for x in ev.null_faults if not ev.window or ev.window[0] <= x <= ev.window[1]]
+    print(f"    kernel page faults at NULL-page addresses on CPU {ev.cpu} during the run: {len(nf)}", file=out)
+    if nf and ev.layout is not None:
+        failures.append(f"fair server: {len(nf)} kernel page faults at NULL-page addresses on CPU {ev.cpu}: "
+                        "a read through a NULL pointer (a probe's) perturbed the run")
     long = [w for w in ws if w["class"] is not None]
     if long:
         n = {k: sum(1 for w in long if w["class"] == k)
@@ -591,25 +647,32 @@ def running_mode(ev: FairServerEvents, bits: int) -> bool:
     return bool(ev.flag(bits, "dl_defer_running")) if ev.flag(bits, "dl_defer") else not ev.flag(bits, "dl_throttled")
 
 
+CHANGING_CALLS = ("rtfs_srv_start", "rtfs_srv_stop", "rtfs_srv_timer")  # entry states, before a possible change
+
+
 def preconditions(ev: FairServerEvents, after: int, before: int, misses: int | None) -> tuple[bool, str]:
-    """A negative control's preconditions, from the CPU's fair server's
-    recorded states between the previous test and the control."""
+    """A negative control's preconditions: the CPU's fair server's state as
+    read at a deadline-class pick between the previous test and the control,
+    after the last call there that could change it."""
     if misses is None:
         return False, "the probes' misses are unknown: a selection could be missing"
     if misses:
         return False, f"the probes missed {misses} hits: a selection could be missing"
-    states = [(t, e, b) for t, e, b in ev.server_states if after <= t <= before and b is not None]
-    if not states:
-        return False, "no state of the CPU's fair server was recorded between the previous test and this control"
     picked = [t for t, _, _ in ev.selection_log if after <= t <= before]
     if picked:
         return False, f"the server selected a task {len(picked)} times between the previous test and this control"
-    t, e, bits = states[-1]
+    gap = [(t, e, b) for t, e, b in ev.server_states if after <= t <= before]
+    last_change = max((t for t, e, _ in gap if e in CHANGING_CALLS), default=after)
+    read = [(t, b) for t, e, b in gap if e == "rtfs_dl_pick" and t > last_change and b is not None]
+    if not read:
+        return False, ("no state of the server was read at a deadline-class pick after its last start, stop or "
+                       "timer call before this control")
+    t, bits = read[-1]
     if running_mode(ev, bits):
-        return False, f"the server was last seen in its running mode ({flags_text(ev, bits)}, at {e})"
-    return True, (f"{len(states)} states of the server recorded since the previous test, the last "
-                  f"{(before - t) / 1e6:.1f} ms before this control ({flags_text(ev, bits)}, at {e}): not running, "
-                  "no selection since")
+        return False, f"the server was last read in its running mode ({flags_text(ev, bits)})"
+    return True, (f"the server was read {(before - t) / 1e6:.1f} ms before this control, after its last start, stop "
+                  f"or timer call ({flags_text(ev, bits)}): not running, and it selected nothing since the "
+                  "previous test")
 
 
 def judge_controls(ev: FairServerEvents, ctl: dict, misses: int | None) -> list[tuple[str, str, str]]:

@@ -90,6 +90,11 @@ def main() -> int:
             m = re.search(rf"^samples {phase} (.*)$", text, re.M)
             expect(m is not None and len(m[1].split()) > 10, f"the {phase} normal task's progress samples")
         expect("# fifo: test mode no-rt, no SCHED_FIFO" in text, "the test mode is recorded")
+        for phase in ("settle-1", "settle-2"):
+            c = re.search(rf"^check {phase} start=(\d+) end=(\d+) exit=0$", text, re.M)
+            span = [(int(a), int(b)) for n, a, b in phases if n == phase][0]
+            expect(c is not None and span[0] <= int(c[1]) <= int(c[2]) <= span[1],
+                   f"a state check at the end of {phase}, inside it: {text[:300]}")
 
         # A loop that ignores its deadline is killed by the supervisor.
         r = run(out, "--cpu", cpu, "--supervisor-cpu", sup, "--phase-s", "0.2", "--settle-s", "0.05",
