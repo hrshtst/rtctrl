@@ -1040,7 +1040,10 @@ paired with an untraced control of the same condition):
   traced mode, over every online CPU) and for the instance from its CPU's
   stats. A failed read, a CPU missing from the stats, or a counter missing
   or not a number records the count as unknown and stops the session as a
-  tracer failure: missing evidence is never recorded as zero losses.
+  tracer failure: missing evidence is never recorded as zero losses. A
+  positive count in either buffer invalidates the capture and stops the
+  session the same way, never with a timing verdict (reviewer decision,
+  2026-11-08).
 
 A known unrelated batch workload (`tools/batch_workloads.sh`, by process
 name: `exiftool`, the package tools, compilers and build tools, the desktop
@@ -1273,6 +1276,25 @@ tools/trace_session.sh --modes untraced,timer \
   --runs current:500:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motion
 tools/quiet_host.sh restore   # also after a failed or interrupted session
 uv run --project tools tools/trace_correlate.py <log>.csv   # each timer run
+```
+
+**Repeat of the 1000 Hz `-excl` pair (reviewer decision, 2026-11-08).** Of
+the four runs (archived in `timer_torque_off/`), the 500 Hz timer capture is
+valid diagnostic evidence; the 1000 Hz `-excl` timer capture lost 48,404
+events from CPU 3's main trace and is rejected as incomplete. Neither rate
+qualifies. That pair is repeated first, at 20 s each and with an unused
+attempt number, after the session's verdict for a positive loss count was
+fixed. The event set and every other setting stay as they were, with C2
+enabled, and every existing evidence check must pass. If events are lost
+again, a narrower system-call tracing is designed and rehearsed before any
+use on the arm:
+
+```
+tools/quiet_host.sh stop
+tools/trace_session.sh --modes untraced,timer --runs current:1000:rt-loaded-excl:fast-motion \
+  --duration 20 --attempt 2
+tools/quiet_host.sh restore   # also after a failed or interrupted session
+uv run --project tools tools/trace_correlate.py <log>.csv   # the timer run
 ```
 
 ## Later steps (after the bounded transaction and Phases B and C)

@@ -860,6 +860,29 @@ details are in the
 [control-rate qualification](../hardware/control-rate.md#timer-service-diagnostics-design-torque-off-1-ms).
 The targeted torque-off captures follow; no rate is qualified.
 
+## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
+
+The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
+fails intermittently: its run ends on the feedback-interval policy, the
+25 ms run interval, with no transport fault. An earlier failure of this
+kind, from log writes on the control thread, was fixed on 2026-10-16
+(`11ccc96`..`9d60caa`, `util::AsyncWriter`); these failures came after it.
+
+| Date | Context | Result |
+|---|---|---|
+| 2026-11-05 | the reviewer's test selection, while another project's 30-worker sweep held the load near 31 on 32 CPUs | failed: a 29.075 ms feedback gap |
+| 2026-11-07 | a full `ctest` during that sweep | failed |
+| 2026-11-08 | two full `ctest -j8` runs in the morning, no sweep (load 0.11 and 0.47) | passed |
+| 2026-11-08 | a full `ctest -j8` at 14:35, no sweep (load near 1), early in the run, when the heavier integration tests start | failed: "feedback interval too long in cycle 241", 29.7 ms between samples, wake lateness up to 8.1 ms |
+| 2026-11-08 | the smoke alone right after, three times | passed |
+| 2026-11-08 | a full `ctest -j8` at 15:27, no sweep (load 0.90), the seventh test to finish | failed: "feedback interval too long in cycle 765" in its marker-timeout case, 30.2 ms between samples, a host transaction up to 7.9 ms |
+| 2026-11-08 | the smoke alone right after, three times | passed |
+
+The reviewer keeps it open (2026-11-08): the passes on a quiet host
+support load sensitivity, but eight parallel tests still contend without
+the sweep, and the isolated passes do not settle the cause. No limit is
+changed for it.
+
 ## Consistency audit
 
 A post-closure audit (executed 2026-07-28, two commits) unified
