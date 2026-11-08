@@ -879,6 +879,7 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-08 | the smoke alone right after, three times | passed |
 | 2026-11-08 | a full `ctest -j8` at 16:25, no sweep (load 0.99) | passed |
 | 2026-11-08 | a full `ctest -j8` at 18:45, no sweep (load 0.45) | passed |
+| 2026-11-08 | six full `ctest -j8` runs from 19:53 to 21:19 (the preflights of the Stage 1 commits), no sweep (load 0.6 to 2.9 at their starts) | passed, each |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
