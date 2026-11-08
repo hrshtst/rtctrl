@@ -13,8 +13,18 @@ new threads and processes given their process's single original mask, and
 left where the process had none; a repeated restore; and the check of a
 run's task snapshot (observer threads and the probe's helpers, not its
 worker, kept off the excluded CPU).
+
+And the recovery cases the reviewer found (2026-11-08), injected into the
+module in this process on a child it creates: an interruption between the
+mask change and its completion record, and between the intent and the
+change, restored correctly; a failed read-back after the change, a failure
+of confinement that restore then repairs; a permission error on a live
+thread during restore, and a read-back that does not match, unresolved
+(status 1, the record retryable, a later restore completing it); and a
+permission error on a thread created during the run.
 """
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -22,6 +32,12 @@ import subprocess
 import sys
 import tempfile
 import time
+
+spec = importlib.util.spec_from_file_location("observer_affinity", "tools/observer_affinity.py")
+assert spec is not None and spec.loader is not None
+oa = importlib.util.module_from_spec(spec)
+sys.modules["observer_affinity"] = oa
+spec.loader.exec_module(oa)
 
 CHILD = r"""
 import os, subprocess, sys, threading, time
@@ -73,6 +89,133 @@ def say(child: subprocess.Popen, what: str) -> str:
     child.stdin.write(what + "\n")
     child.stdin.flush()
     return child.stdout.readline().strip()
+
+
+class Injected(Exception):
+    pass
+
+
+def quiet(fn, *args):
+    """Runs fn with its prints silenced, returning its status."""
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return fn(*args)
+
+
+def fault_checks(root: pathlib.Path, mine: list[int]) -> None:
+    ex = {mine[-1]}
+    orig = set(mine)
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    real_write, real_set, real_get = oa.Record.write, oa.os.sched_setaffinity, oa.os.sched_getaffinity
+    try:
+        time.sleep(0.2)
+
+        def run_case(name: str, write=None, setaff=None, getaff=None) -> pathlib.Path:
+            rec = root / f"{name}.jsonl"
+            if write:
+                oa.Record.write = write
+            if setaff:
+                oa.os.sched_setaffinity = setaff
+            if getaff:
+                oa.os.sched_getaffinity = getaff
+            try:
+                try:
+                    st = quiet(oa.confine, [p.pid], ex, rec, [])
+                except Injected:
+                    st = "interrupted"
+            finally:
+                oa.Record.write, oa.os.sched_setaffinity, oa.os.sched_getaffinity = real_write, real_set, real_get
+            run_case.status = st
+            return rec
+
+        # An interruption between the change and its completion record.
+        def no_completion(self, **obj):
+            if obj.get("kind") == "confined":
+                raise Injected
+            return real_write(self, **obj)
+        rec = run_case("after-change", write=no_completion)
+        expect(run_case.status == "interrupted" and os.sched_getaffinity(p.pid) == orig - ex,
+               "the change was made before the interruption")
+        expect(quiet(oa.restore, rec) == 0 and os.sched_getaffinity(p.pid) == orig,
+               "an interrupted change is restored from its intent")
+        # An interruption between the intent and the change: nothing to undo.
+        def no_change(tid, mask):
+            raise Injected
+        rec = run_case("before-change", setaff=no_change)
+        expect(run_case.status == "interrupted" and os.sched_getaffinity(p.pid) == orig, "no change was made")
+        expect(quiet(oa.restore, rec) == 0 and os.sched_getaffinity(p.pid) == orig and
+               '"kind": "state", "state": "restored"' in rec.read_text(), "an intent never carried out")
+        # A read-back failure after the change: confinement fails, restore repairs.
+        calls = {"n": 0}
+        def flaky_get(tid):
+            if tid == p.pid:
+                calls["n"] += 1
+                if calls["n"] == 2:  # the read-back right after the change
+                    raise PermissionError("injected read-back failure")
+            return real_get(tid)
+        rec = run_case("readback", getaff=flaky_get)
+        expect(run_case.status == 1 and '"kind": "failed"' in rec.read_text() and
+               os.sched_getaffinity(p.pid) == orig - ex, "a failed read-back fails confinement")
+        expect(quiet(oa.restore, rec) == 0 and os.sched_getaffinity(p.pid) == orig, "and restore repairs it")
+
+        # A permission error on a live thread during restore: unresolved, retryable.
+        rec = run_case("eperm")
+        expect(run_case.status == 0 and os.sched_getaffinity(p.pid) == orig - ex, "a clean confinement")
+        def denied(tid, mask):
+            if tid == p.pid:
+                raise PermissionError("injected EPERM on a live thread")
+            return real_set(tid, mask)
+        oa.os.sched_setaffinity = denied
+        try:
+            st = quiet(oa.restore, rec)
+        finally:
+            oa.os.sched_setaffinity = real_set
+        expect(st == 1 and os.sched_getaffinity(p.pid) == orig - ex and
+               '"kind": "state", "state": "restore incomplete"' in rec.read_text(),
+               f"a live thread's permission error is unresolved: {st}")
+        r = tool("restore", "--record", str(rec))
+        expect(r.returncode == 0 and os.sched_getaffinity(p.pid) == orig, f"a retried restore completes: {r.stdout}")
+        # A restore whose read-back does not match.
+        rec = run_case("mismatch")
+        oa.os.sched_setaffinity = lambda tid, mask: None if tid == p.pid else real_set(tid, mask)
+        try:
+            st = quiet(oa.restore, rec)
+        finally:
+            oa.os.sched_setaffinity = real_set
+        expect(st == 1, "a restore that does not take is unresolved")
+        expect(tool("restore", "--record", str(rec)).returncode == 0 and os.sched_getaffinity(p.pid) == orig,
+               "and a retry completes it")
+    finally:
+        oa.Record.write, oa.os.sched_setaffinity, oa.os.sched_getaffinity = real_write, real_set, real_get
+        p.kill()
+        p.wait()
+    # A permission error on a thread created during the run.
+    obs = subprocess.Popen([sys.executable, "-c", CHILD], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    pid, kid = start(obs)
+    try:
+        time.sleep(0.2)
+        rec = root / "new-thread.jsonl"
+        expect(quiet(oa.confine, [pid], ex, rec, []) == 0, "a clean confinement of a threaded process")
+        expect(say(obs, "thread") == "ok", "a new thread")
+        recorded = {json.loads(x)["tid"] for x in rec.read_text().splitlines() if '"kind": "thread"' in x}
+        new = [t for t in tids(pid) if t not in recorded]
+        oa.os.sched_setaffinity = lambda tid, mask: (_ for _ in ()).throw(PermissionError("injected")) \
+            if tid in new else real_set(tid, mask)
+        try:
+            st = quiet(oa.restore, rec)
+        finally:
+            oa.os.sched_setaffinity = real_set
+        expect(st == 1 and os.sched_getaffinity(new[0]) == orig - ex, "a new thread's permission error is unresolved")
+        expect(tool("restore", "--record", str(rec)).returncode == 0 and os.sched_getaffinity(new[0]) == orig,
+               "and a retry restores the new thread")
+    finally:
+        obs.kill()
+        obs.wait()
+        try:
+            os.kill(kid, 9)
+        except OSError:
+            pass
 
 
 def main() -> int:
@@ -195,6 +338,8 @@ def main() -> int:
                    f"the new thread and process restored: {masks(pid2)} {os.sched_getaffinity(gk2)}\n{r.stdout}\n"
                    f"{rec2.read_text()}")
             expect(os.sched_getaffinity(kid2) == allowed, "the reused ID left alone")
+        with tempfile.TemporaryDirectory() as t:
+            fault_checks(pathlib.Path(t), mine)
     finally:
         for p in procs:
             p.kill()

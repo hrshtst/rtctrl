@@ -7,15 +7,22 @@ explicit PIDs and their descendants) off the excluded CPUs: each thread's
 mask becomes its own mask less those CPUs. Before it changes anything it
 writes a record of every thread's identity (process and thread IDs and
 start times, which guard against PID reuse) and mask, flushed to disk; the
-changes and the final state follow in the same record. A thread whose mask
-holds only excluded CPUs is left alone and reported. Exempt process trees
+changes and the final state follow in the same record. Each change is
+written ahead too: the intended mask is recorded, flushed, before the
+thread's mask is set, and the mask read back after it. A thread whose mask
+holds only excluded CPUs is left alone and reported; a live thread whose
+change or read-back fails is a failure (status 1), never counted as gone. Exempt process trees
 (the session's own, with the probe and the tracers) are never touched.
 Kernel threads are never in a named tree.
 
-restore puts each recorded thread back to its recorded mask, when it still
-exists with its recorded start time and still holds the mask confine set; a
-thread that exited, a reused ID and a mask changed during the session are
-reported and left as found. A thread created during the session inherited
+restore reconciles every recorded intent, completed or not (an interruption
+can fall between a change and its completion record), against the thread's
+identity and current mask: a thread that still exists with its recorded
+start time and holds the intended mask goes back to its recorded mask (read
+back); one already at its recorded mask needs nothing; a thread that exited,
+a reused ID and a mask changed during the session are reported and left as
+found. Any other error on a live thread, or a read-back that does not match,
+is unresolved: restore says so, leaves the record retryable and exits 1. A thread created during the session inherited
 its creator's mask, and a multithreaded process has no single original
 mask: a new thread (or a new process in a named tree) is given its process's
 (or nearest recorded ancestor process's) original mask only when every
@@ -159,7 +166,7 @@ def confine(pids: list[int], exclude: set[int], record: pathlib.Path, exempt: li
             rec.write(kind="thread", pid=p, pstart=pstart, ppid=parents.get(p), tid=t, start=s,
                       comm=comm(t), mask=mask)
     rec.write(kind="state", state="confining")
-    moved = skipped = gone = 0
+    moved = skipped = gone = failed = 0
     for p, t, s, mask in planned:
         new = sorted(set(mask) & allowed)
         if not new:
@@ -173,21 +180,29 @@ def confine(pids: list[int], exclude: set[int], record: pathlib.Path, exempt: li
             rec.write(kind="gone", tid=t)
             gone += 1
             continue
+        rec.write(kind="intent", tid=t, mask=new)  # written ahead of the change
         try:
             os.sched_setaffinity(t, new)
             got = sorted(os.sched_getaffinity(t))
         except OSError as e:
-            rec.write(kind="gone", tid=t, why=str(e))
-            gone += 1
+            if start_time(p, t) != s:
+                rec.write(kind="gone", tid=t, why=str(e))
+                gone += 1
+            else:
+                rec.write(kind="failed", tid=t, why=str(e))
+                failed += 1
+            continue
+        if got != new:
+            rec.write(kind="failed", tid=t, why=f"its mask reads {got}, not {new}")
+            failed += 1
             continue
         rec.write(kind="confined", tid=t, mask=got)
         moved += 1
-        if got != new:
-            print(f"observer_affinity: thread {t} reads {got}, not {new}", file=sys.stderr)
-    rec.write(kind="state", state="confined")
+    rec.write(kind="state", state="confined" if not failed else "confined with failures")
     print(f"observer placement: {len(procs)} processes, {len(planned)} threads: {moved} confined to "
-          f"CPUs {','.join(map(str, sorted(allowed)))}, {skipped} left (only excluded CPUs), {gone} gone")
-    return 1 if skipped else 0
+          f"CPUs {','.join(map(str, sorted(allowed)))}, {skipped} left (only excluded CPUs), {gone} gone, "
+          f"{failed} failed")
+    return 1 if skipped or failed else 0
 
 
 def restore(record: pathlib.Path) -> int:
@@ -202,7 +217,10 @@ def restore(record: pathlib.Path) -> int:
         return 2
     allowed = set(head["allowed"])
     recorded = {x["tid"]: x for x in lines if x["kind"] == "thread"}
-    confined = {x["tid"]: x["mask"] for x in lines if x["kind"] == "confined"}
+    # Every change intended, completed or not: the intent records, and the
+    # completion records of a record written before intents existed.
+    intended = {x["tid"]: x["mask"] for x in lines if x["kind"] == "confined"}
+    intended.update({x["tid"]: x["mask"] for x in lines if x["kind"] == "intent"})
     # A process's single original mask, when all its recorded threads shared one.
     by_proc: dict[int, set[tuple]] = {}
     pstart: dict[int, int | None] = {}
@@ -211,9 +229,36 @@ def restore(record: pathlib.Path) -> int:
         pstart[x["pid"]] = x["pstart"]
     single = {p: list(next(iter(m))) for p, m in by_proc.items() if len(m) == 1}
     rec = Record(record, "a")
-    n = {"restored": 0, "exited": 0, "reused": 0, "changed": 0, "new restored": 0, "new left": 0}
-    for t, x in recorded.items():
-        if t not in confined:
+    n = {"restored": 0, "exited": 0, "reused": 0, "changed": 0, "new restored": 0, "new left": 0,
+         "already": 0, "failed": 0}
+
+    def fail(tid: int, why: str) -> None:
+        rec.write(kind="restore failed", tid=tid, why=why)
+        print(f"observer_affinity: thread {tid} not restored: {why}", file=sys.stderr)
+        n["failed"] += 1
+
+    def put_back(pid: int, tid: int, start: int | None, mask: list[int], key: str) -> None:
+        """Sets and reads back the mask; an error is an exit only when the
+        thread is gone."""
+        try:
+            os.sched_setaffinity(tid, mask)
+            got = sorted(os.sched_getaffinity(tid))
+        except OSError as e:
+            if start_time(pid, tid) != start:
+                n["exited"] += 1
+            else:
+                fail(tid, str(e))
+            return
+        if got != sorted(mask):
+            fail(tid, f"its mask reads {got}, not {sorted(mask)}")
+            return
+        rec.write(kind=key, tid=tid, mask=got)
+        n[key] += 1
+
+    for t, want in intended.items():
+        x = recorded.get(t)
+        if x is None:
+            fail(t, "an intent without its thread's record")
             continue
         s = start_time(x["pid"], t)
         if s is None:
@@ -225,15 +270,19 @@ def restore(record: pathlib.Path) -> int:
             continue
         try:
             cur = sorted(os.sched_getaffinity(t))
-            if cur != confined[t]:
-                rec.write(kind="left", tid=t, why=f"its mask changed during the session ({cur})")
-                n["changed"] += 1
-                continue
-            os.sched_setaffinity(t, x["mask"])
-            rec.write(kind="restored", tid=t, mask=sorted(os.sched_getaffinity(t)))
-            n["restored"] += 1
-        except OSError:
-            n["exited"] += 1
+        except OSError as e:
+            if start_time(x["pid"], t) is None:
+                n["exited"] += 1
+            else:
+                fail(t, str(e))
+            continue
+        if cur == sorted(x["mask"]):
+            n["already"] += 1  # never changed, or restored before
+        elif cur == sorted(want):
+            put_back(x["pid"], t, s, x["mask"], "restored")
+        else:
+            rec.write(kind="left", tid=t, why=f"its mask changed during the session ({cur})")
+            n["changed"] += 1
     # New threads in recorded processes, and new processes in their trees.
     parents = processes()
     live = {p for p in pstart if p in parents and start_time(p) == pstart[p]}
@@ -246,21 +295,25 @@ def restore(record: pathlib.Path) -> int:
         for t in threads(p):
             if t in recorded:
                 continue
+            s = start_time(p, t)
             try:
                 cur = sorted(os.sched_getaffinity(t))
-                if mask is not None and cur == sorted(set(mask) & allowed):
-                    os.sched_setaffinity(t, mask)
-                    rec.write(kind="new restored", pid=p, tid=t, mask=mask)
-                    n["new restored"] += 1
-                else:
-                    why = "its process has no single original mask" if mask is None else f"its mask is {cur}"
-                    rec.write(kind="new left", pid=p, tid=t, why=why)
-                    n["new left"] += 1
-            except OSError:
-                pass
-    rec.write(kind="state", state="restored")
-    print("observer placement restored: " + ", ".join(f"{k} {v}" for k, v in n.items()))
-    return 0
+            except OSError as e:
+                if start_time(p, t) is None:
+                    continue  # gone
+                fail(t, str(e))
+                continue
+            if mask is not None and cur == sorted(set(mask) & allowed):
+                put_back(p, t, s, mask, "new restored")
+            elif cur != sorted(mask or []):
+                why = "its process has no single original mask" if mask is None else f"its mask is {cur}"
+                rec.write(kind="new left", pid=p, tid=t, why=why)
+                n["new left"] += 1
+    done = n["failed"] == 0
+    rec.write(kind="state", state="restored" if done else "restore incomplete")
+    print("observer placement restored: " + ", ".join(f"{k} {v}" for k, v in n.items())
+          + ("" if done else "; INCOMPLETE: the record stays, retry the restore"))
+    return 0 if done else 1
 
 
 def check(record: pathlib.Path, tasks: pathlib.Path, worker: int) -> int:

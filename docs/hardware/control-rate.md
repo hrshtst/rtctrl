@@ -1426,15 +1426,24 @@ or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
   own tree is exempt), and before any change writes
   `<log>.csv.observers.jsonl`: every thread's process and thread IDs, start
   times (a guard against reused IDs) and mask, flushed to disk;
-- sets each thread's mask to its own less the excluded CPUs, and refuses to
-  start the run if a thread holds only excluded CPUs;
+- sets each thread's mask to its own less the excluded CPUs, writing the
+  intended mask to the record (flushed) before each change and reading the
+  mask back after it. A thread that holds only excluded CPUs, or a live
+  thread whose change or read-back fails, refuses the run (a failure, never
+  counted as an exited thread);
 - starts the probe with its mask outside them, so only its worker pins
   itself to CPU 3;
-- restores right after the probe, and on every exit (a failed restoration
-  is status 3). A recorded thread goes back to its recorded mask if it still
-  exists with its start time and the mask confinement set. An exited thread,
-  a reused ID and a mask the application changed during the run are left as
-  found and reported. A thread or process created during the run inherited
+- restores right after the probe, and on every exit. Restoration reconciles
+  every recorded intent, completed or not (an interruption can fall between
+  a change and its completion record): a thread that still exists with its
+  start time and holds the intended mask goes back to its recorded mask,
+  read back; one already at its recorded mask needs nothing. An exited
+  thread, a reused ID and a mask the application changed during the run are
+  left as found and reported. Any other error on a live thread, or a
+  read-back that does not match, is unresolved: the record stays for a
+  retry, the tool exits 1, and the session reports a cleanup failure (the
+  run stops; an otherwise successful session exits 3) with the command to
+  retry (reviewer findings, 2026-11-08). A thread or process created during the run inherited
   its creator's mask, and a multithreaded process has no single original
   mask: it gets its process's (or nearest recorded ancestor's) original
   mask only when all that process's recorded threads shared one, and is

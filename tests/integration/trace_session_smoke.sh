@@ -1372,6 +1372,39 @@ kill "$obs_pid" 2>/dev/null || true
 wait "$obs_pid" 2>/dev/null || true
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
 
+# A restoration that stays unresolved (a stand-in placement tool whose
+# restore fails) reaches the session's cleanup-failure handling: the run
+# stops as a placement failure, the cleanup is retried at exit and reported,
+# and the record says the placement was not restored (reviewer, 2026-11-08).
+# (The session runs the tool with python3.)
+cat >"$FAKE/obs_tool.py" <<'EOF'
+import os, sys
+with open(os.environ["FAKE_LOG"] + ".obs_tool", "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1] == "confine":
+    with open(sys.argv[sys.argv.index("--record") + 1], "w") as rec:
+        rec.write('{"kind": "header", "exclude": [0], "allowed": [1]}\n')
+    print("observer placement: 1 processes, 1 threads: 1 confined (stand-in)")
+elif sys.argv[1] == "restore":
+    print("observer placement restored: failed 1; INCOMPLETE: the record stays, retry the restore")
+    print("observer_affinity: thread 1 not restored: stand-in EPERM", file=sys.stderr)
+    sys.exit(1)
+else:
+    print("observer placement check (stand-in)")
+EOF
+set +e
+OBS_TOOL="$FAKE/obs_tool.py" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 58 --duration 2 --modes untraced \
+  --runs current:100:idle:fast-motion --placements confined --observers $$ </dev/null >"$ROOT/pl-rmfail.log" 2>&1
+st=$?
+set -e
+b=$(base current-100hz-idle-bounded-fast-motion-obs-confined-untraced 58)
+[ "$st" -ne 0 ] && grep -q "CLEANUP FAILED: the observers' placement was not restored" "$ROOT/pl-rmfail.log" &&
+  grep -q "retry: python3 $FAKE/obs_tool.py restore --record $b.observers.jsonl" "$ROOT/pl-rmfail.log" &&
+  grep -q "^verdict: placement failure (the observers' placement was not restored)$" "$b.run.txt" &&
+  grep -q '^cleanup: observer placement NOT restored: ' "$b.run.txt" &&
+  [ "$(grep -c '^restore ' "$ROOT/fake.obs_tool")" -ge 2 ] ||
+  fail "an unresolved restoration: status $st" "$ROOT/pl-rmfail.log"
+
 # An emulator rehearsal traces without usbmon.
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \
   --modes traced --runs current:100:idle:fast </dev/null >"$ROOT/nousb.log" 2>&1 ||

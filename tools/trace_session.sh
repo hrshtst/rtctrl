@@ -147,7 +147,8 @@
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
 # runs them directly and TRACE_SESSION_SUDO=<command> uses that command in
 # sudo's place, TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG,
-# LATENCY_TOOL, PERF and TRACEFS replace the tools and the tracefs path, and
+# LATENCY_TOOL, PERF, FS_PROBE_TOOL, OBS_TOOL and TRACEFS replace the tools
+# and the tracefs path, and
 # TRACE_SESSION_RTPRIO_LIMIT replaces the real-time priority limit checked
 # (with a stand-in probe, which needs none).
 set -u
@@ -175,7 +176,7 @@ FS_CONTROL_TOOL=tools/fair_server_control.py
 FS_CONTROL_PHASE_S=${FS_CONTROL_PHASE_S:-3}
 FS_CONTROL_SETTLE_S=${FS_CONTROL_SETTLE_S:-2}
 fs_controls_cpu=
-OBS_TOOL=tools/observer_affinity.py
+OBS_TOOL=${OBS_TOOL:-tools/observer_affinity.py}  # tests replace it
 placements=; observers=
 obs_owed=0; obs_record=  # a confined run's placement record, owed a restoration while obs_owed is 1
 placement=  # the placement of the run being named or made
