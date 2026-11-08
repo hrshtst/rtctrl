@@ -5,9 +5,14 @@ The fair server (rq->fair_server) is a deadline-class entity that runs
 normal tasks ahead of real-time ones while it is active. Its entry into a
 CPU's schedule is observed, not inferred from function entry:
 
-- a selection: fair_server_pick_task returned a task (a return probe), and
-  the deadline class's pick (pick_task_dl, entry and return probes) returned
-  that same task in the same pick; a pick returning no task is counted apart;
+- a selection: fair_server_pick_task returned a task (a return probe, with
+  the task's pid read through it), and the deadline class's pick
+  (pick_task_dl, entry and return probes) returned that same task pointer in
+  the same pick; a pick returning no task is counted apart. The deadline
+  class's return probe reads nothing through the pointer it records: it
+  returns no task on nearly every pick, and a read through that NULL
+  pointer would fault in the kernel at every schedule (the rehearsal of
+  2026-11-08 counted 56,717 such faults on the real-time CPU in 10 s);
 - the server's state at the selection: the fair server's flags word (active,
   throttled, deferred, armed, running...), runtime and deadline, read at the
   fair server pick's entry and at the deadline class's pick entry;
@@ -52,11 +57,16 @@ definitions filtered to that CPU. The positive control passes when the
 trace shows the FIFO loop at a real-time priority there, and the normal
 task both progressing and dispatched by the fair server while the loop ran;
 no fixed share is required. A negative control's preconditions must be
-established first: no probe misses, a stop of that CPU's fair server
-recorded after the previous test, and no pick or server timer after that
-stop. Without them it is INCONCLUSIVE; with them it passes when the server
-dispatched nothing (the normal task alone, which must have run) or
-selected nothing (the idle CPU), and fails otherwise.
+established first, from the server's recorded states (this kernel never
+calls dl_server_stop in these runs: the rehearsal of 2026-11-08 recorded
+none, the server going back to deferred, armed and throttled, or inactive):
+no probe misses; at least one recorded state of that CPU's fair server
+between the previous test and the control; no fair-server selection in
+that gap; and the latest state showing the server not in its running mode
+(a deferred server not deferred-running, or an inactive one). Without them
+it is INCONCLUSIVE; with them it passes when the server dispatched nothing
+(the normal task alone, which must have run) or selected nothing (the idle
+CPU), and fails otherwise.
 
 usage: fair_server.py layout [--btf-raw FILE]
        fair_server.py definitions --group GROUP [--btf-raw FILE]
@@ -187,7 +197,7 @@ def definitions(lay: dict[str, int], group: str = GROUP) -> list[str]:
         (f"p:{group}/rtfs_dl_pick pick_task_dl rq=$arg1:x64 rq_cpu=+{lay['rq.cpu']}($arg1):s32 "
          f"fs_bits=+{fs + lay['se.flags_word']}($arg1):x32 fs_runtime=+{fs + lay['se.runtime']}($arg1):s64 "
          f"fs_deadline=+{fs + lay['se.deadline']}($arg1):u64"),
-        f"r:{group}/rtfs_dl_pick_ret pick_task_dl {task} prio=+{lay['task.prio']}($retval):s32",
+        f"r:{group}/rtfs_dl_pick_ret pick_task_dl task=$retval:x64",
         server("rtfs_fs_pick", "fair_server_pick_task", "$arg1"),
         f"r:{group}/rtfs_fs_pick_ret fair_server_pick_task {task}",
         server("rtfs_srv_start", "dl_server_start", "$arg1"),
@@ -336,6 +346,7 @@ class FairServerEvents:
             return
         self.probe_events += 1
         if ev == "rtfs_dl_pick":
+            self.server_states.append((ts, ev, f.get("fs_bits")))  # the CPU's fair server at the pick
             # A selection not followed by a switch: its task stayed on (a
             # re-selection), or another pick replaced it.
             sel = self.pending
@@ -571,23 +582,34 @@ def flags_text(ev: FairServerEvents, bits: int | None) -> str:
     return ",".join(on) or "none"
 
 
+def running_mode(ev: FairServerEvents, bits: int) -> bool:
+    """The server in the mode in which it can dispatch: active and, when
+    deferred, deferred-running (throttled or not: a throttled running
+    server dispatches again once replenished)."""
+    if not ev.flag(bits, "dl_server_active"):
+        return False
+    return bool(ev.flag(bits, "dl_defer_running")) if ev.flag(bits, "dl_defer") else not ev.flag(bits, "dl_throttled")
+
+
 def preconditions(ev: FairServerEvents, after: int, before: int, misses: int | None) -> tuple[bool, str]:
-    """A negative control's preconditions: the CPU's fair server seen to stop
-    after the previous test, and not picked nor its timer run since."""
+    """A negative control's preconditions, from the CPU's fair server's
+    recorded states between the previous test and the control."""
     if misses is None:
         return False, "the probes' misses are unknown: a selection could be missing"
     if misses:
         return False, f"the probes missed {misses} hits: a selection could be missing"
-    stops = [(t, b) for t, e, b in ev.server_states if e == "rtfs_srv_stop" and after <= t <= before]
-    if not stops:
-        return False, "no stop of the CPU's fair server was recorded between the previous test and this control"
-    t_stop, bits = stops[-1]
-    later = [t for t, e, _ in ev.server_states if e in ("rtfs_fs_pick", "rtfs_srv_timer") and t_stop < t <= before]
-    later += [t for t, _, _ in ev.selection_log if t_stop < t <= before]
-    if later:
-        return False, "the server was picked or its timer ran after its last recorded stop, before this control"
-    return True, (f"the server stopped {(before - t_stop) / 1e6:.1f} ms before this control "
-                  f"(state before the stop: {flags_text(ev, bits)}), and was not picked since")
+    states = [(t, e, b) for t, e, b in ev.server_states if after <= t <= before and b is not None]
+    if not states:
+        return False, "no state of the CPU's fair server was recorded between the previous test and this control"
+    picked = [t for t, _, _ in ev.selection_log if after <= t <= before]
+    if picked:
+        return False, f"the server selected a task {len(picked)} times between the previous test and this control"
+    t, e, bits = states[-1]
+    if running_mode(ev, bits):
+        return False, f"the server was last seen in its running mode ({flags_text(ev, bits)}, at {e})"
+    return True, (f"{len(states)} states of the server recorded since the previous test, the last "
+                  f"{(before - t) / 1e6:.1f} ms before this control ({flags_text(ev, bits)}, at {e}): not running, "
+                  "no selection since")
 
 
 def judge_controls(ev: FairServerEvents, ctl: dict, misses: int | None) -> list[tuple[str, str, str]]:

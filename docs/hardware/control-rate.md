@@ -1066,8 +1066,9 @@ paired with an untraced control of the same condition):
   `tools/fair_server.py` from offsets in the kernel's BTF and written by
   `tools/fair_server_probes.sh` through sudo. They record the deadline
   class's pick (`pick_task_dl`, with CPU 3's fair-server state at its entry
-  and the task it returns), the fair server's own pick
-  (`fair_server_pick_task`, its state and the task it returns), and
+  and the task pointer it returns, nothing read through it), the fair
+  server's own pick (`fair_server_pick_task`, its state and the task it
+  returns, with the task's pid), and
   `dl_server_start`, `dl_server_stop` and `dl_server_timer` with the
   server's state before each call. The picks are filtered to CPU 3, the
   server's calls to CPU 3's server, wherever they run. The session defines
@@ -1482,19 +1483,27 @@ counts and both buffers' losses (the loss rule applies), and
   on that CPU, and the normal task progressing and dispatched by the fair
   server while the loop ran. No fixed share (such as 50 ms per second) is
   required;
-- a **negative** control's preconditions must be established first: no
-  probe misses, a stop of that CPU's fair server recorded after the previous
-  test, and no pick or server timer after that stop. Without them it is
-  INCONCLUSIVE, since the server's state can carry over from the positive
-  test (active, throttled and deferred states differ). With them it passes
-  when the server dispatched nothing while the normal task ran alone (which
-  must have run), or selected nothing on the idle CPU, and fails otherwise.
+- a **negative** control's preconditions must be established first, from
+  the server's recorded states: no probe misses; at least one recorded state
+  of that CPU's fair server between the previous test and the control; no
+  fair-server selection in that gap; and the latest of those states showing
+  the server not in its running mode (a deferred server not
+  deferred-running, or an inactive one). Without them it is INCONCLUSIVE,
+  since the server's state can carry over from the positive test (active,
+  throttled and deferred states differ). With them it passes when the
+  server dispatched nothing while the normal task ran alone (which must have
+  run), or selected nothing on the idle CPU, and fails otherwise. (A first
+  rule required a recorded stop of the server; this kernel never called
+  `dl_server_stop` in the rehearsal of 2026-11-08, its server going back to
+  deferred, armed and throttled, or inactive, so the rule could never be
+  met.)
 
 A failed control stops the session before the timer runs; an inconclusive
 one is reported. The supervisor drains each child's output while it waits
-for it, so a full pipe cannot block either side; every wait is bounded, and
-a signal to the supervisor kills and reaps every running child and marks
-the output incomplete. Controls are never reused: if any file of the
+for it, so a full pipe cannot block either side; every wait is bounded (a
+normal task that does not say it is ready within 2 s ends the run), and a
+signal to the supervisor kills and reaps every running child and marks the
+output incomplete. Controls are never reused: if any file of the
 attempt's controls exists (passed, failed, partial or interrupted), the
 session refuses before anything is sent, and a fresh `--attempt` runs them
 again (reviewer findings, 2026-11-08). The controls, the rehearsal's timer runs with the probes,

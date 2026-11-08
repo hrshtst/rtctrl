@@ -22,8 +22,9 @@ The controls' judgement runs on synthetic traces of a control CPU and
 tools/fair_server_control.py's output: a passing set; a loop that never ran
 at a real-time priority (the tool's test modes) failing the positive
 control; negative controls inconclusive without their preconditions (no
-stop recorded, unknown or nonzero misses, a pick after the stop) and
-failing on a dispatch; and the command line.
+state of the server recorded between the tests, its last state running,
+unknown or nonzero misses, a selection in the gap) and failing on a
+dispatch; and the command line.
 """
 
 import importlib.util
@@ -85,8 +86,8 @@ def definition_checks(lay: dict) -> None:
     expect(d[0] == "p:rtctrl_fs/rtfs_dl_pick pick_task_dl rq=$arg1:x64 rq_cpu=+3688($arg1):s32 "
                   "fs_bits=+3276($arg1):x32 fs_runtime=+3256($arg1):s64 fs_deadline=+3264($arg1):u64",
            f"the deadline class's pick: {d[0]}")
-    expect(d[1] == "r:rtctrl_fs/rtfs_dl_pick_ret pick_task_dl task=$retval:x64 pid=+2800($retval):s32 "
-                  "policy=+1356($retval):u32 prio=+108($retval):s32", f"its return: {d[1]}")
+    expect(d[1] == "r:rtctrl_fs/rtfs_dl_pick_ret pick_task_dl task=$retval:x64",
+           f"its return records the pointer alone, no read through it: {d[1]}")
     expect(d[2] == "p:rtctrl_fs/rtfs_fs_pick fair_server_pick_task se=$arg1:x64 srv_rq=+216($arg1):x64 "
                   "srv_cpu=+3688(+216($arg1)):s32 bits=+84($arg1):x32 runtime=+64($arg1):s64 "
                   "deadline=+72($arg1):u64", f"the fair server's pick: {d[2]}")
@@ -288,12 +289,16 @@ RQ = 0xff00      # its runqueue
 MS = 1_000_000
 
 
-def control_events(fifo_prio: int = 89, stop: bool = True, pick_after_stop: bool = False,
-                   neg_dispatch: bool = False) -> list[tuple]:
+ARMED = 0xF1    # dl_throttled (0), dl_server (4), dl_server_active (5), dl_defer (6), dl_defer_armed (7): deferred, waiting (the rehearsal's bits)
+
+
+def control_events(fifo_prio: int = 89, settled: bool = True, last_running: bool = False,
+                   pick_in_gap: bool = False, neg_dispatch: bool = False) -> list[tuple]:
     """A control CPU's trace: the positive test (a FIFO loop, pid 700, and a
-    normal task, pid 600, that the fair server dispatches twice), the
-    server's stop in settle-1, then the normal task (pid 601) alone, and the
-    idle CPU, the server's stop recorded after each test. Times in ms from 0."""
+    normal task, pid 600, that the fair server dispatches twice), then the
+    normal task (pid 601) alone, and the idle CPU; in each settle between
+    them the server's timer records it deferred, armed and throttled (as the
+    kernel showed in the rehearsal of 2026-11-08). Times in ms from 0."""
     e: list[tuple] = []
 
     def add(t: float, ev: str, rest: str, pid: int = 1, comm: str = "x") -> None:
@@ -316,17 +321,19 @@ def control_events(fifo_prio: int = 89, stop: bool = True, pick_after_stop: bool
         switch(t + 40, "py", 600, 120, "py", 700, fifo_prio)
     switch(3010, "py", 700, fifo_prio, "py", 600, 120)
     switch(3500, "py", 600, 120, "swapper/5", 0, 120)
-    if stop:
-        add(3600, "rtfs_srv_stop", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
-    if pick_after_stop:
-        select(3700, 9)
+    if settled:
+        add(3600, "rtfs_srv_timer", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(ARMED)}")
+    if last_running:
+        add(3700, "rtfs_srv_start", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
+    if pick_in_gap:
+        select(3800, 9)
     switch(5600, "swapper/5", 0, 120, "py", 601, 120)
     if neg_dispatch:
         select(6000, 601)
         switch(6000.01, "py", 601, 120, "py", 601, 120)
     switch(8600, "py", 601, 120, "swapper/5", 0, 120)
-    if stop:  # and again once the normal task has gone
-        add(8700, "rtfs_srv_stop", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
+    if settled:  # and again once the normal task has gone
+        add(8700, "rtfs_srv_start", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(ARMED)}")
     return sorted(e)
 
 
@@ -358,17 +365,18 @@ def control_checks(lay: dict) -> None:
     expect(v["positive"][0] == "PASS" and "dispatched by the fair server 2 times" in v["positive"][1]
            and "(2 samples)" in v["positive"][1], f"the positive control passes: {v}")
     expect(v["negative-normal"][0] == "PASS" and v["negative-idle"][0] == "PASS"
-           and "state before the stop: server_active,defer,defer_running" in v["negative-normal"][1],
-           f"the negative controls pass with their preconditions: {v}")
+           and "(throttled,server,server_active,defer,defer_armed, at rtfs_srv_timer): not running"
+           in v["negative-normal"][1], f"the negative controls pass with their preconditions: {v}")
     v = judged(lay, fifo_prio=120)
     expect(v["positive"][0] == "FAIL" and "did not run at a real-time priority" in v["positive"][1],
            f"a loop without a real-time priority fails: {v}")
     v = judged(lay, text=control_text(fifo_exit=-9, killed="yes"))
     expect(v["positive"][0] == "FAIL" and "did not run to its deadline" in v["positive"][1],
            f"a killed loop fails: {v}")
-    for kw, misses, words in (({"stop": False}, 0, "no stop of the CPU's fair server"),
+    for kw, misses, words in (({"settled": False}, 0, "no state of the CPU's fair server was recorded"),
+                              ({"last_running": True}, 0, "last seen in its running mode"),
                               ({}, None, "misses are unknown"), ({}, 2, "missed 2 hits"),
-                              ({"pick_after_stop": True}, 0, "picked or its timer ran after")):
+                              ({"pick_in_gap": True}, 0, "the server selected a task 1 times")):
         v = judged(lay, misses, **kw)
         expect(v["negative-normal"][0] == "INCONCLUSIVE" and words in v["negative-normal"][1],
                f"no preconditions ({words}): {v}")

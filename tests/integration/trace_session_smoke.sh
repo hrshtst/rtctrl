@@ -1270,7 +1270,7 @@ if [ -n "$SAMPLER" ]; then
       grep -q '^fair-server probe hits during the controls: rtfs_dl_pick 10, .*; misses during the controls: 0$' "$fb.run.txt" &&
       grep -q '^trace overruns: 0 ' "$fb.run.txt" &&
       grep -q '^  positive: FAIL (the loop (pid [0-9]*) did not run at a real-time priority on CPU 1 in the trace)$' "$fb.run.txt" &&
-      grep -q "^  negative-normal: INCONCLUSIVE (preconditions not established: no stop of the CPU's fair server" "$fb.run.txt" &&
+      grep -q "^  negative-normal: INCONCLUSIVE (preconditions not established: no state of the CPU's fair server was recorded" "$fb.run.txt" &&
       grep -q '^verdict: controls fail$' "$fb.run.txt" ||
       fail "the controls' record" "$fb.run.txt"
     grep -q '^phase negative-idle ' "$fb.controls.txt" && grep -q '^# fifo: test mode no-rt, no SCHED_FIFO$' "$fb.controls.txt" ||
