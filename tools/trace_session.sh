@@ -73,9 +73,10 @@
 # voids the run, as does a load that does not report success.
 #
 # A failed criterion is data, not a stop. A probe that exits nonzero, a
-# tracer that does not start, stop cleanly or last the run, a load that
-# does not last the run or succeed, or an analysis error stops the session
-# (the stop rule).
+# tracer that does not start, stop cleanly or last the run, a trace buffer
+# that lost events or whose losses cannot be counted (the capture is then
+# invalid), a load that does not last the run or succeed, or an analysis
+# error stops the session (the stop rule).
 #
 # Each run leaves gitignored files in the output directory:
 #   <log>.csv               per-cycle log (probe)
@@ -1398,7 +1399,11 @@ run_one() {
         n_over="unknown ($n_over)"
       fi
       echo "tsc instance overruns: $n_over (overrun, commit overrun and dropped events)" >>"$note"
-      [[ $n_over =~ ^[0-9]+$ ]] || tracer_problem+="${tracer_problem:+, }the TSC instance's loss counts: $n_over"
+      if ! [[ $n_over =~ ^[0-9]+$ ]]; then
+        tracer_problem+="${tracer_problem:+, }the TSC instance's loss counts: $n_over"
+      elif [ "$n_over" -gt 0 ]; then
+        tracer_problem+="${tracer_problem:+, }the TSC instance lost $n_over events: the capture is invalid"
+      fi
       # Its evidence is read; a failed removal is a cleanup failure, which
       # ends the session after this run (status 3 if it would succeed).
       remove_tsc_instance
@@ -1417,7 +1422,11 @@ run_one() {
       n_trace="unknown ($n_trace)"
     fi
     echo "trace overruns: $n_trace (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
-    [[ $n_trace =~ ^[0-9]+$ ]] || tracer_problem+="${tracer_problem:+, }the trace's loss counts: $n_trace"
+    if ! [[ $n_trace =~ ^[0-9]+$ ]]; then
+      tracer_problem+="${tracer_problem:+, }the trace's loss counts: $n_trace"
+    elif [ "$n_trace" -gt 0 ]; then
+      tracer_problem+="${tracer_problem:+, }the trace lost $n_trace events: the capture is invalid"
+    fi
     if [ "$usbmon" -eq 1 ]; then
       stop_tracer usbmon "$usbmon_job"; usbmon_status=$?; usbmon_job=
       { echo; echo "--- tcpdump (exit $usbmon_status) ---"; cat "$tmp/usbmon.out"; } >>"$note"

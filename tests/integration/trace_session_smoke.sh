@@ -282,7 +282,7 @@ exec "$@"
 EOF
 # The TSC instance's tool: a marker file stands for the instance
 # (FAKE_TSC_REMOVE_FAIL: its removal fails; FAKE_TSC_STATS=fail: its stats
-# read fails; FAKE_TSC_START: race, another session creates it first and
+# read fails; FAKE_TSC_OVERRUN: its overrun count; FAKE_TSC_START: race, another session creates it first and
 # the start exits 2; partial, the start creates it and fails, 4; unknown,
 # it creates it and exits 1, a status that does not say).
 cat >"$FAKE/tsc_instance" <<'EOF'
@@ -301,7 +301,7 @@ case "$1" in
   stop) echo "# entries-in-buffer/entries-written: 1/1   #P:2"
         echo "          <idle>-0       [000] d.h1. 123456789: local_timer_entry: vector=236" ;;
   stats) [ "${FAKE_TSC_STATS:-}" = fail ] && { echo "stand-in: cannot read the stats" >&2; exit 1; }
-         printf 'CPU: %s\nentries: 1\noverrun: 0\ncommit overrun: 0\ndropped events: 0\n' "$4" ;;
+         printf 'CPU: %s\nentries: 1\noverrun: %s\ncommit overrun: 0\ndropped events: 0\n' "$4" "${FAKE_TSC_OVERRUN:-0}" ;;
   remove) [ "${FAKE_TSC_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
           rm -f "$mark" ;;
   exists) [ -e "$mark" ] ;;
@@ -485,6 +485,23 @@ b=$(base current-100hz-idle-bounded-traced 3)
 [ ! -e "$b" ] || fail "the probe ran on the local trace clock" "$ROOT/clock.log"
 grep -q 'the trace clock is not mono' "$ROOT/clock.log"
 grep -q '^verdict: not run (trace clock)' "$b.run.txt"
+
+# Events lost from the trace invalidate the capture: a tracer failure that
+# stops the session, never a timing verdict, and no further run starts.
+if FAKE_TRACE_OVERRUN=7 setsid tools/trace_session.sh "${COMMON[@]}" --yes \
+    --attempt 28 --modes traced --runs current:100:idle:full,cbp:100:idle:full \
+    </dev/null >"$ROOT/lost.log" 2>&1; then
+  fail "a session whose trace lost events went on" "$ROOT/lost.log"
+fi
+b=$(base current-100hz-idle-bounded-traced 28)
+grep -q '^trace overruns: 7 (' "$b.run.txt" &&
+  grep -q '^verdict: tracer failure (the trace lost 7 events: the capture is invalid)' "$b.run.txt" ||
+  fail "the record lacks the lost events and the tracer failure" "$b.run.txt"
+if grep -qE '^verdict: (pass|fail)' "$b.run.txt"; then fail "a capture that lost events got a timing verdict" "$b.run.txt"; fi
+grep -q 'the trace lost 7 events: the capture is invalid: session stopped' "$ROOT/lost.log" ||
+  fail "the session did not say why it stopped" "$ROOT/lost.log"
+[ ! -e "$(base cbp-100hz-idle-bounded-traced 28).run.txt" ] ||
+  fail "a run started after the lost events" "$ROOT/lost.log"
 
 # A loaded traced run: the load starts after both recorders record, is
 # pinned off the excluded CPU (0), runs out its timeout and succeeds.
@@ -997,6 +1014,27 @@ if [ -n "$SAMPLER" ]; then
       fail "$envv: status $st, or the record lacks '$want' and the tracer failure" "$b.run.txt"
     # The buffer whose read failed has no count of zero.
     if grep -q "^${want%%: *}: 0 " "$b.run.txt"; then fail "$envv: the record still claims zero losses" "$b.run.txt"; fi
+  done
+  # A positive loss count in either buffer invalidates the capture: a tracer
+  # failure that stops the session, never a timing verdict, and the next
+  # run does not start.
+  for c in "42 FAKE_TRACE_OVERRUN=7 trace overruns: 7 |the trace lost 7 events: the capture is invalid" \
+           "43 FAKE_TSC_OVERRUN=5 tsc instance overruns: 5 |the TSC instance lost 5 events: the capture is invalid"; do
+    read -r att envv rest <<<"$c"
+    want=${rest%%|*} why=${rest#*|}
+    set +e
+    env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" \
+      --duration 2 --modes timer --runs current:100:rt-idle:fast-motion,current:100:rt-idle:full \
+      </dev/null >"$ROOT/timer-lost-$att.log" 2>&1
+    st=$?
+    set -e
+    b=$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att")
+    [ "$st" -eq 1 ] && grep -qF -- "$want(" "$b.run.txt" && grep -qF -- "verdict: tracer failure ($why)" "$b.run.txt" ||
+      fail "$envv: status $st, or the record lacks '$want' and the tracer failure" "$b.run.txt"
+    if grep -qE '^verdict: (pass|fail)' "$b.run.txt"; then fail "$envv: a capture that lost events got a timing verdict" "$b.run.txt"; fi
+    [ ! -e "$(base current-100hz-rt-idle-bounded-timer "$att").run.txt" ] ||
+      fail "$envv: a run started after the lost events" "$ROOT/timer-lost-$att.log"
+    [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "$envv: the TSC instance remains" "$ROOT/timer-lost-$att.log"
   done
   # The instance's ownership: another session's instance, made after the
   # session's check, is left alone; one this session's start made and then
