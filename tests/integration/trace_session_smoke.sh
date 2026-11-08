@@ -105,6 +105,7 @@ if [ "$1" = list ]; then
   exit 0
 fi
 [ "${FAKE_TRACE_FAIL:-0}" = 1 ] && { echo "stand-in trace-cmd: failing as asked"; exit 1; }
+python3 -c 'import os; print("affinity", ",".join(map(str, sorted(os.sched_getaffinity(0)))))' >>"$FAKE_LOG.trace-affinity"
 out=; clock=local
 while [ $# -gt 0 ]; do
   case "$1" in -o) out=$2; shift ;; -C) clock=$2; shift ;; esac
@@ -1226,6 +1227,60 @@ if [ -n "$SAMPLER" ]; then
     fail "the session with probe misses failed" "$ROOT/fs-miss.log"
   grep -q '; misses during the run: 3$' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 52).run.txt" ||
     fail "the record lacks the probe misses" "$(base current-100hz-rt-idle-bounded-fast-motion-timer 52).run.txt"
+  # The probes' controls: refused without the timer mode, without --port and
+  # on an excluded CPU; planned by a dry run; over the emulator they run
+  # before the timer runs, their tracer off the control CPU. Without a real
+  # trace (the stand-in records nothing) and without a real-time loop (the
+  # tool's no-rt test mode), the positive control fails: the session stops
+  # before any timer run and removes the probes.
+  for c in "--modes traced|needs the timer mode" "--exclude-cpus 0,1|is in the excluded set"; do
+    extra=${c%%|*} words=${c#*|}
+    # shellcheck disable=SC2086
+    if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 53 --duration 2 \
+        --modes timer $extra --fs-controls 1 --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fc-refused.log" 2>&1; then
+      fail "--fs-controls with $extra was accepted" "$ROOT/fc-refused.log"
+    fi
+    grep -q "$words" "$ROOT/fc-refused.log" || fail "no refusal ($words)" "$ROOT/fc-refused.log"
+  done
+  if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh --probe "$FAKE/probe" --outdir "$OUT" --date "$DATE" \
+      --rt-cpu 0 --exclude-cpus 0 --dry-run --fs-controls 1 --modes timer --runs current:100:rt-idle:full \
+      </dev/null >"$ROOT/fc-noport.log" 2>&1; then
+    fail "--fs-controls without --port was accepted" "$ROOT/fc-noport.log"
+  fi
+  grep -q -- '--fs-controls is for the rehearsal: pass the emulator' "$ROOT/fc-noport.log" ||
+    fail "no --fs-controls refusal without --port" "$ROOT/fc-noport.log"
+  if [ "$(nproc)" -ge 3 ]; then
+    TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --dry-run --attempt 53 --duration 2 \
+      --fs-controls 1 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fc-plan.log" 2>&1 ||
+      fail "the controls' dry run failed" "$ROOT/fc-plan.log"
+    grep -q "^before the runs: the fair server's probe controls on CPU 1 (supervisor CPU 2, tracers on CPUs 2," "$ROOT/fc-plan.log" ||
+      fail "the dry run does not plan the controls" "$ROOT/fc-plan.log"
+    : >"$ROOT/fake.trace-affinity"
+    set +e
+    FAIR_SERVER_CONTROL_TEST=no-rt FS_CONTROL_PHASE_S=0.3 FS_CONTROL_SETTLE_S=0.1 TRACE_SESSION_RTPRIO_LIMIT=99 \
+      setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 53 --duration 2 --fs-controls 1 \
+      --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fc.log" 2>&1
+    st=$?
+    set -e
+    fb="$OUT/fs-controls-$DATE-53"
+    [ "$st" -eq 1 ] && [ -s "$fb.controls.txt" ] && [ -s "$fb.trace.dat" ] || fail "the controls' session: status $st" "$ROOT/fc.log"
+    grep -q '^control CPU: 1; supervisor CPU: 2; tracers on CPUs 2,' "$fb.run.txt" &&
+      grep -q -- '-e rtctrl_fs:rtfs_dl_pick -f CPU\\ ==\\ 1 ' "$fb.run.txt" &&
+      grep -q -- '-e rtctrl_fs:rtfs_srv_stop -f srv_cpu\\ ==\\ 1 ' "$fb.run.txt" &&
+      grep -q '^fair-server probe hits during the controls: rtfs_dl_pick 10, .*; misses during the controls: 0$' "$fb.run.txt" &&
+      grep -q '^trace overruns: 0 ' "$fb.run.txt" &&
+      grep -q '^  positive: FAIL (the loop (pid [0-9]*) did not run at a real-time priority on CPU 1 in the trace)$' "$fb.run.txt" &&
+      grep -q "^  negative-normal: INCONCLUSIVE (preconditions not established: no stop of the CPU's fair server" "$fb.run.txt" &&
+      grep -q '^verdict: controls fail$' "$fb.run.txt" ||
+      fail "the controls' record" "$fb.run.txt"
+    grep -q '^phase negative-idle ' "$fb.controls.txt" && grep -q '^# fifo: test mode no-rt, no SCHED_FIFO$' "$fb.controls.txt" ||
+      fail "the controls' output" "$fb.controls.txt"
+    if grep -q '^affinity .*\b1\b' "$ROOT/fake.trace-affinity"; then
+      fail "the controls' tracer may run on the control CPU" "$ROOT/fake.trace-affinity"
+    fi
+    [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer 53).run.txt" ] && [ ! -e "$ROOT/fake.fs_group_exists" ] ||
+      fail "a timer run followed failed controls, or the probes remain" "$ROOT/fc.log"
+  fi
   # The exerciser: refused without --port; over the emulator it runs.
   if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh --probe "$FAKE/probe" --outdir "$OUT" --date "$DATE" \
       --rt-cpu 0 --exclude-cpus 0 --dry-run --exerciser --modes timer --runs current:100:rt-idle:full \

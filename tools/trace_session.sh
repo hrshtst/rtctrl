@@ -45,6 +45,17 @@
 # had an unknown outcome is left in place and reported, never removed on a
 # guess.
 #
+# The probes' controls (--fs-controls CPU; the rehearsal only, over the
+# emulator): before the runs, tools/fair_server_control.py runs a positive
+# test (a SCHED_FIFO busy loop with a self-imposed deadline and a normal task
+# on the spare CPU, its supervisor on another CPU) and negative ones (the
+# normal task alone, then the idle CPU), traced with the same probe
+# definitions filtered to that CPU and the tracers off it. Its record holds
+# the probes' counts, the buffers' losses and the analysis
+# (tools/fair_server.py controls); a failed control, a loss or a tracer
+# failure stops the session, and an inconclusive negative control is
+# reported. Files: fs-controls-<date>-<attempt>.{run.txt,trace.dat,controls.txt}.
+#
 # The session first records the host state once: the fair server's
 # settings (read with bpftrace, since the kernel's lockdown refuses the
 # debugfs files), lockdown, boot line, topology and the adapter. Every run
@@ -141,6 +152,11 @@ IDLE_TOOL=tools/idle_counters.py
 FS_TOOL=tools/fair_server.py
 FS_PROBE_TOOL=${FS_PROBE_TOOL:-tools/fair_server_probes.sh}
 FS_GROUP=rtctrl_fs
+FS_CONTROL_TOOL=tools/fair_server_control.py
+# The controls' phase and settle seconds (tests shorten them).
+FS_CONTROL_PHASE_S=${FS_CONTROL_PHASE_S:-3}
+FS_CONTROL_SETTLE_S=${FS_CONTROL_SETTLE_S:-2}
+fs_controls_cpu=
 fs_defs=; fs_layout=  # the probes' definitions and layout (timer mode), read before anything is sent
 CPU_ROOT=${TRACE_SESSION_CPU_ROOT:-/sys/devices/system/cpu}  # the idle counters' sysfs (tests replace it)
 TSC_INSTANCE=rtctrl_tsc
@@ -213,6 +229,10 @@ usage: $0 [options]
   --exerciser         the timer mode's rehearsal: the timer exerciser runs on
                       the real-time CPU during each timer run (refused
                       without --port and on a serial device)
+  --fs-controls C     the timer mode's rehearsal: the fair server's probes'
+                      positive and negative controls on spare CPU C before
+                      the runs (refused without --port, on a serial device,
+                      and on an excluded CPU)
   --perf-hz N         a profiled run's perf sampling frequency (default $perf_hz)
   --perf-stack B      bytes of user stack perf copies per sample for its DWARF
                       unwinding, a multiple of 8 (default $perf_stack)
@@ -253,7 +273,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--manifest|--outdir|--max-runnable|\
-    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack)
+    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
@@ -276,6 +296,7 @@ while [ $# -gt 0 ]; do
         --max-runnable) max_runnable=$2 ;;
         --stress-dir) stress_dir=$2 ;;
         --load-tail) load_tail=$2 ;;
+        --fs-controls) fs_controls_cpu=$2 ;;
       esac
       shift 2 ;;
     --no-usbmon) usbmon=0; shift ;;
@@ -379,6 +400,14 @@ if [ "$exerciser" -eq 1 ]; then
   ex_tty=$(basename "$(readlink -f "$port")")
   [ ! -e "/sys/class/tty/$ex_tty/device" ] || die "--exerciser is for the rehearsal: $port is a serial device ($ex_tty)"
 fi
+# The probes' controls load a spare CPU: a rehearsal over the emulator only.
+if [ -n "$fs_controls_cpu" ]; then
+  [ "$any_timer" -eq 1 ] || die "--fs-controls needs the timer mode (its probes)"
+  is_uint "$fs_controls_cpu" || die "--fs-controls must be a CPU number"
+  [ -n "$port" ] || die "--fs-controls is for the rehearsal: pass the emulator's --port"
+  fc_tty=$(basename "$(readlink -f "$port")")
+  [ ! -e "/sys/class/tty/$fc_tty/device" ] || die "--fs-controls is for the rehearsal: $port is a serial device ($fc_tty)"
+fi
 is_uint "$attempt" && [ "$attempt" -gt 0 ] || die "--attempt must be a positive integer"
 is_uint "$rt_priority" && is_uint "$rt_cpu" || die "--rt-priority and --rt-cpu must be integers"
 # The probe reads priority 0 as ordinary scheduling, never SCHED_FIFO.
@@ -403,6 +432,19 @@ done
 [ ${#others[@]} -gt 0 ] || die "--exclude-cpus leaves no CPU for the load and the tracers"
 other_cpus=$(IFS=,; echo "${others[*]}")
 idle_cpus=$(tr ' ' , <<<"$excluded")  # the idle counters' CPUs: the excluded set
+tracer_cpus=$other_cpus  # where start_tracer runs a tracer (the controls keep theirs off their CPU)
+ctl_sup=; ctl_tracer_cpus=
+if [ -n "$fs_controls_cpu" ]; then
+  case " $online " in *" $fs_controls_cpu "*) ;; *) die "--fs-controls $fs_controls_cpu is not an online CPU" ;; esac
+  case " $excluded " in
+    *" $fs_controls_cpu "*) die "--fs-controls $fs_controls_cpu is in the excluded set ($exclude_cpus): pick a spare CPU" ;;
+  esac
+  ctl_cpus=()
+  for c in "${others[@]}"; do [ "$c" != "$fs_controls_cpu" ] && ctl_cpus+=("$c"); done
+  [ ${#ctl_cpus[@]} -gt 0 ] || die "--fs-controls $fs_controls_cpu leaves no CPU for the supervisor and the tracers"
+  ctl_sup=${ctl_cpus[0]}
+  ctl_tracer_cpus=$(IFS=,; echo "${ctl_cpus[*]}")
+fi
 stress_timeout=$((duration + load_tail))
 
 # The adapter to capture: the probe's port, unless --usb-device names it.
@@ -585,6 +627,10 @@ if [ -f "$manifest" ]; then
       done
     done
   done
+  if [ -n "$fs_controls_cpu" ]; then
+    b=fs-controls-$date_tag-$attempt
+    awk -v n="$b." 'index($0, n) == 1 { found = 1; exit } END { exit !found }' <<<"$archived" && taken+=("$b")
+  fi
   if [ ${#taken[@]} -gt 0 ]; then
     for b in "${taken[@]}"; do
       echo "trace_session: $b.csv is already in the archive manifest $manifest" >&2
@@ -623,6 +669,10 @@ if [ "$dry_run" -eq 1 ]; then
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
         "$TSC_INSTANCE_TOOL" "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" "$TSC_SAMPLER" "${others[0]}" "$rt_cpu" \
         "$PERF" "$rt_cpu" "$([ "$exerciser" -eq 1 ] && echo "; the exerciser on CPU $rt_cpu")"
+    fi
+    if [ -n "$fs_controls_cpu" ]; then
+      printf 'before the runs: the fair server'"'"'s probe controls on CPU %s (supervisor CPU %s, tracers on CPUs %s): python3 %s run --cpu %s --supervisor-cpu %s --output fs-controls-%s-%s.controls.txt\n' \
+        "$fs_controls_cpu" "$ctl_sup" "$ctl_tracer_cpus" "$FS_CONTROL_TOOL" "$fs_controls_cpu" "$ctl_sup" "$date_tag" "$attempt"
     fi
     if [ "$any_timer" -eq 1 ]; then
       printf '                   the fair server'"'"'s probe events (group %s, %s definitions; defined before the first run, removed at the end), filtered to CPU %s\n' \
@@ -682,7 +732,7 @@ priv() { "${sudo_cmd[@]}" "$@"; }
 start_tracer() {  # name -> <name>_job; the rest is the command
   local name=$1; shift
   rm -f "$tmp/$name.pid" "$tmp/$name.out"
-  taskset -c "$other_cpus" "${sudo_cmd[@]}" python3 -c '
+  taskset -c "$tracer_cpus" "${sudo_cmd[@]}" python3 -c '
 import os, signal, sys
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 with open(sys.argv[1], "w") as f:
@@ -1704,6 +1754,116 @@ run_one() {
     outcome=stop
   fi
 }
+
+# The probes' controls (--fs-controls): 0 when they pass (an inconclusive
+# negative control is reported, not a stop), 1 when the session must stop.
+run_controls() {
+  local base="$outdir/fs-controls-$date_tag-$attempt" note dat ctl ctl_args prof_b prof_a pb pa ctl_status
+  local st stat_out stat_status n_loss problem='' an_status e f
+  note=$base.run.txt; dat=$base.trace.dat; ctl=$base.controls.txt
+  echo
+  echo "=== fair-server controls on CPU $fs_controls_cpu (supervisor on CPU $ctl_sup): $(basename "$base")"
+  if [ -e "$note" ] || [ -e "$ctl" ]; then
+    echo "already attempted, skipped"
+    return 0
+  fi
+  ctl_args=("${trace_args[@]}" -e timer:hrtimer_start)
+  while read -r e f; do
+    ctl_args+=(-e "$FS_GROUP:$e" -f "$f")
+  done < <(python3 - "$fs_controls_cpu" <<'EOF'
+import sys
+sys.path.insert(0, "tools")
+import fair_server
+for e, f in fair_server.filters(int(sys.argv[1])):
+    print(e, f)
+EOF
+)
+  {
+    echo "rtctrl fair-server probe controls (rehearsal)"
+    echo "started: $(date -Is)"
+    echo "commit: $commit"
+    echo "control CPU: $fs_controls_cpu; supervisor CPU: $ctl_sup; tracers on CPUs $ctl_tracer_cpus"
+    printf 'controls: python3 %s run --cpu %s --supervisor-cpu %s --phase-s %s --settle-s %s --output %q\n' \
+      "$FS_CONTROL_TOOL" "$fs_controls_cpu" "$ctl_sup" "$FS_CONTROL_PHASE_S" "$FS_CONTROL_SETTLE_S" "$ctl"
+    printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${ctl_args[@]}"; printf ' -o %q\n' "$dat"
+    cat "$tmp/session.txt"
+  } >"$note"
+  last_note=$note
+  run_outputs=("$dat")
+  tracer_cpus=$ctl_tracer_cpus
+  start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${ctl_args[@]}" -o "$dat"
+  tracer_cpus=$other_cpus
+  if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
+    stop_all
+    { echo "--- trace-cmd did not start ---"; cat "$tmp/trace.out"; } | tee -a "$note"
+    echo "verdict: not run (tracer)" >>"$note"
+    return 1
+  fi
+  prof_b=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); pb=$?
+  python3 "$FS_CONTROL_TOOL" run --cpu "$fs_controls_cpu" --supervisor-cpu "$ctl_sup" \
+    --phase-s "$FS_CONTROL_PHASE_S" --settle-s "$FS_CONTROL_SETTLE_S" --output "$ctl" 2>&1 | tee -a "$note"
+  ctl_status=${PIPESTATUS[0]}
+  prof_a=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); pa=$?
+  stop_tracer trace "$trace_job"; st=$?; trace_job=
+  { echo; echo "--- trace-cmd (exit $st) ---"; cat "$tmp/trace.out"; } >>"$note"
+  [ "$st" -eq 0 ] && [ -s "$dat" ] || problem+="${problem:+, }trace-cmd exit $st"
+  stat_out=$(priv "$TRACE_CMD" report --stat -i "$dat" 2>&1); stat_status=$?
+  { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
+  if [ "$stat_status" -ne 0 ]; then
+    n_loss="unknown (trace-cmd report --stat exited $stat_status)"
+  elif ! n_loss=$(loss_sum "$stat_out" "$online"); then
+    n_loss="unknown ($n_loss)"
+  fi
+  echo "trace overruns: $n_loss (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
+  if ! [[ $n_loss =~ ^[0-9]+$ ]]; then
+    problem+="${problem:+, }the trace's loss counts: $n_loss"
+  elif [ "$n_loss" -gt 0 ]; then
+    problem+="${problem:+, }the trace lost $n_loss events: the capture is invalid"
+  fi
+  { echo; echo "--- fair-server probes (hits misses) before the controls (exit $pb) ---"; echo "$prof_b"
+    echo "--- fair-server probes (hits misses) after the controls (exit $pa) ---"; echo "$prof_a"; } >>"$note"
+  if [ "$pb" -ne 0 ] || [ "$pa" -ne 0 ]; then
+    problem+="${problem:+, }the fair server's probe counts were not read"
+  else
+    awk 'NR == FNR { h[$1] = $2; m[$1] = $3; next }
+         { dh = $2 - h[$1]; dm = $3 - m[$1]; hits = hits sep $1 " " dh; sep = ", "; miss += dm }
+         END { printf "fair-server probe hits during the controls: %s; misses during the controls: %d\n", hits, miss }' \
+      <(echo "$prof_b") <(echo "$prof_a") >>"$note"
+  fi
+  own_outputs
+  [ "$ctl_status" -eq 0 ] || problem+="${problem:+, }the controls tool exited $ctl_status"
+  if [ -n "$problem" ]; then
+    { echo; echo "verdict: tracer failure ($problem)"; } >>"$note"
+    echo "trace_session: fair-server controls: $problem: session stopped. See $note"
+    return 1
+  fi
+  { echo; echo "--- $FS_TOOL controls ---"; } >>"$note"
+  TRACE_CMD="$TRACE_CMD" python3 "$FS_TOOL" controls --controls "$ctl" --record "$note" --trace-dat "$dat" 2>&1 |
+    tee -a "$note"
+  an_status=${PIPESTATUS[0]}
+  case "$an_status" in
+    0) { echo; echo "verdict: controls pass"; } >>"$note"; return 0 ;;
+    1) { echo; echo "verdict: controls fail"; } >>"$note"
+       echo "trace_session: the fair-server controls failed: session stopped. See $note"
+       return 1 ;;
+    *) { echo; echo "verdict: analysis error (exit $an_status)"; } >>"$note"
+       echo "trace_session: the controls' analysis failed (exit $an_status): session stopped. See $note"
+       return 1 ;;
+  esac
+}
+
+if [ -n "$fs_controls_cpu" ]; then
+  current="fair-server controls"; current_mode=controls
+  if ! run_controls; then
+    add_result "fair-server controls" controls "STOPPED the session (see its .run.txt)"
+    current=
+    finish
+    print_table
+    exit 1
+  fi
+  add_result "fair-server controls" controls "$(grep -m 1 '^verdict:' "$outdir/fs-controls-$date_tag-$attempt.run.txt" 2>/dev/null || echo 'skipped (attempted earlier)')"
+  current=
+fi
 
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v <<<"$spec"

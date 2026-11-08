@@ -1406,6 +1406,47 @@ after the ledger check.
 - C2 stays enabled in that baseline; a reversible C2 comparison is to be
   designed.
 
+**Stage 1 rehearsal: the probes' controls.** Before the probes' evidence is
+used on the arm, a rehearsal over `dxl_emu` validates them with positive and
+negative controls on a spare CPU (`--fs-controls <cpu>`, refused without
+`--port`, on a serial device, and on an excluded CPU). Before the timer
+runs, `tools/fair_server_control.py` runs, on that CPU:
+1. **positive**: a normal task that samples its own progress, and beside it
+   a SCHED\_FIFO busy loop (priority 10) that stops itself at a deadline on
+   `CLOCK_MONOTONIC` (3 s). Its supervisor, pinned to another CPU, kills the
+   loop at the deadline plus 0.5 s if it still runs, and says so;
+2. a settle of 2 s, then **negative-normal**: the normal task alone (3 s);
+3. a settle of 2 s, then **negative-idle**: the idle CPU (3 s).
+
+The phases are traced with the same probe definitions, filtered to that CPU,
+with the tracers kept off it. The record holds the probes' hit and miss
+counts and both buffers' losses (the loss rule applies), and
+`tools/fair_server.py controls` judges the controls:
+- **positive** passes when the trace shows the loop at a real-time priority
+  on that CPU, and the normal task progressing and dispatched by the fair
+  server while the loop ran. No fixed share (such as 50 ms per second) is
+  required;
+- a **negative** control's preconditions must be established first: no
+  probe misses, a stop of that CPU's fair server recorded after the previous
+  test, and no pick or server timer after that stop. Without them it is
+  INCONCLUSIVE, since the server's state can carry over from the positive
+  test (active, throttled and deferred states differ). With them it passes
+  when the server dispatched nothing while the normal task ran alone (which
+  must have run), or selected nothing on the idle CPU, and fails otherwise.
+
+A failed control stops the session before the timer runs; an inconclusive
+one is reported. The controls, the rehearsal's timer runs with the probes,
+and the implementation come to the reviewer before any use on the arm.
+With the emulator prepared as for the rehearsal above:
+
+```
+tools/quiet_host.sh stop
+tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
+  --fs-controls 5 --modes untraced,timer --runs current:1000:rt-idle:fast-motion --duration 10 --outdir <dir>
+tools/quiet_host.sh restore   # also after a failed or interrupted session
+uv run --project tools tools/trace_correlate.py <dir>/<log>.csv
+```
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

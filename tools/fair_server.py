@@ -46,8 +46,21 @@ earlier one) gets the same waits, its normal-task time unattributed; normal
 tasks running without a recorded dl_server_start never invalidate a
 capture.
 
+The controls (controls; tools/fair_server_control.py's output and its
+trace) validate the probes on a spare rehearsal CPU, with the same
+definitions filtered to that CPU. The positive control passes when the
+trace shows the FIFO loop at a real-time priority there, and the normal
+task both progressing and dispatched by the fair server while the loop ran;
+no fixed share is required. A negative control's preconditions must be
+established first: no probe misses, a stop of that CPU's fair server
+recorded after the previous test, and no pick or server timer after that
+stop. Without them it is INCONCLUSIVE; with them it passes when the server
+dispatched nothing (the normal task alone, which must have run) or
+selected nothing (the idle CPU), and fails otherwise.
+
 usage: fair_server.py layout [--btf-raw FILE]
        fair_server.py definitions --group GROUP [--btf-raw FILE]
+       fair_server.py controls --controls FILE --record FILE (--trace-dat FILE | --report FILE)
 """
 
 from __future__ import annotations
@@ -240,6 +253,8 @@ class FairServerEvents:
                                       "other deadline-class selections")}
         self.server_calls = {"rtfs_srv_start": 0, "rtfs_srv_stop": 0, "rtfs_srv_timer": 0}
         self.server_states: list[tuple] = []  # (ts, event, bits) of the CPU's fair server
+        self.selection_log: list[tuple] = []  # (ts, pid, valid) of each fair-server selection
+        self.dispatch_log: list[tuple] = []   # (ts, pid, valid) of each dispatch or re-selection
         self.dl_timers = {f"{f} {k}": 0 for f in DL_TIMERS for k in ("start", "expiry")}
         self.probe_events = 0
 
@@ -300,6 +315,7 @@ class FairServerEvents:
             self.pending = None
             if sel.pid == npid:
                 self.counts["dispatched"] += 1
+                self.dispatch_log.append((ts, npid, sel.valid))
                 label = "server-backed" if sel.valid else "contradictory"
             else:
                 self.counts["not dispatched"] += 1
@@ -327,6 +343,7 @@ class FairServerEvents:
                 self.pending = None
                 if self._open is not None and self._open[2] == sel.pid:
                     self.counts["re-selected"] += 1
+                    self.dispatch_log.append((sel.ts, sel.pid, sel.valid))
                     seg = self._open
                     if sel.ts > seg[0]:
                         seg[1] = sel.ts
@@ -358,6 +375,7 @@ class FairServerEvents:
                 if not valid:
                     self.counts["contradictory"] += 1
                 self.pending = Selection(ts, task, self._fs_ret[1], bits, valid)
+                self.selection_log.append((ts, self._fs_ret[1], valid))
             elif task:
                 self.counts["other deadline-class selections"] += 1
             self._pick = None
@@ -515,6 +533,161 @@ def report(ev: FairServerEvents, misses: int | None, top: int, out, failures: li
                   f"{', '.join(w['ran']) or 'none'}", file=out)
 
 
+# --- the controls ------------------------------------------------------------------
+
+REPORT_LINE = re.compile(r"^\s*(?P<comm>.*?)-(?P<pid>\d+)\s+\[(?P<cpu>\d+)\]\s+(?:\S+\s+)?"
+                         r"(?P<s>\d+)\.(?P<ns>\d{9}):\s+(?P<ev>\w+):\s+(?P<rest>.*)$")
+CTL_HEAD = re.compile(r"^# fair_server_control cpu=(\d+) supervisor_cpu=(\d+)")
+CTL_PHASE = re.compile(r"^phase (\S+) (\d+) (\d+)$")
+CTL_FIFO = re.compile(r"^fifo start=(\S+) end=(\S+) exit=(-?\d+) killed=(\w+) pid=(\d+)$")
+CTL_NORMAL = re.compile(r"^normal (\S+) pid=(\d+) exit=(-?\d+) samples=(\d+)$")
+CTL_SAMPLES = re.compile(r"^samples (\S+)(?: (.*))?$")
+
+
+def parse_controls(text: str) -> dict:
+    ctl: dict = {"cpu": None, "supervisor": None, "phases": {}, "fifo": None, "normal": {}}
+    for line in text.splitlines():
+        if m := CTL_HEAD.match(line):
+            ctl["cpu"], ctl["supervisor"] = int(m[1]), int(m[2])
+        elif m := CTL_PHASE.match(line):
+            ctl["phases"][m[1]] = (int(m[2]), int(m[3]))
+        elif m := CTL_FIFO.match(line):
+            ctl["fifo"] = {"start": num(m[1]), "end": num(m[2]), "exit": int(m[3]), "killed": m[4] == "yes",
+                           "pid": int(m[5])}
+        elif m := CTL_NORMAL.match(line):
+            ctl["normal"].setdefault(m[1], {})
+            ctl["normal"][m[1]].update(pid=int(m[2]), exit=int(m[3]))
+        elif m := CTL_SAMPLES.match(line):
+            ctl["normal"].setdefault(m[1], {})["samples"] = [int(t) for t in (m[2] or "").split()]
+    if ctl["cpu"] is None:
+        raise ValueError("not a fair_server_control output")
+    return ctl
+
+
+def flags_text(ev: FairServerEvents, bits: int | None) -> str:
+    if bits is None or ev.layout is None:
+        return "unknown"
+    on = [f.removeprefix("dl_") for f in FLAGS if ev.flag(bits, f)]
+    return ",".join(on) or "none"
+
+
+def preconditions(ev: FairServerEvents, after: int, before: int, misses: int | None) -> tuple[bool, str]:
+    """A negative control's preconditions: the CPU's fair server seen to stop
+    after the previous test, and not picked nor its timer run since."""
+    if misses is None:
+        return False, "the probes' misses are unknown: a selection could be missing"
+    if misses:
+        return False, f"the probes missed {misses} hits: a selection could be missing"
+    stops = [(t, b) for t, e, b in ev.server_states if e == "rtfs_srv_stop" and after <= t <= before]
+    if not stops:
+        return False, "no stop of the CPU's fair server was recorded between the previous test and this control"
+    t_stop, bits = stops[-1]
+    later = [t for t, e, _ in ev.server_states if e in ("rtfs_fs_pick", "rtfs_srv_timer") and t_stop < t <= before]
+    later += [t for t, _, _ in ev.selection_log if t_stop < t <= before]
+    if later:
+        return False, "the server was picked or its timer ran after its last recorded stop, before this control"
+    return True, (f"the server stopped {(before - t_stop) / 1e6:.1f} ms before this control "
+                  f"(state before the stop: {flags_text(ev, bits)}), and was not picked since")
+
+
+def judge_controls(ev: FairServerEvents, ctl: dict, misses: int | None) -> list[tuple[str, str, str]]:
+    out: list[tuple[str, str, str]] = []
+    f = ctl["fifo"]
+    pos = ctl["normal"].get("positive", {})
+    if "positive" not in ctl["phases"] or not f or f["start"] is None or f["end"] is None or f["exit"] != 0 \
+            or f["killed"]:
+        out.append(("positive", "FAIL", f"the FIFO loop did not run to its deadline ({f})"))
+    else:
+        a, b = f["start"], f["end"]
+        rt = any(g[2] == f["pid"] and g[4] == "higher class" for g in ev.segments)
+        prog = sum(1 for t in pos.get("samples", []) if a <= t <= b)
+        disp = sum(1 for t, pid, valid in ev.dispatch_log if valid and pid == pos.get("pid") and a <= t <= b)
+        if not rt:
+            out.append(("positive", "FAIL", f"the loop (pid {f['pid']}) did not run at a real-time priority on "
+                                            f"CPU {ev.cpu} in the trace"))
+        elif prog == 0:
+            out.append(("positive", "FAIL", "the normal task made no progress while the loop ran"))
+        elif disp == 0:
+            out.append(("positive", "FAIL", "no server-backed dispatch of the normal task while the loop ran"))
+        else:
+            out.append(("positive", "PASS", f"while the loop ran ({(b - a) / 1e9:.2f} s) the normal task progressed "
+                                            f"({prog} samples) and was dispatched by the fair server {disp} times"))
+    for name, prev in (("negative-normal", "positive"), ("negative-idle", "negative-normal")):
+        if name not in ctl["phases"] or prev not in ctl["phases"]:
+            out.append((name, "INCONCLUSIVE", "the phase is missing from the controls' output"))
+            continue
+        xs, xe = ctl["phases"][name]
+        ok, why = preconditions(ev, ctl["phases"][prev][1], xs, misses)
+        sel_in = [s for s in ev.selection_log if xs <= s[0] <= xe]
+        disp_in = [d for d in ev.dispatch_log if xs <= d[0] <= xe and d[2]]
+        if not ok:
+            out.append((name, "INCONCLUSIVE", f"preconditions not established: {why}"))
+        elif name == "negative-normal":
+            n = ctl["normal"].get(name, {})
+            prog = sum(1 for t in n.get("samples", []) if xs <= t <= xe)
+            if disp_in:
+                out.append((name, "FAIL", f"{len(disp_in)} server-backed dispatches while the normal task ran alone"))
+            elif prog == 0:
+                out.append((name, "INCONCLUSIVE", "the normal task did not run"))
+            else:
+                out.append((name, "PASS", f"{why}; no server-backed dispatch while the normal task ran alone "
+                                          f"({prog} samples)"))
+        elif sel_in:
+            out.append((name, "FAIL", f"{len(sel_in)} fair-server selections on the idle CPU"))
+        else:
+            out.append((name, "PASS", f"{why}; no fair-server selection on the idle CPU"))
+    return out
+
+
+def controls_main(args) -> int:
+    try:
+        ctl = parse_controls(open(args.controls).read())
+        record = open(args.record).read().splitlines()
+    except (OSError, ValueError) as e:
+        print(f"fair_server: {e}", file=sys.stderr)
+        return 2
+    lay = parse_layout(record)
+    if lay is None:
+        print("fair_server: the record has no probe layout", file=sys.stderr)
+        return 2
+    misses = None
+    for line in record:
+        m = re.match(r"^fair-server probe hits during the controls: .*; misses during the controls: (\d+)$", line)
+        if m:
+            misses = int(m[1])
+    ev = FairServerEvents(ctl["cpu"], lay, None)
+    proc = None
+    if args.report:
+        lines = open(args.report, errors="replace")
+    else:
+        proc = subprocess.Popen([os.environ.get("TRACE_CMD", "trace-cmd"), "report", "-t", "-i", args.trace_dat],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace")
+        lines = proc.stdout
+    last = 0
+    for line in lines:
+        m = REPORT_LINE.match(line)
+        if not m:
+            continue
+        ts = int(m["s"]) * 1_000_000_000 + int(m["ns"])
+        last = ts
+        e = m["ev"]
+        if e in FEED_EVENTS or e.startswith("rtfs_"):
+            ev.feed(ts, int(m["cpu"]), int(m["pid"]), m["comm"], e, m["rest"])
+    if proc is not None and proc.wait() != 0:
+        print(f"fair_server: trace-cmd report -i {args.trace_dat} failed", file=sys.stderr)
+        return 2
+    ev.finish(last)
+    verdicts = judge_controls(ev, ctl, misses)
+    print(f"fair-server controls on CPU {ctl['cpu']} (supervisor on CPU {ctl['supervisor']}; probe misses "
+          f"{'unknown' if misses is None else misses}; {ev.probe_events} probe events, "
+          f"{len(ev.selection_log)} fair-server selections):")
+    for name, verdict, why in verdicts:
+        print(f"  {name}: {verdict} ({why})")
+    failed = any(v == "FAIL" for _, v, _ in verdicts)
+    print(f"fair-server controls: {'FAIL' if failed else 'PASS'}")
+    return 1 if failed else 0
+
+
 def btf_raw(path: str | None) -> list[str]:
     if path:
         with open(path) as f:
@@ -535,7 +708,15 @@ def main() -> int:
     dp = sub.add_parser("definitions")
     dp.add_argument("--group", default=GROUP)
     dp.add_argument("--btf-raw", help="a bpftool raw BTF dump (default: read the kernel's)")
+    cp = sub.add_parser("controls")
+    cp.add_argument("--controls", required=True, help="tools/fair_server_control.py's output")
+    cp.add_argument("--record", required=True, help="the controls' run record (layout, misses)")
+    src = cp.add_mutually_exclusive_group(required=True)
+    src.add_argument("--trace-dat")
+    src.add_argument("--report", help="trace-cmd report -t text instead of the trace")
     args = p.parse_args()
+    if args.cmd == "controls":
+        return controls_main(args)
     try:
         lay = layout_from_btf_raw(btf_raw(args.btf_raw or os.environ.get("FAIR_SERVER_BTF_RAW")))
     except (OSError, LayoutError) as e:

@@ -17,11 +17,19 @@ re-selection of the running task, a normal task left running after the wake
 a waking that finds the worker running, the server calls of another
 server or CPU ignored, the deadline-class timers counted, and the report
 (no probes: unattributed; probes with no pick: an evidence failure).
+
+The controls' judgement runs on synthetic traces of a control CPU and
+tools/fair_server_control.py's output: a passing set; a loop that never ran
+at a real-time priority (the tool's test modes) failing the positive
+control; negative controls inconclusive without their preconditions (no
+stop recorded, unknown or nonzero misses, a pick after the stop) and
+failing on a dispatch; and the command line.
 """
 
 import importlib.util
 import io
 import pathlib
+import tempfile
 import subprocess
 import sys
 
@@ -275,11 +283,123 @@ def analysis_checks(lay: dict) -> None:
         expect(want in out.getvalue() and bool(failures) == fail_, f"the report ({want}): {out.getvalue()} {failures}")
 
 
+C = 5            # the control CPU
+RQ = 0xff00      # its runqueue
+MS = 1_000_000
+
+
+def control_events(fifo_prio: int = 89, stop: bool = True, pick_after_stop: bool = False,
+                   neg_dispatch: bool = False) -> list[tuple]:
+    """A control CPU's trace: the positive test (a FIFO loop, pid 700, and a
+    normal task, pid 600, that the fair server dispatches twice), the
+    server's stop in settle-1, then the normal task (pid 601) alone, and the
+    idle CPU, the server's stop recorded after each test. Times in ms from 0."""
+    e: list[tuple] = []
+
+    def add(t: float, ev: str, rest: str, pid: int = 1, comm: str = "x") -> None:
+        e.append((round(t * MS), C, pid, comm, ev, rest))
+
+    def switch(t: float, prev: str, ppid: int, pprio: int, nxt: str, npid: int, nprio: int) -> None:
+        add(t, "sched_switch", f"{prev}:{ppid} [{pprio}] R ==> {nxt}:{npid} [{nprio}]", ppid, prev)
+
+    def select(t: float, pid: int) -> None:
+        add(t, "rtfs_dl_pick", f"rq={hex(RQ)} rq_cpu={C} fs_bits=0x0")
+        add(t + 0.001, "rtfs_fs_pick", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
+        add(t + 0.002, "rtfs_fs_pick_ret", f"task=0xa{pid} pid={pid} policy=0")
+        add(t + 0.003, "rtfs_dl_pick_ret", f"task=0xa{pid} pid={pid} policy=0 prio=120")
+
+    switch(0, "swapper/5", 0, 120, "py", 600, 120)
+    switch(10, "py", 600, 120, "py", 700, fifo_prio)          # the loop takes the CPU
+    for t in (500, 1500):                                       # the server gives the normal task time
+        select(t, 600)
+        switch(t + 0.01, "py", 700, fifo_prio, "py", 600, 120)
+        switch(t + 40, "py", 600, 120, "py", 700, fifo_prio)
+    switch(3010, "py", 700, fifo_prio, "py", 600, 120)
+    switch(3500, "py", 600, 120, "swapper/5", 0, 120)
+    if stop:
+        add(3600, "rtfs_srv_stop", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
+    if pick_after_stop:
+        select(3700, 9)
+    switch(5600, "swapper/5", 0, 120, "py", 601, 120)
+    if neg_dispatch:
+        select(6000, 601)
+        switch(6000.01, "py", 601, 120, "py", 601, 120)
+    switch(8600, "py", 601, 120, "swapper/5", 0, 120)
+    if stop:  # and again once the normal task has gone
+        add(8700, "rtfs_srv_stop", f"se={hex(RQ + 3192)} srv_rq={hex(RQ)} srv_cpu={C} bits={hex(VALID)}")
+    return sorted(e)
+
+
+def control_text(fifo_exit: int = 0, killed: str = "no") -> str:
+    lines = [f"# fair_server_control cpu={C} supervisor_cpu=6 fifo_priority=10 phase_ns=3000000000",
+             "normal positive pid=600 exit=0 samples=4",
+             "samples positive " + " ".join(str(t * MS) for t in (5, 520, 1520, 3200)),
+             f"phase positive 0 {3550 * MS}",
+             f"fifo start={10 * MS} end={3010 * MS} exit={fifo_exit} killed={killed} pid=700",
+             f"phase settle-1 {3550 * MS} {5550 * MS}",
+             "normal negative-normal pid=601 exit=0 samples=3",
+             "samples negative-normal " + " ".join(str(t * MS) for t in (5700, 7000, 8500)),
+             f"phase negative-normal {5550 * MS} {8650 * MS}",
+             f"phase settle-2 {8650 * MS} {10650 * MS}",
+             f"phase negative-idle {10650 * MS} {13650 * MS}"]
+    return "\n".join(lines) + "\n"
+
+
+def judged(lay: dict, misses: int | None = 0, text: str | None = None, **kw) -> dict[str, tuple]:
+    ev = fs.FairServerEvents(C, lay, None)
+    for e in control_events(**kw):
+        ev.feed(*e)
+    ev.finish(14_000 * MS)
+    return {name: (v, why) for name, v, why in fs.judge_controls(ev, fs.parse_controls(text or control_text()), misses)}
+
+
+def control_checks(lay: dict) -> None:
+    v = judged(lay)
+    expect(v["positive"][0] == "PASS" and "dispatched by the fair server 2 times" in v["positive"][1]
+           and "(2 samples)" in v["positive"][1], f"the positive control passes: {v}")
+    expect(v["negative-normal"][0] == "PASS" and v["negative-idle"][0] == "PASS"
+           and "state before the stop: server_active,defer,defer_running" in v["negative-normal"][1],
+           f"the negative controls pass with their preconditions: {v}")
+    v = judged(lay, fifo_prio=120)
+    expect(v["positive"][0] == "FAIL" and "did not run at a real-time priority" in v["positive"][1],
+           f"a loop without a real-time priority fails: {v}")
+    v = judged(lay, text=control_text(fifo_exit=-9, killed="yes"))
+    expect(v["positive"][0] == "FAIL" and "did not run to its deadline" in v["positive"][1],
+           f"a killed loop fails: {v}")
+    for kw, misses, words in (({"stop": False}, 0, "no stop of the CPU's fair server"),
+                              ({}, None, "misses are unknown"), ({}, 2, "missed 2 hits"),
+                              ({"pick_after_stop": True}, 0, "picked or its timer ran after")):
+        v = judged(lay, misses, **kw)
+        expect(v["negative-normal"][0] == "INCONCLUSIVE" and words in v["negative-normal"][1],
+               f"no preconditions ({words}): {v}")
+    v = judged(lay, neg_dispatch=True)
+    expect(v["negative-normal"][0] == "FAIL", f"a dispatch while the normal task ran alone fails: {v}")
+    # The command line, on a report text.
+    with tempfile.TemporaryDirectory() as t:
+        root = pathlib.Path(t)
+        rep_ = root / "r.txt"
+        rep_.write_text("".join(f"{c:>16}-{p:<7} [{cpu:03d}] d..2. {ts // 10**9}.{ts % 10**9:09d}: {e}: {r}\n"
+                                for ts, cpu, p, c, e, r in control_events()))
+        (root / "c.txt").write_text(control_text())
+        rec = root / "rec.txt"
+        rec.write_text(fs.layout_text(lay) + "\nfair-server probe hits during the controls: rtfs_dl_pick 4; "
+                       "misses during the controls: 0\n")
+        r = subprocess.run([sys.executable, "tools/fair_server.py", "controls", "--controls", str(root / "c.txt"),
+                            "--record", str(rec), "--report", str(rep_)], capture_output=True, text=True)
+        expect(r.returncode == 0 and "  positive: PASS (" in r.stdout and "fair-server controls: PASS" in r.stdout,
+               f"the controls on the command line: {r.stdout} {r.stderr}")
+        (root / "c.txt").write_text(control_text(fifo_exit=-9, killed="yes"))
+        r = subprocess.run([sys.executable, "tools/fair_server.py", "controls", "--controls", str(root / "c.txt"),
+                            "--record", str(rec), "--report", str(rep_)], capture_output=True, text=True)
+        expect(r.returncode == 1 and "fair-server controls: FAIL" in r.stdout, f"a failed control: {r.stdout}")
+
+
 def main() -> int:
     lay = layout_checks()
     definition_checks(lay)
     cli_checks()
     analysis_checks(lay)
+    control_checks(lay)
     print("fair server regressions OK")
     return 0
 
