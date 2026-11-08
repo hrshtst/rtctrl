@@ -669,12 +669,14 @@ def usb_cadence(run: Run, tr: Trace, out) -> None:
 
 
 def reply_phase(tr: Trace, rec: list[dict], out) -> None:
-    """Each read's instruction (its OUT completion) against the adapter's
-    delivery cadence: its phase between the bulk IN completions around it
-    (0 at the one before, 1 at the one after), and per tenth of that phase
-    the reads, the share whose reply arrived in more than one completion,
-    and the medians of the time to the first completion and of the host
-    transaction. A description of the dependence, not a cause."""
+    """The host OUT-completion phase of each read: where its instruction's
+    OUT completion fell, on the host, between the host's bulk IN completions
+    around it (0 at the one before, 1 at the one after), and per tenth of
+    that phase the reads, the share whose reply arrived in more than one
+    completion, and the medians of the time to the first completion and of
+    the host transaction. A retrospective association (the following IN
+    completion is part of it), not a predictor available before sending, a
+    cause or a remedy."""
     ins = sorted(c[0] for c in tr.in_done)
     rows = []
     for x in rec:
@@ -688,10 +690,10 @@ def reply_phase(tr: Trace, rec: list[dict], out) -> None:
         txn = x["read_end"] - x["read_start"] if x.get("read_end") is not None else None
         rows.append((min(ph, 0.999999), x["completions"] > 1, x["first"] - t, txn))
     if not rows:
-        print("  reply phase: no read with completions around its instruction", file=out)
+        print("  host OUT-completion phase: no read with completions around its instruction", file=out)
         return
-    print(f"  reply phase (each instruction's OUT completion between the adapter's bulk IN completions around it; "
-          f"{len(rows)} reads, {sum(r[1] for r in rows)} split):", file=out)
+    print(f"  host OUT-completion phase (each instruction's OUT completion between the host's bulk IN completions "
+          f"around it, a retrospective association; {len(rows)} reads, {sum(r[1] for r in rows)} split):", file=out)
     print("    phase      reads  split  to first completion p50  host transaction p50 (us)", file=out)
     for b in range(10):
         sel = [r for r in rows if b / 10 <= r[0] < (b + 1) / 10]

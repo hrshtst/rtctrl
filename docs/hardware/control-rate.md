@@ -719,12 +719,16 @@ the xHCI interrupts around the probe. For each traced run,
 split across deliveries, the receive path and the host's USB work (the xHCI
 interrupt handlers and the USB completion work in the run). The xHCI counts
 include every device on the controller. For the 500 Hz feasibility analysis
-(reviewer decision, 2026-11-08) it also gives each read's reply phase: where
-its instruction's OUT completion fell between the adapter's bulk IN
-completions around it, and per tenth of that interval the reads, the share
-whose reply arrived in more than one completion, and the median times to
-the first completion and of the host transaction. That describes a
-dependence; it does not establish a cause. It also counts the cycles whose
+(reviewer decision, 2026-11-08) it also gives each read's host
+OUT-completion phase: where its instruction's OUT completion fell, on the
+host, between the host's bulk IN completions around it, and per tenth of
+that interval the reads, the share whose reply arrived in more than one
+completion, and the median times to the first completion and of the host
+transaction. It is a retrospective association, since the following IN
+completion is part of it: it is not a predictor available before sending,
+and it establishes neither a cause nor a remedy. A scheduling proposal
+would have to estimate the phase from what is known before sending, and
+validate that estimate independently. It also counts the cycles whose
 host work exceeds T6a's 0.7 T, each with its largest measured part.
 
 **Plan.** First, short quiet runs (18 runs, about 15 minutes):

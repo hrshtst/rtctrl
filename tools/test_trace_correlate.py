@@ -354,9 +354,9 @@ def main() -> int:
         expect(code == 0, "the clean run passes", out)
         # Each read's instruction against the adapter's delivery cadence: the
         # split reply's instruction came late in its interval.
-        expect("reply phase (each instruction's OUT completion between the adapter's bulk IN completions around "
-               "it; 2 reads, 1 split):" in out and "    0.9-1.0       1   100%" in out
-               and "    0.8-0.9       1     0%" in out, "the reply phase", out)
+        expect("host OUT-completion phase (each instruction's OUT completion between the host's bulk IN completions "
+               "around it, a retrospective association; 2 reads, 1 split):" in out and "    0.9-1.0       1   100%" in out
+               and "    0.8-0.9       1     0%" in out, "the host OUT-completion phase", out)
         expect("cycles whose host work exceeds 0.7 T (1400 us): 0;" in out, "no cycle over 0.7 T", out)
         expect("timer wakes: 2 in the run for 2 sleeps: 2 paired, 0 cycles began without sleeping, "
                "0 missing, 0 duplicate, 0 extra" in out, "both sleeps paired", out)
