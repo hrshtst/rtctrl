@@ -1068,8 +1068,9 @@ paired with an untraced control of the same condition):
   class's pick (`pick_task_dl`, with CPU 3's fair-server state at its entry
   and the task pointer it returns), the fair server's own pick
   (`fair_server_pick_task`, its state and the task pointer it returns),
-  `set_next_task_fair` (the fair task about to run, its pointer never NULL,
-  with its pid: the task's identity), and
+  `set_next_task_fair` (a fair task set next through its class, its
+  pointer never NULL, with its pid: the task's identity; the CFS fast path
+  can bypass it, so a selection may stay unidentified), and
   `dl_server_start`, `dl_server_stop` and `dl_server_timer` with the
   server's state before each call. No probe reads through a pointer that
   can be NULL: the two return probes record the pointer alone (the first

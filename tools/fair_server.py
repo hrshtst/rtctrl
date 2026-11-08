@@ -13,12 +13,14 @@ CPU's schedule is observed, not inferred from function entry:
   kernel (the rehearsal of 2026-11-08 counted 56,712 kernel page faults of
   the worker within the probe's run, at the NULL-page offsets of the fields
   then read through the deadline class's return);
-- the task's identity: set_next_task_fair(rq, p, first) runs for every fair
-  task about to run on the CPU, a server-dispatched one included, with p
-  never NULL; its probe records the pointer and the pid read through it, so
-  each pointer's pid is known once the task has been set next there. A
-  selected task whose pid is not known is counted as unidentified, never as
-  server-backed;
+- the task's identity: set_next_task_fair(rq, p, first) runs when a fair
+  task is set next through its class, with p never NULL; its probe records
+  the pointer and the pid read through it, so a pointer's pid is known once
+  the task has been set next there. It does not see every fair dispatch:
+  the CFS fast path in pick_next_task_fair can call __set_next_task_fair
+  directly. A selected task whose pid is not known is therefore counted as
+  unidentified, never as server-backed (the rehearsal of 2026-11-08
+  identified all four server-backed dispatches of its positive control);
 - the server's state at the selection: the fair server's flags word (active,
   throttled, deferred, armed, running...), runtime and deadline, read at the
   fair server pick's entry and at the deadline class's pick entry;
