@@ -35,9 +35,12 @@
 # settings (read with bpftrace, since the kernel's lockdown refuses the
 # debugfs files), lockdown, boot line, topology and the adapter. Every run
 # record repeats it, with the run's IRQ placement before and after, the
-# xHCI interrupts around the probe, and a task and affinity snapshot
-# halfway through the run. The session changes no scheduler setting; it
-# loads the usbmon module if needed and unloads it at the end.
+# xHCI interrupts around the probe, a task and affinity snapshot halfway
+# through the run, and read-only snapshots of the excluded CPUs' idle-state
+# counters (tools/idle_counters.py: identities, raw values and deltas, with
+# their monotonic sample times) right before and after the probe, untraced
+# runs included. The session changes no scheduler setting; it loads the
+# usbmon module if needed and unloads it at the end.
 #
 # The adapter experiment: --latency-steps L1,L2,... (for example 1,0,1)
 # makes each listed run once per step, in order, each untraced and traced,
@@ -120,6 +123,8 @@ PERF=${PERF:-perf}
 TSC_INSTANCE_TOOL=${TSC_INSTANCE_TOOL:-tools/tsc_instance.sh}
 TSC_SAMPLER=${TSC_SAMPLER:-./build/apps/tsc_mono_pairs}
 EXERCISER=tools/timer_exerciser.py
+IDLE_TOOL=tools/idle_counters.py
+CPU_ROOT=${TRACE_SESSION_CPU_ROOT:-/sys/devices/system/cpu}  # the idle counters' sysfs (tests replace it)
 TSC_INSTANCE=rtctrl_tsc
 # Unrelated batch workloads that refuse the session (tools/batch_workloads.sh:
 # process names, as the kernel truncates them to 15 characters, less the
@@ -378,6 +383,7 @@ for c in $online; do
 done
 [ ${#others[@]} -gt 0 ] || die "--exclude-cpus leaves no CPU for the load and the tracers"
 other_cpus=$(IFS=,; echo "${others[*]}")
+idle_cpus=$(tr ' ' , <<<"$excluded")  # the idle counters' CPUs: the excluded set
 stress_timeout=$((duration + load_tail))
 
 # The adapter to capture: the probe's port, unless --usb-device names it.
@@ -406,6 +412,7 @@ problems=()
 command -v taskset >/dev/null || problems+=("taskset is not installed (util-linux)")
 command -v stdbuf >/dev/null || problems+=("stdbuf is not installed (coreutils)")
 command -v python3 >/dev/null || problems+=("python3 is not installed")
+[ -f "$IDLE_TOOL" ] || problems+=("$IDLE_TOOL is missing (run from the repo root)")
 if [ ${#lt_list[@]} -gt 0 ]; then
   [ -x "$LATENCY_TOOL" ] || problems+=("$LATENCY_TOOL is not executable")
   [ -n "$lt_tty" ] || problems+=("no port to set the latency timer of")
@@ -1356,10 +1363,12 @@ run_one() {
   ( taskset -cp "$other_cpus" "$BASHPID" >/dev/null
     sleep $((duration / 2)); tasks_snapshot >"$csv.tasks.txt" ) &
   snap_pid=$!
+  python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label before --root "$CPU_ROOT" >"$tmp/idle_before.txt" 2>&1
   irq_before=$(xhci_interrupts); t_before=$(date +%s.%N)
   "${cmd[@]}" 2>&1 | tee -a "$note"
   probe_status=${PIPESTATUS[0]}
   irq_after=$(xhci_interrupts); t_after=$(date +%s.%N)
+  python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label after --root "$CPU_ROOT" >"$tmp/idle_after.txt" 2>&1
   # The load and the recorders must have lasted the whole run: checked as
   # the probe ends, before anything is stopped.
   local load_problem='' tracer_problem=''
@@ -1494,6 +1503,9 @@ run_one() {
     fi
   fi
   { echo; echo "--- IRQ placement after ---"; irq_state; } >>"$note"
+  { echo; echo "--- idle counters, CPUs $idle_cpus (read-only, right before and after the probe) ---"
+    cat "$tmp/idle_before.txt" "$tmp/idle_after.txt"
+    python3 "$IDLE_TOOL" delta "$tmp/idle_before.txt" "$tmp/idle_after.txt" 2>&1; } >>"$note"
   awk -v n=$((irq_after - irq_before)) -v a="$t_before" -v b="$t_after" 'BEGIN {
     printf "xhci interrupts around the probe: %d in %.3f s (%.0f per s; every device on the controller)\n", n, b - a, n / (b - a)}' >>"$note"
   local latency_problem=''

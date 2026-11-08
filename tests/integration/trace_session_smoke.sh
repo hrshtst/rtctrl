@@ -309,6 +309,17 @@ esac
 EOF
 chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
+# The excluded CPU 0's idle states (the idle counters' stand-in sysfs): state
+# 2 without the optional above and below counters.
+for st in 0:POLL:0:0 1:C1_ACPI:1:1 2:C2_ACPI:127:381; do
+  IFS=: read -r i name lat res <<<"$st"
+  d="$ROOT/cpu/cpu0/cpuidle/state$i"
+  mkdir -p "$d"
+  for kv in name:$name desc:stand-in latency:$lat residency:$res disable:0 usage:$((i + 10)) time:$((i * 100)) rejected:0; do
+    echo "${kv#*:}" >"$d/${kv%%:*}"
+  done
+  [ "$i" = 2 ] || { echo 0 >"$d/above"; echo 0 >"$d/below"; }
+done
 printf '1\n' >"$ROOT/usbdev/busnum"
 printf '9\n' >"$ROOT/usbdev/devnum"
 printf '0403\n' >"$ROOT/usbdev/idVendor"
@@ -320,6 +331,7 @@ export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
+export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
 if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
 
@@ -423,6 +435,14 @@ for run in current-100hz-idle-bounded-fast-motion position-100hz-idle-bounded; d
     grep -q '^  cpu 0 fair_server_pick_task runtime_ns 50000000 period_ns 1000000000' "$note"
     grep -q '^--- IRQ placement before ---' "$note"
     grep -q '^--- IRQ placement after ---' "$note"
+    # The excluded CPU's idle counters, before and after the probe, in
+    # untraced and traced runs alike.
+    grep -q '^--- idle counters, CPUs 0 (read-only, right before and after the probe) ---$' "$note" &&
+      grep -Eq '^idle counters \(before\): monotonic_ns [0-9]+ [0-9]+ \(read between them\), root '"$ROOT/cpu"'$' "$note" &&
+      grep -Eq '^idle counters \(after\): monotonic_ns [0-9]+ [0-9]+ ' "$note" &&
+      grep -q '^cpu0 state2 name=C2_ACPI desc=stand-in latency=127 residency=381 disable=0 usage=12 time=200 above=unavailable below=unavailable rejected=0$' "$note" &&
+      grep -q '^cpu0 state2 C2_ACPI: usage +0, time +0, above unavailable, below unavailable, rejected +0$' "$note" ||
+      fail "$note: no idle counters around the probe" "$note"
     grep -q '^--- Cpus_allowed_list per task' "$b.tasks.txt"
     if [ "$mode" = traced ]; then
       [ -s "$b.trace.dat" ] || fail "missing $b.trace.dat" "$note"

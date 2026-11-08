@@ -312,6 +312,17 @@ set_tests_properties(timer_service_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timer service regressions OK"
   LABELS unit)
 
+# The read-only idle-state counter snapshots of every traced session run
+# (tools/idle_counters.py) on a fake cpuidle tree.
+add_test(NAME idle_counters_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_idle_counters.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(idle_counters_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "idle counters regressions OK"
+  LABELS unit)
+
 # The timer mode's rehearsal exerciser: its rounds, rows and stop (no timing
 # bound; it never touches the bus).
 add_test(NAME timer_exerciser_regressions

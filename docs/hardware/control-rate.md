@@ -516,7 +516,13 @@ the session reads the fair server's settings with the read-only bpftrace
 probe above, and records them with the lockdown state, boot line, real-time
 settings, topology and the adapter. Every run record repeats them, with the
 run's IRQ placement before and after, and a snapshot halfway through each
-run records every task's CPU, policy and allowed CPUs. The session changes
+run records every task's CPU, policy and allowed CPUs. Right before and
+after the probe, every run, untraced ones included, also takes read-only
+snapshots of the excluded CPUs' idle-state counters
+(`tools/idle_counters.py`): each state's identity, disable flag and raw
+counters with the monotonic times of the reads, and their deltas. A counter
+the kernel does not offer is marked unavailable, and a state whose identity
+changed gets no delta (reviewer decision, 2026-11-08). The session changes
 no scheduler setting; it loads the usbmon module if needed and unloads it at
 the end. A loaded run starts its load once the recorders are recording, so
 their startup takes none of the load's time. The load and the recorders
