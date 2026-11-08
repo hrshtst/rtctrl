@@ -718,7 +718,14 @@ the xHCI interrupts around the probe. For each traced run,
 `tools/trace_correlate.py` adds the adapter's delivery cadence, the replies
 split across deliveries, the receive path and the host's USB work (the xHCI
 interrupt handlers and the USB completion work in the run). The xHCI counts
-include every device on the controller.
+include every device on the controller. For the 500 Hz feasibility analysis
+(reviewer decision, 2026-11-08) it also gives each read's reply phase: where
+its instruction's OUT completion fell between the adapter's bulk IN
+completions around it, and per tenth of that interval the reads, the share
+whose reply arrived in more than one completion, and the median times to
+the first completion and of the host transaction. That describes a
+dependence; it does not establish a cause. It also counts the cycles whose
+host work exceeds T6a's 0.7 T, each with its largest measured part.
 
 **Plan.** First, short quiet runs (18 runs, about 15 minutes):
 

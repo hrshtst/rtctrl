@@ -97,6 +97,7 @@ import math
 import json
 import pathlib
 import re
+import statistics
 import subprocess
 import sys
 
@@ -667,6 +668,44 @@ def usb_cadence(run: Run, tr: Trace, out) -> None:
     show("usb_completion_work", works, out)
 
 
+def reply_phase(tr: Trace, rec: list[dict], out) -> None:
+    """Each read's instruction (its OUT completion) against the adapter's
+    delivery cadence: its phase between the bulk IN completions around it
+    (0 at the one before, 1 at the one after), and per tenth of that phase
+    the reads, the share whose reply arrived in more than one completion,
+    and the medians of the time to the first completion and of the host
+    transaction. A description of the dependence, not a cause."""
+    ins = sorted(c[0] for c in tr.in_done)
+    rows = []
+    for x in rec:
+        t = x.get("instr_done")
+        if t is None or "first" not in x:
+            continue
+        k = bisect.bisect_left(ins, t)
+        if k == 0 or k >= len(ins) or ins[k] <= ins[k - 1]:
+            continue
+        ph = (t - ins[k - 1]) / (ins[k] - ins[k - 1])
+        txn = x["read_end"] - x["read_start"] if x.get("read_end") is not None else None
+        rows.append((min(ph, 0.999999), x["completions"] > 1, x["first"] - t, txn))
+    if not rows:
+        print("  reply phase: no read with completions around its instruction", file=out)
+        return
+    print(f"  reply phase (each instruction's OUT completion between the adapter's bulk IN completions around it; "
+          f"{len(rows)} reads, {sum(r[1] for r in rows)} split):", file=out)
+    print("    phase      reads  split  to first completion p50  host transaction p50 (us)", file=out)
+    for b in range(10):
+        sel = [r for r in rows if b / 10 <= r[0] < (b + 1) / 10]
+        if not sel:
+            print(f"    {b / 10:.1f}-{(b + 1) / 10:.1f}  {0:6d}      -", file=out)
+            continue
+        split = sum(r[1] for r in sel) / len(sel)
+        first = statistics.median(r[2] for r in sel) / 1e3
+        txns = [r[3] for r in sel if r[3] is not None]
+        txn = f"{statistics.median(txns) / 1e3:.0f}" if txns else "-"
+        print(f"    {b / 10:.1f}-{(b + 1) / 10:.1f}  {len(sel):6d}  {100 * split:4.0f}%  {first:22.0f}  {txn:>19}",
+              file=out)
+
+
 def port_work_item(data: list, bh: dict, queued: list) -> str | None:
     """The TTY work item queued most often by the USB completion work that
     follows the adapter's data completions."""
@@ -809,6 +848,22 @@ def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
         part = max(parts.items(), key=lambda kv: kv[1])[0]
         largest[part] = largest.get(part, 0) + 1
     print(f"  overran cycles: {len(overran)}; largest measured part: "
+          + (", ".join(f"{k} {v}" for k, v in sorted(largest.items(), key=lambda kv: -kv[1])) or "-"),
+          file=out)
+    # Cycles whose host work (cycle end less read start) exceeds T6a's 0.7 T,
+    # with their largest measured part, as for the overruns.
+    period = 1e9 / float(run.summary["rate_hz"])
+    over = [i for i, r in enumerate(rows) if int(r["cycle_end_ns"]) >= 0 and int(r["read_start_ns"]) >= 0
+            and int(r["cycle_end_ns"]) - int(r["read_start_ns"]) > 0.7 * period]
+    largest = {}
+    for i in over:
+        s = by_row.get(i, {})
+        parts = {"before the first USB completion": s.get("to_first_completion", 0) + s.get("instruction_usb", 0),
+                 "between USB completions": s.get("between_completions", 0),
+                 "after the last USB completion": s.get("after_last_completion", 0)}
+        part = max(parts.items(), key=lambda kv: kv[1])[0]
+        largest[part] = largest.get(part, 0) + 1
+    print(f"  cycles whose host work exceeds 0.7 T ({0.7 * period / 1e3:.0f} us): {len(over)}; largest measured part: "
           + (", ".join(f"{k} {v}" for k, v in sorted(largest.items(), key=lambda kv: -kv[1])) or "-"),
           file=out)
     del o
@@ -1166,6 +1221,7 @@ def main() -> int:
     transfers = check_transfers(run, tr, failures, out)
     rec = receive_path(run, tr, transfers, failures, out)
     usb_cadence(run, tr, out)
+    reply_phase(tr, rec, out)
     if tr.work_anomalies:
         print(f"  {tr.work_anomalies} workqueue executions ended without a recorded start "
               "(begun before the trace)", file=out)
