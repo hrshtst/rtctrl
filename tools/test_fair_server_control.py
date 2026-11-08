@@ -6,15 +6,47 @@ modes (FAIR_SERVER_CONTROL_TEST). Pinned: the phases in order with their
 boundaries, the loop's start and end within the positive phase, the normal
 tasks' progress samples, the supervisor's kill of a loop that ignores its
 deadline (and the failing status), the refusals, and a loop refused
-SCHED_FIFO without a real-time limit.
+SCHED_FIFO without a real-time limit. And the supervisor's own failure
+modes (reviewer, 2026-11-08): with 4 kB pipes and enough progress samples to
+fill them, the run completes (the output drained while each child is waited
+for); a SIGTERM during the positive phase kills and reaps every child, marks
+the output incomplete and exits 130.
 """
 
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
+
+# A run whose children have 4 kB pipes (the reviewer's reproducer's setting).
+SMALL_PIPES = r"""
+import os, subprocess, sys
+sys.path.insert(0, "tools")
+import fair_server_control as m
+m.child = lambda args: subprocess.Popen([sys.executable, m.__file__, *args], stdout=subprocess.PIPE, text=True,
+                                        pipesize=4096)
+cpu, sup, out = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+with open(out, "w") as f:
+    sys.exit(m.run(cpu, sup, 10, 800_000_000, 50_000_000, 100_000_000, f))
+"""
+
+
+def leftovers(token: str) -> list[int]:
+    """The processes still carrying the run's token in their environment."""
+    found = []
+    for d in pathlib.Path("/proc").iterdir():
+        if d.name.isdigit() and int(d.name) != os.getpid():
+            try:
+                if token.encode() in (d / "environ").read_bytes():
+                    found.append(int(d.name))
+            except OSError:
+                pass
+    return found
 
 
 def expect(cond: bool, what: str) -> None:
@@ -63,6 +95,37 @@ def main() -> int:
         text = out.read_text()
         expect(r.returncode == 1 and re.search(r"^fifo start=\d+ end=none exit=-9 killed=yes ", text, re.M) is not None,
                f"the supervisor's kill: {r.returncode}\n{text}")
+
+        # Full pipes: the run completes, its samples well past 4 kB per phase.
+        env = dict(os.environ, FAIR_SERVER_CONTROL_TEST="no-rt")
+        p = subprocess.Popen([sys.executable, "-c", SMALL_PIPES, cpu, sup, str(out)], env=env,
+                             start_new_session=True)
+        try:
+            code = p.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+            expect(False, "a run with full pipes hangs")
+        text = out.read_text()
+        m = re.search(r"^normal negative-normal pid=\d+ exit=0 samples=(\d+)$", text, re.M)
+        expect(code == 0 and m is not None and int(m[1]) * 16 > 4096 and "phase negative-idle" in text,
+               f"a run with full pipes completes: {code}\n{text[:400]}")
+
+        # A SIGTERM during the positive phase: every child killed and reaped.
+        token = uuid.uuid4().hex
+        env = dict(os.environ, FAIR_SERVER_CONTROL_TEST="no-rt", RTCTRL_TEST_TOKEN=token)
+        p = subprocess.Popen([sys.executable, "tools/fair_server_control.py", "run", "--output", str(out),
+                              "--cpu", cpu, "--supervisor-cpu", sup, "--phase-s", "5"], env=env)
+        time.sleep(1.0)
+        expect(len(leftovers(token)) >= 3, "the supervisor and its two children run")
+        t0 = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        code = p.wait(timeout=10)
+        text = out.read_text()
+        expect(code == 130 and time.monotonic() - t0 < 5 and "# interrupted by signal 15" in text,
+               f"a SIGTERM ends the run at once, marked incomplete: {code}\n{text}")
+        time.sleep(0.2)
+        expect(leftovers(token) == [], f"no child outlives the supervisor: {leftovers(token)}")
 
         # Refusals.
         r = run(out, "--cpu", cpu, "--supervisor-cpu", cpu, test="no-rt")

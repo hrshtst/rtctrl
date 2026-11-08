@@ -1478,7 +1478,13 @@ counts and both buffers' losses (the loss rule applies), and
   must have run), or selected nothing on the idle CPU, and fails otherwise.
 
 A failed control stops the session before the timer runs; an inconclusive
-one is reported. The controls, the rehearsal's timer runs with the probes,
+one is reported. The supervisor drains each child's output while it waits
+for it, so a full pipe cannot block either side; every wait is bounded, and
+a signal to the supervisor kills and reaps every running child and marks
+the output incomplete. Controls are never reused: if any file of the
+attempt's controls exists (passed, failed, partial or interrupted), the
+session refuses before anything is sent, and a fresh `--attempt` runs them
+again (reviewer findings, 2026-11-08). The controls, the rehearsal's timer runs with the probes,
 and the implementation come to the reviewer before any use on the arm.
 With the emulator prepared as for the rehearsal above:
 

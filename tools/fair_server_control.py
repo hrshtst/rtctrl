@@ -18,6 +18,10 @@ end, and each normal task's progress samples (CLOCK_MONOTONIC, the trace's
 clock, about once per millisecond of its running) are written out; the
 trace's analysis (tools/fair_server.py controls) judges them.
 
+Each child's output is drained while it is waited for, every wait is
+bounded, and a signal to the supervisor kills and reaps every running child
+(status 130, the output marked incomplete).
+
 usage: fair_server_control.py run --cpu N --supervisor-cpu M --output FILE
            [--fifo-priority P] [--phase-s S] [--settle-s S] [--margin-s S]
 
@@ -91,75 +95,114 @@ def child(args: list[str]) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, __file__, *args], stdout=subprocess.PIPE, text=True)
 
 
+class Interrupted(Exception):
+    """A signal reached the supervisor."""
+
+
 def run(cpu: int, sup: int, prio: int, phase_ns: int, settle_ns: int, margin_ns: int, out) -> int:
+    """The phases, in order. Each child's output is drained while it is
+    waited for, never after: a child blocked on a full pipe would otherwise
+    wait for a reader that waits for it. Every wait is bounded: a child past
+    its deadline and margin is killed and reaped. A signal to this process
+    kills and reaps every child that is still running, and the output says
+    so."""
     if cpu == sup:
         print("fair_server_control: the supervisor needs another CPU", file=sys.stderr)
         return 2
     os.sched_setaffinity(0, {sup})
     print(f"# fair_server_control cpu={cpu} supervisor_cpu={sup} fifo_priority={prio} "
-          f"phase_ns={phase_ns} settle_ns={settle_ns} margin_ns={margin_ns}", file=out)
+          f"phase_ns={phase_ns} settle_ns={settle_ns} margin_ns={margin_ns}", file=out, flush=True)
     status = 0
+    children: list[subprocess.Popen] = []
+
+    def spawn(args: list[str]) -> subprocess.Popen:
+        p = child(args)
+        children.append(p)
+        return p
+
+    def collect(p: subprocess.Popen, until_ns: int) -> tuple[int, str, bool]:
+        """Its exit status and output, drained while waiting; killed and
+        reaped once until_ns has passed."""
+        try:
+            text, _ = p.communicate(timeout=max(0.0, (until_ns - now()) / 1e9))
+            return p.returncode, text or "", False
+        except subprocess.TimeoutExpired:
+            p.kill()
+            text, _ = p.communicate()
+            return p.returncode, text or "", True
 
     def normal_task(deadline: int) -> subprocess.Popen:
-        p = child(["_normal", str(cpu), str(deadline)])
+        p = spawn(["_normal", str(cpu), str(deadline)])
         assert p.stdout is not None
         line = p.stdout.readline().split()
         if not line or line[0] != "ready":
             raise RuntimeError("the normal task did not start")
         return p
 
-    def finish_normal(p: subprocess.Popen, phase: str) -> None:
+    def report_normal(p: subprocess.Popen, phase: str, code: int, text: str, killed: bool) -> None:
         nonlocal status
-        assert p.stdout is not None
-        text = p.stdout.read()
-        code = p.wait()
         samples = next((ln.split()[1:] for ln in text.splitlines() if ln.startswith("samples")), [])
         print(f"normal {phase} pid={p.pid} exit={code} samples={len(samples)}", file=out)
         print(f"samples {phase} " + " ".join(samples), file=out)
-        if code != 0:
+        if killed:
+            print(f"# normal {phase}: killed past its deadline", file=out)
+        if code != 0 or killed:
             status = 1
 
-    # positive
-    t0 = now()
-    end = t0 + phase_ns
-    nt = normal_task(end + margin_ns)
-    ft = child(["_fifo", str(cpu), str(prio), str(end)])
-    assert ft.stdout is not None
-    killed = "no"
-    try:
-        code = ft.wait(timeout=(end + margin_ns - now()) / 1e9)
-    except subprocess.TimeoutExpired:
-        ft.send_signal(signal.SIGKILL)
-        code = ft.wait()
-        killed = "yes"
-        status = 1
-    ftext = ft.stdout.read()
-    fstart = next((ln.split()[2] for ln in ftext.splitlines() if ln.startswith("fifo start")), "none")
-    fend = next((ln.split()[2] for ln in ftext.splitlines() if ln.startswith("fifo end")), "none")
-    if code != 0:
-        status = 1
-    finish_normal(nt, "positive")  # it runs on past the loop by the margin
-    t1 = now()
-    print(f"phase positive {t0} {t1}", file=out)
-    print(f"fifo start={fstart} end={fend} exit={code} killed={killed} pid={ft.pid}", file=out)
-    for ln in ftext.splitlines():
-        if ln.startswith("fifo:"):
-            print(f"# {ln}", file=out)
+    def interrupted(signum, _frame) -> None:
+        raise Interrupted(signum)
 
-    # the rest, in order
-    for phase, task in (("settle-1", False), ("negative-normal", True), ("settle-2", False),
-                        ("negative-idle", False)):
-        dur = settle_ns if phase.startswith("settle") else phase_ns
+    old = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        # positive
         t0 = now()
-        if task:
-            nt = normal_task(t0 + dur)
-            nt.wait()
-            t1 = now()
-            finish_normal(nt, phase)
-        else:
-            time.sleep(dur / 1e9)
-            t1 = now()
-        print(f"phase {phase} {t0} {t1}", file=out)
+        end = t0 + phase_ns
+        nt = normal_task(end + margin_ns)
+        ft = spawn(["_fifo", str(cpu), str(prio), str(end)])
+        code, ftext, killed = collect(ft, end + margin_ns)
+        if code != 0 or killed:
+            status = 1
+        # The normal task runs on past the loop by the margin.
+        report_normal(nt, "positive", *collect(nt, end + 2 * margin_ns))
+        t1 = now()
+        fstart = next((ln.split()[2] for ln in ftext.splitlines() if ln.startswith("fifo start")), "none")
+        fend = next((ln.split()[2] for ln in ftext.splitlines() if ln.startswith("fifo end")), "none")
+        print(f"phase positive {t0} {t1}", file=out)
+        print(f"fifo start={fstart} end={fend} exit={code} killed={'yes' if killed else 'no'} pid={ft.pid}",
+              file=out)
+        for ln in ftext.splitlines():
+            if ln.startswith("fifo:"):
+                print(f"# {ln}", file=out)
+        out.flush()
+
+        # the rest, in order
+        for phase, task in (("settle-1", False), ("negative-normal", True), ("settle-2", False),
+                            ("negative-idle", False)):
+            dur = settle_ns if phase.startswith("settle") else phase_ns
+            t0 = now()
+            if task:
+                nt = normal_task(t0 + dur)
+                result = collect(nt, t0 + dur + margin_ns)
+                t1 = now()
+                report_normal(nt, phase, *result)
+            else:
+                time.sleep(dur / 1e9)
+                t1 = now()
+            print(f"phase {phase} {t0} {t1}", file=out, flush=True)
+    except Interrupted as e:
+        print(f"# interrupted by signal {e.args[0]}: the controls are incomplete", file=out)
+        status = 130
+    finally:
+        for p in children:
+            if p.poll() is None:
+                p.kill()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        for sig, h in old.items():
+            signal.signal(sig, h)
+        out.flush()
     return status
 
 
