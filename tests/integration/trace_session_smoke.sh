@@ -1280,6 +1280,23 @@ if [ -n "$SAMPLER" ]; then
     fi
     [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer 53).run.txt" ] && [ ! -e "$ROOT/fake.fs_group_exists" ] ||
       fail "a timer run followed failed controls, or the probes remain" "$ROOT/fc.log"
+    # An earlier attempt's controls are never reused: a failed record, a
+    # partial output and an interrupted trace each refuse the session before
+    # anything is sent, and no probe runs (reviewer, 2026-11-08).
+    for c in "55 run.txt verdict: controls fail" "56 controls.txt phase positive 1 2" "57 trace.dat stand-in trace data"; do
+      read -r att suffix content <<<"$c"
+      echo "$content" >"$OUT/fs-controls-$DATE-$att.$suffix"
+      set +e
+      FAIR_SERVER_CONTROL_TEST=no-rt FS_CONTROL_PHASE_S=0.3 FS_CONTROL_SETTLE_S=0.1 TRACE_SESSION_RTPRIO_LIMIT=99 \
+        setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" --duration 2 --fs-controls 1 \
+        --modes untraced,timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fc-retry-$att.log" 2>&1
+      st=$?
+      set -e
+      [ "$st" -eq 2 ] && grep -q "the fair-server controls of this attempt were attempted earlier ($OUT/fs-controls-$DATE-$att.$suffix): controls are never reused; pass a free --attempt" "$ROOT/fc-retry-$att.log" ||
+        fail "an earlier attempt's controls ($suffix): status $st" "$ROOT/fc-retry-$att.log"
+      [ -z "$(ls "$OUT" | grep -E -- "-$DATE-$att\.csv")" ] && [ "$(ls "$OUT"/fs-controls-$DATE-$att.* | wc -l)" -eq 1 ] ||
+        fail "a session with an earlier attempt's controls ($suffix) ran something" "$ROOT/fc-retry-$att.log"
+    done
   fi
   # The exerciser: refused without --port; over the emulator it runs.
   if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh --probe "$FAKE/probe" --outdir "$OUT" --date "$DATE" \

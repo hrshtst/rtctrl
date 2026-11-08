@@ -55,6 +55,9 @@
 # (tools/fair_server.py controls); a failed control, a loss or a tracer
 # failure stops the session, and an inconclusive negative control is
 # reported. Files: fs-controls-<date>-<attempt>.{run.txt,trace.dat,controls.txt}.
+# Controls are never reused: if any of those files exists (a passed, failed,
+# partial or interrupted attempt), the session refuses before anything is
+# sent, and a fresh --attempt runs them again.
 #
 # The observer placement comparison (--placements open,confined with
 # --observers PID,...): each listed run is made once per placement, its log
@@ -516,6 +519,13 @@ command -v taskset >/dev/null || problems+=("taskset is not installed (util-linu
 command -v stdbuf >/dev/null || problems+=("stdbuf is not installed (coreutils)")
 command -v python3 >/dev/null || problems+=("python3 is not installed")
 [ -f "$IDLE_TOOL" ] || problems+=("$IDLE_TOOL is missing (run from the repo root)")
+# The probes' controls run afresh in each session: an earlier attempt's
+# files, whatever their verdict or completeness, refuse it.
+if [ -n "$fs_controls_cpu" ]; then
+  for f in "$outdir/fs-controls-$date_tag-$attempt".{run.txt,trace.dat,controls.txt}; do
+    [ -e "$f" ] && problems+=("the fair-server controls of this attempt were attempted earlier ($f): controls are never reused; pass a free --attempt")
+  done
+fi
 if [ -n "$observers" ]; then
   [ -f "$OBS_TOOL" ] || problems+=("$OBS_TOOL is missing (run from the repo root)")
   IFS=, read -r -a obs_pids <<<"$observers"
@@ -1888,9 +1898,9 @@ run_controls() {
   note=$base.run.txt; dat=$base.trace.dat; ctl=$base.controls.txt
   echo
   echo "=== fair-server controls on CPU $fs_controls_cpu (supervisor on CPU $ctl_sup): $(basename "$base")"
-  if [ -e "$note" ] || [ -e "$ctl" ]; then
-    echo "already attempted, skipped"
-    return 0
+  if [ -e "$note" ] || [ -e "$dat" ] || [ -e "$ctl" ]; then
+    echo "trace_session: the controls of this attempt were attempted earlier: controls are never reused; session stopped"
+    return 1
   fi
   ctl_args=("${trace_args[@]}" -e timer:hrtimer_start)
   while read -r e f; do
@@ -1986,7 +1996,7 @@ if [ -n "$fs_controls_cpu" ]; then
     print_table
     exit 1
   fi
-  add_result "fair-server controls" controls "$(grep -m 1 '^verdict:' "$outdir/fs-controls-$date_tag-$attempt.run.txt" 2>/dev/null || echo 'skipped (attempted earlier)')"
+  add_result "fair-server controls" controls "$(grep -m 1 '^verdict:' "$outdir/fs-controls-$date_tag-$attempt.run.txt")"
   current=
 fi
 
