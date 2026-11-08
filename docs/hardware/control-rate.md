@@ -1406,6 +1406,42 @@ after the ledger check.
 - C2 stays enabled in that baseline; a reversible C2 comparison is to be
   designed.
 
+**Observer placement (approved for implementation 2026-11-08).** The
+observers are the applications left open while runs are watched (their
+process trees: the Claude Code processes, the browser, Dropbox and the
+other desktop applications) and the probe's helper threads (its main thread
+and log writer), not its worker. The session's tracers already run outside
+CPUs 2 and 3, and kernel receive workers are outside this mechanism.
+`tools/trace_session.sh --placements open,confined --observers <PID,...>`
+makes each listed run once per placement, its log name labelled `-obs-open`
+or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
+- takes the operator's explicit PIDs and their descendants (the session's
+  own tree is exempt), and before any change writes
+  `<log>.csv.observers.jsonl`: every thread's process and thread IDs, start
+  times (a guard against reused IDs) and mask, flushed to disk;
+- sets each thread's mask to its own less the excluded CPUs, and refuses to
+  start the run if a thread holds only excluded CPUs;
+- starts the probe with its mask outside them, so only its worker pins
+  itself to CPU 3;
+- restores right after the probe, and on every exit (a failed restoration
+  is status 3). A recorded thread goes back to its recorded mask if it still
+  exists with its start time and the mask confinement set. An exited thread,
+  a reused ID and a mask the application changed during the run are left as
+  found and reported. A thread or process created during the run inherited
+  its creator's mask, and a multithreaded process has no single original
+  mask: it gets its process's (or nearest recorded ancestor's) original
+  mask only when all that process's recorded threads shared one, and is
+  otherwise left and reported.
+
+The run's halfway task snapshot is checked: an observer thread or a probe
+helper allowed on an excluded CPU stops the session as a placement failure.
+In a traced run, `tools/trace_correlate.py` also counts the time observer
+threads (with those they created during the run) and probe helpers spent
+on the excluded CPUs, and any such time fails the analysis. The open runs
+leave the observers as they are, and C2 stays enabled in both placements.
+The same-session open and confined comparison, with its run count and
+labels, comes to the reviewer before it runs.
+
 **Stage 1 rehearsal: the probes' controls.** Before the probes' evidence is
 used on the arm, a rehearsal over `dxl_emu` validates them with positive and
 negative controls on a spare CPU (`--fs-controls <cpu>`, refused without

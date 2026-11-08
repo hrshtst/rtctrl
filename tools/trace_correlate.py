@@ -94,6 +94,7 @@ import argparse
 import bisect
 import csv
 import math
+import json
 import pathlib
 import re
 import subprocess
@@ -138,6 +139,13 @@ class Trace:
         # (tools/fair_server.py), else None.
         self.timer = timer
         self.fs = fs
+        # A confined run's excluded CPUs: each task's time on them in the
+        # run's window (set by main when the run has a placement record).
+        self.excl: set[int] | None = None
+        self.excl_window: tuple[int, int] | None = None
+        self.excl_cur: dict[int, tuple] = {}  # cpu -> (tid, comm, since)
+        self.excl_ns: dict[int, int] = {}
+        self.excl_comm: dict[int, str] = {}
         self.last_ts = 0
         self.expiring: dict[int, list] = {}   # cpu -> stack of (entry ts, now, wakeup)
         self.timer_wakes: list[tuple] = []    # (entry ts, now, cpu, waking ts, running)
@@ -167,6 +175,14 @@ class Trace:
         self.timer_cancels: list[tuple] = []
         self.faults: list[tuple] = []
         self.lines = 0
+
+    def excl_account(self, tid: int, comm: str, since: int, end: int) -> None:
+        if not tid or self.excl_window is None:
+            return
+        a, b = max(since, self.excl_window[0]), min(end, self.excl_window[1])
+        if b > a:
+            self.excl_ns[tid] = self.excl_ns.get(tid, 0) + b - a
+            self.excl_comm[tid] = comm
 
     def feed(self, line: str) -> None:
         m = LINE.match(line)
@@ -215,6 +231,11 @@ class Trace:
             npid, ppid = int(s["npid"]), int(s["ppid"])
             if self.timer is not None:
                 self.timer.switch(ts, cpu, ppid, s["prev"], npid, s["next"])
+            if self.excl is not None and cpu in self.excl:
+                cur = self.excl_cur.get(cpu)
+                if cur:
+                    self.excl_account(*cur, ts)
+                self.excl_cur[cpu] = (npid, s["next"], ts)
             if npid == self.tid:
                 self.worker_switch.append((ts, cpu, "in", ""))
                 self.running = True
@@ -705,6 +726,36 @@ KWORKER_PARTS = ("tty_queue_to_kworker_waking", "kworker_waking_to_first_run", "
                  "kworker_preempted_before_tty", "kworker_slept_before_tty")
 
 
+def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failures: list[str]) -> None:
+    """A confined run's observers and the probe's helpers on the excluded
+    CPUs during the run: any time there is a placement failure."""
+    recf = pathlib.Path(str(csv_path) + ".observers.jsonl")
+    entries = [json.loads(x) for x in recf.read_text().splitlines() if x.strip()]
+    head = next((e for e in entries if e["kind"] == "header"), None)
+    if head is None:
+        failures.append(f"observer placement: {recf.name} has no header")
+        return
+    for cpu, (tid, comm, since) in list(tr.excl_cur.items()):
+        tr.excl_account(tid, comm, since, tr.last_ts)
+    tr.excl_cur.clear()
+    obs = {e["tid"] for e in entries if e["kind"] == "thread"} | {e["pid"] for e in entries if e["kind"] == "thread"}
+    if tr.timer is not None:  # threads and processes the observers created during the run
+        for _, parent, _, child, _ in sorted(tr.timer.forks):
+            if parent in obs:
+                obs.add(child)
+    probe_comm = "x7_bus_timing"
+    o = {t: ns for t, ns in tr.excl_ns.items() if t in obs}
+    h = {t: ns for t, ns in tr.excl_ns.items() if t != run.tid and tr.excl_comm.get(t) == probe_comm and t not in obs}
+    cpus = ",".join(map(str, sorted(tr.excl or ())))
+    print(f"  observer placement (confined, {recf.name}): on CPUs {cpus} during the run, observer threads "
+          f"{len(o)} ({sum(o.values()) / 1e6:.3f} ms), probe helper threads {len(h)} "
+          f"({sum(h.values()) / 1e6:.3f} ms)", file=out)
+    for t, ns in sorted({**o, **h}.items(), key=lambda kv: -kv[1])[:10]:
+        print(f"    {tr.excl_comm.get(t, '?')} {t}: {ns / 1e3:.1f} us", file=out)
+    if o or h:
+        failures.append(f"observer placement: {len(o)} observer and {len(h)} probe helper threads ran on CPUs {cpus}")
+
+
 def probe_misses(record: list[str]) -> int | None:
     """The fair server's probe misses during the run, from its record (None
     when the record does not say)."""
@@ -1085,6 +1136,14 @@ def main() -> int:
         fs_events = fair_server.FairServerEvents(int(rc[1]) if rc else 3, fair_server.parse_layout(record),
                                                  run.tid, window)
     tr = Trace(run.tid, adapter, timer_events, fs_events)
+    obs_file = pathlib.Path(str(args.csv) + ".observers.jsonl")
+    if obs_file.exists():
+        try:
+            head = json.loads(obs_file.read_text().splitlines()[0])
+            tr.excl = set(head["exclude"])
+        except (OSError, ValueError, KeyError, IndexError):
+            tr.excl = set()
+        tr.excl_window = (run.origin + int(run.rows[0]["wake_ns"]), run.origin + int(run.rows[-1]["cycle_end_ns"]))
     if args.report:
         with open(args.report, errors="replace") as f:
             for line in f:
@@ -1124,6 +1183,8 @@ def main() -> int:
     if tr.fs is not None:
         tr.fs.finish(tr.last_ts)
         fair_server.report(tr.fs, probe_misses(record), args.top, out, failures)
+    if tr.excl is not None:
+        observer_placement(args.csv, run, tr, out, failures)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
     if failures:

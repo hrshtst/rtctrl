@@ -1296,6 +1296,65 @@ if [ -n "$SAMPLER" ]; then
     fail "the exerciser's run" "$b.run.txt"
 fi
 
+# The observer placement: refusals (a confined placement without observers,
+# observers without a confined placement, an unknown placement, a missing
+# process); then an open and a confined run of a stand-in observer (a
+# process of this test's with two threads and a child): labelled names, the
+# confined run's record of the tool's confinement, restoration and halfway
+# check, the probe started off the excluded CPU, the open run left alone,
+# and the observer's masks restored afterwards.
+for c in "--placements confined|a confined placement needs --observers" \
+         "--placements open --observers 1|--observers needs --placements with confined" \
+         "--placements shut --observers 1|unknown placement 'shut'" \
+         "--placements open,confined --observers 999999999|--observers: no process 999999999"; do
+  extra=${c%%|*} words=${c#*|}
+  # shellcheck disable=SC2086
+  if setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 54 --modes untraced \
+      --runs current:100:idle:fast-motion $extra </dev/null >"$ROOT/pl-refused.log" 2>&1; then
+    fail "the placement $extra was accepted" "$ROOT/pl-refused.log"
+  fi
+  grep -qF -- "$words" "$ROOT/pl-refused.log" || fail "no refusal ($words)" "$ROOT/pl-refused.log"
+done
+python3 -c '
+import subprocess, sys, threading, time
+threading.Thread(target=lambda: time.sleep(600), daemon=True).start()
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+time.sleep(600)' &
+obs_pid=$!
+# A failed check must not leave the observer holding the test's output.
+trap 'kill "$EMU_PID" 2>/dev/null || true; pkill -P "$obs_pid" 2>/dev/null || true; kill "$obs_pid" 2>/dev/null || true' EXIT
+sleep 0.5
+all_cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0)))))')
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 54 --duration 4 --modes untraced \
+  --runs current:100:idle:fast-motion --placements open,confined --observers "$obs_pid" \
+  </dev/null >"$ROOT/pl.log" 2>&1 || fail "the placement session failed" "$ROOT/pl.log"
+bo=$(base current-100hz-idle-bounded-fast-motion-obs-open-untraced 54)
+bc=$(base current-100hz-idle-bounded-fast-motion-obs-confined-untraced 54)
+[ -f "$bo.run.txt" ] && [ -f "$bc.run.txt" ] && [ ! -e "$bo.observers.jsonl" ] && [ -s "$bc.observers.jsonl" ] ||
+  fail "the placement runs' files" "$ROOT/pl.log"
+grep -q "^placement: open (observers $obs_pid left as they are)$" "$bo.run.txt" ||
+  fail "the open run's record" "$bo.run.txt"
+grep -q "^placement: confined (observers $obs_pid moved off CPUs 0, the probe started on CPUs " "$bc.run.txt" &&
+  grep -q '^command: taskset -c [0-9,\]* .*x7_bus_timing ' "$bc.run.txt" &&
+  grep -q '^--- observer placement: python3 tools/observer_affinity.py confine (exit 0) ---$' "$bc.run.txt" &&
+  grep -Eq '^observer placement: 2 processes, [0-9]+ threads: [0-9]+ confined to CPUs ' "$bc.run.txt" &&
+  grep -q '^observer placement restored: restored [0-9]*, exited 0, reused 0, changed 0' "$bc.run.txt" &&
+  grep -Eq '^observer placement check \(halfway snapshot\): [0-9]+ observer threads, 0 allowed on CPUs 0; [0-9]+ probe helper threads, 0 allowed there$' "$bc.run.txt" &&
+  grep -Eq '^verdict: (pass|fail)' "$bc.run.txt" ||
+  fail "the confined run's record" "$bc.run.txt"
+python3 - "$obs_pid" "$all_cpus" <<'EOF' || fail "the observer's masks were not restored" "$bc.run.txt"
+import os, sys
+pid, want = int(sys.argv[1]), set(map(int, sys.argv[2].split(",")))
+kids = [int(p) for p in os.listdir("/proc") if p.isdigit() and open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()[1] == str(pid)]
+for p in [pid] + kids:
+    for t in os.listdir(f"/proc/{p}/task"):
+        assert os.sched_getaffinity(int(t)) == want, (p, t, os.sched_getaffinity(int(t)))
+EOF
+pkill -P "$obs_pid" 2>/dev/null || true
+kill "$obs_pid" 2>/dev/null || true
+wait "$obs_pid" 2>/dev/null || true
+trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
+
 # An emulator rehearsal traces without usbmon.
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 4 --no-usbmon \
   --modes traced --runs current:100:idle:fast </dev/null >"$ROOT/nousb.log" 2>&1 ||

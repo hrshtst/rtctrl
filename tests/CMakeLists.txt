@@ -346,6 +346,17 @@ set_tests_properties(fair_server_control_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "fair server control regressions OK"
   LABELS unit)
 
+# The observer placement (tools/observer_affinity.py) on processes of the
+# test's own: the record, confinement, restoration and the snapshot check.
+add_test(NAME observer_affinity_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_observer_affinity.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(observer_affinity_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "observer affinity regressions OK"
+  LABELS unit)
+
 # The timer mode's rehearsal exerciser: its rounds, rows and stop (no timing
 # bound; it never touches the bus).
 add_test(NAME timer_exerciser_regressions

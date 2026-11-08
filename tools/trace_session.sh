@@ -56,6 +56,21 @@
 # failure stops the session, and an inconclusive negative control is
 # reported. Files: fs-controls-<date>-<attempt>.{run.txt,trace.dat,controls.txt}.
 #
+# The observer placement comparison (--placements open,confined with
+# --observers PID,...): each listed run is made once per placement, its log
+# name carrying the label (-obs-open, -obs-confined). For a confined run,
+# tools/observer_affinity.py moves every thread of the operator's named
+# process trees off the excluded CPUs right after the record is opened
+# (writing <log>.csv.observers.jsonl, every thread's identity, start time and
+# mask, before any change), the probe starts with its mask outside them (only
+# its worker pins itself to the real-time CPU), and the observers are
+# restored right after the probe, and on every exit (a failed restoration is
+# status 3). The run's halfway task snapshot is checked: an observer thread
+# or a probe helper allowed on an excluded CPU stops the session as a
+# placement failure, as does a thread confine cannot move. The session's own
+# process tree is exempt, and kernel workers are outside this mechanism. An
+# open run leaves the observers as they are.
+#
 # The session first records the host state once: the fair server's
 # settings (read with bpftrace, since the kernel's lockdown refuses the
 # debugfs files), lockdown, boot line, topology and the adapter. Every run
@@ -157,6 +172,10 @@ FS_CONTROL_TOOL=tools/fair_server_control.py
 FS_CONTROL_PHASE_S=${FS_CONTROL_PHASE_S:-3}
 FS_CONTROL_SETTLE_S=${FS_CONTROL_SETTLE_S:-2}
 fs_controls_cpu=
+OBS_TOOL=tools/observer_affinity.py
+placements=; observers=
+obs_owed=0; obs_record=  # a confined run's placement record, owed a restoration while obs_owed is 1
+placement=  # the placement of the run being named or made
 fs_defs=; fs_layout=  # the probes' definitions and layout (timer mode), read before anything is sent
 CPU_ROOT=${TRACE_SESSION_CPU_ROOT:-/sys/devices/system/cpu}  # the idle counters' sysfs (tests replace it)
 TSC_INSTANCE=rtctrl_tsc
@@ -229,6 +248,11 @@ usage: $0 [options]
   --exerciser         the timer mode's rehearsal: the timer exerciser runs on
                       the real-time CPU during each timer run (refused
                       without --port and on a serial device)
+  --placements L      the observer placement comparison: each run once per
+                      placement, open and/or confined, its log name labelled
+                      (default: no placement, no label)
+  --observers PIDS    the observer applications' processes (explicit PIDs,
+                      their trees confined in confined runs)
   --fs-controls C     the timer mode's rehearsal: the fair server's probes'
                       positive and negative controls on spare CPU C before
                       the runs (refused without --port, on a serial device,
@@ -273,7 +297,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--manifest|--outdir|--max-runnable|\
-    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls)
+    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls|--placements|--observers)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
@@ -297,6 +321,8 @@ while [ $# -gt 0 ]; do
         --stress-dir) stress_dir=$2 ;;
         --load-tail) load_tail=$2 ;;
         --fs-controls) fs_controls_cpu=$2 ;;
+        --placements) placements=$2 ;;
+        --observers) observers=$2 ;;
       esac
       shift 2 ;;
     --no-usbmon) usbmon=0; shift ;;
@@ -400,6 +426,22 @@ if [ "$exerciser" -eq 1 ]; then
   ex_tty=$(basename "$(readlink -f "$port")")
   [ ! -e "/sys/class/tty/$ex_tty/device" ] || die "--exerciser is for the rehearsal: $port is a serial device ($ex_tty)"
 fi
+# The placements, as labels (one empty placement without the comparison).
+pl_list=("")
+if [ -n "$placements" ]; then
+  IFS=, read -r -a pl_list <<<"$placements"
+  [ ${#pl_list[@]} -gt 0 ] || die "--placements is empty"
+  for pl in "${pl_list[@]}"; do
+    case "$pl" in open|confined) ;; *) die "--placements: unknown placement '$pl' (open or confined)" ;; esac
+  done
+fi
+if [ -n "$observers" ]; then
+  [[ $observers =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--observers must be a list of PIDs"
+  case ",$placements," in *,confined,*) ;; *) die "--observers needs --placements with confined" ;; esac
+fi
+case ",$placements," in
+  *,confined,*) [ -n "$observers" ] || die "a confined placement needs --observers (the PIDs to confine)" ;;
+esac
 # The probes' controls load a spare CPU: a rehearsal over the emulator only.
 if [ -n "$fs_controls_cpu" ]; then
   [ "$any_timer" -eq 1 ] || die "--fs-controls needs the timer mode (its probes)"
@@ -474,6 +516,13 @@ command -v taskset >/dev/null || problems+=("taskset is not installed (util-linu
 command -v stdbuf >/dev/null || problems+=("stdbuf is not installed (coreutils)")
 command -v python3 >/dev/null || problems+=("python3 is not installed")
 [ -f "$IDLE_TOOL" ] || problems+=("$IDLE_TOOL is missing (run from the repo root)")
+if [ -n "$observers" ]; then
+  [ -f "$OBS_TOOL" ] || problems+=("$OBS_TOOL is missing (run from the repo root)")
+  IFS=, read -r -a obs_pids <<<"$observers"
+  for op in "${obs_pids[@]}"; do
+    [ -d "/proc/$op" ] || problems+=("--observers: no process $op")
+  done
+fi
 if [ ${#lt_list[@]} -gt 0 ]; then
   [ -x "$LATENCY_TOOL" ] || problems+=("$LATENCY_TOOL is not executable")
   [ -n "$lt_tty" ] || problems+=("no port to set the latency timer of")
@@ -587,11 +636,12 @@ stress_cmd() {  # condition -> scmd[]
   esac
 }
 
-log_base() {  # profile rate condition variant mode [ms:step]
-  local lt=
+log_base() {  # profile rate condition variant mode [ms:step]; the placement from $placement
+  local lt= pl=
   variant_flags "$4"
   [ -n "${6:-}" ] && lt="-lt${6%%:*}-s${6##*:}"
-  echo "rate-trace-$1-${2}hz-$3$vtag$lt-$5-$date_tag-$attempt"
+  [ -n "$placement" ] && pl="-obs-$placement"
+  echo "rate-trace-$1-${2}hz-$3$vtag$lt$pl-$5-$date_tag-$attempt"
 }
 
 probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
@@ -607,7 +657,7 @@ probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
   return 0
 }
 
-total=$(( ${#run_list[@]} * ${#step_list[@]} * ${#mode_list[@]} ))
+total=$(( ${#run_list[@]} * ${#step_list[@]} * ${#pl_list[@]} * ${#mode_list[@]} ))
 
 # A planned log name already in the archive manifest would give a second
 # dataset that name: refused, as the prerequisites are (a dry run lists it).
@@ -620,10 +670,12 @@ if [ -f "$manifest" ]; then
   for spec in "${run_list[@]}"; do
     IFS=: read -r p r c v <<<"$spec"
     for step in "${step_list[@]}"; do
-      for m in "${mode_list[@]}"; do
-        b=$(log_base "$p" "$r" "$c" "$v" "$m" "$step")
-        awk -v n="$b.csv" '$0 == n || index($0, n ".") == 1 { found = 1; exit }
-                           END { exit !found }' <<<"$archived" && taken+=("$b")
+      for placement in "${pl_list[@]}"; do
+        for m in "${mode_list[@]}"; do
+          b=$(log_base "$p" "$r" "$c" "$v" "$m" "$step")
+          awk -v n="$b.csv" '$0 == n || index($0, n ".") == 1 { found = 1; exit }
+                             END { exit !found }' <<<"$archived" && taken+=("$b")
+        done
       done
     done
   done
@@ -641,6 +693,7 @@ else
   echo "trace_session: no archive manifest at $manifest to check the log names against (run from the repo root, or pass --manifest)" >&2
   taken+=(none)
 fi
+placement=
 [ ${#taken[@]} -eq 0 ] || [ "$dry_run" -eq 1 ] || exit 2
 
 if [ "$dry_run" -eq 1 ]; then
@@ -648,17 +701,24 @@ if [ "$dry_run" -eq 1 ]; then
   for spec in "${run_list[@]}"; do
     IFS=: read -r p r c v <<<"$spec"
     for step in "${step_list[@]}"; do
+      for placement in "${pl_list[@]}"; do
       for m in "${mode_list[@]}"; do
         probe_cmd "$p" "$r" "$c" "$v" "$m" "$step"
         stress_cmd "$c"
         printf '  [%s' "$m"
+        [ -n "$placement" ] && printf '; observers %s' "$placement"
         [ "$m" = profiled ] && printf '; profiled'
         [ -n "$step" ] && printf '; latency timer %s ms (step %s)' "${step%%:*}" "${step##*:}"
         [ ${#scmd[@]} -gt 0 ] && printf '; load: %s' "${scmd[*]}"
         printf '] '; printf '%q ' "${cmd[@]}"; echo
       done
+      done
     done
   done
+  placement=
+  if [ -n "$placements" ]; then
+    echo "placements $placements: a confined run moves the trees of $observers off CPUs $exclude_cpus through $OBS_TOOL (recorded first, restored right after the probe and on every exit) and starts the probe on CPUs $other_cpus"
+  fi
   if [ ${#lt_list[@]} -gt 0 ]; then
     echo "latency steps $latency_steps on $lt_tty through $LATENCY_TOOL: read before anything is sent, set before each step's runs, read after each run, and restored on every exit"
   fi
@@ -890,6 +950,24 @@ remove_fs_probes() {
   return "$st"
 }
 
+# The observers' placement: restored from its record (verified by the tool);
+# a failure is a cleanup failure (status 3), with the command to retry.
+restore_observers() {
+  local out
+  [ "$obs_owed" -ne 0 ] || return 0
+  if out=$(python3 "$OBS_TOOL" restore --record "$obs_record" 2>&1); then
+    obs_owed=0
+    [ -n "$last_note" ] && [ -f "$last_note" ] && echo "$out" >>"$last_note"
+    return 0
+  fi
+  echo "trace_session: CLEANUP FAILED: the observers' placement was not restored: $out" >&2
+  echo "  retry: python3 $OBS_TOOL restore --record $obs_record" >&2
+  if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+    printf '\n--- session end ---\ncleanup: observer placement NOT restored: %s\n' "$out" >>"$last_note"
+  fi
+  return 1
+}
+
 # The adapter experiment's latency timer: the value found at the start,
 # the value set last, whether the session owes the starting value back (from
 # the first stepped run on, set or not), and the record of the last run,
@@ -949,6 +1027,10 @@ on_exit() {
   fi
   if [ "$tsc_owed" -ne 0 ] && ! remove_tsc_instance; then
     echo "trace_session: the session fails: its cleanup did not remove the trace instance" >&2
+    cleanup_ok=0
+  fi
+  if [ "$obs_owed" -ne 0 ] && ! restore_observers; then
+    echo "trace_session: the session fails: its cleanup did not restore the observers' placement" >&2
     cleanup_ok=0
   fi
   if [ "$fs_owed" -ne 0 ] && ! remove_fs_probes; then
@@ -1321,6 +1403,9 @@ run_one() {
   case "$cond" in *loaded*) loaded=1 ;; esac
   wait_quiet
   probe_cmd "$profile" "$rate" "$cond" "$variant" "$mode" "$step"
+  # A confined run starts the probe outside the excluded CPUs: its helper
+  # threads keep that mask, and only its worker pins itself to the real-time CPU.
+  [ "$placement" = confined ] && cmd=(taskset -c "$other_cpus" "${cmd[@]}")
   stress_cmd "$cond"
   {
     echo "rtctrl traced torque-off run"
@@ -1330,6 +1415,10 @@ run_one() {
     echo "condition: $cond"
     echo "variant: $variant (bounded read path: the probe's 35 ms budget and equal guard)"
     echo "mode: $mode"
+    case "$placement" in
+      confined) echo "placement: confined (observers $observers moved off CPUs $exclude_cpus, the probe started on CPUs $other_cpus)" ;;
+      open) echo "placement: open (observers $observers left as they are)" ;;
+    esac
     if [ -n "$step" ]; then
       echo "latency step: $lt_ms ms (step ${step##*:} of ${#step_list[@]}: $latency_steps)"
     fi
@@ -1366,6 +1455,24 @@ run_one() {
     echo
   } >"$note"
   last_note=$note
+  # A confined run: the observers off the excluded CPUs, recorded first.
+  if [ "$placement" = confined ]; then
+    local obs_out obs_status
+    obs_record="$csv.observers.jsonl"
+    obs_owed=1
+    obs_out=$(python3 "$OBS_TOOL" confine --pids "$observers" --exclude-cpus "$exclude_cpus" \
+      --record "$obs_record" --exempt-pid "$$" 2>&1)
+    obs_status=$?
+    { echo "--- observer placement: python3 $OBS_TOOL confine (exit $obs_status) ---"; echo "$obs_out"; } >>"$note"
+    [ -s "$obs_record" ] || obs_owed=0  # refused before writing anything
+    if [ "$obs_status" -ne 0 ]; then
+      echo "trace_session: the observers were not all confined (exit $obs_status): session stopped. See $note" | tee -a "$note"
+      restore_observers
+      echo "verdict: not run (placement)" >>"$note"
+      outcome=stop
+      return
+    fi
+  fi
   # The step's latency timer, set if it changes, and checked in effect. From
   # here the session owes the starting value back, set or not: the run opens
   # the port, and a run can change the adapter's value.
@@ -1542,6 +1649,11 @@ run_one() {
   probe_status=${PIPESTATUS[0]}
   irq_after=$(xhci_interrupts); t_after=$(date +%s.%N)
   python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label after --root "$CPU_ROOT" >"$tmp/idle_after.txt" 2>&1
+  local placement_problem=''
+  if [ "$placement" = confined ]; then
+    { echo; echo "--- observer placement: restore ---"; } >>"$note"
+    restore_observers || placement_problem="the observers' placement was not restored"
+  fi
   if [ "$timered" -eq 1 ]; then
     fs_after=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); fs_a_status=$?
   fi
@@ -1556,6 +1668,13 @@ run_one() {
     [ -n "$tracer_problem" ] && tracer_problem+=" before the probe did"
   fi
   wait "$snap_pid" 2>/dev/null
+  if [ "$placement" = confined ] && [ -z "$placement_problem" ]; then
+    local chk wtid_c
+    wtid_c=$(sed -n 's/^worker_tid = //p' "$csv.summary.toml" 2>/dev/null)
+    chk=$(python3 "$OBS_TOOL" check --record "$obs_record" --tasks "$csv.tasks.txt" --worker-tid "${wtid_c:-0}" 2>&1) ||
+      placement_problem="the placement was not in effect halfway through the run"
+    { echo "--- observer placement: check of the halfway snapshot ---"; echo "$chk"; } >>"$note"
+  fi
   if [ "$traced" -eq 1 ]; then
     echo "clock pair after: $(clock_pair)" >>"$note"
     if [ "$timered" -eq 1 ]; then
@@ -1715,6 +1834,12 @@ run_one() {
     outcome=stop
     return
   fi
+  if [ -n "$placement_problem" ]; then
+    { echo; echo "verdict: placement failure ($placement_problem)"; } >>"$note"
+    echo "trace_session: $placement_problem: session stopped. See $note"
+    outcome=stop
+    return
+  fi
   if [ -n "$tracer_problem" ]; then
     { echo; echo "verdict: tracer failure ($tracer_problem)"; } >>"$note"
     echo "trace_session: $tracer_problem: session stopped. See $note"
@@ -1868,8 +1993,10 @@ fi
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v <<<"$spec"
   for step in "${step_list[@]}"; do
+    for placement in "${pl_list[@]}"; do
     label=$spec
     [ -n "$step" ] && label="$spec@${step%%:*}ms#${step##*:}"
+    [ -n "$placement" ] && label+=" obs-$placement"
     for m in "${mode_list[@]}"; do
       current=$label; current_mode=$m
       run_one "$p" "$r" "$c" "$v" "$m" "$step"
@@ -1892,7 +2019,9 @@ for spec in "${run_list[@]}"; do
         exit 0
       fi
     done
+    done
   done
 done
+placement=
 finish
 print_table

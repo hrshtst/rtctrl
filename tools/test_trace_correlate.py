@@ -448,6 +448,28 @@ def main() -> int:
         expect("waits after waking (CPU 3: the worker's sched_waking to its switch-in" in out
                and "n=2 " in out and "fair-server probes: not in this capture" in out,
                "the timer-mode run's waits", out)
+        # A confined run's placement: observer and probe helper threads kept
+        # off the excluded CPUs pass; one switched in on CPU 2 during the run
+        # fails, and so does a probe helper there.
+        for name, extra, ok in (("placed", [], True),
+                                ("misplaced", [(1000.0, "obs-thread", 7771), (1050.0, None, 0)], False),
+                                ("helper", [(1000.0, "x7_bus_timing", 4243), (1050.0, None, 0)], False)):
+            r = Run(timer=True)
+            prev = ("swapper/2", 0)
+            for us, comm, pid in extra:
+                nxt = (comm, pid) if comm else ("swapper/2", 0)
+                r.ev(us, prev[0], prev[1], 2, "d..2.", "sched_switch",
+                     f"{prev[0]}:{prev[1]} [120] S ==> {nxt[0]}:{nxt[1]} [120]")
+                prev = nxt
+            path = r.write(root, name)
+            pathlib.Path(str(path) + ".observers.jsonl").write_text(
+                '{"kind": "header", "exclude": [2, 3], "allowed": [0, 1], "version": 1}\n'
+                '{"kind": "thread", "pid": 7770, "tid": 7771, "start": 5, "pstart": 5, "mask": [0, 1, 2, 3]}\n')
+            p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
+                                str(root / f"{name}.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
+            out = p.stdout + p.stderr
+            expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok)
+                   and (ok or "ran on CPUs 2,3" in out), f"the placement check ({name})", out)
         code, out, _ = correlate(root, "timer_fs_empty", timer=True, fs_layout=True)
         expect(code == 1 and "fair server: the probes recorded no pick on CPU 3: their evidence is missing" in out
                and "probe misses during the run: 0" in out, "probes without a pick fail", out)
