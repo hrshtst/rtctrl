@@ -10,7 +10,9 @@ SCHED_FIFO without a real-time limit. And the supervisor's own failure
 modes (reviewer, 2026-11-08): with 4 kB pipes and enough progress samples to
 fill them, the run completes (the output drained while each child is waited
 for); a SIGTERM during the positive phase kills and reaps every child, marks
-the output incomplete and exits 130.
+the output incomplete and exits 130; and a normal task that never says it is
+ready ends the run within the readiness bound (status 1, marked incomplete,
+no child left).
 """
 
 import os
@@ -126,6 +128,29 @@ def main() -> int:
                f"a SIGTERM ends the run at once, marked incomplete: {code}\n{text}")
         time.sleep(0.2)
         expect(leftovers(token) == [], f"no child outlives the supervisor: {leftovers(token)}")
+
+        # A normal task that never says it is ready: the readiness wait is bounded.
+        token = uuid.uuid4().hex
+        silent = SMALL_PIPES.replace(
+            'm.child = lambda args: subprocess.Popen([sys.executable, m.__file__, *args], stdout=subprocess.PIPE, text=True,\n'
+            '                                        pipesize=4096)',
+            'm.child = lambda args: subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],\n'
+            '                                        stdout=subprocess.PIPE, text=True)')
+        expect(silent != SMALL_PIPES, "the silent child's script")
+        t0 = time.monotonic()
+        p = subprocess.Popen([sys.executable, "-c", silent, cpu, sup, str(out)],
+                             env=dict(os.environ, RTCTRL_TEST_TOKEN=token), start_new_session=True)
+        try:
+            code = p.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait()
+            expect(False, "the readiness wait is unbounded")
+        text = out.read_text()
+        expect(code == 1 and time.monotonic() - t0 < 6 and "did not say it was ready within 2 s" in text,
+               f"a silent normal task ends the run: {code}\n{text}")
+        time.sleep(0.2)
+        expect(leftovers(token) == [], f"no child outlives a silent start: {leftovers(token)}")
 
         # Refusals.
         r = run(out, "--cpu", cpu, "--supervisor-cpu", cpu, test="no-rt")

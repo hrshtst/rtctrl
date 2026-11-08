@@ -36,12 +36,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import select
 import signal
 import subprocess
 import sys
 import time
 
 SAMPLE_NS = 1_000_000
+READY_S = 2.0  # how long a normal task may take to say it is ready (it pins itself and says so at once)
 
 
 def now() -> int:
@@ -102,8 +104,9 @@ class Interrupted(Exception):
 def run(cpu: int, sup: int, prio: int, phase_ns: int, settle_ns: int, margin_ns: int, out) -> int:
     """The phases, in order. Each child's output is drained while it is
     waited for, never after: a child blocked on a full pipe would otherwise
-    wait for a reader that waits for it. Every wait is bounded: a child past
-    its deadline and margin is killed and reaped. A signal to this process
+    wait for a reader that waits for it. Every wait is bounded: a normal task
+    that does not say it is ready within READY_S ends the run (status 1), and
+    a child past its deadline and margin is killed and reaped. A signal to this process
     kills and reaps every child that is still running, and the output says
     so."""
     if cpu == sup:
@@ -134,6 +137,8 @@ def run(cpu: int, sup: int, prio: int, phase_ns: int, settle_ns: int, margin_ns:
     def normal_task(deadline: int) -> subprocess.Popen:
         p = spawn(["_normal", str(cpu), str(deadline)])
         assert p.stdout is not None
+        if not select.select([p.stdout], [], [], READY_S)[0]:
+            raise RuntimeError(f"the normal task did not say it was ready within {READY_S:.0f} s")
         line = p.stdout.readline().split()
         if not line or line[0] != "ready":
             raise RuntimeError("the normal task did not start")
@@ -192,6 +197,9 @@ def run(cpu: int, sup: int, prio: int, phase_ns: int, settle_ns: int, margin_ns:
     except Interrupted as e:
         print(f"# interrupted by signal {e.args[0]}: the controls are incomplete", file=out)
         status = 130
+    except RuntimeError as e:
+        print(f"# {e}: the controls are incomplete", file=out)
+        status = 1
     finally:
         for p in children:
             if p.poll() is None:
