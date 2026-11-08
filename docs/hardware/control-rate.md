@@ -1198,6 +1198,42 @@ after the run (inside the anchors), a valid SMI count series covering the
 run (a count perf could not take, or a gap, fails it), and the exerciser's
 file when the record says it ran.
 
+**Waits after waking and the fair server** (`tools/fair_server.py`, through
+`tools/trace_correlate.py`; Stage 1, approved 2026-11-08). Every wake of the
+sleeping worker on CPU 3, timer and read wakes alike, is followed from its
+`sched_waking` to its switch-in; the completed `sched_wakeup` is reported
+too. CPU 3's time inside the wait is split into overlapping execution
+intervals at its switches, interrupts and softirqs, and each interval is
+labelled by what occupied the CPU:
+- **server-backed**: a normal task in validated server-backed dispatch. A
+  selection is the fair server's own pick returning a task that the
+  deadline class's pick then returns; it is dispatched when the next switch
+  on CPU 3 runs that task, or when the task was already running and stays
+  on (a re-selection). Its interval may begin before the wake. The server's
+  state read at the selection must show it active and not throttled;
+- **contradictory**: a dispatch whose server state does not;
+- **preemption delay**: a normal task already running at the wake and left
+  running with no selection, only when the probes are in the capture and
+  missed nothing;
+- **normal unvalidated**: any other normal-task time;
+- **higher class**: a real-time or stopper task, or a deadline-class
+  selection the fair server did not make;
+- **interrupt**, and **idle/switching**.
+
+A wait of 50 us or more is classed **server-backed** only when server-backed
+intervals cover it apart from interrupt and switching time (a 2 us
+tolerance per label); **mixed** when they cover part of it beside another
+mechanism; **other mechanism** when they cover none; and **INDETERMINATE**
+when normal unvalidated or contradictory time covers more than the
+tolerance. The class says what occupied CPU 3, never a sole cause. A pick
+returning no task, a selection followed by another switch, and a
+contradictory state are counted apart, with the server's start, stop and
+timer calls and CPU 3's deadline-class timers as context. Normal tasks
+running without a recorded `dl_server_start` never invalidate a capture;
+probes defined for a run that recorded no pick on CPU 3 do (their evidence
+is missing). A capture without the probes, such as the earlier ones, gets
+the same waits with its normal-task time unattributed.
+
 **Rehearsal** over `dxl_emu`, before any run on the arm:
 - **availability**: the session refuses before anything is sent if a
   required event or the `x86-tsc` clock is missing, or if a previous

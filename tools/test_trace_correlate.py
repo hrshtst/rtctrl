@@ -44,6 +44,14 @@ HEADER = ("cycle,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,first_r
 REPLIES = [[(600.0, 122)], [(300.0, 66), (1300.0, 58)], [(700.0, 122)]]
 
 
+# A session record's fair-server probe layout (this kernel's, as
+# tools/fair_server.py reads it from the BTF).
+FS_LAYOUT = ("fair-server probe layout: rq.ext_server=2952 rq.fair_server=3192 rq.cpu=3688 se.runtime=64 "
+             "se.deadline=72 se.rq=216 task.prio=108 task.policy=1356 task.pid=2800 se.flags_word=84 "
+             "bit.dl_throttled=0 bit.dl_non_contending=2 bit.dl_server=4 bit.dl_server_active=5 bit.dl_defer=6 "
+             "bit.dl_defer_armed=7 bit.dl_defer_running=8 bit.dl_defer_idle=9")
+
+
 def ns(us: float) -> int:
     return round(us * 1000)
 
@@ -285,7 +293,9 @@ class Run:
                 "clock offsets: boottime_minus_monotonic_ns 0 tai_minus_monotonic_ns 1700000037000000000 "
                 "bracket_ns 40\n"
                 f"smi anchor monotonic_ns: {smi_before} {smi_before + 10_100_000} (before perf stat started; "
-                "when its first interval was seen)\n")
+                "when its first interval was seen)\n"
+                + (FS_LAYOUT + "\nfair-server probe hits during the run: rtfs_dl_pick 0; misses during the run: 0\n"
+                   if self.opt.get("fs_layout") else ""))
             if not self.opt.get("no_smi"):
                 pathlib.Path(str(path) + ".smi.csv").write_text(
                     "# started on Sat Nov  7 12:00:00 2026\n\n"
@@ -432,6 +442,15 @@ def main() -> int:
                and "matched one-to-one" in out and "conversion uncertainty U:" in out
                and "sleeps: 2; on time 2" in out and "deadline writes: 2, 0 disarming" in out
                and "SMIs 0" in out and "MISSING" not in out, "the timer-mode run", out)
+        # Its waits after waking (tools/fair_server.py), unattributed without
+        # the probes; with the probes' layout in the record but no pick in the
+        # trace, their evidence is missing.
+        expect("waits after waking (CPU 3: the worker's sched_waking to its switch-in" in out
+               and "n=2 " in out and "fair-server probes: not in this capture" in out,
+               "the timer-mode run's waits", out)
+        code, out, _ = correlate(root, "timer_fs_empty", timer=True, fs_layout=True)
+        expect(code == 1 and "fair server: the probes recorded no pick on CPU 3: their evidence is missing" in out
+               and "probe misses during the run: 0" in out, "probes without a pick fail", out)
         for name, opt, words in (
                 ("timer_bare", {"timer_record": True}, "the timer-mode run has no deadline writes on CPU 3"),
                 ("timer_raw_only", {"timer": True, "drop_named": True}, "sleep timing: 2 sleeps without a sleep call"),

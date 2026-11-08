@@ -99,6 +99,7 @@ import re
 import subprocess
 import sys
 
+import fair_server
 import timer_service
 
 try:
@@ -128,11 +129,15 @@ BARRIER_WORK = "wq_barrier_func"
 class Trace:
     """The events of one trace that the checks and the receive path use."""
 
-    def __init__(self, tid: int, adapter: str, timer: timer_service.TimerEvents | None = None) -> None:
+    def __init__(self, tid: int, adapter: str, timer: timer_service.TimerEvents | None = None,
+                 fs: fair_server.FairServerEvents | None = None) -> None:
         self.tid = tid
         self.adapter = adapter
-        # A timer-mode run's events (tools/timer_service.py), else None.
+        # A timer-mode run's events (tools/timer_service.py) and its
+        # real-time CPU's waits and fair-server events
+        # (tools/fair_server.py), else None.
         self.timer = timer
+        self.fs = fs
         self.last_ts = 0
         self.expiring: dict[int, list] = {}   # cpu -> stack of (entry ts, now, wakeup)
         self.timer_wakes: list[tuple] = []    # (entry ts, now, cpu, waking ts, running)
@@ -175,6 +180,8 @@ class Trace:
         self.last_ts = ts
         if self.timer is not None and ev in timer_service.TIMER_EVENTS:
             self.timer.feed(ts, cpu, pid, m["comm"], ev, rest, flags)
+        if self.fs is not None and (ev in fair_server.FEED_EVENTS or ev.startswith("rtfs_")):
+            self.fs.feed(ts, cpu, pid, m["comm"], ev, rest)
         if ev == "hrtimer_expire_entry":
             n = NOW.search(rest)
             a = re.search(r"hrtimer=(\S+)", rest)
@@ -698,6 +705,16 @@ KWORKER_PARTS = ("tty_queue_to_kworker_waking", "kworker_waking_to_first_run", "
                  "kworker_preempted_before_tty", "kworker_slept_before_tty")
 
 
+def probe_misses(record: list[str]) -> int | None:
+    """The fair server's probe misses during the run, from its record (None
+    when the record does not say)."""
+    for line in record:
+        m = re.match(r"^fair-server probe hits during the run: .*; misses during the run: (\d+)$", line.strip())
+        if m:
+            return int(m[1])
+    return None
+
+
 def report(run: Run, rec: list[dict], timer: dict, top: int, out) -> None:
     segs = [segments(x) for x in rec]
     print("  receive path per read (us): from the trace, with the probe's stamps", file=out)
@@ -1060,11 +1077,14 @@ def main() -> int:
         return 2
     record = record_of(args.csv)
     timer_events = None
+    fs_events = None
     if any(line.strip() == "mode: timer" for line in record):
         rc = re.search(r"--rt-cpu (\d+)", "\n".join(record))
         window = (run.origin + int(run.rows[0]["wake_ns"]), run.origin + int(run.rows[-1]["cycle_end_ns"]))
         timer_events = timer_service.TimerEvents(run.tid, int(rc[1]) if rc else 3, window)
-    tr = Trace(run.tid, adapter, timer_events)
+        fs_events = fair_server.FairServerEvents(int(rc[1]) if rc else 3, fair_server.parse_layout(record),
+                                                 run.tid, window)
+    tr = Trace(run.tid, adapter, timer_events, fs_events)
     if args.report:
         with open(args.report, errors="replace") as f:
             for line in f:
@@ -1101,6 +1121,9 @@ def main() -> int:
         tr.timer.finish(tr.last_ts)
         timer_service.report(args.csv, tr.timer, timer["pairs"], record, failures, args.top, out,
                              sleep_calls=tr.sleep_calls)
+    if tr.fs is not None:
+        tr.fs.finish(tr.last_ts)
+        fair_server.report(tr.fs, probe_misses(record), args.top, out, failures)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
     if failures:
