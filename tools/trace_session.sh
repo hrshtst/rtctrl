@@ -31,6 +31,20 @@
 # The tracers run on the CPUs outside the excluded set (the real-time CPU
 # and its SMT siblings by default), and read nothing on the bus.
 #
+# A timer run also records the fair server's probe events (Stage 1;
+# tools/fair_server.py, tools/fair_server_probes.sh): kprobe events in the
+# session's own group (rtctrl_fs) on the deadline class's pick, the fair
+# server's pick and its start, stop and timer, with the server's state read
+# from offsets in the kernel's BTF. The session defines them once, before
+# anything is sent (refusing a group left by an earlier session), records
+# the layout, the definitions and each event's format, filters them to the
+# real-time CPU in every timer run (the picks by the CPU they run on, the
+# server's calls by the server's CPU), records their hit and miss counts
+# right before and after the probe, and removes them on every exit; a
+# failed removal fails the session (status 3), and a group whose definition
+# had an unknown outcome is left in place and reported, never removed on a
+# guess.
+#
 # The session first records the host state once: the fair server's
 # settings (read with bpftrace, since the kernel's lockdown refuses the
 # debugfs files), lockdown, boot line, topology and the adapter. Every run
@@ -124,6 +138,10 @@ TSC_INSTANCE_TOOL=${TSC_INSTANCE_TOOL:-tools/tsc_instance.sh}
 TSC_SAMPLER=${TSC_SAMPLER:-./build/apps/tsc_mono_pairs}
 EXERCISER=tools/timer_exerciser.py
 IDLE_TOOL=tools/idle_counters.py
+FS_TOOL=tools/fair_server.py
+FS_PROBE_TOOL=${FS_PROBE_TOOL:-tools/fair_server_probes.sh}
+FS_GROUP=rtctrl_fs
+fs_defs=; fs_layout=  # the probes' definitions and layout (timer mode), read before anything is sent
 CPU_ROOT=${TRACE_SESSION_CPU_ROOT:-/sys/devices/system/cpu}  # the idle counters' sysfs (tests replace it)
 TSC_INSTANCE=rtctrl_tsc
 # Unrelated batch workloads that refuse the session (tools/batch_workloads.sh:
@@ -189,8 +207,9 @@ usage: $0 [options]
                       deadline writes, idle transitions, NMIs, system calls
                       and page faults, the worker's sleep calls, process
                       lifecycle, a TSC-clock trace instance of its timer
-                      interrupts, bracketed TSC and monotonic pairs and its
-                      SMI count; rt-* only)
+                      interrupts, bracketed TSC and monotonic pairs, its
+                      SMI count and the fair server's probe events; rt-*
+                      only)
   --exerciser         the timer mode's rehearsal: the timer exerciser runs on
                       the real-time CPU during each timer run (refused
                       without --port and on a serial device)
@@ -454,6 +473,13 @@ if [ "$any_timer" -eq 1 ]; then
   [ -x "$TSC_SAMPLER" ] || problems+=("$TSC_SAMPLER is not built (cmake --build build --target tsc_mono_pairs)")
   [ -f "$EXERCISER" ] || [ "$exerciser" -eq 0 ] || problems+=("$EXERCISER is missing")
   [ -e /sys/bus/event_source/devices/msr/events/smi ] || problems+=("no msr/smi/ perf event: the SMI count needs it")
+  [ -x "$FS_PROBE_TOOL" ] || problems+=("$FS_PROBE_TOOL is not executable")
+  # The fair server's probes: their offsets from the kernel's BTF, read as
+  # the invoking user (bpftool; FAIR_SERVER_BTF_RAW replaces the dump in tests).
+  if ! fs_layout=$(python3 "$FS_TOOL" layout 2>&1) ||
+     ! fs_defs=$(python3 "$FS_TOOL" definitions --group "$FS_GROUP" 2>&1); then
+    problems+=("the fair server's probe layout was not read: ${fs_layout:-}${fs_defs:+ $fs_defs}")
+  fi
 fi
 # Known unrelated batch workloads refuse the session; it never stops one.
 running_batch=$(batch_running "$batch_list")
@@ -597,6 +623,10 @@ if [ "$dry_run" -eq 1 ]; then
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
         "$TSC_INSTANCE_TOOL" "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" "$TSC_SAMPLER" "${others[0]}" "$rt_cpu" \
         "$PERF" "$rt_cpu" "$([ "$exerciser" -eq 1 ] && echo "; the exerciser on CPU $rt_cpu")"
+    fi
+    if [ "$any_timer" -eq 1 ]; then
+      printf '                   the fair server'"'"'s probe events (group %s, %s definitions; defined before the first run, removed at the end), filtered to CPU %s\n' \
+        "$FS_GROUP" "$FS_TOOL" "$rt_cpu"
     fi
     if [ "$any_profiled" -eq 1 ]; then
       printf 'profiled runs record: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${profile_args[*]}"
@@ -768,6 +798,48 @@ remove_tsc_instance() {
   return 1
 }
 
+# The fair server's probe events: fs_owed is 1 once this session's
+# definition created any, 2 while a definition's outcome is unknown, else 0.
+# They are removed (verified) at the session's end and on every exit, after
+# the recorders stopped; a failed removal is a cleanup failure (status 3). A
+# group of unknown ownership is left in place and reported.
+fs_owed=0
+fs_hint() {
+  local n
+  echo "  remove them by hand (as root), one line per event:" >&2
+  for n in $(sed -n 's#^[pr]:[A-Za-z0-9_]*/\([A-Za-z0-9_]*\) .*#\1#p' <<<"$fs_defs"); do
+    echo "    echo -:$FS_GROUP/$n | sudo tee -a $TRACEFS/kprobe_events" >&2
+  done
+}
+remove_fs_probes() {
+  local out f st=0
+  [ "$fs_owed" -ne 0 ] || return 0
+  f=$(mktemp)
+  printf '%s\n' "$fs_defs" >"$f"
+  if [ "$fs_owed" -eq 2 ]; then
+    fs_owed=0
+    if priv "$FS_PROBE_TOOL" exists "$TRACEFS" "$FS_GROUP"; then
+      echo "trace_session: the probe group $FS_GROUP exists after a definition whose outcome is unknown; it was left in place (it may be another session's)" >&2
+      fs_hint
+      if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+        printf '\n--- session end ---\ncleanup: probe group %s left in place (the outcome of its definition unknown)\n' "$FS_GROUP" >>"$last_note"
+      fi
+      st=1
+    fi
+  elif out=$(priv "$FS_PROBE_TOOL" remove "$TRACEFS" "$FS_GROUP" "$f" 2>&1); then
+    fs_owed=0
+  else
+    echo "trace_session: CLEANUP FAILED: the fair server's probes ($FS_GROUP) were not removed: $out" >&2
+    fs_hint
+    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+      printf '\n--- session end ---\ncleanup: probe group %s NOT removed: %s\n' "$FS_GROUP" "$out" >>"$last_note"
+    fi
+    st=1
+  fi
+  rm -f "$f"
+  return "$st"
+}
+
 # The adapter experiment's latency timer: the value found at the start,
 # the value set last, whether the session owes the starting value back (from
 # the first stepped run on, set or not), and the record of the last run,
@@ -829,11 +901,16 @@ on_exit() {
     echo "trace_session: the session fails: its cleanup did not remove the trace instance" >&2
     cleanup_ok=0
   fi
+  if [ "$fs_owed" -ne 0 ] && ! remove_fs_probes; then
+    echo "trace_session: the session fails: its cleanup did not remove the fair server's probes" >&2
+    cleanup_ok=0
+  fi
   [ "$cleanup_ok" -eq 1 ] || { [ "$status" -eq 0 ] && exit 3; }
   return 0
 }
 finish() {
   stop_all
+  remove_fs_probes || :  # a failure is reported, and retried and counted at exit
   if [ "$usbmon_loaded_here" -eq 1 ]; then priv "$MODPROBE" -r usbmon; fi
   [ -n "$keepalive_pid" ] && kill "$keepalive_pid" 2>/dev/null
   rm -rf "$tmp"
@@ -932,6 +1009,31 @@ if [ "$any_timer" -eq 1 ]; then
     finish
     die "the trace instance $TSC_INSTANCE remains from an earlier session (sudo rmdir $TRACEFS/instances/$TSC_INSTANCE): nothing was sent"
   fi
+  # The fair server's probes, defined once for the session, before anything
+  # is sent; a group left by an earlier session refuses it.
+  if priv "$FS_PROBE_TOOL" exists "$TRACEFS" "$FS_GROUP"; then
+    finish
+    die "the probe group $FS_GROUP remains from an earlier session (see $FS_PROBE_TOOL remove): nothing was sent"
+  fi
+  printf '%s\n' "$fs_defs" >"$tmp/fs_defs.txt"
+  fs_owed=2
+  fs_out=$(priv "$FS_PROBE_TOOL" define "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1)
+  fs_status=$?
+  case "$fs_status" in 0|4) fs_owed=1 ;; 2) fs_owed=0 ;; *) fs_owed=2 ;; esac
+  if [ "$fs_status" -ne 0 ]; then
+    echo "$fs_out" >&2
+    finish
+    die "the fair server's probes were not defined (exit $fs_status): nothing was sent"
+  fi
+  priv "$TRACE_CMD" list -e >"$tmp/events-fs.txt" 2>&1
+  fs_missing=()
+  for e in $(sed -n 's#^[pr]:[A-Za-z0-9_]*/\([A-Za-z0-9_]*\) .*#\1#p' "$tmp/fs_defs.txt"); do
+    grep -qx -- "$FS_GROUP:$e" "$tmp/events-fs.txt" || fs_missing+=("$FS_GROUP:$e")
+  done
+  if [ ${#fs_missing[@]} -gt 0 ]; then
+    finish
+    die "the fair server's probe events are not listed by trace-cmd (${fs_missing[*]}): nothing was sent"
+  fi
   timer_args=("${trace_args[@]}" -e timer:hrtimer_start -e timer:hrtimer_cancel -e "$init_ev"
               -e msr:write_msr -f "msr == 0x6e0 && CPU == $rt_cpu"
               -e power:cpu_idle -f "cpu_id == $rt_cpu")
@@ -946,7 +1048,24 @@ if [ "$any_timer" -eq 1 ]; then
   # The worker's sleep calls by name, as a profiled run records them (the
   # sleep checker's evidence; the raw system calls carry only numbers).
   for e in "${sleep_events[@]}"; do timer_args+=(-e "$e" -f "comm == \"$probe_comm\""); done
+  # The fair server's probes: the picks by the CPU they run on, the server's
+  # calls by the server's CPU.
+  while read -r e f; do
+    timer_args+=(-e "$FS_GROUP:$e" -f "$f")
+  done < <(python3 - "$rt_cpu" <<'EOF'
+import sys
+sys.path.insert(0, "tools")
+import fair_server
+for e, f in fair_server.filters(int(sys.argv[1])):
+    print(e, f)
+EOF
+)
   {
+    echo "--- fair-server probes (group $FS_GROUP, defined by this session; $FS_TOOL) ---"
+    echo "$fs_layout"
+    echo "$fs_out"
+    sed 's/^/  /' "$tmp/fs_defs.txt"
+    priv "$TRACE_CMD" list -e "^$FS_GROUP:" -F 2>&1
     echo "--- timer mode events (trace-cmd list -e ... -F) ---"
     for e in msr:write_msr power:cpu_idle nmi:nmi_handler timer:hrtimer_start timer:hrtimer_cancel "$init_ev" \
              sched:sched_process_fork sched:sched_process_exec; do
@@ -1363,12 +1482,19 @@ run_one() {
   ( taskset -cp "$other_cpus" "$BASHPID" >/dev/null
     sleep $((duration / 2)); tasks_snapshot >"$csv.tasks.txt" ) &
   snap_pid=$!
+  local fs_before='' fs_after='' fs_b_status=0 fs_a_status=0
+  if [ "$timered" -eq 1 ]; then
+    fs_before=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); fs_b_status=$?
+  fi
   python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label before --root "$CPU_ROOT" >"$tmp/idle_before.txt" 2>&1
   irq_before=$(xhci_interrupts); t_before=$(date +%s.%N)
   "${cmd[@]}" 2>&1 | tee -a "$note"
   probe_status=${PIPESTATUS[0]}
   irq_after=$(xhci_interrupts); t_after=$(date +%s.%N)
   python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label after --root "$CPU_ROOT" >"$tmp/idle_after.txt" 2>&1
+  if [ "$timered" -eq 1 ]; then
+    fs_after=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); fs_a_status=$?
+  fi
   # The load and the recorders must have lasted the whole run: checked as
   # the probe ends, before anything is stopped.
   local load_problem='' tracer_problem=''
@@ -1416,6 +1542,21 @@ run_one() {
       # Its evidence is read; a failed removal is a cleanup failure, which
       # ends the session after this run (status 3 if it would succeed).
       remove_tsc_instance
+      # The fair server's probes: their hits and misses (kprobe_profile)
+      # right before and after the probe; a read that fails, or an event
+      # missing from it, leaves the probes' coverage unknown.
+      { echo; echo "--- fair-server probes (hits misses) right before the probe (exit $fs_b_status) ---"
+        echo "$fs_before"
+        echo "--- fair-server probes (hits misses) right after the probe (exit $fs_a_status) ---"
+        echo "$fs_after"; } >>"$note"
+      if [ "$fs_b_status" -ne 0 ] || [ "$fs_a_status" -ne 0 ]; then
+        tracer_problem+="${tracer_problem:+, }the fair server's probe counts were not read"
+      else
+        awk 'NR == FNR { h[$1] = $2; m[$1] = $3; next }
+             { dh = $2 - h[$1]; dm = $3 - m[$1]; hits = hits sep $1 " " dh; sep = ", "; miss += dm }
+             END { printf "fair-server probe hits during the run: %s; misses during the run: %d\n", hits, miss }' \
+          <(echo "$fs_before") <(echo "$fs_after") >>"$note"
+      fi
     fi
     local trace_status usbmon_status=0 stat_out stat_status n_trace
     stop_tracer trace "$trace_job"; trace_status=$?; trace_job=

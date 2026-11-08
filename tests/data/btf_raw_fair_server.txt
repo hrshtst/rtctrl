@@ -1,0 +1,42 @@
+[1] INT 'int' size=4 bits_offset=0 nr_bits=32 encoding=SIGNED
+[2] STRUCT 'rq' size=16 vlen=1
+	'nr_running' type_id=1 bits_offset=0
+[147561] STRUCT 'rq' size=4352 vlen=94
+	'nr_running' type_id=163340 bits_offset=0
+	'dl' type_id=109130 bits_offset=19520
+	'ext_server' type_id=148823 bits_offset=23616
+	'fair_server' type_id=148823 bits_offset=25536
+	'dl_server' type_id=301 bits_offset=27776
+	'cpu' type_id=124913 bits_offset=29504
+[148823] STRUCT 'sched_dl_entity' size=240 vlen=24
+	'dl_runtime' type_id=162435 bits_offset=192
+	'dl_deadline' type_id=162435 bits_offset=256
+	'dl_period' type_id=162435 bits_offset=320
+	'dl_bw' type_id=162435 bits_offset=384
+	'dl_density' type_id=162435 bits_offset=448
+	'runtime' type_id=148479 bits_offset=512
+	'deadline' type_id=162435 bits_offset=576
+	'flags' type_id=163340 bits_offset=640
+	'dl_throttled' type_id=163340 bits_offset=672 bitfield_size=1
+	'dl_yielded' type_id=163340 bits_offset=673 bitfield_size=1
+	'dl_non_contending' type_id=163340 bits_offset=674 bitfield_size=1
+	'dl_overrun' type_id=163340 bits_offset=675 bitfield_size=1
+	'dl_server' type_id=163340 bits_offset=676 bitfield_size=1
+	'dl_server_active' type_id=163340 bits_offset=677 bitfield_size=1
+	'dl_defer' type_id=163340 bits_offset=678 bitfield_size=1
+	'dl_defer_armed' type_id=163340 bits_offset=679 bitfield_size=1
+	'dl_defer_running' type_id=163340 bits_offset=680 bitfield_size=1
+	'dl_defer_idle' type_id=163340 bits_offset=681 bitfield_size=1
+	'dl_timer' type_id=122025 bits_offset=704
+	'rq' type_id=303 bits_offset=1728
+[155946] STRUCT 'task_struct' size=9920 vlen=272
+	'__state' type_id=163340 bits_offset=192
+	'flags' type_id=163340 bits_offset=352
+	'prio' type_id=124913 bits_offset=864
+	'dl' type_id=148823 bits_offset=3968
+	'dl_server' type_id=301 bits_offset=5888
+	'policy' type_id=163340 bits_offset=10848
+	'pid' type_id=141337 bits_offset=22400
+	'tgid' type_id=141337 bits_offset=22432
+	'comm' type_id=191 bits_offset=26752
+[999999] FUNC 'pick_task_dl' type_id=53656 linkage=static

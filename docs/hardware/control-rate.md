@@ -1049,7 +1049,26 @@ paired with an untraced control of the same condition):
   tracer failure: missing evidence is never recorded as zero losses. A
   positive count in either buffer invalidates the capture and stops the
   session the same way, never with a timing verdict (reviewer decision,
-  2026-11-08).
+  2026-11-08);
+- the fair server's probe events (Stage 1, approved 2026-11-08): kprobe
+  events in the session's own group (`rtctrl_fs`), defined by
+  `tools/fair_server.py` from offsets in the kernel's BTF and written by
+  `tools/fair_server_probes.sh` through sudo. They record the deadline
+  class's pick (`pick_task_dl`, with CPU 3's fair-server state at its entry
+  and the task it returns), the fair server's own pick
+  (`fair_server_pick_task`, its state and the task it returns), and
+  `dl_server_start`, `dl_server_stop` and `dl_server_timer` with the
+  server's state before each call. The picks are filtered to CPU 3, the
+  server's calls to CPU 3's server, wherever they run. The session defines
+  them once, before anything is sent, and refuses a group left by an
+  earlier session; it records the layout, the definitions and each event's
+  format, and each run's hit and miss counts (`kprobe_profile`) right before
+  and after the probe. Counts that cannot be read stop the session as a
+  tracer failure. The group is removed (verified) on every exit, and a
+  failed removal fails the session (status 3); a group whose definition had
+  an unknown outcome is left in place and reported, with the commands that
+  remove it by hand. Whether each fetch argument reads as intended is
+  confirmed in the rehearsal before any use on the arm.
 
 A known unrelated batch workload (`tools/batch_workloads.sh`, by process
 name: `exiftool`, the package tools, compilers and build tools, the desktop

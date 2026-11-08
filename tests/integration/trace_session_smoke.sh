@@ -96,6 +96,12 @@ if [ "$1" = list ]; then
            syscalls:sys_exit_clock_nanosleep syscalls:sys_enter_nanosleep syscalls:sys_exit_nanosleep; do
     [ "$e" = "${FAKE_MISSING_EVENT:-}" ] || echo "$e"
   done
+  # The fair server's probe events, once the stand-in group exists.
+  if [ -e "$FAKE_LOG.fs_group_exists" ]; then
+    for e in rtfs_dl_pick rtfs_dl_pick_ret rtfs_fs_pick rtfs_fs_pick_ret rtfs_srv_start rtfs_srv_stop rtfs_srv_timer; do
+      echo "rtctrl_fs:$e"
+    done
+  fi
   exit 0
 fi
 [ "${FAKE_TRACE_FAIL:-0}" = 1 ] && { echo "stand-in trace-cmd: failing as asked"; exit 1; }
@@ -307,6 +313,39 @@ case "$1" in
   exists) [ -e "$mark" ] ;;
 esac
 EOF
+# The fair server's probe tool: a marker file stands for its group
+# (FAKE_FS_DEFINE: fail, nothing created, 2; partial, created then failed,
+# 4; unknown, created and a status that does not say, 1; race, another
+# session's group made first, 2. FAKE_FS_REMOVE_FAIL: its removal fails;
+# FAKE_FS_PROFILE=fail: its counts read fails; FAKE_FS_MISSES: misses on
+# the first event after a run).
+cat >"$FAKE/fs_probes" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.fs_probes"
+mark="$FAKE_LOG.fs_group_exists"
+names() { sed -n 's#^[pr]:rtctrl_fs/\([a-z_]*\) .*#\1#p' "$1"; }
+case "$1" in
+  define) [ -e "$mark" ] && exit 2
+          case "${FAKE_FS_DEFINE:-}" in
+            fail) echo "fair_server_probes: the kernel refused: (stand-in)" >&2; exit 2 ;;
+            partial) : >"$mark"; echo "fair_server_probes: the kernel refused the third (stand-in)" >&2; exit 4 ;;
+            unknown) : >"$mark"; echo "sudo: a stand-in failure" >&2; exit 1 ;;
+            race) : >"$mark"; echo "fair_server_probes: it exists (another session's)" >&2; exit 2 ;;
+          esac
+          : >"$mark"
+          echo "fair-server probes $3: $(names "$4" | wc -l) events defined ($(names "$4" | xargs))" ;;
+  remove) [ "${FAKE_FS_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
+          rm -f "$mark" ;;
+  exists) [ -e "$mark" ] ;;
+  profile) [ "${FAKE_FS_PROFILE:-}" = fail ] && { echo "stand-in: cannot read kprobe_profile" >&2; exit 1; }
+           n=$(( $(cat "$FAKE_LOG.fs_profile_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$FAKE_LOG.fs_profile_calls"
+           first=1
+           for e in $(names "$4"); do
+             miss=0; [ "$first" = 1 ] && [ $((n % 2)) -eq 0 ] && miss=${FAKE_FS_MISSES:-0}
+             echo "$e $((n * 10)) $miss"; first=0
+           done ;;
+esac
+EOF
 chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
 # The excluded CPU 0's idle states (the idle counters' stand-in sysfs): state
@@ -332,6 +371,7 @@ export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stre
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
+export FS_PROBE_TOOL="$FAKE/fs_probes" FAIR_SERVER_BTF_RAW="$PWD/tests/data/btf_raw_fair_server.txt"
 if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
 
@@ -952,6 +992,39 @@ set -e
 stats=$(tools/tsc_instance.sh stats "$T" s 3) && [ "${stats%%$'\n'*}" = "CPU: 3" ] ||
   fail "the instance's stats do not name the CPU"
 
+# tools/fair_server_probes.sh on a scratch tree: a group that exists, and a
+# first definition the kernel refuses (kprobe_events cannot be written), are
+# status 2 (nothing created: never the caller's to remove); definitions
+# written whose event directories do not appear are status 4 (the caller's
+# to remove); a definition outside the group is refused before anything is
+# written; the counts name every event, and a missing one fails; removing
+# events that are absent succeeds.
+T="$ROOT/fs-tree"
+rm -rf "$T"
+mkdir -p "$T/events/held" "$T/nowrite/kprobe_events"
+printf 'p:held/rtfs_a f x=$arg1\n' >"$T/held.defs"
+printf 'p:fresh/rtfs_a f x=$arg1\nr:fresh/rtfs_b f y=$retval\n' >"$T/fresh.defs"
+printf 'p:fresh/rtfs_a f x=$arg1\np:other/rtfs_b f y=$arg1\n' >"$T/mixed.defs"
+: >"$T/kprobe_events"
+printf '  rtfs_a          12            0\n  other_x  5  1\n' >"$T/kprobe_profile"
+set +e
+tools/fair_server_probes.sh define "$T" held "$T/held.defs" 2>/dev/null; st_held=$?
+tools/fair_server_probes.sh define "$T/nowrite" fresh "$T/fresh.defs" 2>/dev/null; st_nowrite=$?
+tools/fair_server_probes.sh define "$T" fresh "$T/fresh.defs" 2>/dev/null; st_nodir=$?
+tools/fair_server_probes.sh define "$T" fresh "$T/mixed.defs" 2>"$T/mixed.err"; st_mixed=$?
+prof=$(tools/fair_server_probes.sh profile "$T" fresh "$T/fresh.defs" 2>/dev/null); st_prof=$?
+tools/fair_server_probes.sh remove "$T" fresh "$T/fresh.defs"; st_rm=$?
+set -e
+[ "$st_held" -eq 2 ] || fail "an existing probe group: status $st_held"
+[ "$st_nowrite" -eq 2 ] || fail "a refused first definition: status $st_nowrite"
+[ "$st_nodir" -eq 4 ] && [ "$(cat "$T/kprobe_events")" = "$(cat "$T/fresh.defs")" ] ||
+  fail "definitions written without their event directories: status $st_nodir, or not appended as written"
+[ "$st_mixed" -eq 1 ] && grep -q 'a definition outside the group fresh' "$T/mixed.err" ||
+  fail "a definition outside the group: status $st_mixed"
+[ "$(cat "$T/kprobe_events")" = "$(cat "$T/fresh.defs")" ] || fail "the refused definitions were written"
+[ "$st_prof" -eq 1 ] && [ "$prof" = $'rtfs_a 12 0\nrtfs_b missing' ] || fail "the probe counts: status $st_prof, '$prof'"
+[ "$st_rm" -eq 0 ] || fail "removing absent events: status $st_rm"
+
 # The timer mode (with the real TSC sampler): its events with the CPU
 # filters, the TSC instance started inside the trace and removed, the
 # sampler's pairs on both CPUs, the SMI count with its anchors, the losses in
@@ -980,6 +1053,20 @@ if [ -n "$SAMPLER" ]; then
   for e in $fixture_events; do
     grep -qx -- "$e" <<<"$rec_events" || fail "the timer fixture uses $e, which the timer mode does not record" "$ROOT/fake.trace-cmd"
   done
+  # The fair server's probes: defined once with the BTF layout, enabled in
+  # the timer run with their filters, their counts around the probe in the
+  # record, removed at the end.
+  grep -q '^--- fair-server probes (group rtctrl_fs, defined by this session; tools/fair_server.py) ---$' "$b.run.txt" &&
+    grep -q '^fair-server probe layout: rq.ext_server=2952 rq.fair_server=3192 rq.cpu=3688 ' "$b.run.txt" &&
+    grep -q '^fair-server probes rtctrl_fs: 7 events defined (rtfs_dl_pick rtfs_dl_pick_ret ' "$b.run.txt" &&
+    grep -q '^  p:rtctrl_fs/rtfs_dl_pick pick_task_dl rq=\$arg1:x64 rq_cpu=+3688(\$arg1):s32 fs_bits=+3276(\$arg1):x32 ' "$b.run.txt" &&
+    grep -q '^--- fair-server probes (hits misses) right before the probe (exit 0) ---$' "$b.run.txt" &&
+    grep -q '^fair-server probe hits during the run: rtfs_dl_pick 10, .*; misses during the run: 0$' "$b.run.txt" ||
+    fail "the fair server's probes in the record" "$b.run.txt"
+  grep -q -- '-e rtctrl_fs:rtfs_dl_pick -f CPU == 0 -e rtctrl_fs:rtfs_dl_pick_ret -f CPU == 0 .*-e rtctrl_fs:rtfs_srv_start -f srv_cpu == 0 ' "$ROOT/fake.trace-cmd" ||
+    fail "trace-cmd was not given the fair server's probe events" "$ROOT/fake.trace-cmd"
+  grep -q "^define $ROOT/tracefs rtctrl_fs " "$ROOT/fake.fs_probes" && grep -q "^remove $ROOT/tracefs rtctrl_fs " "$ROOT/fake.fs_probes" &&
+    [ ! -e "$ROOT/fake.fs_group_exists" ] || fail "the probes' definition and removal" "$ROOT/fake.fs_probes"
   grep -q "^start $ROOT/tracefs rtctrl_tsc 0 16384" "$ROOT/fake.tsc_instance" &&
     grep -q '^stop ' "$ROOT/fake.tsc_instance" && grep -q '^remove ' "$ROOT/fake.tsc_instance" ||
     fail "the TSC instance's start, stop and removal" "$ROOT/fake.tsc_instance"
@@ -1078,6 +1165,67 @@ if [ -n "$SAMPLER" ]; then
   grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/timer-own-unknown.log" ||
     fail "the unknown start's instance was not reported" "$ROOT/timer-own-unknown.log"
   rm -f "$ROOT/fake.tsc_instance_exists"
+  # The fair server's probes: a group left by an earlier session, and a
+  # definition the kernel refuses, refuse the session before anything is
+  # sent; a partly made group is removed; one of unknown ownership (an
+  # unclear status, or another session's made first) is left alone; a
+  # failed removal is status 3; counts that cannot be read stop the run.
+  : >"$ROOT/fake.fs_group_exists"
+  if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 44 --duration 2 \
+      --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-stale.log" 2>&1; then
+    fail "a timer session beside a stale probe group started" "$ROOT/fs-stale.log"
+  fi
+  grep -q 'the probe group rtctrl_fs remains from an earlier session' "$ROOT/fs-stale.log" &&
+    [ -e "$ROOT/fake.fs_group_exists" ] && [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer 44).run.txt" ] ||
+    fail "no refusal for the stale probe group, or it was removed" "$ROOT/fs-stale.log"
+  rm -f "$ROOT/fake.fs_group_exists"
+  for c in "45 fail 2 absent" "46 partial 2 absent" "47 unknown 2 left" "48 race 2 left"; do
+    read -r att how want_st want_mark <<<"$c"
+    rm -f "$ROOT/fake.fs_group_exists"
+    set +e
+    FAKE_FS_DEFINE=$how TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+      --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-def-$how.log" 2>&1
+    st=$?
+    set -e
+    [ "$st" -eq "$want_st" ] && grep -q "the fair server's probes were not defined" "$ROOT/fs-def-$how.log" ||
+      fail "definition $how: status $st" "$ROOT/fs-def-$how.log"
+    [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att").run.txt" ] ||
+      fail "definition $how: a run started" "$ROOT/fs-def-$how.log"
+    if [ "$want_mark" = left ]; then
+      [ -e "$ROOT/fake.fs_group_exists" ] || fail "definition $how: the group was removed" "$ROOT/fs-def-$how.log"
+    else
+      [ ! -e "$ROOT/fake.fs_group_exists" ] || fail "definition $how: the group remains" "$ROOT/fs-def-$how.log"
+    fi
+  done
+  grep -q 'exists after a definition whose outcome is unknown; it was left in place' "$ROOT/fs-def-unknown.log" &&
+    grep -q 'echo -:rtctrl_fs/rtfs_dl_pick | sudo tee -a ' "$ROOT/fs-def-unknown.log" ||
+    fail "the unknown definition's group was not reported with its manual removal" "$ROOT/fs-def-unknown.log"
+  rm -f "$ROOT/fake.fs_group_exists"
+  set +e
+  FAKE_FS_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 49 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-rmfail.log" 2>&1
+  st=$?
+  set -e
+  [ "$st" -eq 3 ] && grep -q "CLEANUP FAILED: the fair server's probes (rtctrl_fs) were not removed" "$ROOT/fs-rmfail.log" &&
+    grep -q 'cleanup: probe group rtctrl_fs NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 49).run.txt" ||
+    fail "a failed probe removal gave status $st" "$ROOT/fs-rmfail.log"
+  rm -f "$ROOT/fake.fs_group_exists"
+  set +e
+  FAKE_FS_PROFILE=fail TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 51 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion,current:100:rt-idle:full \
+    </dev/null >"$ROOT/fs-prof.log" 2>&1
+  st=$?
+  set -e
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 51)
+  [ "$st" -eq 1 ] && grep -qF "verdict: tracer failure (the fair server's probe counts were not read)" "$b.run.txt" &&
+    [ ! -e "$(base current-100hz-rt-idle-bounded-timer 51).run.txt" ] && [ ! -e "$ROOT/fake.fs_group_exists" ] ||
+    fail "unread probe counts: status $st, or the run was not stopped, or the group remains" "$b.run.txt"
+  # Misses are counted in the record.
+  FAKE_FS_MISSES=3 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 52 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-miss.log" 2>&1 ||
+    fail "the session with probe misses failed" "$ROOT/fs-miss.log"
+  grep -q '; misses during the run: 3$' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 52).run.txt" ||
+    fail "the record lacks the probe misses" "$(base current-100hz-rt-idle-bounded-fast-motion-timer 52).run.txt"
   # The exerciser: refused without --port; over the emulator it runs.
   if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh --probe "$FAKE/probe" --outdir "$OUT" --date "$DATE" \
       --rt-cpu 0 --exclude-cpus 0 --dry-run --exerciser --modes timer --runs current:100:rt-idle:full \

@@ -323,6 +323,17 @@ set_tests_properties(idle_counters_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "idle counters regressions OK"
   LABELS unit)
 
+# The fair server's probes (tools/fair_server.py): their layout from an
+# excerpt of the kernel's BTF, their definitions and filters.
+add_test(NAME fair_server_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_fair_server.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(fair_server_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "fair server regressions OK"
+  LABELS unit)
+
 # The timer mode's rehearsal exerciser: its rounds, rows and stop (no timing
 # bound; it never touches the bus).
 add_test(NAME timer_exerciser_regressions
