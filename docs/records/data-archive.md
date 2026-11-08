@@ -11,7 +11,7 @@ below were archived on 2026-07-28. The control-rate sections (`e0/`,
 `e1_prod/`, `e1_cal/` and `r4_bounded/`, checksums taken 2026-11-04;
 `b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/`, `latency_timer/`
 and `profiled_torque_off/`, taken 2026-11-06; `timer_rehearsal/`, an
-emulator rehearsal, taken 2026-11-07)
+emulator rehearsal, taken 2026-11-07; `timer_torque_off/`, taken 2026-11-08)
 are kept on a separate volume of the
 same private archive; their paths are
 relative to that volume's project folder. A citation in the project records
@@ -1644,3 +1644,51 @@ these files. Described in
 | `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv.run.txt` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), session record | `284e05c8e8050c3593937b89672fc4405e467cc4526d037873cb20ae5a02a58d` |
 | `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv.summary.toml` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), probe summary | `0f1c86a9a3f23386203a4479623ac50084d44bfeb1bc2d4c690f18bad64d52f6` |
 | `rate-trace-current-1000hz-rt-idle-bounded-fast-motion-untraced-20261107-2.csv.tasks.txt` | timer-mode emulator rehearsal (untraced control; current, 1000 Hz, rt-idle), task snapshot | `663272316e99768c9f7f1b6bd24a2dbed4985dd21927d78ba606cbf540c3ebe9` |
+
+## `timer_torque_off/` — control-rate timer-mode torque-off runs (2026-11-08)
+
+The four targeted timer service runs on the arm, at `adc6143`
+(`tools/trace_session.sh --modes untraced,timer`, no exerciser, 60 s each):
+current at 500 Hz under rt-loaded and at 1000 Hz under rt-loaded-excl, each
+an untraced control and then a timer run, on the bounded read path with the
+35 ms budget and an equal guard, every servo torque-off. Each run has its
+per-cycle log, probe summary, session record and task snapshot; a timer run
+also has its process listing, timer-mode trace, TSC-clock trace instance,
+sampler pairs, SMI counts and the adapter's usbmon capture. The operator
+quieted the host with `tools/quiet_host.sh` (stopped at 14:10:48 JST,
+restored after the session; its record is in every session record). The
+1000 Hz timer run's main trace lost 48,404 events on CPU 3, so that run's
+timer service evidence is incomplete. The folder also holds a `SHA256SUMS`
+of these files. Described in
+[control-rate.md](../hardware/control-rate.md#timer-service-diagnostics-design-torque-off-1-ms).
+
+| file | role | sha256 |
+|---|---|---|
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), per-cycle log | `9851bee63b97199cda084c64a5db318af6c38ac507e0e1ad7ba1074ec5c17a60` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.procs.txt` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), process listing at the run's start (lineage for the background load) | `a08ef6d0be17c6234edd0f1244cc0292420ada58543722b2792777f2a8dbf4da` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.run.txt` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), session record | `1f525499f8ca4b7936f9084142386e317102fce8c1fd2d18c3a8e652c65d9a82` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.smi.csv` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), CPU 3 SMI counts (perf stat -I 10) | `eb3605ba2aa130cf8deec0c74f4f69c24d17077098bc7cfbbe1d6a10b10055e0` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.summary.toml` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), probe summary | `db6e94f148799ce042247f53c7680940e0d430640d8b361097cb408523209959` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.tasks.txt` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), task snapshot | `5cdabddcc088523d94753ab54abcbe59f5488a884bb81ee118b4128a48730f38` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.trace.dat` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), timer-mode trace (trace-cmd, mono clock) | `dddb075a79230fdca7818046f6235280d31c9e4db765ff55e7cfe40ede8713c9` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.tsc-pairs.csv` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `13f76afb44bfc686b78fd9c7104181c1991c0117ef1ca636e6770c9b8ffaaa72` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.tsc.txt` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), TSC-clock trace instance (CPU 3 local timer entries) | `62f33de4c416dc6c060eb9c07245c1a6b33994a1a7ed830e70caca9e28a95450` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-timer-20261108-1.csv.usbmon.pcap` | timer-mode torque-off run (timer run; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), the adapter's usbmon capture | `0bbbd775840f1c6f3afaf25972251625c5d4a0fddbbb75f4f6deb1b4c06a998c` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-1.csv` | timer-mode torque-off run (untraced control; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), per-cycle log | `cbd06fc6adb922ff40a3bc7942770e624eb197890aaee10274d76570fd707922` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-1.csv.run.txt` | timer-mode torque-off run (untraced control; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), session record | `a476b2660fb8b6641088a277319dff8ed1f40294c2d8d6a631f36c26a9915730` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-1.csv.summary.toml` | timer-mode torque-off run (untraced control; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), probe summary | `d7e392b0a693cd4b40934490f53c1e8a744cbb82525d40198cf2e12d1979df92` |
+| `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-1.csv.tasks.txt` | timer-mode torque-off run (untraced control; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), task snapshot | `d88e5456ea84ccf673be6a4e0c0aa81a863305bd02c6110049a3f0e0a1b9abab` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), per-cycle log | `135265afb585d5534b75d77856c8cbec15927b9a071bb11461e662a69bfb918d` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.procs.txt` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), process listing at the run's start (lineage for the background load) | `ba0bfec25dda75b78c377d1b555ffc852b5b9dcdead0907986c8c3228c1ddb62` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.run.txt` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), session record | `16c29335ed5ffa7cbd405a37165af20e00103ab9a06cc7f07e54023da647174f` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.smi.csv` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), CPU 3 SMI counts (perf stat -I 10) | `6637ebd9027ebd8e03b924e55427d6423f007a0054f0fe2d97d3b8d9563eaaee` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.summary.toml` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), probe summary | `8bbf539a665ac24c72ba92eed6d58b689474cfaa3171880501e2311b204fdd55` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.tasks.txt` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), task snapshot | `780f35e97b753f418c8dd27cf42ed527611e41190b7d2754c97647364cc6845c` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.trace.dat` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), timer-mode trace (trace-cmd, mono clock) | `5a95fc382c7756b2b3d80014343bd172ffa8ed47774a9f789f59712509ae023d` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.tsc-pairs.csv` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `9c8358825acd11ffd6b17b2f6b70299b3c076754ff7750b93ea6d0a9eef56cd9` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.tsc.txt` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), TSC-clock trace instance (CPU 3 local timer entries) | `e1a478ff5b1a4ff99d779916ec5ef150383b6fe34d3d824e4ae160e876592404` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-timer-20261108-1.csv.usbmon.pcap` | timer-mode torque-off run (timer run; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), the adapter's usbmon capture | `adf472e3e2741fd551bdbcdf0516befc479cc9a214661e9162102ac816fd707a` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261108-1.csv` | timer-mode torque-off run (untraced control; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), per-cycle log | `3cf3e7e93f91405dccff00849932b7ae23ce37d09bb52e69475aec8714b66d25` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261108-1.csv.run.txt` | timer-mode torque-off run (untraced control; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), session record | `f9db01106b866c90f0d9a1460ad2498db809dcf43b8f5d156284536ce54d693f` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261108-1.csv.summary.toml` | timer-mode torque-off run (untraced control; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), probe summary | `254042196e71f92898033dfa646f3ed32054f4b1433fca35db3bc0d72000dbb2` |
+| `rate-trace-current-500hz-rt-loaded-bounded-fast-motion-untraced-20261108-1.csv.tasks.txt` | timer-mode torque-off run (untraced control; current, 500 Hz, rt-loaded, Fast Sync Read with the motion-only read), task snapshot | `bfb26409eed97ba90775d3b4c3daf970f18d77bbb1b2ca505468b52832e1474c` |
