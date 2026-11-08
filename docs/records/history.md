@@ -878,6 +878,7 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-08 | a full `ctest -j8` at 15:27, no sweep (load 0.90), the seventh test to finish | failed: "feedback interval too long in cycle 765" in its marker-timeout case, 30.2 ms between samples, a host transaction up to 7.9 ms |
 | 2026-11-08 | the smoke alone right after, three times | passed |
 | 2026-11-08 | a full `ctest -j8` at 16:25, no sweep (load 0.99) | passed |
+| 2026-11-08 | a full `ctest -j8` at 18:45, no sweep (load 0.45) | passed |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without

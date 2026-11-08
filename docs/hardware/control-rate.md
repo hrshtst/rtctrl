@@ -1297,6 +1297,54 @@ tools/quiet_host.sh restore   # also after a failed or interrupted session
 uv run --project tools tools/trace_correlate.py <log>.csv   # the timer run
 ```
 
+**The repeat's results (accepted 2026-11-08).** The repeat (attempt 2, at
+`8493d14`) gave a complete timer capture. No event was lost in either
+buffer, all 39,010 of the TSC instance's anchors matched with none left
+out, U was 1,270 ns, and the USB association check passed. The untraced
+control reached 663.5 Hz and the timer run 559.7 Hz (measured). Both failed
+T1, T2 and T6a, and the timer run also failed T5 (wake lateness p99.9
+101 us, maximum 573 us). 1 kHz remains unqualified in the tested
+configuration. The capture shows two sources of late worker wakes on
+CPU 3, neither of them an established cause:
+
+- 117 of the 11,191 sleeps were served 75.5 to 176.0 us late, every one
+  from idle state 2 (`C2_ACPI`, declared exit latency 127 us);
+- in two wakes, normal-priority tasks ran on CPU 3 before the woken
+  worker: for 568.6 us at cycle 10068 (the T5 maximum; threads of the
+  observer applications) and for 330.1 us at a read's wake. This is
+  consistent with the fair server. Deadline-class timer events on CPU 3
+  around both are an indication, not validated server state.
+
+The capture's files are in `timer_torque_off/` of the
+[archive manifest](../records/data-archive.md); the originals were removed
+after the ledger check.
+
+**Next steps (reviewer decisions, 2026-11-08).**
+
+- 500 Hz feasibility has priority, without a promise of qualification.
+- The fair-server instrumentation is approved as software, with four
+  requirements:
+    - it observes server-backed dispatch (validated server state and the
+      selected task, correlated with the actual switch), not function
+      entry;
+    - it attributes each wait by overlapping execution intervals, allowing
+      mixed and INDETERMINATE results, and never invalidates a capture
+      because normal tasks ran without a recorded server start;
+    - positive and negative controls on a rehearsal CPU validate the
+      probes. The FIFO exerciser there has a self-imposed deadline and a
+      supervisor on another CPU, and normal-task progress and observed
+      server-backed dispatch are the evidence, not a fixed share;
+    - the implementation and the rehearsal are reviewed before hardware.
+      Attempts 3 to 5 at the repeat's condition then follow, as a labelled
+      mechanism-reproduction experiment with the observer applications
+      open.
+- No cpuset partition yet. Observer placement outside CPUs 2 and 3,
+  helper threads included, is compared first, without waiting for the
+  fair-server result. An isolated cpuset also moves unbound-workqueue work,
+  so its design would have to address the TTY receive path.
+- C2 stays enabled in that baseline; a reversible C2 comparison is to be
+  designed.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
