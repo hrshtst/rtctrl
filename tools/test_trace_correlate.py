@@ -476,6 +476,28 @@ def main() -> int:
             out = p.stdout + p.stderr
             expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok)
                    and (ok or "ran on CPUs 2,3" in out), f"the placement check ({name})", out)
+        # The recorders' uninterruptible waits over 5 ms are listed, from the
+        # trace's switches (context, not a check): trace-cmd's 6.1 ms is; perf's
+        # 1 ms, a preemption (R) and a task that is no recorder are not.
+        r = Run()
+        for us, prev, nxt in ((500.0, ("trace-cmd", 6000, "D"), ("swapper/12", 0)),
+                              (520.0, ("perf", 6001, "D"), ("swapper/13", 0)),
+                              (530.0, ("tcpdump", 6002, "R"), ("other", 6100)),
+                              (540.0, ("chrome", 6003, "D"), ("swapper/14", 0)),
+                              (1520.0, ("swapper/13", 0, "R"), ("perf", 6001)),
+                              (6530.0, ("other", 6100, "S"), ("tcpdump", 6002)),
+                              (6540.0, ("swapper/14", 0, "R"), ("chrome", 6003)),
+                              (6600.0, ("swapper/12", 0, "R"), ("trace-cmd", 6000))):
+            r.ev(us, prev[0], prev[1], 12, "d..2.", "sched_switch",
+                 f"{prev[0]}:{prev[1]} [120] {prev[2]} ==> {nxt[0]}:{nxt[1]} [120]")
+        path = r.write(root, "recwait")
+        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
+                            str(root / "recwait.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
+        out = p.stdout + p.stderr
+        expect(p.returncode == 0 and "recorder waits (context, not a check): 1 uninterruptible spans over 5 ms" in out
+               and "trace-cmd 6000: 6.1 ms from +0.000500 s" not in out and "trace-cmd 6000: 6.1 ms from +0.001 s" in out
+               and "perf 6001" not in out and "tcpdump 6002" not in out and "chrome 6003" not in out,
+               "the recorders' waits", out)
         code, out, _ = correlate(root, "timer_fs_empty", timer=True, fs_layout=True)
         expect(code == 1 and "fair server: the probes recorded no pick on CPU 3: their evidence is missing" in out
                and "probe misses during the run: 0" in out, "probes without a pick fail", out)

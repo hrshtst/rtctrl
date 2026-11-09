@@ -323,6 +323,17 @@ set_tests_properties(idle_counters_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "idle counters regressions OK"
   LABELS unit)
 
+# The read-only, system-wide memory and writeback counters around every
+# session run (tools/vm_counters.py) on fake /proc files and the host's own.
+add_test(NAME vm_counters_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_vm_counters.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(vm_counters_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "vm counters regressions OK"
+  LABELS unit)
+
 # The staging of a run's capture streams (tools/trace_stage.py) with stand-in
 # findmnt and umount: the budget, the mount's verification, publication with
 # its failures and retries, release, abort and the guard.

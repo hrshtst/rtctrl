@@ -126,6 +126,10 @@ STATUS_BYTES = 2
 BH_WORK = "usb_giveback_urb_bh"
 TTY_WORK = "flush_to_ldisc"
 BARRIER_WORK = "wq_barrier_func"
+# The session's recorders, by the comm the kernel gives them, and the length
+# of an uninterruptible wait the analysis lists (context, not a check).
+RECORDERS = ("trace-cmd", "perf", "tcpdump", "tsc_mono_pairs")
+RECORDER_WAIT_NS = 5_000_000
 
 
 class Trace:
@@ -147,6 +151,10 @@ class Trace:
         self.excl_cur: dict[int, tuple] = {}  # cpu -> (tid, comm, since)
         self.excl_ns: dict[int, int] = {}
         self.excl_comm: dict[int, str] = {}
+        # The recorders' uninterruptible waits: when one left a CPU, and the
+        # spans over RECORDER_WAIT_NS it spent in D state (start, end, comm, pid).
+        self.rec_off: dict[int, tuple[int, str, str]] = {}
+        self.rec_waits: list[tuple[int, int, str, int]] = []
         self.last_ts = 0
         self.expiring: dict[int, list] = {}   # cpu -> stack of (entry ts, now, wakeup)
         self.timer_wakes: list[tuple] = []    # (entry ts, now, cpu, waking ts, running)
@@ -230,6 +238,12 @@ class Trace:
             if not s:
                 return
             npid, ppid = int(s["npid"]), int(s["ppid"])
+            if s["prev"] in RECORDERS:
+                self.rec_off[ppid] = (ts, s["prev"], s["state"])
+            if s["next"] in RECORDERS:
+                off = self.rec_off.pop(npid, None)
+                if off and off[2].startswith("D") and ts - off[0] > RECORDER_WAIT_NS:
+                    self.rec_waits.append((off[0], ts, off[1], npid))
             if self.timer is not None:
                 self.timer.switch(ts, cpu, ppid, s["prev"], npid, s["next"])
             if self.excl is not None and cpu in self.excl:
@@ -797,6 +811,19 @@ def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failure
         failures.append(f"observer placement: {len(o)} observer and {len(h)} probe helper threads ran on CPUs {cpus}")
 
 
+def recorder_waits(run: Run, tr: Trace, out) -> None:
+    """The recorders' uninterruptible spans over 5 ms, from the trace's own
+    sched_switch events: context for a capture's losses, not a check."""
+    w = sorted(tr.rec_waits)
+    print(f"  recorder waits (context, not a check): {len(w)} uninterruptible spans over "
+          f"{RECORDER_WAIT_NS / 1e6:.0f} ms of {', '.join(RECORDERS)} (sched_switch, D state)", file=out)
+    for a, b, comm, pid in w[:20]:
+        print(f"    {comm} {pid}: {(b - a) / 1e6:.1f} ms from {(a - run.origin) / 1e9:+.3f} s to "
+              f"{(b - run.origin) / 1e9:+.3f} s (the probe's epoch)", file=out)
+    if len(w) > 20:
+        print(f"    and {len(w) - 20} more", file=out)
+
+
 def probe_misses(record: list[str]) -> int | None:
     """The fair server's probe misses during the run, from its record (None
     when the record does not say)."""
@@ -1229,6 +1256,7 @@ def main() -> int:
               "(begun before the trace)", file=out)
     report(run, rec, timer, args.top, out)
     placement(rec, out)
+    recorder_waits(run, tr, out)
     perf_txt = args.perf_txt or pathlib.Path(str(args.csv) + ".perf.txt")
     perf = load_perf(perf_txt, run.tid) if perf_txt.exists() else None
     stacks_txt = pathlib.Path(str(perf_txt).removesuffix(".perf.txt") + ".perf.stacks.txt")
