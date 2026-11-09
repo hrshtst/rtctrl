@@ -1728,9 +1728,17 @@ the controls, which pass, an untraced control and a timer run that lost
 open and confined placements, each an untraced control and a timer run; the
 open timer run is complete in events but fails the SMI coverage rule, and the
 confined one lost 2,674,161 events on CPU 3). Attempt 2 (`stage1-placement`)
-was refused before writing anything and has no files. The operator quieted
-the host with `tools/quiet_host.sh` around attempts 3 and 4 (its record is in
-every session record). The `.correlate.txt` files are `trace_correlate.py`
+was refused before writing anything and has no files. Attempts 5 and 6 (at
+`b6d9fde`, the first on the recorder staging: each run's streams on a private
+`noswap` tmpfs, published with an inventory and a ledger) are
+`stage1-controls-5/` (the controls, stopped at the trace buffers' readback
+before the controls workload ran: the allowance ignored the kernel's page
+rounding) and `stage1-placement-6/` (the open untraced control, which ran and
+was published, and the open timer run, stopped at the same readback before
+the probe). Their trace files are startup traces, recorded before the stop;
+no controls workload or timer-mode probe ran, and no confined run started.
+The operator quieted the host with `tools/quiet_host.sh` around attempts 3 to
+6 (its record is in every session record). The `.correlate.txt` files are `trace_correlate.py`
 outputs the operator saved after each session. Each subfolder also holds a
 `SHA256SUMS` of its files. Described in
 [control-rate.md](../hardware/control-rate.md).
@@ -1805,3 +1813,21 @@ outputs the operator saved after each session. Each subfolder also holds a
 | `stage1-placement-2/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261108-4.csv.run.txt` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 4), session record | `0185f7aaf7d1812e89a9c69f02fe7ef8a15ff1f93e63d50026cf8373422f1516` |
 | `stage1-placement-2/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261108-4.csv.summary.toml` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 4), probe summary | `287613ce0974cafeb0ef2860922529cfc89e4e451be9a18133303b6272dcc424` |
 | `stage1-placement-2/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261108-4.csv.tasks.txt` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 4), task snapshot | `02b4ee4221c623ae46bc8815f6a3c76fcd9ead10afbeae8825526e193d99c89e` |
+| `stage1-controls-5/fs-controls-20261109-5.run.txt` | Stage 1 emulator rehearsal (probe controls, attempt 5 (stopped at the buffer readback before the controls workload ran)), session record | `03d89c787b364ac29537d437357bc448122cd174246af9313bc168ad62828f05` |
+| `stage1-controls-5/fs-controls-20261109-5.staging.inventory.json` | Stage 1 emulator rehearsal (probe controls, attempt 5 (stopped at the buffer readback before the controls workload ran)), staging inventory (each staged file's SHA-256, taken before any copy) | `8c5177a42b0fa6e509eeeb0577554fcc72161749ac392cb6708f4b6b142de4f9` |
+| `stage1-controls-5/fs-controls-20261109-5.staging.sha256` | Stage 1 emulator rehearsal (probe controls, attempt 5 (stopped at the buffer readback before the controls workload ran)), staging ledger (sha256sum format; the published staged files) | `9b2cd5bfff1a91664a7c4524ec90f0a6a8144ba987edb4cca52f1b3c3c61f8cd` |
+| `stage1-controls-5/fs-controls-20261109-5.trace.dat` | Stage 1 emulator rehearsal (probe controls, attempt 5 (stopped at the buffer readback before the controls workload ran)), startup trace (trace-cmd, mono clock; recorded before the stop, the controls workload never ran) | `f0e10ed21155b69e0e76bbca3839af21f2daed714e073cdd30f0989b7bdff1a0` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), process listing at the run's start | `917691176c40d2ad192321997c1e59f830a33f5e22e7127a9c8fd86587ca4197` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.run.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), session record | `54028067dfebe5c3fa7747b45f51d20fe03a7302a0d8f8a07e33c539330acff3` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.smi.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), CPU 3 SMI counts (perf stat -I 10) until the stop | `8b4b28ed47f5f99d6cf767ac01599386c67ca96048927e663c2125a3888d8c5d` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.staging.inventory.json` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), staging inventory (each staged file's SHA-256, taken before any copy) | `b34117e76b78f01868fe458e485ca3745004449995ebcc1bf95754cbf49f70aa` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.staging.sha256` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), staging ledger (sha256sum format; the published staged files) | `279c998284ec3e28abf0cb6b2b4727a9c894af18a41a5ac6122f78e5e9ef99d5` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.trace.dat` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), startup trace (trace-cmd, mono clock; recorded before the stop, no probe ran) | `910c7abd9e4b03bfdf248f3582f8eddccc67071704063e003100f6a49b6a49e4` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.tsc-pairs.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), bracketed TSC and CLOCK_MONOTONIC sampler pairs until the stop | `054442016370235af2a243c45573d71f9f6eca7a4dc7ba48507b1a3222eca676` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-6.csv.usbmon.pcap` | Stage 1 emulator rehearsal (timer run, open placement, attempt 6 (stopped at the buffer readback before the probe)), usbmon capture (empty: no USB adapter behind the emulator) | `fc94ca7ba3dd6b2015c73f2fcc395cc3e62476bfd3d030bdfc1f77df034255b8` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-6.csv` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 6), per-cycle log | `e82de5fe8485430d39332554c119e1c6cda29bac7b647b1f0499d2b93bcf5137` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-6.csv.run.txt` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 6), session record | `074918bc717271279537b577b0de1b39a0f79c1433428ba410152bb6d69e2b91` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-6.csv.staging.inventory.json` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 6), staging inventory (each staged file's SHA-256, taken before any copy) | `04e559695748f5f20acccb1f0211aaefefc7ee891079d30455095c0590dd5d98` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-6.csv.staging.sha256` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 6), staging ledger (sha256sum format; the published staged files) | `9e2b36815c0ae4609db970ba315148d327dd172b22acb38c4b6a4e4d9f50e1bd` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-6.csv.summary.toml` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 6), probe summary | `09ea4f3e7c8e0aa123dbbe405e02f46f6b902d82730a6a8d3919d12d51b8ac1a` |
+| `stage1-placement-6/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-6.csv.tasks.txt` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 6), task snapshot | `362d58d1786e5533d51acc4799e5866ab1439bd89fe1024cecda1865299aa8c7` |
