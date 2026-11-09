@@ -1536,6 +1536,113 @@ tools/quiet_host.sh restore   # also after a failed or interrupted session
 uv run --project tools tools/trace_correlate.py <dir>/<log>.csv
 ```
 
+**Stage 1 rehearsals (2026-11-08; not accepted).** At `3a2d12d`, attempt 3
+(the controls, an untraced and a timer run) and attempt 4 (open and confined
+placements, each an untraced and a timer run) ran over the emulator,
+archived in `stage1_rehearsal/`. The three controls passed with their
+preconditions established (all four of the normal task's server-backed
+dispatches identified; confirming state reads 3.8 and 4.0 ms before the
+negatives), and both confined runs confined and restored every observer
+thread (about 1,240 each) with no failure. No timer capture passed every
+evidence check: attempt 3's timer run lost 108,445 events on CPU 3, the
+confined one 2,674,161, and all three failed the SMI coverage rule (largest
+intervals 181.8, 48.3 and 1,008.0 ms). Each loss and each long SMI interval
+coincided with trace-cmd and perf in uninterruptible sleep together, both
+waking within 0.1 ms of each other (146 and 172 ms; 998 ms; twice about
+43 ms, 5.000 s apart, in the open run, where the TSC sampler stalled with
+them). Each long SMI interval equals perf's stall plus one 10 ms interval,
+and each hole fits a blocked reader of the 16 MiB overwrite buffer. Those
+are consistent with backpressure on the recorders; they do not identify the
+stalled resource (writes to the ext4 output directory, memory reclaim or a
+lock), and the cause stays provisional (reviewer, 2026-11-09). The earlier
+rehearsal (2026-11-07), written to tmpfs, lost nothing.
+
+**Recorder staging (approved with three amendments, 2026-11-09).** Every run
+of `tools/trace_session.sh`, untraced runs and the controls included, writes
+its capture streams to a stage of its own (`tools/trace_stage.py`): a
+private tmpfs mounted for the run under `/run/rtctrl-stage/` with `size=S`,
+`noswap`, mode 0700 and the operator's ownership. The streams are the
+probe's log and summary, the trace with trace-cmd's per-CPU temporary files
+(`--temp`), usbmon, the SMI counts, the TSC instance and sampler pairs,
+perf, the exerciser's log and the snapshots. The run record and the
+observer record stay in the output directory, so every recovery command
+names a file that exists. The events, clocks, buffers, compression, recorder
+CPUs and priorities, C2 and every evidence rule are unchanged; only where the
+streams are written changes. The arrangement is diagnostic, not a
+qualification of the production logging to disk.
+
+- **Budget, per run and by mode** (provisional, empirical constants for the
+  measured timer configuration): S = 1.25 (R + R/4 + A), with R = 250 MB/s
+  over the run plus 10 s of raw trace, R/4 its assembled output (4:1
+  compression is an assumption; measured 19:1 to 21:1), and A the other
+  streams the mode enables (at least 512 MiB in a traced run). Untraced runs
+  have no trace allowance; the controls are budgeted over their own
+  duration (three phases, two settles and 10 s); perf's frequency and stack
+  size are budgeted. Before the mount, `MemAvailable` must be at least
+  S + K + H: K the kernel ring buffers of every trace array the run uses,
+  for every possible CPU (a timer run's two arrays, 2 × 32 × 16 MiB), H =
+  max(8 GiB, 15% of `MemTotal`). A 60 s timer run needs about 39.0 GB.
+  The measured raw traces were 1.51 GB for a 10 s rehearsal run and 9.56 GB
+  for hardware attempt 1's 60 s loaded run.
+- **Before anything runs:** the mount is verified (a tmpfs exactly at that
+  point, with `noswap` and the requested size, private) and marked as the
+  session's. A refusal or failure at any step before the marker undoes the
+  stage only while it holds no data, and the run does not start.
+- **Before the probe:** trace-cmd's temporary files must be on the stage
+  only, and both arrays' `buffer_total_size_kb` must fit K. A guard on the
+  tracer CPUs samples the stage's free space and `MemAvailable` every 0.2 s
+  through the run and the assembly; below R/4 + 64 MiB free or H/2
+  available, it stops trace-cmd (and perf) and records why. It is a guard,
+  not a reservation. The record gives its sampled peak and a conservative
+  bound (the usage just before trace-cmd's stop plus the assembled trace).
+- **After every writer stops:** an immutable inventory (SHA-256 of every
+  staged file) is written durably to the output directory
+  (`<log>.csv.staging.inventory.json`) before any copy. Each file is copied
+  to a partial name, fsynced, hashed as read back, compared and linked
+  without overwriting, and its directory fsynced; the ledger
+  (`<log>.csv.staging.sha256`, checkable with `sha256sum -c`) comes last.
+  Nothing syncs the whole filesystem: Dirty and Writeback are recorded, with
+  a bounded settling check. The stage is released (emptied, unmounted,
+  removed) only when the ledger and every copy verify. The capture is then
+  judged from the published copies, failed captures being published the
+  same way.
+- **Failures:** a failed publication keeps the stage and names it with the
+  retry; the capture is judged from the stage, so its own verdict is
+  recorded apart; the session fails with status 3 (130 kept for an
+  interruption). A failed release is a cleanup failure (status 3). A stage
+  left by an earlier session refuses every later session, which never
+  touches it. The retry, as the operator:
+
+```
+python3 tools/trace_stage.py publish --stage <stage> --outdir <dir>
+python3 tools/trace_stage.py release --stage <stage> --outdir <dir>   # unmounts through sudo
+python3 tools/trace_stage.py abort --stage <stage>                    # only a stage without data
+```
+
+Two read-only diagnostics come with it (approved 2026-11-09), as context,
+never as a cause by themselves: `tools/vm_counters.py` brackets every probe
+with the system-wide swap, major-fault, direct-reclaim, `allocstall_*` and
+writeback counters and the `MemAvailable`, Dirty, Writeback, SwapFree and
+Shmem gauges (raw values, deltas with units, unavailable values marked), and
+`tools/trace_correlate.py` lists every recorder's uninterruptible span over
+5 ms from the trace's own `sched_switch` events. The implementation comes
+to the reviewer, then both rehearsals repeat with fresh attempts and
+directories; hardware waits for their review. With the emulator prepared as
+above:
+
+```
+tools/quiet_host.sh stop
+tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
+  --fs-controls 5 --modes untraced,timer --runs current:1000:rt-idle:fast-motion --duration 10 \
+  --attempt 5 --outdir <dir5>
+tools/quiet_host.sh restore   # also after a failed or interrupted session
+tools/quiet_host.sh stop
+tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
+  --modes untraced,timer --placements open,confined --observers <PID,...> \
+  --runs current:1000:rt-idle:fast-motion --duration 10 --attempt 6 --outdir <dir6>
+tools/quiet_host.sh restore
+```
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

@@ -901,6 +901,9 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-08 | a full `ctest -j8` at 18:45, no sweep (load 0.45) | passed |
 | 2026-11-08 | six full `ctest -j8` runs from 19:53 to 21:19 (the preflights of the Stage 1 commits), no sweep (load 0.6 to 2.9 at their starts) | passed, each |
 | 2026-11-08 | the full `ctest -j8` runs of the preflights from 21:56 to 23:57 (the Stage 1 fixes, `8242631` to `96e6602`), no sweep | passed, each |
+| 2026-11-09 | full `ctest -j8` runs at about 09:00, 09:10 and 09:19, no sweep (the last beside a 30-million-line trace analysis) | passed, each |
+| 2026-11-09 | a full `ctest -j8` at about 09:31, no sweep (load near 2) | failed: "command rejected in cycle 1112" (source feedback stale), 1 stale sample, 1 deadline miss, a 7.0 ms cycle |
+| 2026-11-09 | full `ctest -j8` runs at 09:37, 10:22 and 10:31, no sweep | passed, each |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
