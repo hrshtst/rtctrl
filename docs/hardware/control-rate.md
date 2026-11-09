@@ -1443,9 +1443,12 @@ or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
   times (a guard against reused IDs) and mask, flushed to disk;
 - sets each thread's mask to its own less the excluded CPUs, writing the
   intended mask to the record (flushed) before each change and reading the
-  mask back after it. A thread that holds only excluded CPUs, or a live
-  thread whose mask cannot be read or whose change or read-back fails,
-  refuses the run (a failure, never counted as an exited thread);
+  mask back after it. A thread that holds only excluded CPUs, a process or
+  thread whose identity (its `stat`), task directory or mask cannot be read,
+  or a live thread whose change or read-back fails, refuses the run. Only a
+  missing `/proc` entry (`ENOENT`, `ESRCH`) says a task exited; a
+  permission, I/O or other read failure is never counted as an exit
+  (reviewer, 2026-11-09);
 - repeats that pass (approved 2026-11-09). A new thread inherits its
   creator's mask, so one created between a listing and its creator's change
   keeps the excluded CPUs (rehearsal 8, below). Each pass lists the trees
@@ -1459,7 +1462,12 @@ or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
   the excluded CPUs again after confine confined it or found it off them (an
   application setting its own mask), refuse the run; the observers are
   restored before any probe starts. A placement is no freeze of the
-  applications, so the checks below stay mandatory;
+  applications, so the checks below stay mandatory. Nor are repeated scans
+  of `/proc` an atomic view of the trees: a process forked by a thread not
+  yet confined (between a listing and its creator's change) whose parent
+  exits before the next pass is reparented out of the trees before any pass
+  sees it, so neither the passes nor the snapshot's parents attribute it to
+  an observer (see the limitation below);
 - records each thread's mask with its origin: the first pass's listing (the
   original mask), a later pass's thread still on the excluded CPUs (its mask
   before the change), or a later pass's thread already off them, which
@@ -1473,8 +1481,9 @@ or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
   start time and holds the intended mask goes back to its recorded mask,
   read back; one already at its recorded mask needs nothing. An exited
   thread, a reused ID and a mask the application changed during the run are
-  left as found and reported. Any other error on a live thread, or a
-  read-back that does not match, is unresolved: the record stays for a
+  left as found and reported. Any other error on a live thread, an
+  identity or task directory that cannot be read, or a read-back that does
+  not match, is unresolved: the record stays for a
   retry, the tool exits 1, and the session reports a cleanup failure (the
   run stops; an otherwise successful session exits 3) with the command to
   retry (reviewer findings, 2026-11-08). A thread found already off the
@@ -1488,19 +1497,35 @@ or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
   reported as left, never given an invented wider mask.
 
 The run's halfway task snapshot lists every task's process, parent, start
-times and allowed CPUs, and is checked: a task of a recorded process
-(matched by ID and start time) or of a descendant (by the snapshot's
-parents, the exempt trees left out), or a probe helper, allowed on an
-excluded CPU or with an unreadable mask, stops the session as a placement
-failure. A snapshot is one moment, not the whole run. A confined run is
+times and allowed CPUs, closed by a completeness line; a live task it cannot
+read makes the listing incomplete (its exit status 1), and an incomplete or
+unfinished listing is no evidence. The snapshot's status and the check both
+count: an incomplete listing, or a task of a recorded process (matched by ID
+and start time) or of a descendant (by the snapshot's parents, the exempt
+trees left out), or a probe helper, allowed on an excluded CPU, stops the
+session as a placement failure. A snapshot is one moment, not the whole
+run. A confined run is
 untraced or in the timer mode. In a timer run, the session lists the same
 lineage right after the trace started (`<log>.csv.lineage.txt`), and
 `tools/trace_correlate.py` counts the time spent on the excluded CPUs by
 every observer task (the record's, the lineage's, so that a task created
 before the trace and absent from the record is one, and every task they
 forked during the trace) and by the probe helpers. Any such time, a missing
-lineage or missing process events fails the analysis. The open runs leave
-the observers as they are, and C2 stays enabled in both placements.
+or incomplete lineage (the session stops before the probe when it cannot list
+one) or missing process events fails the analysis. The open runs leave the
+observers as they are, and C2 stays enabled in both placements.
+
+**Limitation of the placement evidence.** The passes, the snapshot and the
+trace attribute a task to an observer only through what they saw: the
+recorded processes, the parents in a listing, and the fork events of a
+trace. A descendant that left the trees unseen (forked between two passes
+by a thread not yet confined, its parent exiting before the next pass)
+inherited the unconfined mask and is attributed by none of them, unless a
+timer run's trace recorded its fork. A passing confined run therefore shows
+that every observer task these mechanisms could attribute stayed off CPUs 2
+and 3, not that every possible descendant was isolated throughout the run.
+That is enough for the emulator rehearsal (reviewer, 2026-11-09); a stronger
+isolation claim needs a separately reviewed approach.
 The same-session open and confined comparison, with its run count and
 labels, comes to the reviewer before it runs.
 
@@ -1737,8 +1762,12 @@ that process's threads, then changed them; the thread is consistent with
 being created in between, though the untraced record does not date its
 creation. The placement rehearsal is not accepted. Confine now repeats its
 pass, and the checks follow the observers' lineage (above; approved
-2026-11-09). Its implementation comes to the reviewer; then the open and
-confined placement session repeats as attempt 9 in a fresh directory.
+2026-11-09). Its review found unreadable identities and task directories
+taken for exits, in confine, restore and the task listing, and the halfway
+snapshot's status discarded; they now fail, and the ancestry limitation
+above is recorded (review, 2026-11-09). The correction comes to the
+reviewer; then the open and confined placement session repeats as attempt 9
+in a fresh directory.
 Hardware waits for accepted confined-placement and recording evidence. With
 the emulator prepared as above:
 

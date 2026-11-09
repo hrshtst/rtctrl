@@ -899,6 +899,10 @@ the placement record, was allowed on every CPU, consistent with its creation
 between confine's listing of its process and the change of its creator.
 Confine now repeats its pass until one finds nothing new, and the halfway
 snapshot and the trace follow the observers' lineage (approved 2026-11-09).
+That fix's review found unreadable identities and task directories taken for
+exits and the halfway snapshot's status discarded; both now fail the run,
+and the evidence is limited to what the passes, the listings and the trace
+could attribute (a descendant reparented out of the trees unseen is not).
 The details are in the
 [control-rate qualification](../hardware/control-rate.md). Hardware runs
 wait for a successful rehearsal.
@@ -929,6 +933,7 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-09 | full `ctest -j8` runs at 09:37, 10:22 and 10:31, no sweep | passed, each |
 | 2026-11-09 | full `ctest -j8` runs at about 13:13, 13:26 and 14:57, no sweep | passed, each |
 | 2026-11-09 | full `ctest -j8` runs at about 18:19, 18:38 and 18:48, no sweep | passed, each |
+| 2026-11-09 | full `ctest -j8` runs at about 19:23 and 19:32, no sweep | passed, each (the first failed `gravity_demo_smoke`, below) |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
@@ -952,7 +957,25 @@ rehearsals, and no bound is changed for it.
 | 2026-11-09 | a full `ctest -j8` at about 13:13, no sweep | failed: the stand-in `tcpdump` ignored its SIGINT for 120 s (attempt 28) |
 | 2026-11-09 | the stand-in alone, 150 SIGINTs at random delays | stopped promptly, each |
 | 2026-11-09 | a full `ctest -j8` at about 13:26, no sweep | passed |
-| 2026-11-09 | full `ctest -j8` runs at about 14:57, 18:19, 18:38 and 18:48, no sweep | passed, each |
+| 2026-11-09 | full `ctest -j8` runs at about 14:57, 18:19, 18:38, 18:48, 19:23 and 19:32, no sweep | passed, each |
+
+## `gravity_demo_smoke` silent failure (open, 2026-11-09)
+
+In one full `ctest -j8` run (about 19:23, no sweep), the pty smoke of
+`x7_gravity_demo` (`tests/integration/gravity_demo_smoke.sh`) failed 6 s in,
+the eleventh test to finish: after its default-log and custom-kt checks
+passed, its phase 3 (ENTER ends the session early) ended the script without
+a message. The demo's exit inside a command substitution under `set -e`
+stops the script before the test prints what the demo said, so neither its
+status nor its verdict was kept. It passed five times alone right after. The
+change under test (the observer placement tools) does not touch the demo; the
+cause is unknown and no bound is changed for it.
+
+| Date | Context | Result |
+|---|---|---|
+| 2026-11-09 | a full `ctest -j8` at about 19:23, no sweep | failed silently in phase 3 (the early stop) |
+| 2026-11-09 | the smoke alone, five times | passed, each |
+| 2026-11-09 | the next full `ctest -j8`, at about 19:32, no sweep | passed |
 
 ## Consistency audit
 
