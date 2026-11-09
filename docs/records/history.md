@@ -876,7 +876,12 @@ Each loss and each long SMI interval coincided with trace-cmd and perf in
 uninterruptible sleep together; the reviewer keeps the cause provisional. The
 rehearsal was not accepted (2026-11-09), and staging the recorders' outputs
 on a private bounded `noswap` tmpfs was approved for implementation, with the
-evidence rules unchanged. The details are in the
+evidence rules unchanged. The implementation's review (2026-11-09) found
+two blockers, fixed before the rehearsals: the stage's cleanup failed past a
+real unmount (a root-owned mount point refusing the operator), and a short
+untraced stage was smaller than its guard's free-space bound. Split at the
+recorders' wakeups, the stalls above were blocked in all but at most
+0.02 ms. The details are in the
 [control-rate qualification](../hardware/control-rate.md). Hardware runs wait
 for a successful rehearsal.
 

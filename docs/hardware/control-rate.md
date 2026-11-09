@@ -1554,14 +1554,17 @@ them). Each long SMI interval equals perf's stall plus one 10 ms interval,
 and each hole fits a blocked reader of the 16 MiB overwrite buffer. Those
 are consistent with backpressure on the recorders; they do not identify the
 stalled resource (writes to the ext4 output directory, memory reclaim or a
-lock), and the cause stays provisional (reviewer, 2026-11-09). The earlier
-rehearsal (2026-11-07), written to tmpfs, lost nothing.
+lock), and the cause stays provisional (reviewer, 2026-11-09). Split at the
+recorders' `sched_wakeup` events, every one of those spans was blocked until
+its wakeup in all but at most 0.02 ms, so none was mostly a runnable wait.
+The earlier rehearsal (2026-11-07), written to tmpfs, lost nothing.
 
 **Recorder staging (approved with three amendments, 2026-11-09).** Every run
 of `tools/trace_session.sh`, untraced runs and the controls included, writes
 its capture streams to a stage of its own (`tools/trace_stage.py`): a
 private tmpfs mounted for the run under `/run/rtctrl-stage/` with `size=S`,
-`noswap`, mode 0700 and the operator's ownership. The streams are the
+`noswap`, mode 0700 and the operator's ownership, on a mount point that is
+the operator's with mode 0700 too. The streams are the
 probe's log and summary, the trace with trace-cmd's per-CPU temporary files
 (`--temp`), usbmon, the SMI counts, the TSC instance and sampler pairs,
 perf, the exerciser's log and the snapshots. The run record and the
@@ -1572,16 +1575,17 @@ streams are written changes. The arrangement is diagnostic, not a
 qualification of the production logging to disk.
 
 - **Budget, per run and by mode** (provisional, empirical constants for the
-  measured timer configuration): S = 1.25 (R + R/4 + A), with R = 250 MB/s
-  over the run plus 10 s of raw trace, R/4 its assembled output (4:1
-  compression is an assumption; measured 19:1 to 21:1), and A the other
-  streams the mode enables (at least 512 MiB in a traced run). Untraced runs
-  have no trace allowance; the controls are budgeted over their own
+  measured timer configuration): S = 1.25 (R + R/4 + A) + Q, with R =
+  250 MB/s over the run plus 10 s of raw trace, R/4 its assembled output
+  (4:1 compression is an assumption; measured 19:1 to 21:1), A the other
+  streams the mode enables (at least 512 MiB in a traced run), and Q =
+  64 MiB the guard's reserve. Untraced runs have no trace allowance (a 10 s
+  untraced run at 1000 Hz gets 109 MiB); the controls are budgeted over their own
   duration (three phases, two settles and 10 s); perf's frequency and stack
   size are budgeted. Before the mount, `MemAvailable` must be at least
   S + K + H: K the kernel ring buffers of every trace array the run uses,
   for every possible CPU (a timer run's two arrays, 2 × 32 × 16 MiB), H =
-  max(8 GiB, 15% of `MemTotal`). A 60 s timer run needs about 39.0 GB.
+  max(8 GiB, 15% of `MemTotal`). A 60 s timer run needs about 39.1 GB.
   The measured raw traces were 1.51 GB for a 10 s rehearsal run and 9.56 GB
   for hardware attempt 1's 60 s loaded run.
 - **Before anything runs:** the mount is verified (a tmpfs exactly at that
@@ -1591,10 +1595,15 @@ qualification of the production logging to disk.
 - **Before the probe:** trace-cmd's temporary files must be on the stage
   only, and both arrays' `buffer_total_size_kb` must fit K. A guard on the
   tracer CPUs samples the stage's free space and `MemAvailable` every 0.2 s
-  through the run and the assembly; below R/4 + 64 MiB free or H/2
-  available, it stops trace-cmd (and perf) and records why. It is a guard,
-  not a reservation. The record gives its sampled peak and a conservative
-  bound (the usage just before trace-cmd's stop plus the assembled trace).
+  through the run and the assembly; below R/4 + Q free (what the run still
+  writes after a stop, plus the reserve) or H/2 available, it stops
+  trace-cmd (and perf) and records why. An untraced run has no recorder to
+  stop: a trip there is recorded and fails the run. Because the stage holds
+  Q on top of the budgeted streams, in every mode it stays above the bound
+  when empty, with the budgeted streams while recording, and at the
+  assembly's end. It is a guard, not a reservation. The record gives its
+  sampled peak and a conservative bound (the usage just before trace-cmd's
+  stop plus the assembled trace).
 - **After every writer stops:** an immutable inventory (SHA-256 of every
   staged file) is written durably to the output directory
   (`<log>.csv.staging.inventory.json`) before any copy. Each file is copied
@@ -1603,7 +1612,11 @@ qualification of the production logging to disk.
   (`<log>.csv.staging.sha256`, checkable with `sha256sum -c`) comes last.
   Nothing syncs the whole filesystem: Dirty and Writeback are recorded, with
   a bounded settling check. The stage is released (emptied, unmounted,
-  removed) only when the ledger and every copy verify. The capture is then
+  removed) only when the ledger and every copy verify. Past the unmount
+  nothing inside the mount point is read or deleted: the bare mount point is
+  removed with rmdir, which removes only an empty directory, so a retry
+  after a failure or an interruption there needs neither the marker (gone
+  with the tmpfs) nor access to the directory. The capture is then
   judged from the published copies, failed captures being published the
   same way.
 - **Failures:** a failed publication keeps the stage and names it with the
@@ -1615,7 +1628,7 @@ qualification of the production logging to disk.
 
 ```
 python3 tools/trace_stage.py publish --stage <stage> --outdir <dir>
-python3 tools/trace_stage.py release --stage <stage> --outdir <dir>   # unmounts through sudo
+python3 tools/trace_stage.py release --stage <stage> --outdir <dir>   # unmounts through sudo; also a bare mount point
 python3 tools/trace_stage.py abort --stage <stage>                    # only a stage without data
 ```
 
@@ -1624,11 +1637,25 @@ never as a cause by themselves: `tools/vm_counters.py` brackets every probe
 with the system-wide swap, major-fault, direct-reclaim, `allocstall_*` and
 writeback counters and the `MemAvailable`, Dirty, Writeback, SwapFree and
 Shmem gauges (raw values, deltas with units, unavailable values marked), and
-`tools/trace_correlate.py` lists every recorder's uninterruptible span over
-5 ms from the trace's own `sched_switch` events. The implementation comes
-to the reviewer, then both rehearsals repeat with fresh attempts and
-directories; hardware waits for their review. With the emulator prepared as
-above:
+`tools/trace_correlate.py` lists every recorder's off-CPU span over 5 ms that
+began with a switch-out in D state, from the trace's own events, split at
+the recorder's `sched_wakeup` into the time blocked and the time runnable
+until it ran again (a span whose wakeup the trace lacks is not split).
+
+The implementation's review (2026-11-09) found two blockers, both
+reproduced without root, and a diagnostic's wording to correct: the mount
+point, created by root with mode 0700, refused the operator once unmounted,
+so a successful release failed its cleanup and left a stage that blocked
+the next session; a 10 s untraced stage at 1000 Hz got 45 MiB under a
+64 MiB guard bound, so it tripped empty; and the recorders' spans, measured
+to the next switch-in, were called uninterruptible though they could
+include a runnable wait. The fixes are above: the mount point is the
+operator's and is never entered after the unmount, the stage holds the
+guard's reserve, and the spans are split at the wakeup. The stand-ins now
+emulate a real unmount (the contents vanish and the mount point reappears
+with its own mode) and the stage's bounded capacity. Both rehearsals then
+repeat with fresh attempts and directories; hardware waits for their
+review. With the emulator prepared as above:
 
 ```
 tools/quiet_host.sh stop
