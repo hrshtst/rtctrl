@@ -1765,11 +1765,10 @@ pass, and the checks follow the observers' lineage (above; approved
 2026-11-09). Its review found unreadable identities and task directories
 taken for exits, in confine, restore and the task listing, and the halfway
 snapshot's status discarded; they now fail, and the ancestry limitation
-above is recorded (review, 2026-11-09). The correction comes to the
-reviewer; then the open and confined placement session repeats as attempt 9
-in a fresh directory.
-Hardware waits for accepted confined-placement and recording evidence. With
-the emulator prepared as above:
+above is recorded (review, 2026-11-09). The correction was confirmed the
+same day, and the open and confined placement session repeated as attempt 9
+in a fresh directory, with freshly collected observer PIDs and the emulator
+prepared as above:
 
 ```
 tools/quiet_host.sh stop
@@ -1778,6 +1777,44 @@ tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/us
   --runs current:1000:rt-idle:fast-motion --duration 10 --attempt 9 --outdir <dir9>
 tools/quiet_host.sh restore   # also after a failed or interrupted session
 ```
+
+**Rehearsal 9 (2026-11-09; accepted).** At `6933d33`, archived in
+`stage1_rehearsal/stage1-placement-9` with its two analysis reports. It is
+accepted as the emulator recording and observer placement rehearsal, within
+the documented ancestry limits (reviewer, 2026-11-09). Attempt 7's controls
+still count while the kernel, the probe definitions and the event set stay
+unchanged.
+
+| Run | Placement | Recording |
+|---|---|---|
+| open, untraced | (observers left as they are) | (untraced) |
+| open, timer | (observers left as they are) | 0 main-trace and TSC-instance losses, 0 packets dropped by tcpdump; 9,464 paired sleeps on time; U 2,181 ns, one suspect anchor excluded under the existing rule (19,654 of 19,655 matched, skew -2,183 ns); SMI counts cover the run, 0 SMIs |
+| confined, untraced | 1,367 threads in 4 passes, 1,360 masks changed; midpoint snapshot complete, none of 1,398 observer threads and neither of 2 probe helpers allowed on CPUs 2 or 3 | (untraced) |
+| confined, timer | 1,371 threads in 2 passes; midpoint snapshot, none of 1,361 observer threads or 2 probe helpers allowed there; trace: no time on CPUs 2 and 3 by attributable observer tasks (1,370 in the lineage listed after the trace started, none absent from the record, 39 created during the trace) or probe helpers | 0 losses as above; 9,468 paired sleeps, one classified as interrupt late from idle state 1; U 2,097 ns, all 19,652 anchors matched; SMI counts cover the run, 0 SMIs |
+
+In the confined untraced run, pass 2 found a `JSCWarmUp` thread of a Claude
+Code process still on the excluded CPUs and confined it; its creation in pass
+1's gap is an inference, as the record does not date it. Pass 3 found seven
+`HeapHelper` threads already off them (inherited), and pass 4 settled. The
+late service's interrupt arrived about 111.5 us after its converted deadline:
+this locates the delay, not its cause, and does not show that the idle state
+caused it. The confined run's two worker waits over 50 us (86.8 and 76.7 us)
+start at `sched_waking`; the completed `sched_wakeup` came 85.8 and 75.7 us
+later, about 1 us before the switch-in. They were mostly interrupt-context
+spans before the wakeup completed, not a runnable FIFO worker kept waiting
+by other tasks, and neither timer run recorded a fair-server selection.
+Neither analysis has a probe miss or a NULL-page fault, and both fail only
+the expected PTY USB association; all four runs fail T1, T2 and T6a, as
+every emulator run has. All four stages were published with verified ledgers
+and released, both restorations finished with no thread left or failed, and
+the host settings were restored.
+
+The untraced placement evidence is one midpoint snapshot. The timer run's
+evidence covers the tasks whose observer lineage could be established,
+subject to the ancestry limitation above; it is no proof that every possible
+descendant was isolated. The emulator's expected timing and USB failures
+qualify no hardware control rate. Hardware diagnostic runs wait for the
+review of their concrete run plan.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
