@@ -939,7 +939,7 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-09 | full `ctest -j8` runs at 09:37, 10:22 and 10:31, no sweep | passed, each |
 | 2026-11-09 | full `ctest -j8` runs at about 13:13, 13:26 and 14:57, no sweep | passed, each |
 | 2026-11-09 | full `ctest -j8` runs at about 18:19, 18:38 and 18:48, no sweep | passed, each |
-| 2026-11-09 | full `ctest -j8` runs at about 19:23, 19:32 and 20:03, no sweep | passed, each (the first failed `gravity_demo_smoke`, below) |
+| 2026-11-09 | full `ctest -j8` runs at about 19:23, 19:32, 20:03, 20:18 and 20:36, no sweep | passed, each (at 19:23 `gravity_demo_smoke` failed, at 20:18 an `hw_test` case; below) |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
@@ -963,7 +963,7 @@ rehearsals, and no bound is changed for it.
 | 2026-11-09 | a full `ctest -j8` at about 13:13, no sweep | failed: the stand-in `tcpdump` ignored its SIGINT for 120 s (attempt 28) |
 | 2026-11-09 | the stand-in alone, 150 SIGINTs at random delays | stopped promptly, each |
 | 2026-11-09 | a full `ctest -j8` at about 13:26, no sweep | passed |
-| 2026-11-09 | full `ctest -j8` runs at about 14:57, 18:19, 18:38, 18:48, 19:23, 19:32 and 20:03, no sweep | passed, each |
+| 2026-11-09 | full `ctest -j8` runs at about 14:57, 18:19, 18:38, 18:48, 19:23, 19:32, 20:03, 20:18 and 20:36, no sweep | passed, each |
 
 ## `gravity_demo_smoke` silent failure (open, 2026-11-09)
 
@@ -979,9 +979,29 @@ cause is unknown and no bound is changed for it.
 
 | Date | Context | Result |
 |---|---|---|
+| 2026-11-04 | a full run while another project's 30-worker sweep held the load near 31 on 32 CPUs | failed once |
 | 2026-11-09 | a full `ctest -j8` at about 19:23, no sweep | failed silently in phase 3 (the early stop) |
 | 2026-11-09 | the smoke alone, five times | passed, each |
-| 2026-11-09 | the next full `ctest -j8` runs, at about 19:32 and 20:03, no sweep | passed, each |
+| 2026-11-09 | the next full `ctest -j8` runs, at about 19:32, 20:03, 20:18 and 20:36, no sweep | passed, each |
+
+## `hw_test` exact deadline-miss count (open)
+
+The unit test "feedback-synchronized deadline fallbacks are mode safe"
+(`tests/unit/hw_test.cpp`, a 5 ms real-clock cycle on `emu::FakePacketIO`)
+expects exactly one controller deadline miss. A scheduling race can make it
+two: if the background thread finishes the accepted cycle before the test
+reads the cycle count right after its submission, the test's choreography
+waits one cycle too many. An earlier probe (2026-10-19, with temporary
+sleeps since reverted) showed it: a 5 us sleep at that point failed 39 of 40
+tries with "2 == 1". It is a property of the test's timing, not of the
+deadline fallback it checks, and no bound is changed for it.
+
+| Date | Context | Result |
+|---|---|---|
+| 2026-10-15 | a local `ctest -j8` under I/O load | failed once |
+| 2026-11-09 | a full `ctest -j8` at about 20:18, no sweep | failed: `controller_deadline_misses == 1` read 2 |
+| 2026-11-09 | the test alone, ten times right after | passed, each |
+| 2026-11-09 | the next full `ctest -j8`, at about 20:36, no sweep | passed |
 
 ## Consistency audit
 

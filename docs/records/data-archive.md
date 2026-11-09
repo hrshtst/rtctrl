@@ -1712,55 +1712,76 @@ events. The folder also holds a `SHA256SUMS` of these files, attempt 2's
 | `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-2.csv.summary.toml` | timer-mode torque-off run (untraced control, attempt 2; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), probe summary | `dbc2faa5144c02a69a10612033745db9222e9c00164b92258713040dc129e8d5` |
 | `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-2.csv.tasks.txt` | timer-mode torque-off run (untraced control, attempt 2; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), task snapshot | `b69b14b35033c7f778707628209c30969e9d811686c31220ec7ace379afbb509` |
 
-## `stage1_rehearsal/` — control-rate Stage 1 emulator rehearsals (2026-11-08)
+## `stage1_rehearsal/` — control-rate Stage 1 emulator rehearsals (2026-11-08 and 2026-11-09)
 
 The fair-server instrumentation's and observer placement's rehearsals over
 `dxl_emu` (emulated servos on a pty: no servo and no USB adapter), current
 at 1000 Hz, rt-idle, 10 s per run, every run torque-off. Emulator data, not
-hardware telemetry, kept with checksums at the reviewer's request,
-failed captures included; none of the timer captures passes every evidence
-check. Three subfolders keep the session directories' own names:
-`stage1-controls/` (attempt 1, at `dcb3244`: the probe controls, an untraced
-control and a timer run whose old return probe caused 56,712 NULL-page
-kernel faults; superseded), `stage1-controls-2/` (attempt 3, at `3a2d12d`:
-the controls, which pass, an untraced control and a timer run that lost
-108,445 events on CPU 3) and `stage1-placement-2/` (attempt 4, at `3a2d12d`:
-open and confined placements, each an untraced control and a timer run; the
-open timer run is complete in events but fails the SMI coverage rule, and the
-confined one lost 2,674,161 events on CPU 3). Attempt 2 (`stage1-placement`)
-was refused before writing anything and has no files. Attempts 5 and 6 (at
-`b6d9fde`, the first on the recorder staging: each run's streams on a private
-`noswap` tmpfs, published with an inventory and a ledger) are
-`stage1-controls-5/` (the controls, stopped at the trace buffers' readback
-before the controls workload ran: the allowance ignored the kernel's page
-rounding) and `stage1-placement-6/` (the open untraced control, which ran and
-was published, and the open timer run, stopped at the same readback before
-the probe). Their trace files are startup traces, recorded before the stop;
-no controls workload or timer-mode probe ran, and no confined run started.
-Attempts 7 and 8 (at `8318db6`, the readback following the kernel's rounding)
-are `stage1-controls-7/` (the controls, which pass, an untraced control and a
-timer run with zero main-trace and TSC-instance losses, zero packets dropped
-by tcpdump, and complete clock, sampler and SMI coverage; its analysis fails
-only the expected PTY USB association) and `stage1-placement-8/` (the open
-untraced control and timer run, the timer run as complete as attempt 7's, and
-the confined untraced control, a placement failure: halfway through it a
-thread of an observer, absent from the placement record, was allowed on CPUs
-2 and 3, and the session stopped before the confined timer run).
-Attempt 9 (`stage1-placement-9/`, acquired and analysed at `6933d33`, after
-the repeated observer placement and its read-failure correction) is the
-accepted emulator recording and placement rehearsal (reviewer, 2026-11-09),
-within the documented ancestry limits: open and confined placements, each an
-untraced control and a timer run. Both timer runs have zero main-trace and
-TSC-instance losses and complete clock, sampler and SMI coverage (the open
-run's conversion excluded one suspect anchor under the existing rule); both
-confined runs kept every attributable observer task off CPUs 2 and 3, the
-untraced one by its midpoint snapshot, the timer one also in its trace.
-The operator quieted the host with `tools/quiet_host.sh` around attempts 3 to
-9 (its record is in every session record). The `.correlate.txt` files are `trace_correlate.py`
-outputs the operator saved after each session; attempts 7 and 8's were run
-at `8318db6` after the session, and attempt 9's at `6933d33`. Each subfolder also holds a
-`SHA256SUMS` of its files. Described in
+hardware telemetry, kept with checksums at the reviewer's request, failed
+captures included. Each subfolder keeps its session directory's name and
+holds a `SHA256SUMS` of its files. Described in
 [control-rate.md](../hardware/control-rate.md).
+
+**Failed or superseded captures (not accepted):**
+
+- `stage1-controls/` (attempt 1, at `dcb3244`): the probe controls, an
+  untraced control and a timer run whose old return probe caused 56,712
+  NULL-page kernel faults; superseded.
+- `stage1-controls-2/` (attempt 3, at `3a2d12d`): the controls, which pass,
+  an untraced control and a timer run that lost 108,445 events on CPU 3.
+- `stage1-placement-2/` (attempt 4, at `3a2d12d`): open and confined
+  placements, each an untraced control and a timer run; the open timer run
+  is complete in events but fails the SMI coverage rule, and the confined
+  one lost 2,674,161 events on CPU 3.
+- Attempt 2 (`stage1-placement`) was refused before writing anything and
+  has no files.
+- `stage1-controls-5/` and `stage1-placement-6/` (attempts 5 and 6, at
+  `b6d9fde`, the first on the recorder staging: each run's streams on a
+  private `noswap` tmpfs, published with an inventory and a ledger): the
+  controls stopped at the trace buffers' readback before the controls
+  workload ran (the allowance ignored the kernel's page rounding); the open
+  untraced control ran and was published, and the open timer run stopped at
+  the same readback before the probe. Their trace files are startup traces,
+  recorded before the stop; no confined run started.
+- `stage1-placement-8/` (attempt 8, at `8318db6`): the open untraced control
+  and timer run, the timer run as complete as attempt 7's, and the confined
+  untraced control, a placement failure: halfway through it a thread of an
+  observer, absent from the placement record, was allowed on CPUs 2 and 3,
+  and the session stopped before the confined timer run. The placement
+  rehearsal was not accepted.
+
+**Accepted rehearsals (reviewer, 2026-11-09):**
+
+- `stage1-controls-7/` (attempt 7, at `8318db6`), accepted for its recording
+  and controls checks: the controls pass; its timer run has zero main-trace
+  and TSC-instance losses, zero packets dropped by tcpdump, and complete
+  clock, sampler and SMI coverage. Its controls count while the kernel, the
+  probe definitions and the event set stay unchanged.
+- `stage1-placement-9/` (attempt 9, acquired and analysed at `6933d33`,
+  after the repeated observer placement and its read-failure correction),
+  accepted as the emulator recording and placement rehearsal within the
+  documented ancestry limits: open and confined placements, each an
+  untraced control and a timer run. Both timer runs have zero main-trace and
+  TSC-instance losses and complete clock, sampler and SMI coverage (the open
+  run's conversion excluded one suspect anchor under the existing rule);
+  both confined runs kept every attributable observer task off CPUs 2 and 3,
+  the untraced one by its midpoint snapshot, the timer one also in its
+  trace.
+
+Every analysis here fails the USB association check by design, the one
+exception the acceptances allow: over the pty no USB OUT submission exists,
+so the check validates nothing of the USB path (on hardware it stays
+strict). All the probe runs fail T1, T2 and T6a, as every emulator run has;
+no hardware control rate is qualified by these rehearsals.
+
+The operator quieted the host with `tools/quiet_host.sh` around attempts 3
+to 9 (its record is in every session record). The `.correlate.txt` files
+are `tools/trace_correlate.py` outputs. Those of attempts 1, 3 and 4 were run
+by the operator after each session and saved in the session directories
+(they were there before the developer first read them). Those of attempts 7,
+8 and 9 were run by the developer (Claude Code) after the session, at
+`8318db6` (attempts 7 and 8) and `6933d33` (attempt 9), with `--adapter 1-9`,
+and added to the archived folders; the session directories do not hold them.
 
 | file | role | sha256 |
 |---|---|---|
@@ -1856,7 +1877,7 @@ at `8318db6` after the session, and attempt 9's at `6933d33`. Each subfolder als
 | `stage1-controls-7/fs-controls-20261109-7.staging.sha256` | Stage 1 emulator rehearsal (probe controls, attempt 7), staging ledger (sha256sum format; the published staged files) | `cd7994d8fe51eb31e475ba97b8f2650b6d2d2d7c6705e3897de72a18868b1d9c` |
 | `stage1-controls-7/fs-controls-20261109-7.trace.dat` | Stage 1 emulator rehearsal (probe controls, attempt 7), controls trace with the fair server's probe events (trace-cmd, mono clock) | `6eb1530e431caa6c407215d827fcd03d842317b30307cc79278c62746d7d9231` |
 | `stage1-controls-7/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261109-7.csv` | Stage 1 emulator rehearsal (timer run, attempt 7), per-cycle log | `3e572f7ed73094ad771d44bec3892383871148391a53fee86b7594ed95b42ed7` |
-| `stage1-controls-7/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261109-7.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, attempt 7), trace_correlate.py output (`--adapter 1-9`), run at `8318db6` after the session | `1e0f10541a144f4867bbfbf7a13ee33c59a9acb4e1c4efd6214dd2f9f4cf6873` |
+| `stage1-controls-7/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261109-7.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, attempt 7), trace_correlate.py output (`--adapter 1-9`), run by the developer at `8318db6` after the session | `1e0f10541a144f4867bbfbf7a13ee33c59a9acb4e1c4efd6214dd2f9f4cf6873` |
 | `stage1-controls-7/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261109-7.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, attempt 7), process listing at the run's start | `6159564182ae01767b95fdbf50519009b22b77c96f7824916cd9322a6ad9689c` |
 | `stage1-controls-7/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261109-7.csv.run.txt` | Stage 1 emulator rehearsal (timer run, attempt 7), session record | `2e039d168a5fc8c5b0532ebf35962f5e5f068190a2af4ba4a203f4605bd037a3` |
 | `stage1-controls-7/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-timer-20261109-7.csv.smi.csv` | Stage 1 emulator rehearsal (timer run, attempt 7), CPU 3 SMI counts (perf stat -I 10) | `5d5e36b7c782ba5fad656d34d12370ab7ebc89b390e94cbd26c35ce6c090d295` |
@@ -1882,7 +1903,7 @@ at `8318db6` after the session, and attempt 9's at `6933d33`. Each subfolder als
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-untraced-20261109-8.csv.summary.toml` | Stage 1 emulator rehearsal (untraced control, confined placement, attempt 8 (placement failure: an observer thread allowed on CPUs 2 and 3 halfway; the session stopped before the confined timer run)), probe summary | `ab3b99949b82382007b879b6808e92f08e6bf024245d459b851c6c55f065ca95` |
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-untraced-20261109-8.csv.tasks.txt` | Stage 1 emulator rehearsal (untraced control, confined placement, attempt 8 (placement failure: an observer thread allowed on CPUs 2 and 3 halfway; the session stopped before the confined timer run)), task snapshot | `855901b0b9d31644696facd0aa2c5595e2f5dc003ff5dea43c98568cbd775793` |
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-8.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 8), per-cycle log | `d64d41344649b10f7bd086509980aa89e479d6f5e2a0bc630348c2297192a267` |
-| `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-8.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 8), trace_correlate.py output (`--adapter 1-9`), run at `8318db6` after the session | `f706fd05291d1283aa31f457a8c2507adaff0d49ea8e8b54df497304ff23fd1a` |
+| `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-8.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 8), trace_correlate.py output (`--adapter 1-9`), run by the developer at `8318db6` after the session | `f706fd05291d1283aa31f457a8c2507adaff0d49ea8e8b54df497304ff23fd1a` |
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-8.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 8), process listing at the run's start | `2647aeb80a9ad76d0c9a83e1e1cfde3f795b5bc0a670d68ba287aa5224a48578` |
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-8.csv.run.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 8), session record | `501d4d02b473478bd0d3faf5df139363f217e80b76ca4a7fdd9ef3d61d87caa4` |
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-8.csv.smi.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 8), CPU 3 SMI counts (perf stat -I 10) | `066b1025eab4696399d93e6232ffc1bd6020ee5d66b16fef65d7cb75445159e3` |
@@ -1901,7 +1922,7 @@ at `8318db6` after the session, and attempt 9's at `6933d33`. Each subfolder als
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-8.csv.summary.toml` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 8), probe summary | `c2040ac8e9af28026f18ad438bd0b439d1d5d2fd48213c28a4dd1cb6dc0b8d7a` |
 | `stage1-placement-8/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-8.csv.tasks.txt` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 8), task snapshot | `e84db5482a8da97b39999c2eeaf2d268222479c5ec0e0cfe4d9b7cfda996e627` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-timer-20261109-9.csv` | Stage 1 emulator rehearsal (timer run, confined placement, attempt 9), per-cycle log | `6a2c9e4ae0af5cc2b89647a83138674fb11d7f1db0c27c3f28f1efa83f23d300` |
-| `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-timer-20261109-9.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, confined placement, attempt 9), trace_correlate.py output (`--adapter 1-9`), run at `6933d33` after the session | `490edc5df21cd0b8b0af27b75dfb46bafa95d62da208178d5f13ca3f6b31840d` |
+| `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-timer-20261109-9.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, confined placement, attempt 9), trace_correlate.py output (`--adapter 1-9`), run by the developer at `6933d33` after the session | `490edc5df21cd0b8b0af27b75dfb46bafa95d62da208178d5f13ca3f6b31840d` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-timer-20261109-9.csv.lineage.txt` | Stage 1 emulator rehearsal (timer run, confined placement, attempt 9), task lineage listed right after the trace started (observer_affinity.py tasks), with its completeness line | `e549fd1c97e90a1af190bf4917db04f8914d5035d1054bcc29a86c60aa3ee77c` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-timer-20261109-9.csv.observers.jsonl` | Stage 1 emulator rehearsal (timer run, confined placement, attempt 9), observer placement record (passes, identities, origins, intents, confinements, restorations) | `f7e0f6073f4814ebaf7d438357bc507bd11a3bc7a0ac8b35004453e56c7c0209` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-timer-20261109-9.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, confined placement, attempt 9), process listing at the run's start | `b9ebf31fafd3d005f102cc55d6f0338bedc4d6c56afc80b36d3e2ffe3d2cbf2a` |
@@ -1923,7 +1944,7 @@ at `8318db6` after the session, and attempt 9's at `6933d33`. Each subfolder als
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-untraced-20261109-9.csv.summary.toml` | Stage 1 emulator rehearsal (untraced control, confined placement, attempt 9), probe summary | `cec228320c1010a0bbc674611eea4abfd61e0df2f53fa2411e01653bd6c88ea5` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-confined-untraced-20261109-9.csv.tasks.txt` | Stage 1 emulator rehearsal (untraced control, confined placement, attempt 9), task snapshot halfway through the run, with its task lineage and completeness line | `6e6f9306bdb18a53870fac2f85004746412628c5d787b0b57a96ae6729b1bf57` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-9.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 9), per-cycle log | `739456322e90f5e1976f587bb13ce3a37361ad95c0723e7636acfbf5dbb697f9` |
-| `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-9.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 9), trace_correlate.py output (`--adapter 1-9`), run at `6933d33` after the session | `bbbd5479336fd2e717e17e384c11da2709659f2bbaa50dd9d0cc2735888cb712` |
+| `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-9.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 9), trace_correlate.py output (`--adapter 1-9`), run by the developer at `6933d33` after the session | `bbbd5479336fd2e717e17e384c11da2709659f2bbaa50dd9d0cc2735888cb712` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-9.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 9), process listing at the run's start | `de3cdf179e25b957b4fda160f01ce103744a9086d39bc19149998432726799c4` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-9.csv.run.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 9), session record | `a7a891a63a2cf403b0272a2f162b8290bcfcaec3dfd0a72809aecf90c3a9d72c` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261109-9.csv.smi.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 9), CPU 3 SMI counts (perf stat -I 10) | `10839f636f1df80f87e87225610214f0d573250a445858508a31a64158a03b6e` |
