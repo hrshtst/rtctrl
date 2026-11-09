@@ -5,10 +5,10 @@ staging): the budget, the mount's verification and marker, an in-run guard,
 and the publication of the staged files to the output directory with their
 release.
 
-The session (as root) creates a mount point under the stage root and mounts a
-tmpfs there with size=S and noswap; this tool checks that mount, marks it as
-the session's, watches it during the run, and once every writer has stopped
-publishes it:
+The session (as root) creates a mount point under the stage root, owned by
+the operator with mode 0700, and mounts a tmpfs there with size=S and
+noswap; this tool checks that mount, marks it as the session's, watches it
+during the run, and once every writer has stopped publishes it:
 
 - inventory: every staged file is hashed once (SHA-256) into an immutable
   inventory, kept in the stage and written durably to the output directory
@@ -28,15 +28,31 @@ publishes it:
   its mount point removed. A stage without a complete marker is released by
   abort, and only while it holds no data.
 
+Past an unmount nothing inside the mount point is read or deleted: the
+stage's files and records went with the tmpfs, and the bare mount point is
+removed with rmdir (through sudo), which removes only an empty directory. So
+a retry after a failure or an interruption between the unmount and the
+removal needs neither the vanished marker nor access to the directory, and
+completes the same way (release or abort). Only a directory named as the
+session names its stages (<session>-<attempt>-<seq>-<8 hex digits>) is ever
+unmounted or removed.
+
 The budget (provisional, empirical constants for the measured timer
 configuration; a guard, not a reservation): per run,
-  S = 1.25 (R + C + A), R = rho (D + 10 s) raw trace, C = R / 4 assembled,
-A the other enabled streams (at least 512 MiB in a traced run), each mode
-budgeted for the streams it enables; and before mounting MemAvailable must be
-at least S + K + H, K the kernel ring buffers the run allocates (the buffer
-size for every possible CPU in each trace array it uses), H = max(8 GiB, 15%
-of MemTotal). The guard stops the run's recorders when the stage's free
-space falls below C + 64 MiB or MemAvailable below H / 2.
+  S = 1.25 (R + C + A) + Q, R = rho (D + 10 s) raw trace, C = R / 4
+assembled, A the other enabled streams (at least 512 MiB in a traced run),
+each mode budgeted for the streams it enables, Q = 64 MiB the guard's
+reserve; and before mounting MemAvailable must be at least S + K + H, K the
+kernel ring buffers the run allocates (the buffer size for every possible
+CPU in each trace array it uses), H = max(8 GiB, 15% of MemTotal). The guard
+stops the run's recorders when the stage's free space falls below C + Q (what
+the run still writes after the stop, the assembled trace, and the reserve;
+Q alone in an untraced run) or MemAvailable below H / 2. The stage holds its
+reserve on top of the budgeted streams, so in every mode it stays above the
+bound empty, while recording (the raw trace and the other streams, their
+25% margin used too) and at the assembly's end (the assembled trace beside
+the raw files). An untraced run has no recorder to stop: a trip there is
+recorded and fails the run.
 
 usage: trace_stage.py budget --mode M --duration-s D [--rate-hz R] --buffer-kb B --cpus N
                              [--usbmon 0|1] [--perf-hz F] [--perf-stack S] [--exerciser 0|1]
@@ -48,10 +64,13 @@ usage: trace_stage.py budget --mode M --duration-s D [--rate-hz R] --buffer-kb B
        trace_stage.py release --stage DIR --outdir DIR
        trace_stage.py abort --stage DIR
        trace_stage.py leftovers --root DIR
-(--meminfo PATH replaces /proc/meminfo; FINDMNT, UMOUNT and TRACE_STAGE_SUDO
-replace findmnt, umount and sudo, "none" running without it; TRACE_STAGE_FAIL
-injects a publication failure for the tests: copy, hash, link,
-crash-after-link or crash-before-ledger.)
+(--meminfo PATH replaces /proc/meminfo; FINDMNT, UMOUNT, RMDIR and
+TRACE_STAGE_SUDO replace findmnt, umount, rmdir and sudo, "none" running
+without it; TRACE_STAGE_FAIL injects a failure for the tests: copy, hash,
+link, crash-after-link, crash-before-ledger or crash-after-unmount; and
+TRACE_STAGE_CAPACITY=findmnt models the tests' stand-in stage, a directory on
+a large filesystem, as the bounded mount it stands for: findmnt's size, less
+its files in 4 KiB pages.)
 """
 
 from __future__ import annotations
@@ -64,6 +83,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import secrets
 import signal
 import subprocess
@@ -86,12 +106,14 @@ SAMPLER_RATE = 64 * 1024   # and per second
 EXERCISER = 16 * MIB
 CONTROLS_TXT = 16 * MIB
 PERF_TEXT_PER_SAMPLE = 8 * 1024
-GUARD_SPACE_EXTRA = 64 * MIB
+GUARD_RESERVE = 64 * MIB    # Q: held on top of the budgeted streams, the guard's bound beyond C
 MODES = ("untraced", "traced", "profiled", "timer", "controls")
 MARKER = ".rtctrl-stage"
 INVENTORY = ".rtctrl-inventory.json"
 OWN = (MARKER, MARKER + ".tmp", INVENTORY, INVENTORY + ".tmp")
 CHUNK = 4 * MIB
+PAGE = 4096
+STAGE_NAME = re.compile(r"^\d+-\d{8}T\d{6}-\d+-\d+-[0-9a-f]{8}$")
 
 
 class StageError(Exception):
@@ -140,7 +162,7 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
         items["perf text"] = perf_hz * t * PERF_TEXT_PER_SAMPLE
     other = sum(items.values())
     a = max(A_TRACED, other) if traced else other
-    size_mib = ceil_mib(MARGIN * (raw + assembled + a))
+    size_mib = ceil_mib(MARGIN * (raw + assembled + a) + GUARD_RESERVE)
     arrays = {"untraced": 0, "traced": 1, "profiled": 1, "controls": 1, "timer": 2}[mode]
     kernel = buffer_kb * 1024 * cpus * arrays
     total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
@@ -149,9 +171,10 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
     headroom = max(8 * GIB, int(0.15 * total))
     need = size_mib * MIB + kernel + headroom
     return {"mode": mode, "duration_s": duration_s, "raw": int(raw), "assembled": int(assembled), "other": int(other),
-            "items": {k: int(v) for k, v in items.items()}, "a": int(a), "size_mib": size_mib, "kernel": kernel,
-            "headroom": headroom, "need": need, "available": avail, "ok": avail >= need,
-            "guard_min_free": int(assembled) + GUARD_SPACE_EXTRA, "guard_min_available": headroom // 2}
+            "items": {k: int(v) for k, v in items.items()}, "a": int(a), "reserve": GUARD_RESERVE,
+            "size_mib": size_mib, "kernel": kernel, "headroom": headroom, "need": need, "available": avail,
+            "ok": avail >= need, "guard_min_free": int(assembled) + GUARD_RESERVE,
+            "guard_min_available": headroom // 2}
 
 
 def gb(n: float) -> str:
@@ -190,6 +213,26 @@ def verify(stage: pathlib.Path, size_mib: int) -> str:
     if st.st_uid != os.getuid() or st.st_mode & 0o777 != 0o700:
         raise StageError(f"{stage} is not private to this user (uid {st.st_uid}, mode {st.st_mode & 0o777:o})")
     return f"tmpfs {size} bytes, options {','.join(opts)}"
+
+
+def space(stage: pathlib.Path) -> tuple[int, int]:
+    """The stage's used and free bytes: its filesystem's statvfs, or with
+    TRACE_STAGE_CAPACITY=findmnt (the tests' stand-in stage) the bounded mount
+    it stands for, findmnt's size less its files in 4 KiB pages."""
+    if os.environ.get("TRACE_STAGE_CAPACITY") == "findmnt":
+        m = findmnt(stage)
+        if m is None:
+            raise StageError(f"{stage} is not a mount point")
+        used = 0
+        for d, _, names in os.walk(stage):
+            for name in names:
+                try:
+                    used += -(-os.lstat(os.path.join(d, name)).st_size // PAGE) * PAGE
+                except FileNotFoundError:
+                    pass
+        return used, max(0, m[1] - used)
+    st = os.statvfs(stage)
+    return (st.f_blocks - st.f_bfree) * st.f_frsize, st.f_bavail * st.f_frsize
 
 
 def write_json_atomic(path: pathlib.Path, obj: dict) -> None:
@@ -404,19 +447,30 @@ def mounted(stage: pathlib.Path) -> bool:
 
 
 def unmount_and_remove(stage: pathlib.Path) -> None:
+    """Unmounts the stage when it is mounted, then removes the bare mount
+    point with rmdir, which removes only an empty directory. Nothing inside
+    the mount point is read or deleted past the unmount (see the module's
+    description), so a retry completes the same way."""
+    if not STAGE_NAME.match(stage.name):
+        raise StageError(f"{stage} is not named as a stage of tools/trace_session.sh "
+                         "(<session>-<attempt>-<seq>-<8 hex digits>): not touched")
     if mounted(stage):
         r = subprocess.run([*sudo(), os.environ.get("UMOUNT", "umount"), str(stage)], capture_output=True, text=True)
         if r.returncode != 0:
             raise StageError(f"the unmount of {stage} failed: {(r.stderr or r.stdout).strip()}")
         if mounted(stage):
             raise StageError(f"{stage} is still mounted after its unmount")
-    for name in OWN:  # left only when the stage was never a mount (the tests' stand-in)
-        (stage / name).unlink(missing_ok=True)
-    if stage.exists():
-        r = subprocess.run([*sudo(), "rmdir", str(stage)], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise StageError(f"the mount point {stage} was not removed: {(r.stderr or r.stdout).strip()}")
-    if stage.exists():
+        if fail_point("crash-after-unmount"):
+            os._exit(9)
+    if not os.path.lexists(stage):
+        return
+    if stage.is_symlink() or not stage.is_dir():
+        raise StageError(f"{stage} is not a directory: not removed")
+    r = subprocess.run([*sudo(), os.environ.get("RMDIR", "rmdir"), str(stage)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise StageError(f"the mount point {stage} is unmounted but was not removed (rmdir, which removes only an "
+                         f"empty directory): {(r.stderr or r.stdout).strip()}")
+    if os.path.lexists(stage):
         raise StageError(f"{stage} remains")
 
 
@@ -432,8 +486,17 @@ def empty_tree(stage: pathlib.Path) -> None:
 
 
 def release(stage: pathlib.Path, outdir: pathlib.Path, out) -> None:
-    if not stage.exists():
+    if not os.path.lexists(stage):
         print(f"released: {stage} is gone already", file=out)
+        return
+    if not mounted(stage):
+        # A release (or abort) unmounted it and was interrupted or failed
+        # before the removal: the staged files and the marker went with the
+        # tmpfs, and the bare mount point is all that remains.
+        unmount_and_remove(stage)
+        print(f"released: {stage} was no longer mounted (its staged files and records went with its tmpfs); its "
+              f"bare mount point removed. Nothing was verified again here: the ledger in {outdir} stays checkable "
+              "with sha256sum -c", file=out)
         return
     marker = read_marker(stage)
     try:
@@ -463,9 +526,16 @@ def release(stage: pathlib.Path, outdir: pathlib.Path, out) -> None:
 
 
 def abort(stage: pathlib.Path, out) -> None:
-    """A stage without a complete marker, or never written: undone only while it holds no data."""
-    if not stage.exists():
+    """A stage without a complete marker, or never written: undone only while
+    it holds no data. A mounted one is checked through its mounted root (the
+    operator's); a bare mount point (never mounted, or unmounted already) is
+    never entered, rmdir removing it only when empty."""
+    if not os.path.lexists(stage):
         print(f"aborted: {stage} does not exist", file=out)
+        return
+    if not mounted(stage):
+        unmount_and_remove(stage)
+        print(f"aborted: {stage} was not mounted; its bare mount point removed (it was empty)", file=out)
         return
     data = [str(p.relative_to(stage)) for p in stage.iterdir() if p.name not in OWN]
     if data:
@@ -473,7 +543,7 @@ def abort(stage: pathlib.Path, out) -> None:
     if (stage / INVENTORY).exists():
         raise StageError(f"{stage} has an inventory: publish and release it instead")
     unmount_and_remove(stage)
-    print(f"aborted: {stage} held no data; unmounted if mounted, and removed", file=out)
+    print(f"aborted: {stage} held no data; unmounted and removed", file=out)
 
 
 def leftovers(root: pathlib.Path, out) -> int:
@@ -482,6 +552,10 @@ def leftovers(root: pathlib.Path, out) -> int:
     n = 0
     for d in sorted(root.iterdir()):
         n += 1
+        if not mounted(d):
+            print(f"{d}: not mounted, a bare mount point (its tmpfs and records are gone); release or abort removes "
+                  "it (rmdir: only when empty)", file=out)
+            continue
         try:
             m = read_marker(d)
             published = (d / INVENTORY).exists()
@@ -508,9 +582,7 @@ def guard(stage: pathlib.Path, min_free: int, min_avail: int, interval: float, s
     print(f"guard: every {interval:g} s, stop below {min_free} bytes free or {min_avail} bytes MemAvailable; "
           f"recorders {','.join(map(str, stop_pids)) or 'none'}", file=out, flush=True)
     while not stop:
-        st = os.statvfs(stage)
-        used = (st.f_blocks - st.f_bfree) * st.f_frsize
-        free = st.f_bavail * st.f_frsize
+        used, free = space(stage)
         try:
             avail = meminfo(mem_path).get("MemAvailable")
         except OSError:
@@ -584,7 +656,8 @@ def main() -> int:
                 print(f"{k}={r[k]}", file=out)
             items = ", ".join(f"{k} {gb(v)}" for k, v in r["items"].items())
             print(f"staging budget ({a.mode}, {a.duration_s:g} s, provisional): raw trace {gb(r['raw'])}, assembled "
-                  f"{gb(r['assembled'])}, other streams {gb(r['a'])} ({items}); tmpfs cap {r['size_mib']} MiB; "
+                  f"{gb(r['assembled'])}, other streams {gb(r['a'])} ({items}); guard reserve "
+                  f"{r['reserve'] // MIB} MiB; tmpfs cap {r['size_mib']} MiB; "
                   f"kernel buffers {gb(r['kernel'])}, headroom {gb(r['headroom'])}: MemAvailable needed "
                   f"{gb(r['need'])}, available {gb(r['available'])}{'' if r['ok'] else ': NOT ENOUGH'}", file=out)
             return 0 if r["ok"] else 1
@@ -596,8 +669,8 @@ def main() -> int:
         elif a.cmd == "guard":
             guard(a.stage, a.min_free, a.min_available, a.interval, a.stop_pid, a.meminfo, out)
         elif a.cmd == "usage":
-            st = os.statvfs(a.stage)
-            print(f"used {(st.f_blocks - st.f_bfree) * st.f_frsize} free {st.f_bavail * st.f_frsize}", file=out)
+            used, free = space(a.stage)
+            print(f"used {used} free {free}", file=out)
         elif a.cmd == "publish":
             publish(a.stage, a.outdir, a.meminfo, a.settle_s, out)
         elif a.cmd == "release":

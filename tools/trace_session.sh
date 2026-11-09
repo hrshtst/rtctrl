@@ -79,8 +79,8 @@
 # trace-cmd's per-CPU temporary files (--temp), usbmon, the SMI counts, the
 # TSC instance and sampler pairs, perf, the exerciser's log and the
 # snapshots) are written to a private, size-bounded noswap tmpfs mounted for
-# the run under the stage root (/run/rtctrl-stage), never to the output
-# directory, so no recorder writes to the output filesystem during the run;
+# the run under the stage root (/run/rtctrl-stage) on a mount point that is
+# the operator's (mode 0700), never to the output directory, so no recorder writes to the output filesystem during the run;
 # the run record and the observer record stay in the output directory, so
 # every recovery command names a file that exists. Before the mount, the
 # run's budget (by mode: the raw trace, its assembly and the other enabled
@@ -90,10 +90,14 @@
 # buffer_total_size_kb are read back against the budget before the probe;
 # and a guard on the tracer CPUs stops the recorders when the stage's free
 # space or MemAvailable falls below its bounds (a guard, not a
-# reservation). Once every writer has stopped, the stage is inventoried,
+# reservation; the stage holds the guard's reserve on top of the budgeted
+# streams, so the budgeted usage never trips it in any mode, and in an
+# untraced run, with no recorder to stop, a trip is recorded and fails the
+# run). Once every writer has stopped, the stage is inventoried,
 # published to the output directory (each copy hashed as read back, linked
 # without overwriting and fsynced; the ledger <log>.csv.staging.sha256 last)
-# and only then released (emptied, unmounted, removed); failed captures are
+# and only then released (emptied, unmounted, the bare mount point removed by
+# rmdir without entering it, so a retry needs no marker); failed captures are
 # published the same way, and the capture is judged from the published
 # copies. A publication or release that fails keeps the stage, names it with
 # the retry, and fails the session (status 3, an interruption keeping 130),
@@ -579,7 +583,7 @@ command -v timeout >/dev/null || problems+=("timeout is not installed (coreutils
 if [ -f "$STAGE_TOOL" ] && ! left=$(python3 "$STAGE_TOOL" leftovers --root "$STAGE_ROOT" 2>&1); then
   problems+=("a stage remains under $STAGE_ROOT from an earlier session (it may hold the only copy of a run's evidence; this session never touches it):
 $(sed 's/^/      /' <<<"$left")
-      publish and release it (python3 $STAGE_TOOL publish --stage DIR --outdir OUTDIR, then release with the same arguments), or, if it holds no data, python3 $STAGE_TOOL abort --stage DIR")
+      publish and release it (python3 $STAGE_TOOL publish --stage DIR --outdir OUTDIR, then release with the same arguments; a bare mount point, unmounted already, needs only the release), or, if it holds no data, python3 $STAGE_TOOL abort --stage DIR")
 fi
 # The probes' controls run afresh in each session: an earlier attempt's
 # files, whatever their verdict or completeness, refuse it.
@@ -1085,6 +1089,16 @@ stage_open() {  # mode duration_s rate_hz base note -> 0 once the stage is ready
     return 1
   fi
   stage_owed=1
+  # The mount point is the operator's, mode 0700, as the mounted root will
+  # be: once unmounted, it is again what remains (the cleanup never enters
+  # it; see tools/trace_stage.py).
+  if ! out=$(priv chown "$(id -u):$(id -g)" "$stage_dir" 2>&1) ||
+     ! out=$(stat -c %u:%g:%a "$stage_dir" 2>&1) || [ "$out" != "$(id -u):$(id -g):700" ]; then
+    echo "staging: the mount point $stage_dir is not the operator's with mode 0700 ($out)" >>"$note"
+    stage_abort
+    return 1
+  fi
+  echo "staging: the mount point $stage_dir, the operator's with mode 0700 ($out)" >>"$note"
   stage_owed=2
   if ! out=$(priv "$MOUNT" -t tmpfs -o "size=${size_mib}m,noswap,mode=0700,uid=$(id -u),gid=$(id -g),nosuid,nodev,noexec" \
              rtctrl-stage "$stage_dir" 2>&1); then

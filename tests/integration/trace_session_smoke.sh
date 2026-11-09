@@ -123,10 +123,16 @@ done
 # Its per-CPU temporary file in --temp's directory (FAKE_IGNORE_TEMP: beside
 # the output instead), and its buffers' total, -b for every possible CPU
 # (FAKE_BUFFER_TOTAL replaces it). FAKE_DROP_MEM: MemAvailable falls once it
-# records (the staging guard's memory stop).
+# records (the staging guard's memory stop); FAKE_TRACE_FILL: its temporary
+# file fills the stage's modeled capacity but 1 MiB (the guard's space stop;
+# sparse, removed at its stop as trace-cmd removes its temporary files).
 tdir=${temp:-$(dirname "$out")}
 [ "${FAKE_IGNORE_TEMP:-0}" = 1 ] && tdir=$(dirname "$out")
 : >"$tdir/$(basename "$out").cpu0"
+if [ "${FAKE_TRACE_FILL:-0}" = 1 ]; then
+  cap=$("$FINDMNT" -n -b -o FSTYPE,SIZE,OPTIONS --mountpoint "$(dirname "$tdir")" | awk '{print $2}')
+  truncate -s $((cap - 1048576)) "$tdir/$(basename "$out").cpu0"
+fi
 npos=$(python3 -c 'import sys; n=0
 for part in open("/sys/devices/system/cpu/possible").read().strip().split(","):
     a, _, b = part.partition("-"); n += int(b or a) - int(a) + 1
@@ -381,23 +387,29 @@ case "$1" in
 esac
 EOF
 # The runs' staging: mount adds a line to a stand-in mount table that
-# findmnt answers from and umount removes (FAKE_MOUNT_FAIL: the mount fails;
-# FAKE_MOUNT_TYPE replaces tmpfs; FAKE_MOUNT_DROP leaves an option out;
-# $FAKE_UMOUNT_FAIL existing: the unmount fails).
+# findmnt answers from, with the mount point's own owner and mode (logged)
+# kept for its unmount; umount emulates a real one: the tmpfs's contents
+# vanish and the mount point reappears with its own mode. FAKE_MOUNT_FAIL:
+# the mount fails; FAKE_MOUNT_TYPE replaces tmpfs; FAKE_MOUNT_DROP leaves an
+# option out; $FAKE_UMOUNT_FAIL or $FAKE_RMDIR_FAIL existing: the unmount or
+# the mount point's removal fails. The guard and the usage see each stage
+# with its bounded capacity (TRACE_STAGE_CAPACITY=findmnt).
 cat >"$FAKE/mount" <<'EOF'
 #!/usr/bin/env bash
-echo "$*" >>"$FAKE_LOG.mount"
+target=${*: -1}
+echo "$* (mount point $(stat -c %u:%g:%a "$target"))" >>"$FAKE_LOG.mount"
 [ "${FAKE_MOUNT_FAIL:-0}" = 1 ] && { echo "mount: stand-in failing as asked" >&2; exit 32; }
-opts=$4; target=${*: -1}
+opts=$4
 size=$(sed -n 's/.*size=\([0-9]*\)m.*/\1/p' <<<"$opts")
 [ -n "${FAKE_MOUNT_DROP:-}" ] && opts=$(tr , '\n' <<<"$opts" | grep -vx "$FAKE_MOUNT_DROP" | paste -sd,)
+under=$(stat -c %a "$target")
 chmod 700 "$target"
-echo "$target ${FAKE_MOUNT_TYPE:-tmpfs} $((size * 1048576)) $opts" >>"$FAKE_MOUNTS"
+echo "$target ${FAKE_MOUNT_TYPE:-tmpfs} $((size * 1048576)) $opts $under" >>"$FAKE_MOUNTS"
 EOF
 cat >"$FAKE/findmnt" <<'EOF'
 #!/usr/bin/env bash
 target=${*: -1}
-while read -r path fstype size opts; do
+while read -r path fstype size opts under; do
   [ "$path" = "$target" ] && { echo "$fstype $size $opts"; exit 0; }
 done <"$FAKE_MOUNTS"
 exit 1
@@ -406,7 +418,16 @@ cat >"$FAKE/umount" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.umount"
 [ -e "$FAKE_UMOUNT_FAIL" ] && { echo "umount: $1: target is busy" >&2; exit 32; }
+line=$(grep "^$1 " "$FAKE_MOUNTS") || { echo "umount: $1: not mounted" >&2; exit 32; }
+find "$1" -mindepth 1 -delete
+chmod "${line##* }" "$1"
 grep -v "^$1 " "$FAKE_MOUNTS" >"$FAKE_MOUNTS.new"; mv "$FAKE_MOUNTS.new" "$FAKE_MOUNTS"
+EOF
+cat >"$FAKE/rmdir" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.rmdir"
+[ -e "$FAKE_RMDIR_FAIL" ] && { echo "rmdir: failed to remove '$1': Device or resource busy" >&2; exit 1; }
+exec rmdir "$@"
 EOF
 chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
@@ -439,8 +460,9 @@ export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stre
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
-export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" FAKE_MOUNTS="$ROOT/mounts"
-export FAKE_UMOUNT_FAIL="$ROOT/umount-fail" TRACE_SESSION_STAGE_ROOT="$ROOT/stage" TRACE_SESSION_MEMINFO="$ROOT/meminfo"
+export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" RMDIR="$FAKE/rmdir" FAKE_MOUNTS="$ROOT/mounts"
+export FAKE_UMOUNT_FAIL="$ROOT/umount-fail" FAKE_RMDIR_FAIL="$ROOT/rmdir-fail" TRACE_STAGE_CAPACITY=findmnt
+export TRACE_SESSION_STAGE_ROOT="$ROOT/stage" TRACE_SESSION_MEMINFO="$ROOT/meminfo"
 export FS_PROBE_TOOL="$FAKE/fs_probes" FAIR_SERVER_BTF_RAW="$PWD/tests/data/btf_raw_fair_server.txt"
 if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
@@ -1515,14 +1537,17 @@ grep -q "rate-trace-cbp-1000hz-rt-idle-bounded-fast-untraced-$DATE-1.csv" "$ROOT
 
 
 # The runs' staging (tools/trace_stage.py). Every session above ran its runs
-# on a stand-in stage; here, the records of an untraced and a traced run, and
-# the paths that refuse, stop or keep a stage.
+# on a stand-in stage with its bounded capacity, untraced ones included,
+# without a guard stop; here, the records of an untraced and a traced run,
+# and the paths that refuse, stop or keep a stage.
 stage_left() { ls -A "$ROOT/stage" 2>/dev/null; }
 [ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "a stage remains after the sessions above" "$ROOT/mounts"
 for mode in untraced traced; do
   b=$(base "current-100hz-idle-bounded-fast-motion-$mode" 1)
   note="$b.run.txt"
-  grep -q '^staging budget (' "$note" && grep -q "^staging: verified: $ROOT/stage/" "$note" &&
+  grep -q '^staging budget (' "$note" && grep -q 'guard reserve 64 MiB' "$note" &&
+    grep -q "^staging: the mount point $ROOT/stage/[^ ]*, the operator's with mode 0700 ($(id -u):$(id -g):700)$" "$note" &&
+    grep -q "^staging: verified: $ROOT/stage/" "$note" &&
     grep -q 'noswap' "$note" && grep -q "^staging: marked: $ROOT/stage/" "$note" &&
     grep -q "^logging: the probe's log and every capture stream go to the stage $ROOT/stage/" "$note" &&
     grep -q '^--- staging guard ---' "$note" && grep -q 'stop: none$' "$note" &&
@@ -1541,6 +1566,13 @@ grep -q '^kernel buffers read back (buffer_total_size_kb): main ' "$(base curren
 for f in "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" "$(base position-100hz-idle-bounded-traced 1).run.txt"; do
   [ "$(grep -c '^--- staging guard ---$' "$f")" -eq 1 ] || fail "the guard's record is not once in $f" "$f"
 done
+# Every mount found its mount point the operator's, mode 0700; no session
+# above had a guard stop (the stages modeled with their bounded capacity).
+grep -q '(mount point ' "$FAKE_LOG.mount" && ! grep -v "(mount point $(id -u):$(id -g):700)$" "$FAKE_LOG.mount" | grep -q . ||
+  fail "a mount point was not the operator's with mode 0700" "$FAKE_LOG.mount"
+if grep -l '^guard stop:' "$OUT"/*.run.txt 2>/dev/null | grep -q .; then
+  fail "a guard stopped a run on a stage of its budgeted size" "$(grep -l '^guard stop:' "$OUT"/*.run.txt | head -n 1)"
+fi
 if grep -q '^kernel buffers read back' "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"; then
   fail "an untraced run read back trace buffers" "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"
 fi
@@ -1599,6 +1631,19 @@ grep -q '^guard stop: MemAvailable is 1024000 bytes' "$b.run.txt" &&
   grep -Eq '^verdict: (not run \(tracer\)|tracer failure \(.*the staging guard stopped the recorders \(MemAvailable is 1024000 bytes)' "$b.run.txt" ||
   fail "the guard's memory stop" "$b.run.txt"
 [ -z "$(stage_left)" ] || fail "the guard's stage was left" "$ROOT/stage-guard.log"
+# The guard's space stop on the stage's bounded capacity: trace-cmd's
+# temporary file fills it but 1 MiB, under the bound; the guard stops it and
+# says why, and the run fails.
+if FAKE_TRACE_FILL=1 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 85 --duration 3 --modes traced \
+    --runs current:100:idle:full </dev/null >"$ROOT/stage-space.log" 2>&1; then
+  fail "a session whose guard stopped the recorders on space went on" "$ROOT/stage-space.log"
+fi
+b=$(base current-100hz-idle-bounded-traced 85)
+grep -Eq '^guard stop: the stage has [0-9]+ bytes free \(bound [0-9]+\)' "$b.run.txt" &&
+  grep -Eq '^verdict: (not run \(tracer\)|tracer failure \(.*the staging guard stopped the recorders \(the stage has)' "$b.run.txt" &&
+  grep -q '^preservation: published and verified, the stage released$' "$b.run.txt" ||
+  fail "the guard's space stop" "$b.run.txt"
+[ -z "$(stage_left)" ] || fail "the guard's space stage was left" "$ROOT/stage-space.log"
 
 # trace-cmd's temporary files beside its output, not in --temp's directory:
 # the run stops before the probe; and buffers above the budget's allowance.
@@ -1679,5 +1724,27 @@ setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 93 --modes traced \
 rm -f "$ROOT/umount-fail"
 TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$kept" --outdir "$OUT" >"$ROOT/retry.log" 2>&1 &&
   [ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "the retried release" "$ROOT/retry.log"
+
+# A release that unmounts and then fails to remove the mount point: status
+# 3; the bare mount point (its marker gone with the tmpfs) refuses the next
+# session, listed as one; the retried release removes it without a marker.
+: >"$ROOT/rmdir-fail"
+status=0
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 94 --modes traced \
+  --runs current:100:idle:full </dev/null >"$ROOT/stage-rmdir.log" 2>&1 || status=$?
+rm -f "$ROOT/rmdir-fail"
+b=$(base current-100hz-idle-bounded-traced 94)
+kept="$ROOT/stage/$(stage_left)"
+[ "$status" -eq 3 ] && grep -q '^preservation: published and verified; the stage was NOT released' "$b.run.txt" &&
+  grep -q 'unmounted but was not removed' "$b.run.txt" && [ -d "$kept" ] && [ ! -s "$ROOT/mounts" ] &&
+  [ -z "$(ls -A "$kept")" ] || fail "the failed removal after the unmount (status $status)" "$ROOT/stage-rmdir.log"
+status=0
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 95 --modes traced \
+  --runs current:100:idle:full </dev/null >"$ROOT/stage-bare.log" 2>&1 || status=$?
+[ "$status" -eq 2 ] && grep -q "$kept: not mounted, a bare mount point" "$ROOT/stage-bare.log" && [ -d "$kept" ] ||
+  fail "the bare mount point's refusal (status $status)" "$ROOT/stage-bare.log"
+TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$kept" --outdir "$OUT" >"$ROOT/retry.log" 2>&1 &&
+  grep -q 'was no longer mounted' "$ROOT/retry.log" && [ -z "$(stage_left)" ] ||
+  fail "the retried release of the bare mount point" "$ROOT/retry.log"
 
 echo "trace session script OK"
