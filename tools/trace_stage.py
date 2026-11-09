@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""Staging of a run's capture streams on a private, size-bounded noswap
+tmpfs for tools/trace_session.sh (docs/hardware/control-rate.md, recorder
+staging): the budget, the mount's verification and marker, an in-run guard,
+and the publication of the staged files to the output directory with their
+release.
+
+The session (as root) creates a mount point under the stage root and mounts a
+tmpfs there with size=S and noswap; this tool checks that mount, marks it as
+the session's, watches it during the run, and once every writer has stopped
+publishes it:
+
+- inventory: every staged file is hashed once (SHA-256) into an immutable
+  inventory, kept in the stage and written durably to the output directory
+  (<base>.staging.inventory.json) before any copy;
+- publish: each file is copied to a temporary name in the output directory
+  (.<name>.partial-<token>, the stage's own token), fsynced, hashed as read
+  back and compared with the inventory, then linked to its final name without
+  overwriting, and its directory fsynced. A final file that already holds the
+  inventory's hash counts as published (a retry after a crash past a link); a
+  different one stops publication. Only the stage's own partial names are
+  ever removed. The ledger (<base>.staging.sha256, sha256sum format) is
+  written last and fsynced with its directory. Nothing syncs the whole
+  filesystem: the Dirty and Writeback figures are recorded before and after,
+  with a bounded settling check;
+- release: only when the ledger matches the inventory and every destination
+  file re-hashes to it, the staged files are deleted, the tmpfs unmounted and
+  its mount point removed. A stage without a complete marker is released by
+  abort, and only while it holds no data.
+
+The budget (provisional, empirical constants for the measured timer
+configuration; a guard, not a reservation): per run,
+  S = 1.25 (R + C + A), R = rho (D + 10 s) raw trace, C = R / 4 assembled,
+A the other enabled streams (at least 512 MiB in a traced run), each mode
+budgeted for the streams it enables; and before mounting MemAvailable must be
+at least S + K + H, K the kernel ring buffers the run allocates (the buffer
+size for every possible CPU in each trace array it uses), H = max(8 GiB, 15%
+of MemTotal). The guard stops the run's recorders when the stage's free
+space falls below C + 64 MiB or MemAvailable below H / 2.
+
+usage: trace_stage.py budget --mode M --duration-s D [--rate-hz R] --buffer-kb B --cpus N
+                             [--usbmon 0|1] [--perf-hz F] [--perf-stack S] [--exerciser 0|1]
+       trace_stage.py verify --stage DIR --size-mib M
+       trace_stage.py mark --stage DIR --session ID --base NAME --outdir DIR
+       trace_stage.py guard --stage DIR --min-free B --min-available B [--interval S] [--stop-pid PID ...]
+       trace_stage.py usage --stage DIR
+       trace_stage.py publish --stage DIR --outdir DIR
+       trace_stage.py release --stage DIR --outdir DIR
+       trace_stage.py abort --stage DIR
+       trace_stage.py leftovers --root DIR
+(--meminfo PATH replaces /proc/meminfo; FINDMNT, UMOUNT and TRACE_STAGE_SUDO
+replace findmnt, umount and sudo, "none" running without it; TRACE_STAGE_FAIL
+injects a publication failure for the tests: copy, hash, link,
+crash-after-link or crash-before-ledger.)
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import errno
+import hashlib
+import json
+import math
+import os
+import pathlib
+import secrets
+import signal
+import subprocess
+import sys
+import time
+
+MIB = 1 << 20
+GIB = 1 << 30
+RHO = 250_000_000          # raw trace bytes per second (provisional)
+MARGIN = 1.25
+COMPRESSION = 4            # the assembled trace's assumed floor (an assumption)
+A_TRACED = 512 * MIB       # the other streams of a traced run, at least
+OVERHEAD_S = 10            # recording before and after the probe
+PROBE_PER_CYCLE = 1024     # the probe's log and summary per cycle
+SNAPSHOTS = 16 * MIB       # process listing and task snapshot
+USBMON_RATE = 2_000_000    # bytes per second of the adapter's capture
+TSC_TEXT_FACTOR = 4        # the TSC instance's text, per byte of one CPU's buffer
+SAMPLER = MIB              # sampler pairs and SMI counts, fixed part
+SAMPLER_RATE = 64 * 1024   # and per second
+EXERCISER = 16 * MIB
+CONTROLS_TXT = 16 * MIB
+PERF_TEXT_PER_SAMPLE = 8 * 1024
+GUARD_SPACE_EXTRA = 64 * MIB
+MODES = ("untraced", "traced", "profiled", "timer", "controls")
+MARKER = ".rtctrl-stage"
+INVENTORY = ".rtctrl-inventory.json"
+OWN = (MARKER, MARKER + ".tmp", INVENTORY, INVENTORY + ".tmp")
+CHUNK = 4 * MIB
+
+
+class StageError(Exception):
+    pass
+
+
+def meminfo(path: str) -> dict[str, int]:
+    """/proc/meminfo's kB fields, in bytes."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            k, _, v = line.partition(":")
+            parts = v.split()
+            if parts and parts[0].isdigit():
+                out[k.strip()] = int(parts[0]) * (1024 if len(parts) > 1 and parts[1] == "kB" else 1)
+    return out
+
+
+def ceil_mib(n: float) -> int:
+    return int(math.ceil(n / MIB))
+
+
+def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: int, usbmon: bool,
+           perf_hz: int, perf_stack: int, exerciser: bool, mem: dict[str, int]) -> dict:
+    """The stage's size and the RAM a run needs, for the streams its mode enables."""
+    if mode not in MODES:
+        raise StageError(f"unknown mode {mode}")
+    t = duration_s + OVERHEAD_S
+    traced = mode != "untraced"
+    raw = RHO * t if traced else 0
+    assembled = raw / COMPRESSION
+    items: dict[str, float] = {"snapshots": float(SNAPSHOTS)}
+    if mode == "controls":
+        items["controls output"] = CONTROLS_TXT
+    else:
+        items["probe log"] = PROBE_PER_CYCLE * rate_hz * t
+    if traced and mode != "controls" and usbmon:
+        items["usbmon"] = USBMON_RATE * t
+    if mode == "timer":
+        items["TSC instance text"] = TSC_TEXT_FACTOR * buffer_kb * 1024
+        items["sampler and SMI counts"] = SAMPLER + SAMPLER_RATE * t
+        if exerciser:
+            items["exerciser"] = EXERCISER
+    if mode == "profiled":
+        items["perf.data"] = perf_hz * (perf_stack + 1024) * t
+        items["perf text"] = perf_hz * t * PERF_TEXT_PER_SAMPLE
+    other = sum(items.values())
+    a = max(A_TRACED, other) if traced else other
+    size_mib = ceil_mib(MARGIN * (raw + assembled + a))
+    arrays = {"untraced": 0, "traced": 1, "profiled": 1, "controls": 1, "timer": 2}[mode]
+    kernel = buffer_kb * 1024 * cpus * arrays
+    total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
+    if total is None or avail is None:
+        raise StageError("MemTotal or MemAvailable is missing from meminfo")
+    headroom = max(8 * GIB, int(0.15 * total))
+    need = size_mib * MIB + kernel + headroom
+    return {"mode": mode, "duration_s": duration_s, "raw": int(raw), "assembled": int(assembled), "other": int(other),
+            "items": {k: int(v) for k, v in items.items()}, "a": int(a), "size_mib": size_mib, "kernel": kernel,
+            "headroom": headroom, "need": need, "available": avail, "ok": avail >= need,
+            "guard_min_free": int(assembled) + GUARD_SPACE_EXTRA, "guard_min_available": headroom // 2}
+
+
+def gb(n: float) -> str:
+    return f"{n / 1e9:.2f} GB"
+
+
+def sudo() -> list[str]:
+    s = os.environ.get("TRACE_STAGE_SUDO", "sudo")
+    return [] if s == "none" else [s]
+
+
+def findmnt(stage: pathlib.Path) -> tuple[str, int, list[str]] | None:
+    """The mount exactly at stage: its type, size in bytes and options."""
+    r = subprocess.run([os.environ.get("FINDMNT", "findmnt"), "-n", "-b", "-o", "FSTYPE,SIZE,OPTIONS",
+                        "--mountpoint", str(stage)], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    parts = r.stdout.split()
+    if len(parts) != 3 or not parts[1].isdigit():
+        raise StageError(f"findmnt printed {r.stdout.strip()!r}")
+    return parts[0], int(parts[1]), parts[2].split(",")
+
+
+def verify(stage: pathlib.Path, size_mib: int) -> str:
+    m = findmnt(stage)
+    if m is None:
+        raise StageError(f"{stage} is not a mount point")
+    fstype, size, opts = m
+    if fstype != "tmpfs":
+        raise StageError(f"{stage} is a {fstype} mount, not tmpfs")
+    if "noswap" not in opts:
+        raise StageError(f"{stage} is a tmpfs without noswap (options {','.join(opts)})")
+    if size != size_mib * MIB:
+        raise StageError(f"{stage} holds {size} bytes, not the {size_mib} MiB asked for")
+    st = stage.stat()
+    if st.st_uid != os.getuid() or st.st_mode & 0o777 != 0o700:
+        raise StageError(f"{stage} is not private to this user (uid {st.st_uid}, mode {st.st_mode & 0o777:o})")
+    return f"tmpfs {size} bytes, options {','.join(opts)}"
+
+
+def write_json_atomic(path: pathlib.Path, obj: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=1, sort_keys=True)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def mark(stage: pathlib.Path, session: str, base: str, outdir: pathlib.Path) -> dict:
+    if (stage / MARKER).exists():
+        raise StageError(f"{stage} is marked already")
+    marker = {"session": session, "base": base, "outdir": str(outdir.resolve()), "token": secrets.token_hex(8),
+              "pid": os.getppid(), "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+    write_json_atomic(stage / MARKER, marker)
+    return marker
+
+
+def read_marker(stage: pathlib.Path) -> dict:
+    try:
+        m = json.loads((stage / MARKER).read_text())
+    except (OSError, ValueError) as e:
+        raise StageError(f"{stage} has no complete marker ({e})") from e
+    for k in ("session", "base", "outdir", "token"):
+        if not isinstance(m.get(k), str) or not m[k]:
+            raise StageError(f"{stage}'s marker has no {k}")
+    return m
+
+
+def staged_files(stage: pathlib.Path) -> list[str]:
+    """Every regular file under the stage but its own records, as relative paths."""
+    out = []
+    for p in sorted(stage.rglob("*")):
+        rel = p.relative_to(stage)
+        if len(rel.parts) == 1 and rel.name in OWN:
+            continue
+        if p.is_symlink() or (not p.is_file() and not p.is_dir()):
+            raise StageError(f"{p} is not a regular file")
+        if p.is_file():
+            out.append(str(rel))
+    return out
+
+
+def sha256(path: pathlib.Path) -> tuple[str, int]:
+    h, n = hashlib.sha256(), 0
+    with open(path, "rb") as f:
+        while b := f.read(CHUNK):
+            h.update(b)
+            n += len(b)
+    return h.hexdigest(), n
+
+
+def inventory(stage: pathlib.Path) -> dict:
+    """The stage's immutable inventory: taken once, then only checked."""
+    marker = read_marker(stage)
+    files = []
+    for rel in staged_files(stage):
+        h, n = sha256(stage / rel)
+        files.append({"path": rel, "size": n, "sha256": h})
+    inv = {"base": marker["base"], "token": marker["token"], "session": marker["session"], "files": files}
+    p = stage / INVENTORY
+    if p.exists():
+        old = json.loads(p.read_text())
+        if old != inv:
+            raise StageError(f"{stage} changed after its inventory was taken: publication refused")
+        return old
+    write_json_atomic(p, inv)
+    return inv
+
+
+def fsync_path(path: pathlib.Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fail_point(name: str) -> bool:
+    return os.environ.get("TRACE_STAGE_FAIL") == name
+
+
+def write_once(path: pathlib.Path, data: bytes, token: str) -> str:
+    """A durable file of these bytes at path, never overwriting another."""
+    if path.exists():
+        if path.read_bytes() != data:
+            raise StageError(f"{path} exists with other contents: never overwritten")
+        fsync_path(path)
+        return "present"
+    tmp = path.with_name(f".{path.name}.partial-{token}")
+    tmp.unlink(missing_ok=True)
+    try:
+        with open(tmp, "xb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    fsync_path(path.parent)
+    return "written"
+
+
+def publish_file(src: pathlib.Path, dst: pathlib.Path, entry: dict, token: str) -> str:
+    if not dst.parent.exists():
+        dst.parent.mkdir(parents=True)
+        fsync_path(dst.parent.parent)
+    if os.path.lexists(dst):
+        if dst.is_symlink() or not dst.is_file():
+            raise StageError(f"{dst} exists and is not a regular file: never overwritten")
+        h, n = sha256(dst)
+        if (h, n) != (entry["sha256"], entry["size"]):
+            raise StageError(f"{dst} exists with other contents: never overwritten")
+        fsync_path(dst)
+        return "present"
+    tmp = dst.with_name(f".{dst.name}.partial-{token}")
+    tmp.unlink(missing_ok=True)  # the stage's own, from an earlier attempt
+    try:
+        h, n = hashlib.sha256(), 0
+        with open(src, "rb") as fi, open(tmp, "xb") as fo:
+            while b := fi.read(CHUNK):
+                if fail_point("copy"):
+                    raise OSError(errno.ENOSPC, "No space left on device (injected)", str(tmp))
+                h.update(b)
+                n += len(b)
+                fo.write(b)
+            fo.flush()
+            os.fsync(fo.fileno())
+        if (h.hexdigest(), n) != (entry["sha256"], entry["size"]):
+            raise StageError(f"{src} changed after its inventory was taken")
+        back, nb = sha256(tmp)
+        if fail_point("hash"):
+            back = "0" * 64
+        if (back, nb) != (entry["sha256"], entry["size"]):
+            raise StageError(f"the copy {tmp} does not read back as {entry['sha256']}")
+        if fail_point("link"):
+            raise OSError(errno.EIO, "Input/output error (injected)", str(dst))
+        try:
+            os.link(tmp, dst)
+        except FileExistsError:
+            if sha256(dst) != (entry["sha256"], entry["size"]):
+                raise StageError(f"{dst} appeared with other contents: never overwritten") from None
+    finally:
+        tmp.unlink(missing_ok=True)
+    fsync_path(dst.parent)
+    if fail_point("crash-after-link"):
+        os._exit(9)
+    return "copied"
+
+
+def ledger_text(inv: dict) -> bytes:
+    return "".join(f"{e['sha256']}  {e['path']}\n" for e in inv["files"]).encode()
+
+
+def inventory_bytes(inv: dict) -> bytes:
+    return (json.dumps(inv, indent=1, sort_keys=True) + "\n").encode()
+
+
+def writeback(mem_path: str) -> tuple[int | None, int | None]:
+    try:
+        m = meminfo(mem_path)
+    except OSError:
+        return None, None
+    return m.get("Dirty"), m.get("Writeback")
+
+
+def kb(v: int | None) -> str:
+    return "unavailable" if v is None else f"{v // 1024} kB"
+
+
+def publish(stage: pathlib.Path, outdir: pathlib.Path, mem_path: str, settle_s: float, out) -> dict:
+    marker = read_marker(stage)
+    if pathlib.Path(marker["outdir"]) != outdir.resolve():
+        raise StageError(f"{stage} belongs to the output directory {marker['outdir']}, not {outdir.resolve()}")
+    d0, w0 = writeback(mem_path)
+    t0 = time.monotonic()
+    inv = inventory(stage)
+    token, base = inv["token"], inv["base"]
+    write_once(outdir / f"{base}.staging.inventory.json", inventory_bytes(inv), token)
+    counts = {"copied": 0, "present": 0}
+    for e in inv["files"]:
+        counts[publish_file(stage / e["path"], outdir / e["path"], e, token)] += 1
+    if fail_point("crash-before-ledger"):
+        os._exit(9)
+    write_once(outdir / f"{base}.staging.sha256", ledger_text(inv), token)
+    fsync_path(outdir)
+    d1, w1 = writeback(mem_path)
+    settled, t_settle = False, time.monotonic()
+    while True:
+        _, w = writeback(mem_path)
+        if w is not None and w <= MIB:
+            settled = True
+            break
+        if time.monotonic() - t_settle >= settle_s:
+            break
+        time.sleep(0.5)
+    size = sum(e["size"] for e in inv["files"])
+    print(f"published: {len(inv['files'])} files, {size} bytes ({counts['copied']} copied, {counts['present']} "
+          f"already in place) in {time.monotonic() - t0:.1f} s; ledger {base}.staging.sha256, inventory "
+          f"{base}.staging.inventory.json; each file, the ledger and the directory fsynced", file=out)
+    print(f"writeback (system-wide, /proc/meminfo): Dirty {kb(d0)}, Writeback {kb(w0)} before; Dirty {kb(d1)}, "
+          f"Writeback {kb(w1)} after; Writeback {'at or under 1 MiB' if settled else 'not under 1 MiB'} "
+          f"{time.monotonic() - t_settle:.1f} s later (bound {settle_s:.0f} s)", file=out)
+    return inv
+
+
+def mounted(stage: pathlib.Path) -> bool:
+    return findmnt(stage) is not None
+
+
+def unmount_and_remove(stage: pathlib.Path) -> None:
+    if mounted(stage):
+        r = subprocess.run([*sudo(), os.environ.get("UMOUNT", "umount"), str(stage)], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise StageError(f"the unmount of {stage} failed: {(r.stderr or r.stdout).strip()}")
+        if mounted(stage):
+            raise StageError(f"{stage} is still mounted after its unmount")
+    for name in OWN:  # left only when the stage was never a mount (the tests' stand-in)
+        (stage / name).unlink(missing_ok=True)
+    if stage.exists():
+        r = subprocess.run([*sudo(), "rmdir", str(stage)], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise StageError(f"the mount point {stage} was not removed: {(r.stderr or r.stdout).strip()}")
+    if stage.exists():
+        raise StageError(f"{stage} remains")
+
+
+def empty_tree(stage: pathlib.Path) -> None:
+    """Deletes the staged data, keeping the stage's own records until its unmount."""
+    for p in sorted(stage.rglob("*"), key=lambda q: len(q.parts), reverse=True):
+        if len(p.relative_to(stage).parts) == 1 and p.name in OWN:
+            continue
+        if p.is_dir() and not p.is_symlink():
+            p.rmdir()
+        else:
+            p.unlink()
+
+
+def release(stage: pathlib.Path, outdir: pathlib.Path, out) -> None:
+    if not stage.exists():
+        print(f"released: {stage} is gone already", file=out)
+        return
+    marker = read_marker(stage)
+    try:
+        inv = json.loads((stage / INVENTORY).read_text())
+    except (OSError, ValueError) as e:
+        raise StageError(f"{stage} was never published (no inventory): release refused") from e
+    base, token = inv["base"], marker["token"]
+    if inv.get("token") != token:
+        raise StageError(f"{stage}'s inventory is not its own: release refused")
+    led = outdir / f"{base}.staging.sha256"
+    if not led.exists() or led.read_bytes() != ledger_text(inv):
+        raise StageError(f"the ledger {led} is missing or does not match the inventory: release refused")
+    ip = outdir / f"{base}.staging.inventory.json"
+    if not ip.exists() or ip.read_bytes() != inventory_bytes(inv):
+        raise StageError(f"the inventory {ip} is missing or does not match: release refused")
+    for e in inv["files"]:
+        dst = outdir / e["path"]
+        if not dst.is_file() or sha256(dst) != (e["sha256"], e["size"]):
+            raise StageError(f"{dst} does not hold the inventory's contents: release refused")
+        fsync_path(dst)
+    for d in {(outdir / e["path"]).parent for e in inv["files"]} | {outdir}:
+        fsync_path(d)
+    empty_tree(stage)
+    unmount_and_remove(stage)
+    print(f"released: {len(inv['files'])} files verified in {outdir} against the ledger; {stage} emptied, "
+          "unmounted and removed", file=out)
+
+
+def abort(stage: pathlib.Path, out) -> None:
+    """A stage without a complete marker, or never written: undone only while it holds no data."""
+    if not stage.exists():
+        print(f"aborted: {stage} does not exist", file=out)
+        return
+    data = [str(p.relative_to(stage)) for p in stage.iterdir() if p.name not in OWN]
+    if data:
+        raise StageError(f"{stage} holds data ({', '.join(sorted(data)[:5])}): kept")
+    if (stage / INVENTORY).exists():
+        raise StageError(f"{stage} has an inventory: publish and release it instead")
+    unmount_and_remove(stage)
+    print(f"aborted: {stage} held no data; unmounted if mounted, and removed", file=out)
+
+
+def leftovers(root: pathlib.Path, out) -> int:
+    if not root.is_dir():
+        return 0
+    n = 0
+    for d in sorted(root.iterdir()):
+        n += 1
+        try:
+            m = read_marker(d)
+            published = (d / INVENTORY).exists()
+            print(f"{d}: run {m['base']} of session {m['session']}, output directory {m['outdir']}; "
+                  f"{'inventory taken' if published else 'not inventoried'}", file=out)
+        except (StageError, OSError) as e:
+            print(f"{d}: no complete marker ({e})", file=out)
+    return n
+
+
+def guard(stage: pathlib.Path, min_free: int, min_avail: int, interval: float, stop_pids: list[int],
+          mem_path: str, out) -> None:
+    """Samples the stage's free space and MemAvailable until SIGINT or SIGTERM;
+    below either bound it stops the given recorders (SIGINT) once, and says why."""
+    stop = False
+
+    def on_signal(*_):
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    n, peak, least_free, least_avail, tripped = 0, 0, None, None, None
+    print(f"guard: every {interval:g} s, stop below {min_free} bytes free or {min_avail} bytes MemAvailable; "
+          f"recorders {','.join(map(str, stop_pids)) or 'none'}", file=out, flush=True)
+    while not stop:
+        st = os.statvfs(stage)
+        used = (st.f_blocks - st.f_bfree) * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        try:
+            avail = meminfo(mem_path).get("MemAvailable")
+        except OSError:
+            avail = None
+        n += 1
+        peak = max(peak, used)
+        least_free = free if least_free is None else min(least_free, free)
+        if avail is not None:
+            least_avail = avail if least_avail is None else min(least_avail, avail)
+        if tripped is None and (free < min_free or (avail is not None and avail < min_avail)):
+            why = (f"the stage has {free} bytes free (bound {min_free})" if free < min_free else
+                   f"MemAvailable is {avail} bytes (bound {min_avail})")
+            tripped = why
+            sent = []
+            for pid in stop_pids:
+                try:
+                    os.kill(pid, signal.SIGINT)
+                    sent.append(str(pid))
+                except OSError as e:
+                    sent.append(f"{pid} ({e.strerror})")
+            print(f"guard stop: {why} at monotonic_ns {time.clock_gettime_ns(time.CLOCK_MONOTONIC)}; "
+                  f"SIGINT to {', '.join(sent) or 'no recorder'}", file=out, flush=True)
+        time.sleep(interval)
+    print(f"guard: {n} samples; sampled peak used {peak} bytes; least free {least_free} bytes; least MemAvailable "
+          f"{least_avail if least_avail is not None else 'unavailable'} bytes; stop: {tripped or 'none'}",
+          file=out, flush=True)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    b = sub.add_parser("budget")
+    b.add_argument("--mode", required=True, choices=MODES)
+    b.add_argument("--duration-s", type=float, required=True)
+    b.add_argument("--rate-hz", type=float, default=0.0)
+    b.add_argument("--buffer-kb", type=int, required=True)
+    b.add_argument("--cpus", type=int, required=True)
+    b.add_argument("--usbmon", type=int, default=1)
+    b.add_argument("--perf-hz", type=int, default=0)
+    b.add_argument("--perf-stack", type=int, default=0)
+    b.add_argument("--exerciser", type=int, default=0)
+    for name in ("verify", "mark", "guard", "usage", "publish", "release", "abort"):
+        s = sub.add_parser(name)
+        s.add_argument("--stage", type=pathlib.Path, required=True)
+        if name == "verify":
+            s.add_argument("--size-mib", type=int, required=True)
+        if name == "mark":
+            s.add_argument("--session", required=True)
+            s.add_argument("--base", required=True)
+        if name in ("mark", "publish", "release"):
+            s.add_argument("--outdir", type=pathlib.Path, required=True)
+        if name == "guard":
+            s.add_argument("--min-free", type=int, required=True)
+            s.add_argument("--min-available", type=int, required=True)
+            s.add_argument("--interval", type=float, default=0.2)
+            s.add_argument("--stop-pid", type=int, action="append", default=[])
+        if name == "publish":
+            s.add_argument("--settle-s", type=float, default=30.0)
+    lo = sub.add_parser("leftovers")
+    lo.add_argument("--root", type=pathlib.Path, required=True)
+    for s in (b, sub.choices["guard"], sub.choices["publish"]):
+        s.add_argument("--meminfo", default="/proc/meminfo")
+    a = p.parse_args()
+    out = sys.stdout
+    try:
+        if a.cmd == "budget":
+            r = budget(a.mode, a.duration_s, a.rate_hz, a.buffer_kb, a.cpus, bool(a.usbmon), a.perf_hz,
+                       a.perf_stack, bool(a.exerciser), meminfo(a.meminfo))
+            for k in ("size_mib", "kernel", "headroom", "need", "available", "guard_min_free",
+                      "guard_min_available"):
+                print(f"{k}={r[k]}", file=out)
+            items = ", ".join(f"{k} {gb(v)}" for k, v in r["items"].items())
+            print(f"staging budget ({a.mode}, {a.duration_s:g} s, provisional): raw trace {gb(r['raw'])}, assembled "
+                  f"{gb(r['assembled'])}, other streams {gb(r['a'])} ({items}); tmpfs cap {r['size_mib']} MiB; "
+                  f"kernel buffers {gb(r['kernel'])}, headroom {gb(r['headroom'])}: MemAvailable needed "
+                  f"{gb(r['need'])}, available {gb(r['available'])}{'' if r['ok'] else ': NOT ENOUGH'}", file=out)
+            return 0 if r["ok"] else 1
+        if a.cmd == "verify":
+            print(f"verified: {a.stage}: {verify(a.stage, a.size_mib)}", file=out)
+        elif a.cmd == "mark":
+            m = mark(a.stage, a.session, a.base, a.outdir)
+            print(f"marked: {a.stage}: run {m['base']}, session {m['session']}, token {m['token']}", file=out)
+        elif a.cmd == "guard":
+            guard(a.stage, a.min_free, a.min_available, a.interval, a.stop_pid, a.meminfo, out)
+        elif a.cmd == "usage":
+            st = os.statvfs(a.stage)
+            print(f"used {(st.f_blocks - st.f_bfree) * st.f_frsize} free {st.f_bavail * st.f_frsize}", file=out)
+        elif a.cmd == "publish":
+            publish(a.stage, a.outdir, a.meminfo, a.settle_s, out)
+        elif a.cmd == "release":
+            release(a.stage, a.outdir, out)
+        elif a.cmd == "abort":
+            abort(a.stage, out)
+        elif a.cmd == "leftovers":
+            return 1 if leftovers(a.root, out) else 0
+    except (StageError, OSError, ValueError) as e:
+        print(f"trace_stage: {a.cmd}: {e}", file=sys.stderr)
+        if a.cmd == "publish":
+            print(f"  the stage is kept; retry: python3 {sys.argv[0]} publish --stage {a.stage} --outdir {a.outdir}, "
+                  f"then: python3 {sys.argv[0]} release --stage {a.stage} --outdir {a.outdir}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

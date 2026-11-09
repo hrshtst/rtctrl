@@ -323,6 +323,18 @@ set_tests_properties(idle_counters_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "idle counters regressions OK"
   LABELS unit)
 
+# The staging of a run's capture streams (tools/trace_stage.py) with stand-in
+# findmnt and umount: the budget, the mount's verification, publication with
+# its failures and retries, release, abort and the guard.
+add_test(NAME trace_stage_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_trace_stage.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(trace_stage_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "trace stage regressions OK"
+  LABELS unit)
+
 # The fair server's probes (tools/fair_server.py): their layout from an
 # excerpt of the kernel's BTF, their definitions and filters, the waits
 # after waking with their attribution, and the controls' judgement.
