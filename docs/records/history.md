@@ -881,9 +881,16 @@ two blockers, fixed before the rehearsals: the stage's cleanup failed past a
 real unmount (a root-owned mount point refusing the operator), and a short
 untraced stage was smaller than its guard's free-space bound. Split at the
 recorders' wakeups, the stalls above were blocked in all but at most
-0.02 ms. The details are in the
-[control-rate qualification](../hardware/control-rate.md). Hardware runs wait
-for a successful rehearsal.
+0.02 ms. Rehearsals 5 and 6 (2026-11-09, at `b6d9fde`, the first on the
+staging, archived in `stage1_rehearsal/`) ran no controls workload or
+timer-mode probe: the trace buffers' readback stopped both before them, its
+allowance having ignored the kernel's rounding of each CPU's buffer to whole
+subbuffers (524,384 KiB read back per array against 524,288). Real `noswap`
+stages were mounted, published with verified ledgers and released, and the
+open untraced control ran. The rehearsal was not accepted, and the readback
+was corrected to the kernel's rounding (approved 2026-11-09). The details are
+in the [control-rate qualification](../hardware/control-rate.md). Hardware
+runs wait for a successful rehearsal.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
@@ -909,11 +916,30 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-09 | full `ctest -j8` runs at about 09:00, 09:10 and 09:19, no sweep (the last beside a 30-million-line trace analysis) | passed, each |
 | 2026-11-09 | a full `ctest -j8` at about 09:31, no sweep (load near 2) | failed: "command rejected in cycle 1112" (source feedback stale), 1 stale sample, 1 deadline miss, a 7.0 ms cycle |
 | 2026-11-09 | full `ctest -j8` runs at 09:37, 10:22 and 10:31, no sweep | passed, each |
+| 2026-11-09 | full `ctest -j8` runs at about 13:13, 13:26 and 14:57, no sweep | passed, each |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
 the sweep, and the isolated passes do not settle the cause. No limit is
 changed for it.
+
+## `trace_session_script_smoke` stand-in stop failure (open, 2026-11-09)
+
+In one full `ctest -j8` run (about 13:13, no sweep), the session smoke test
+failed at its attempt 28: the stand-in `tcpdump` (a test script, not the real
+tool) did not act on its SIGINT, and the session killed it after its 120 s
+bound, so the run's verdict named the kill (exit 137) beside the expected
+lost events. The stand-in had installed its handler before it reported ready.
+It stopped promptly in 150 of 150 isolated tries on the unloaded host, and the
+next full run (about 13:26) passed; neither establishes its cause, and it
+stays open (reviewer, 2026-11-09). It does not block the emulator
+rehearsals, and no bound is changed for it.
+
+| Date | Context | Result |
+|---|---|---|
+| 2026-11-09 | a full `ctest -j8` at about 13:13, no sweep | failed: the stand-in `tcpdump` ignored its SIGINT for 120 s (attempt 28) |
+| 2026-11-09 | the stand-in alone, 150 SIGINTs at random delays | stopped promptly, each |
+| 2026-11-09 | a full `ctest -j8` at about 13:26, no sweep | passed |
 
 ## Consistency audit
 

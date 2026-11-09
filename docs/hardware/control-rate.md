@@ -1583,9 +1583,14 @@ qualification of the production logging to disk.
   untraced run at 1000 Hz gets 109 MiB); the controls are budgeted over their own
   duration (three phases, two settles and 10 s); perf's frequency and stack
   size are budgeted. Before the mount, `MemAvailable` must be at least
-  S + K + H: K the kernel ring buffers of every trace array the run uses,
-  for every possible CPU (a timer run's two arrays, 2 × 32 × 16 MiB), H =
-  max(8 GiB, 15% of `MemTotal`). A 60 s timer run needs about 39.1 GB.
+  S + K + H: K the trace arrays' data-plus-reader allocation, for each
+  array and possible CPU (n + 1) subbuffers, with n = max(2, ceil(B / p)),
+  B the requested bytes and p the payload of a subbuffer in the array's page
+  header (4,080 bytes of a 4 KiB subbuffer on this kernel), and one more for
+  the reader: 16,456 KiB per CPU for 16 MiB requested, 1.08 GB for a timer
+  run's two arrays of 32 CPUs, bookkeeping and transient allocations
+  excluded. H = max(8 GiB, 15% of `MemTotal`). A 60 s timer run needs about
+  39.1 GB.
   The measured raw traces were 1.51 GB for a 10 s rehearsal run and 9.56 GB
   for hardware attempt 1's 60 s loaded run.
 - **Before anything runs:** the mount is verified (a tmpfs exactly at that
@@ -1593,7 +1598,13 @@ qualification of the production logging to disk.
   session's. A refusal or failure at any step before the marker undoes the
   stage only while it holds no data, and the run does not start.
 - **Before the probe:** trace-cmd's temporary files must be on the stage
-  only, and both arrays' `buffer_total_size_kb` must fit K. A guard on the
+  only, and every trace array must read back exactly as the kernel rounds
+  the request, a check kept apart from K. Its geometry must be the main
+  array's, read before any run (a missing or malformed page header refuses
+  the session). Each configured CPU's `buffer_size_kb` must read
+  floor(n p / 1024) KiB (16,387 for 16 MiB), and `buffer_total_size_kb` their
+  sum, truncated per CPU before summing (524,384 KiB per array); otherwise
+  the run stops before the probe. A guard on the
   tracer CPUs samples the stage's free space and `MemAvailable` every 0.2 s
   through the run and the assembly; below R/4 + Q free (what the run still
   writes after a stop, plus the reserve) or H/2 available, it stops
@@ -1653,20 +1664,37 @@ include a runnable wait. The fixes are above: the mount point is the
 operator's and is never entered after the unmount, the stage holds the
 guard's reserve, and the spans are split at the wakeup. The stand-ins now
 emulate a real unmount (the contents vanish and the mount point reappears
-with its own mode) and the stage's bounded capacity. Both rehearsals then
-repeat with fresh attempts and directories; hardware waits for their
-review. With the emulator prepared as above:
+with its own mode) and the stage's bounded capacity. The fixes were
+confirmed the same day, and the reviewer approved S with its reserve.
+
+**Rehearsals 5 and 6 (2026-11-09; not accepted).** At `b6d9fde`, archived in
+`stage1_rehearsal/` (`stage1-controls-5`, `stage1-placement-6`). No controls
+workload or timer-mode probe ran: the controls and the open timer run stopped
+before them at the buffers' readback, 524,384 KiB per array against an
+allowance of 524,288 that ignored the kernel's rounding (16 MiB per CPU is
+4,113 subbuffers of 4,080 bytes, 16,387 KiB). Their startup traces (3.3 and
+4.1 MB) were published. The open untraced control ran on its 109 MiB stage
+(the guard's sampled peak 1.8 MB, no stop) and fails T1, T2 and T6a, as every
+untraced emulator run has. All three stages were real `noswap` tmpfs mounts
+of exactly the requested size, the operator's with mode 0700, published with
+verified ledgers, unmounted and removed; no confined run started. This
+validates the staging lifecycle and a short untraced run, not sustained
+recording without losses, complete timing and SMI coverage, or the confined
+placement. The readback now follows the kernel's rounding (above; approved
+2026-11-09). Its implementation comes to the reviewer, then both rehearsals
+repeat with fresh attempts and directories; hardware waits for their review.
+With the emulator prepared as above:
 
 ```
 tools/quiet_host.sh stop
 tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
   --fs-controls 5 --modes untraced,timer --runs current:1000:rt-idle:fast-motion --duration 10 \
-  --attempt 5 --outdir <dir5>
+  --attempt 7 --outdir <dir7>
 tools/quiet_host.sh restore   # also after a failed or interrupted session
 tools/quiet_host.sh stop
 tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
   --modes untraced,timer --placements open,confined --observers <PID,...> \
-  --runs current:1000:rt-idle:fast-motion --duration 10 --attempt 6 --outdir <dir6>
+  --runs current:1000:rt-idle:fast-motion --duration 10 --attempt 8 --outdir <dir8>
 tools/quiet_host.sh restore
 ```
 
