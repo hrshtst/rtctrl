@@ -475,7 +475,58 @@ def main() -> int:
                                 str(root / f"{name}.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
             out = p.stdout + p.stderr
             expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok)
-                   and (ok or "ran on CPUs 2,3" in out), f"the placement check ({name})", out)
+                   and (ok or "ran on CPUs 2,3" in out) and "lineage: none (a run before 2026-11-09)" in out,
+                   f"the placement check ({name})", out)
+        # The repeated-scan confine's record (version 2): the lineage listed
+        # right after the trace started seeds the observers, so a task of a
+        # recorded process absent from the record (created before the trace)
+        # fails on CPU 2, as does a descendant created before the trace and
+        # one an observer forked during it; a task outside the trees, an
+        # exempt tree's and a reused process ID's do not count; a run without
+        # the lineage fails (reviewer, 2026-11-09).
+        v2 = ('{"kind": "header", "exclude": [2, 3], "allowed": [0, 1], "version": 2, "exempt": [8000], '
+              '"exempt_ids": [{"pid": 8000, "start": 80}]}\n'
+              '{"kind": "process", "pid": 7770, "pstart": 5, "ppid": 1, "n": 1}\n'
+              '{"kind": "thread", "pid": 7770, "tid": 7771, "start": 5, "pstart": 5, "ppid": 1, "mask": [0, 1, 2, 3], '
+              '"n": 1, "origin": "inventory"}\n')
+        lineage = ("taken: x\n--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---\n"
+                   "taken monotonic_ns: 1 2\n"
+                   "7770 7771 1 5 5 0-1\n"
+                   "7770 7775 1 5 6 0-1\n"     # a thread absent from the record
+                   "7780 7780 7770 9 9 0-1\n"  # a descendant absent from it
+                   "8000 8000 7770 80 80 0-31\n"  # the session, run from the observer's tree: exempt
+                   "6600 6600 1 3 3 0-31\n")   # another application
+        for name, extra, forks, ok in (
+                ("v2-placed", [], [], True),
+                ("v2-absent", [(1000.0, "JITWorker", 7775), (1050.0, None, 0)], [], False),
+                ("v2-descendant", [(1000.0, "child", 7780), (1050.0, None, 0)], [], False),
+                ("v2-forked", [(1000.0, "forked", 7790), (1050.0, None, 0)], [(900.0, 7780, 7790)], False),
+                ("v2-other", [(1000.0, "other", 6600), (1050.0, "session", 8000), (1060.0, "sesskid", 8001),
+                              (1070.0, None, 0)], [(900.0, 8000, 8001)], True),
+                ("v2-nolineage", [], [], False)):
+            r = Run(timer=True)
+            prev = ("swapper/2", 0)
+            for us, parent, child in forks:
+                r.ev(us, "obs", parent, 1, ".....", "sched_process_fork",
+                     f"comm=obs pid={parent} child_comm=kid child_pid={child}")
+            for us, comm, pid in extra:
+                nxt = (comm, pid) if comm else ("swapper/2", 0)
+                r.ev(us, prev[0], prev[1], 2, "d..2.", "sched_switch",
+                     f"{prev[0]}:{prev[1]} [120] S ==> {nxt[0]}:{nxt[1]} [120]")
+                prev = nxt
+            path = r.write(root, name)
+            pathlib.Path(str(path) + ".observers.jsonl").write_text(v2)
+            if name != "v2-nolineage":
+                pathlib.Path(str(path) + ".lineage.txt").write_text(lineage)
+            p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
+                                str(root / f"{name}.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
+            out = p.stdout + p.stderr
+            words = ("no task lineage after the trace started" if name == "v2-nolineage" else
+                     "lineage after the trace started (" if ok else "ran on CPUs 2,3")
+            expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok) and words in out
+                   and (name == "v2-nolineage" or "3 observer tasks in 2 processes (1 processes not in the placement "
+                        "record), 2 tasks absent from the record" in out),
+                   f"the version 2 placement check ({name})", out)
         # The recorders' off-CPU spans over 5 ms begun in D state are listed,
         # from the trace's events (context, not a check), each split at its
         # wakeup: trace-cmd's 6.1 ms, switched out in D at 0.5 ms and woken

@@ -22,9 +22,26 @@ of confinement that restore then repairs; a permission error on a live
 thread during restore, and a read-back that does not match, unresolved
 (status 1, the record retryable, a later restore completing it); and a
 permission error on a thread created during the run.
+
+And the repeated pass (reviewer, 2026-11-09): a thread and a child process
+created in the first pass's gap (between its listing and its creator's
+change) found and confined by the second, which records them as unconfined;
+a thread created after its creator's change, found already confined
+(inherited), left as found and restored to its process's original, or, with
+no single original, left and reported (and the reviewer's counterexample on
+fake identities); an application widening a confined thread again, passes
+that never settle, a live thread unreadable in a later pass (failures, then
+restored); a reused thread ID recorded as another thread; and an
+interruption in a later pass. The task listing's lineage, and the halfway
+check's: a process created after the placement covered by its parent, an
+exempt tree and a reused process ID left out, a snapshot without the
+lineage refused for this record and a legacy one checked as before, said
+so.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -101,6 +118,30 @@ def quiet(fn, *args):
     import io
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         return fn(*args)
+
+
+def cpu_list(m) -> str:
+    return oa.cpu_list(m)
+
+
+def lineage_snapshot(root: pathlib.Path, pids: set[int], extra: list[tuple], override: dict | None = None,
+                     name: str = "tasks.txt") -> pathlib.Path:
+    """A halfway snapshot as the session takes it, its lineage section from
+    the tool (the given processes' rows), with extra rows (pid, tid, CPUs)
+    and rows' CPUs overridden ((pid, tid) -> CPUs, None: unreadable)."""
+    listing = tool("tasks").stdout.splitlines()
+    rows = []
+    for ln in listing[2:]:
+        w = ln.split()
+        if len(w) == 6 and int(w[0]) in pids:
+            key = (int(w[0]), int(w[1]))
+            if override and key in override:
+                w[5] = "-" if override[key] is None else cpu_list(override[key])
+            rows.append(" ".join(w))
+    rows += [f"{p_} {t_} 1 1 1 {cpu_list(m)}" for p_, t_, m in extra]
+    path = root / name
+    path.write_text("taken: x\n" + "\n".join(listing[:2] + rows) + "\n")
+    return path
 
 
 def fault_checks(root: pathlib.Path, mine: list[int]) -> None:
@@ -218,6 +259,375 @@ def fault_checks(root: pathlib.Path, mine: list[int]) -> None:
             pass
 
 
+class Observer:
+    """A stand-in observer (CHILD) of the test's: its process, its children."""
+
+    def __init__(self) -> None:
+        self.p = subprocess.Popen([sys.executable, "-c", CHILD], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  text=True)
+        self.pid, kid = start(self.p)
+        self.kids = [kid]
+        time.sleep(0.2)
+        self.idle = next(t for t in tids(self.pid) if t != self.pid)
+
+    def thread(self) -> int:
+        before = set(tids(self.pid))
+        expect(say(self.p, "thread") == "ok", "a new thread")
+        return (set(tids(self.pid)) - before).pop()
+
+    def child(self) -> int:
+        k = int(say(self.p, "child"))
+        self.kids.append(k)
+        return k
+
+    def masks(self) -> dict[int, set[int]]:
+        return {t: os.sched_getaffinity(t) for p in [self.pid] + self.kids for t in tids(p)}
+
+    def close(self) -> None:
+        self.p.kill()
+        self.p.wait()
+        for k in self.kids:
+            try:
+                os.kill(k, 9)
+            except OSError:
+                pass
+
+
+@contextlib.contextmanager
+def patched(**fns):
+    """The module's functions (and os's, as "os_<name>", and Record.write as
+    "record_write") replaced for the block."""
+    saved = []
+    for name, fn in fns.items():
+        if name.startswith("os_"):
+            saved.append((oa.os, name[3:], getattr(oa.os, name[3:])))
+            setattr(oa.os, name[3:], fn)
+        elif name == "record_write":
+            saved.append((oa.Record, "write", oa.Record.write))
+            oa.Record.write = fn
+        else:
+            saved.append((oa, name, getattr(oa, name)))
+            setattr(oa, name, fn)
+    try:
+        yield
+    finally:
+        for obj, name, fn in reversed(saved):
+            setattr(obj, name, fn)
+
+
+def capture(fn, *args) -> tuple:
+    """Runs fn, returning its status and what it printed."""
+    o, e = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(o), contextlib.redirect_stderr(e):
+        st = fn(*args)
+    return st, o.getvalue() + e.getvalue()
+
+
+def entries(rec: pathlib.Path) -> list[dict]:
+    return [json.loads(x) for x in rec.read_text().splitlines() if x.strip()]
+
+
+def repeated_scan_checks(root: pathlib.Path, mine: list[int]) -> None:
+    """The repeated pass (reviewer, 2026-11-09), injected into the module in
+    this process on stand-in observers it creates."""
+    ex = {mine[-1]}
+    full = set(mine)
+    allowed = full - ex
+    real_threads, real_processes, real_start = oa.threads, oa.processes, oa.start_time
+    real_set, real_get, real_write = oa.os.sched_setaffinity, oa.os.sched_getaffinity, oa.Record.write
+    observers: list[Observer] = []
+
+    def observer() -> Observer:
+        o = Observer()
+        observers.append(o)
+        return o
+
+    def restored(o: Observer, rec: pathlib.Path, what: str) -> str:
+        st, out = capture(oa.restore, rec)
+        expect(st == 0 and all(m == full for m in o.masks().values()), f"{what}: restored ({st}) {o.masks()}\n{out}")
+        return out
+
+    try:
+        # The creation gap: a thread and a child process created by the
+        # observer's main thread between the first pass's listing and its
+        # change keep the excluded CPU; the second pass records them
+        # (unconfined) and confines them; the third finds nothing new.
+        o = observer()
+        fired: list[int] = []
+        made: list[int] = []
+
+        def gap(p: int):
+            ts = real_threads(p)
+            if p == o.pid and not fired:
+                fired.append(1)
+                made.extend([o.thread(), o.child()])
+            return ts
+        rec = root / "gap.jsonl"
+        with patched(threads=gap):
+            st = quiet(oa.confine, [o.pid], ex, rec, [])
+        e = entries(rec)
+        late = [x for x in e if x["kind"] == "thread" and x.get("origin") == "unconfined"]
+        expect(st == 0 and {x["tid"] for x in late} == set(made) and all(x["n"] == 2 for x in late)
+               and any(x["kind"] == "process" and x["pid"] == made[1] and x["n"] == 2 for x in e)
+               and e[-1] == {"kind": "state", "state": "confined", "passes": 3},
+               f"the gap's thread and process found and confined by the second pass: {st} {e[-1]} {late}")
+        expect(all(m == allowed for m in o.masks().values()), f"every thread confined: {o.masks()}")
+        restored(o, rec, "the gap's tasks")
+
+        # A thread created after its creator's change inherits the confined
+        # mask: found by the second pass (inherited), left as found, and
+        # restored to its process's original (the reviewer's case).
+        o = observer()
+        fired.clear()
+        made.clear()
+
+        def set_then_spawn(tid, mask):
+            real_set(tid, mask)
+            if tid == o.pid and not fired:
+                fired.append(1)
+                made.append(o.thread())
+        rec = root / "inherited.jsonl"
+        with patched(os_sched_setaffinity=set_then_spawn):
+            st = quiet(oa.confine, [o.pid], ex, rec, [])
+        e = entries(rec)
+        inh = [x for x in e if x["kind"] == "thread" and x.get("origin") == "inherited"]
+        expect(st == 0 and [x["tid"] for x in inh] == made and set(inh[0]["mask"]) == allowed and inh[0]["n"] == 2
+               and not any(x["kind"] == "intent" and x["tid"] == made[0] for x in e),
+               f"an inherited thread recorded as found, unchanged: {st} {inh}")
+        out = restored(o, rec, "an inherited thread")
+        expect("inherited restored 1" in out, f"the inherited thread given its process's original: {out}")
+        # The same where the process has no single original: left, reported.
+        o = observer()
+        os.sched_setaffinity(o.idle, full - {mine[0]})
+        fired.clear()
+        made.clear()
+        rec = root / "inherited-ambiguous.jsonl"
+        with patched(os_sched_setaffinity=set_then_spawn):
+            st = quiet(oa.confine, [o.pid], ex, rec, [])
+        st, out = capture(oa.restore, rec)
+        expect(st == 0 and "inherited left 1" in out and "1 threads left at their current masks" in out
+               and os.sched_getaffinity(made[0]) == allowed and os.sched_getaffinity(o.pid) == full
+               and '"state": "restored, threads left"' in rec.read_text(),
+               f"an inherited thread without a justified original left and reported: {out}")
+
+        # An application widening a confined thread again: a failure.
+        o = observer()
+        calls: list[int] = []
+
+        def count_then_widen():
+            calls.append(1)
+            if len(calls) == 3:  # the second pass's listing (the first call precedes the header)
+                real_set(o.idle, full)
+            return real_processes()
+        rec = root / "widened.jsonl"
+        with patched(processes=count_then_widen):
+            st, out = capture(oa.confine, [o.pid], ex, rec, [])
+        text = rec.read_text()
+        expect(st == 1 and "holds excluded CPUs again" in text and '"state": "confined with failures"' in text,
+               f"a thread widened by the application fails confine: {st} {out}")
+        restored(o, rec, "after a widened thread")
+
+        # Passes that never settle (a new thread in each): a failure after
+        # MAX_PASSES, then restored, the threads created meanwhile included.
+        o = observer()
+
+        def every(p: int):
+            ts = real_threads(p)
+            if p == o.pid:
+                o.thread()
+            return ts
+        rec = root / "unsettled.jsonl"
+        with patched(threads=every):
+            st, out = capture(oa.confine, [o.pid], ex, rec, [])
+        e = entries(rec)
+        expect(st == 1 and "NOT SETTLED" in out and e[-1] == {"kind": "state", "state": "not settled",
+                                                               "passes": oa.MAX_PASSES},
+               f"unsettled passes fail: {st} {out} {e[-1]}")
+        restored(o, rec, "after unsettled passes")
+
+        # A reused thread ID (another start time) is another thread.
+        o = observer()
+        calls.clear()
+
+        def count():
+            calls.append(1)
+            return real_processes()
+
+        def reused_start(pid: int, tid: int | None = None):
+            v = real_start(pid, tid)
+            return v + 1000 if tid == o.idle and len(calls) >= 3 and v is not None else v
+        rec = root / "reused.jsonl"
+        with patched(processes=count, start_time=reused_start):
+            st = quiet(oa.confine, [o.pid], ex, rec, [])
+        ids = [(x["start"], x.get("origin")) for x in entries(rec) if x["kind"] == "thread" and x["tid"] == o.idle]
+        expect(st == 0 and len(ids) == 2 and ids[1] == (ids[0][0] + 1000, "inherited"),
+               f"a reused ID recorded as another thread: {st} {ids}")
+        out = restored(o, rec, "a reused ID")
+        expect("reused 1" in out, f"the reused ID's record left: {out}")
+
+        # An interruption in a later pass, between a change and its record.
+        o = observer()
+        fired.clear()
+        made.clear()
+
+        def gap_thread(p: int):
+            ts = real_threads(p)
+            if p == o.pid and not fired:
+                fired.append(1)
+                made.append(o.thread())
+            return ts
+        armed: list[int] = []
+
+        def interrupted(self, **obj):
+            if obj.get("kind") == "state" and obj.get("n") == 2:
+                armed.append(1)
+            if armed and obj.get("kind") == "confined":
+                raise Injected
+            return real_write(self, **obj)
+        rec = root / "later-interrupted.jsonl"
+        with patched(threads=gap_thread, record_write=interrupted):
+            try:
+                quiet(oa.confine, [o.pid], ex, rec, [])
+                st = "returned"
+            except Injected:
+                st = "interrupted"
+        expect(st == "interrupted" and os.sched_getaffinity(made[0]) == allowed,
+               f"the second pass's change made, then interrupted: {st}")
+        restored(o, rec, "an interrupted later pass")
+
+        # A live thread whose mask cannot be read in a later pass: a failure.
+        o = observer()
+        calls.clear()
+
+        def unreadable(tid: int):
+            if tid == o.idle and len(calls) >= 3:
+                raise PermissionError("injected")
+            return real_get(tid)
+        rec = root / "unreadable.jsonl"
+        with patched(processes=count, os_sched_getaffinity=unreadable):
+            st = quiet(oa.confine, [o.pid], ex, rec, [])
+        expect(st == 1 and "its mask cannot be read" in rec.read_text(), f"an unreadable live thread fails: {st}")
+        restored(o, rec, "after an unreadable thread")
+    finally:
+        oa.threads, oa.processes, oa.start_time = real_threads, real_processes, real_start
+        oa.os.sched_setaffinity, oa.os.sched_getaffinity, oa.Record.write = real_set, real_get, real_write
+        for o in observers:
+            o.close()
+
+
+def counterexample_checks(root: pathlib.Path) -> None:
+    """The reviewer's restoration counterexample (2026-11-09) in this
+    record's form, on fake identities and masks only: a thread found by a
+    later pass with its creator's confined mask is restored to the process's
+    original; with no single original it is left and reported."""
+    full, confined = [0, 1, 2, 3], [0, 1]
+
+    def run(extra: list[dict], masks: dict[int, set[int]]) -> tuple:
+        records = [
+            {"kind": "header", "version": 2, "allowed": confined, "exclude": [2, 3], "exempt": [], "exempt_ids": [],
+             "roots": [{"pid": 101, "start": 1}]},
+            {"kind": "process", "pid": 101, "pstart": 1, "ppid": 1, "n": 1},
+            {"kind": "thread", "pid": 101, "pstart": 1, "ppid": 1, "tid": 101, "start": 11, "mask": full, "n": 1,
+             "origin": "inventory"},
+            *extra,
+            {"kind": "state", "state": "confining", "n": 1},
+            {"kind": "intent", "tid": 101, "start": 11, "mask": confined},
+            {"kind": "confined", "tid": 101, "start": 11, "mask": confined},
+            {"kind": "thread", "pid": 101, "pstart": 1, "ppid": 1, "tid": 102, "start": 12, "mask": confined, "n": 2,
+             "origin": "inherited"},
+            {"kind": "state", "state": "confining", "n": 2},
+            {"kind": "unchanged", "tid": 102, "start": 12},
+            {"kind": "state", "state": "confined", "passes": 3},
+        ]
+        path = root / "counterexample.jsonl"
+        path.write_text("".join(json.dumps(x) + "\n" for x in records))
+        with patched(start_time=lambda pid, tid=None: {None: 1, 101: 11, 102: 12, 103: 13}.get(tid),
+                     processes=lambda: {101: 1}, threads=lambda pid: sorted(masks) if pid == 101 else [],
+                     os_sched_getaffinity=lambda tid: set(masks[tid]),
+                     os_sched_setaffinity=lambda tid, mask: masks.__setitem__(tid, set(mask))):
+            return capture(oa.restore, path)
+
+    masks = {101: set(confined), 102: set(confined)}
+    st, out = run([], masks)
+    expect(st == 0 and masks == {101: set(full), 102: set(full)} and "inherited restored 1" in out,
+           f"the inherited thread restored with its creator: {st} {masks} {out}")
+    masks = {101: set(confined), 102: set(confined), 103: set(confined)}
+    st, out = run([{"kind": "thread", "pid": 101, "pstart": 1, "ppid": 1, "tid": 103, "start": 13, "mask": [0, 1, 3],
+                    "n": 1, "origin": "inventory"},
+                   {"kind": "intent", "tid": 103, "start": 13, "mask": confined}], masks)
+    expect(st == 0 and masks == {101: set(full), 102: set(confined), 103: {0, 1, 3}} and "inherited left 1" in out
+           and "threads left at their current masks" in out,
+           f"no single original: the inherited thread left and reported: {st} {masks} {out}")
+
+
+def lineage_checks(root: pathlib.Path, mine: list[int]) -> None:
+    """The task listing and the halfway check's lineage (reviewer,
+    2026-11-09)."""
+    ex = {mine[-1]}
+    full = set(mine)
+    allowed = full - ex
+    # The listing: this process's row with its parent, start time and CPUs.
+    r = tool("tasks")
+    lin, taken = oa.parse_lineage(r.stdout.splitlines())
+    me = (lin or {}).get((os.getpid(), os.getpid()))
+    expect(r.returncode == 0 and taken is not None and taken[0] <= taken[1] and me is not None
+           and me[0] == os.getppid() and me[1] == oa.start_time(os.getpid()) and me[3] == os.sched_getaffinity(0),
+           f"the listing's row of this process: {me} {taken}")
+    # A process created after the placement is an observer by its parent:
+    # confined (it inherited the mask) it passes; widened it fails.
+    o = Observer()
+    try:
+        rec = root / "lineage.jsonl"
+        expect(tool("confine", "--pids", str(o.pid), "--exclude-cpus", cpu_list(ex), "--record",
+                    str(rec)).returncode == 0, "a clean confinement")
+        late = o.child()
+        probe = [(4242, 4243, ex), (4242, 4242, allowed)]
+        snap = lineage_snapshot(root, {o.pid, *o.kids}, probe)
+        r = tool("check", "--record", str(rec), "--tasks", str(snap), "--worker-tid", "4243")
+        expect(r.returncode == 0 and "lineage: 3 observer processes" in r.stdout
+               and "1 of them not in the record" in r.stdout, f"a new descendant, confined, passes: {r.stdout}")
+        os.sched_setaffinity(late, full)
+        snap = lineage_snapshot(root, {o.pid, *o.kids}, probe)
+        r = tool("check", "--record", str(rec), "--tasks", str(snap), "--worker-tid", "4243")
+        expect(r.returncode == 1 and "1 allowed on" in r.stdout and f"process {late} thread {late}" in r.stdout,
+               f"a new descendant on the excluded CPU fails: {r.stdout}")
+        expect(tool("restore", "--record", str(rec)).returncode == 0, "restored")
+    finally:
+        o.close()
+
+    # Identities and the exempt trees, on a synthetic record and snapshot.
+    def check(record: list[dict], rows: list[str], lineage: bool = True) -> subprocess.CompletedProcess:
+        rp, tp = root / "syn.jsonl", root / "syn-tasks.txt"
+        rp.write_text("".join(json.dumps(x) + "\n" for x in record))
+        if lineage:
+            tp.write_text("taken: x\n" + oa.LINEAGE + "\ntaken monotonic_ns: 1 2\n" + "\n".join(rows) + "\n")
+        else:
+            tp.write_text("taken: x\n" + "\n".join(rows) + "\n")
+        return tool("check", "--record", str(rp), "--tasks", str(tp), "--worker-tid", "4243")
+    record = [{"kind": "header", "version": 2, "exclude": [3], "allowed": [0, 1, 2], "exempt": [6000],
+               "exempt_ids": [{"pid": 6000, "start": 20}]},
+              {"kind": "process", "pid": 5000, "pstart": 10, "ppid": 1, "n": 1},
+              {"kind": "thread", "pid": 5000, "pstart": 10, "ppid": 1, "tid": 5000, "start": 10, "mask": [0, 1, 2, 3],
+               "n": 1, "origin": "inventory"}]
+    base = ["5000 5000 1 10 10 0-2",
+            "6000 6000 5000 20 20 0-3",  # the session, run from an observer's tree: exempt
+            "6001 6001 6000 40 40 0-3",  # its descendant: exempt too
+            "4242 4243 6000 50 50 3"]    # the probe's worker
+    r = check(record, base)
+    expect(r.returncode == 0 and "1 observer threads, 0 allowed" in r.stdout, f"the exempt trees left out: {r.stdout}")
+    r = check(record, base + ["5001 5001 5000 30 30 0-3"])
+    expect(r.returncode == 1 and "process 5001 thread 5001" in r.stdout, f"a new descendant there fails: {r.stdout}")
+    r = check(record, ["5000 5000 1 99 99 0-3", "5002 5002 5000 100 100 0-3", "4242 4243 1 50 50 3"])
+    expect(r.returncode == 0 and "0 observer threads" in r.stdout,
+           f"a reused process ID (another start time) and its child are not observers: {r.stdout}")
+    # A record of the single-pass confine (version 1) and a snapshot before
+    # the lineage: the recorded processes alone, said so.
+    v1 = [{"kind": "header", "exclude": [3], "allowed": [0, 1, 2], "exempt": [6000]}, record[2]]
+    r = check(v1, ["/proc/5000/task/5000/status 0-2", "/proc/5001/task/5001/status 0-3",
+                   "/proc/4242/task/4243/status 3"], lineage=False)
+    expect(r.returncode == 0 and "lineage: none in this snapshot" in r.stdout, f"a legacy snapshot: {r.stdout}")
+
+
 def main() -> int:
     mine = sorted(os.sched_getaffinity(0))
     if len(mine) < 3:
@@ -248,7 +658,7 @@ def main() -> int:
             lines = [json.loads(x) for x in rec.read_text().splitlines()]
             kinds = [x["kind"] for x in lines]
             expect(kinds[0] == "header" and kinds.index("state") > max(i for i, k in enumerate(kinds) if k == "thread")
-                   and kinds[-1] == "state" and lines[-1]["state"] == "confined",
+                   and kinds[-1] == "state" and lines[-1]["state"] == "confined with failures",
                    f"the record: header, every thread, then the changes: {kinds}")
             th = [x for x in lines if x["kind"] == "thread"]
             expect({x["tid"] for x in th} == set(tids(pid)) | set(tids(kid)) and all(x["start"] for x in th),
@@ -302,44 +712,61 @@ def main() -> int:
             # The run's task snapshot: the observer's threads as confined, the
             # probe's worker on the excluded CPU and a helper off it pass; a
             # helper or an observer thread allowed there fails.
-            def snapshot(helper: set[int], extra: str = "") -> pathlib.Path:
-                fmt = lambda m: ",".join(map(str, sorted(m)))  # noqa: E731
-                lines = [f"/proc/{p_}/task/{t_}/status {fmt(os.sched_getaffinity(t_))}"
-                         for p_ in (pid2, kid2) for t_ in tids(p_)]
-                lines += [f"/proc/4242/task/4243/status {ex}", f"/proc/4242/task/4242/status {fmt(helper)}", extra]
-                path = root / "tasks.txt"
-                path.write_text("taken: x\n" + "\n".join(lines) + "\n")
-                return path
+            # (The snapshot's lineage, as the session lists it, with a stand-in
+            # probe: its worker 4243 and a helper 4242.)
+            def snapshot(helper: set[int], override: dict | None = None) -> pathlib.Path:
+                return lineage_snapshot(root, {pid2, kid2}, [(4242, 4243, {ex}), (4242, 4242, helper)], override)
             r = tool("check", "--record", str(rec2), "--tasks", str(snapshot(allowed)), "--worker-tid", "4243")
-            expect(r.returncode == 0 and "0 allowed on" in r.stdout and "1 probe helper threads, 0 allowed" in r.stdout,
+            expect(r.returncode == 0 and "0 allowed on" in r.stdout and "1 probe helper threads, 0 allowed" in r.stdout
+                   and "lineage: 2 observer processes" in r.stdout and "0 of them not in the record" in r.stdout,
                    f"a confined run's snapshot passes: {r.stdout} {r.stderr}")
             r = tool("check", "--record", str(rec2), "--tasks", str(snapshot(set(mine))), "--worker-tid", "4243")
             expect(r.returncode == 1 and "1 probe helper threads, 1 allowed there" in r.stdout,
                    f"a helper on the excluded CPU fails: {r.stdout}")
-            r = tool("check", "--record", str(rec2), "--tasks",
-                     str(snapshot(allowed, f"/proc/{pid2}/task/{pid2}/status {','.join(map(str, mine))}")),
+            r = tool("check", "--record", str(rec2), "--tasks", str(snapshot(allowed, {(pid2, pid2): set(mine)})),
                      "--worker-tid", "4243")
             expect(r.returncode == 1 and "1 allowed on" in r.stdout, f"an observer thread there fails: {r.stdout}")
+            r = tool("check", "--record", str(rec2), "--tasks", str(snapshot(allowed, {(pid2, pid2): None})),
+                     "--worker-tid", "4243")
+            expect(r.returncode == 1 and "allowed CPUs unreadable" in r.stdout, f"an unreadable mask fails: {r.stdout}")
             r = tool("check", "--record", str(rec2), "--tasks", str(snapshot(allowed)), "--worker-tid", "1")
             expect(r.returncode == 1 and "not in the snapshot" in r.stderr, "a missing worker fails")
+            # This confine's record requires the lineage; a snapshot without it fails.
+            legacy = root / "legacy-tasks.txt"
+            legacy.write_text("taken: x\n" + "".join(f"/proc/{p_}/task/{t_}/status {cpu_list(os.sched_getaffinity(t_))}\n"
+                                                     for p_ in (pid2, kid2) for t_ in tids(p_))
+                              + f"/proc/4242/task/4243/status {ex}\n")
+            r = tool("check", "--record", str(rec2), "--tasks", str(legacy), "--worker-tid", "4243")
+            expect(r.returncode == 1 and "no task lineage, which this placement record requires" in r.stderr,
+                   f"a snapshot without the lineage fails: {r.stdout} {r.stderr}")
             expect(say(obs2, "thread") == "ok", "a new thread")
             gk2 = int(say(obs2, "child"))
             kids.append(gk2)
-            # Fake a reused ID for the child's main thread in the record.
+            # Fake a reused ID for the child's main thread in the record (its
+            # thread and change records, keyed by ID and start time): the
+            # recorded thread is reported reused, and the thread holding the
+            # ID now is another, a new thread of its process, given the
+            # process's original (it holds the confined form).
             entries = [json.loads(x) for x in rec2.read_text().splitlines()]
             for x in entries:
-                if x["kind"] == "thread" and x["tid"] == kid2:
+                if x.get("tid") == kid2 and "start" in x:
                     x["start"] = 1
             rec2.write_text("".join(json.dumps(x, sort_keys=True) + "\n" for x in entries))
             r = tool("restore", "--record", str(rec2))
-            expect(r.returncode == 0 and "new restored 2" in r.stdout and "reused 1" in r.stdout,
+            expect(r.returncode == 0 and "new restored 3" in r.stdout and "reused 1" in r.stdout,
                    f"new threads with a single original mask, and a reused ID: {r.stdout}")
             expect(all(m == set(mine) for m in masks(pid2).values()) and os.sched_getaffinity(gk2) == set(mine),
                    f"the new thread and process restored: {masks(pid2)} {os.sched_getaffinity(gk2)}\n{r.stdout}\n"
                    f"{rec2.read_text()}")
-            expect(os.sched_getaffinity(kid2) == allowed, "the reused ID left alone")
+            expect(os.sched_getaffinity(kid2) == set(mine), "the ID's present thread treated as a new one")
         with tempfile.TemporaryDirectory() as t:
             fault_checks(pathlib.Path(t), mine)
+        with tempfile.TemporaryDirectory() as t:
+            repeated_scan_checks(pathlib.Path(t), mine)
+        with tempfile.TemporaryDirectory() as t:
+            lineage_checks(pathlib.Path(t), mine)
+        with tempfile.TemporaryDirectory() as t:
+            counterexample_checks(pathlib.Path(t))
     finally:
         for p in procs:
             p.kill()

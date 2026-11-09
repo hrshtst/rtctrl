@@ -102,6 +102,7 @@ import subprocess
 import sys
 
 import fair_server
+import observer_affinity
 import timer_service
 
 try:
@@ -794,21 +795,53 @@ KWORKER_PARTS = ("tty_queue_to_kworker_waking", "kworker_waking_to_first_run", "
 
 def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failures: list[str]) -> None:
     """A confined run's observers and the probe's helpers on the excluded
-    CPUs during the run: any time there is a placement failure."""
+    CPUs during the run: any time there is a placement failure. The observers
+    are the placement record's tasks; the tasks of the lineage the session
+    took right after the trace started (the recorded processes by ID and
+    start time and their descendants by parent, less the exempt trees, so a
+    task created before the trace and absent from the record is one); and
+    every task an observer task forked during the trace (a reused ID stays an
+    observer: the set only grows). A record of the repeated-scan confine
+    (version 2) requires the lineage and the timer mode's process events; an
+    earlier run's check says what it does not cover."""
     recf = pathlib.Path(str(csv_path) + ".observers.jsonl")
     entries = [json.loads(x) for x in recf.read_text().splitlines() if x.strip()]
     head = next((e for e in entries if e["kind"] == "header"), None)
     if head is None:
         failures.append(f"observer placement: {recf.name} has no header")
         return
+    v2 = head.get("version", 1) >= 2
     for cpu, (tid, comm, since) in list(tr.excl_cur.items()):
         tr.excl_account(tid, comm, since, tr.last_ts)
     tr.excl_cur.clear()
     obs = {e["tid"] for e in entries if e["kind"] == "thread"} | {e["pid"] for e in entries if e["kind"] == "thread"}
-    if tr.timer is not None:  # threads and processes the observers created during the run
+    notes = []
+    linf = pathlib.Path(str(csv_path) + ".lineage.txt")
+    if linf.exists():
+        lineage, _ = observer_affinity.parse_lineage(linf.read_text(errors="replace").splitlines())
+        if lineage is None:
+            failures.append(f"observer placement: {linf.name} has no task lineage")
+            lineage = {}
+        procs, new = observer_affinity.observers_in(entries, lineage)
+        seeded = {t for (p, t) in lineage if p in procs}
+        notes.append(f"lineage after the trace started ({linf.name}): {len(seeded)} observer tasks in "
+                     f"{len(procs)} processes ({len(new)} processes not in the placement record), "
+                     f"{len(seeded - obs)} tasks absent from the record; the exempt trees left out")
+        obs |= seeded
+    elif v2:
+        failures.append(f"observer placement: no task lineage after the trace started ({linf.name})")
+    else:
+        notes.append("lineage: none (a run before 2026-11-09): the recorded tasks and what they forked during the "
+                     "trace are covered, not tasks created before the trace and absent from the record")
+    if tr.timer is not None:
+        before = len(obs)
         for _, parent, _, child, _ in sorted(tr.timer.forks):
             if parent in obs:
                 obs.add(child)
+        notes.append(f"fork events: {len(obs) - before} tasks created by observer tasks during the trace")
+    elif v2:
+        failures.append("observer placement: the trace has no process events (not a timer-mode trace) to follow "
+                        "the observers' lineage")
     probe_comm = "x7_bus_timing"
     o = {t: ns for t, ns in tr.excl_ns.items() if t in obs}
     h = {t: ns for t, ns in tr.excl_ns.items() if t != run.tid and tr.excl_comm.get(t) == probe_comm and t not in obs}
@@ -816,6 +849,8 @@ def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failure
     print(f"  observer placement (confined, {recf.name}): on CPUs {cpus} during the run, observer threads "
           f"{len(o)} ({sum(o.values()) / 1e6:.3f} ms), probe helper threads {len(h)} "
           f"({sum(h.values()) / 1e6:.3f} ms)", file=out)
+    for note in notes:
+        print(f"    {note}", file=out)
     for t, ns in sorted({**o, **h}.items(), key=lambda kv: -kv[1])[:10]:
         print(f"    {tr.excl_comm.get(t, '?')} {t}: {ns / 1e3:.1f} us", file=out)
     if o or h:

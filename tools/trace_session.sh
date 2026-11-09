@@ -64,15 +64,22 @@
 # name carrying the label (-obs-open, -obs-confined). For a confined run,
 # tools/observer_affinity.py moves every thread of the operator's named
 # process trees off the excluded CPUs right after the record is opened
-# (writing <log>.csv.observers.jsonl, every thread's identity, start time and
-# mask, before any change), the probe starts with its mask outside them (only
+# (writing <log>.csv.observers.jsonl, every process's and thread's identity,
+# start time and mask, before any change), repeating its pass until one finds
+# no new process or thread and every one off them (at most 10 passes;
+# reviewer, 2026-11-09); the probe starts with its mask outside them (only
 # its worker pins itself to the real-time CPU), and the observers are
 # restored right after the probe, and on every exit (a failed restoration is
-# status 3). The run's halfway task snapshot is checked: an observer thread
-# or a probe helper allowed on an excluded CPU stops the session as a
-# placement failure, as does a thread confine cannot move. The session's own
-# process tree is exempt, and kernel workers are outside this mechanism. An
-# open run leaves the observers as they are.
+# status 3). The run's halfway task snapshot, which lists every task's parent
+# and start times, is checked: an observer task (a recorded process's, or a
+# descendant's) or a probe helper allowed on an excluded CPU stops the
+# session as a placement failure, as does a confine that fails or does not
+# settle (before the probe). A confined traced run lists the same lineage
+# right after its trace started (<log>.csv.lineage.txt), for the trace's
+# check to follow with the fork events; a confined run is therefore untraced
+# or in the timer mode. The session's own process tree is exempt, and kernel
+# workers are outside this mechanism. An open run leaves the observers as
+# they are.
 #
 # Recorder staging (every run; tools/trace_stage.py, approved 2026-11-09):
 # each run's capture streams (the probe's log and summary, the trace with
@@ -168,6 +175,8 @@
 #   <log>.csv.summary.toml  run summary (probe)
 #   <log>.csv.run.txt       command, host state, probe output, verdicts
 #   <log>.csv.tasks.txt     tasks, CPUs and affinities halfway through
+#   <log>.csv.lineage.txt   every task's parent, start times and CPUs right
+#                           after the trace started (confined traced runs)
 #   <log>.csv.trace.dat     trace-cmd record (traced runs)
 #   <log>.csv.usbmon.pcap   usbmon capture of the adapter (traced runs)
 #   <log>.csv.staging.sha256  the published files' SHA-256 (sha256sum -c)
@@ -497,7 +506,14 @@ if [ -n "$observers" ]; then
   case ",$placements," in *,confined,*) ;; *) die "--observers needs --placements with confined" ;; esac
 fi
 case ",$placements," in
-  *,confined,*) [ -n "$observers" ] || die "a confined placement needs --observers (the PIDs to confine)" ;;
+  *,confined,*)
+    [ -n "$observers" ] || die "a confined placement needs --observers (the PIDs to confine)"
+    # The trace's placement check follows the timer mode's process events.
+    for m in "${mode_list[@]}"; do
+      case "$m" in
+        traced|profiled) die "a confined placement runs untraced or in the timer mode, whose process events the trace's placement check follows (not $m)" ;;
+      esac
+    done ;;
 esac
 # The probes' controls load a spare CPU: a rehearsal over the emulator only.
 if [ -n "$fs_controls_cpu" ]; then
@@ -796,7 +812,7 @@ if [ "$dry_run" -eq 1 ]; then
   done
   placement=
   if [ -n "$placements" ]; then
-    echo "placements $placements: a confined run moves the trees of $observers off CPUs $exclude_cpus through $OBS_TOOL (recorded first, restored right after the probe and on every exit) and starts the probe on CPUs $other_cpus"
+    echo "placements $placements: a confined run moves the trees of $observers off CPUs $exclude_cpus through $OBS_TOOL (recorded first, repeated until a pass finds nothing new, restored right after the probe and on every exit; its halfway snapshot and, in the timer mode, a listing after the trace started follow the observers' lineage) and starts the probe on CPUs $other_cpus"
   fi
   echo "staging: each run's capture streams on a private noswap tmpfs under $STAGE_ROOT ($STAGE_TOOL), published to $outdir, verified and released after the run; the budgets (provisional) at today's MemAvailable:"
   # A traced budget needs the trace buffers' geometry, read as root when the
@@ -1572,6 +1588,9 @@ tasks_snapshot() {
   ps -eLo pid,tid,psr,cls,rtprio,ni,stat,comm
   echo "--- Cpus_allowed_list per task (/proc/<pid>/task/<tid>/status) ---"
   awk '/^Cpus_allowed_list/ {print FILENAME, $2}' /proc/[0-9]*/task/[0-9]*/status 2>/dev/null
+  # Every task's parent and start times with its CPUs: the placement check's
+  # lineage (required with a confined run's record).
+  python3 "$OBS_TOOL" tasks 2>&1
 }
 clock_offsets() {  # BOOTTIME and TAI minus MONOTONIC, for timers on those clocks (timer mode)
   python3 - <<'EOF'
@@ -1848,6 +1867,22 @@ run_one() {
       echo "verdict: not run (staging)" >>"$note"
       outcome=stop
       return
+    fi
+    # A confined run's lineage once the trace records: the trace's placement
+    # check starts from it (tasks absent from the placement record included)
+    # and follows the fork events (reviewer, 2026-11-09).
+    if [ "$placement" = confined ]; then
+      if python3 "$OBS_TOOL" tasks >"$sb.lineage.txt" 2>"$tmp/lineage.err"; then
+        echo "task lineage after the trace started: $(basename "$sb").lineage.txt, $(($(wc -l <"$sb.lineage.txt") - 2)) tasks" >>"$note"
+      else
+        { echo "trace_session: the task lineage was not listed after the trace started: session stopped"
+          cat "$tmp/lineage.err"; } | tee -a "$note"
+        stop_all
+        restore_observers
+        echo "verdict: not run (placement)" >>"$note"
+        outcome=stop
+        return
+      fi
     fi
     if [ "$usbmon" -eq 1 ]; then
       start_tracer usbmon "$TCPDUMP" "${usbmon_opts[@]}" -w "$pcap" "$usbmon_filter"

@@ -296,7 +296,9 @@ case "$1" in
 esac
 EOF
 # A stand-in probe for the profiled runs: it replays a real run's log
-# ($FAKE_PROBE_TEMPLATE, from the pairs below) for --duration seconds.
+# ($FAKE_PROBE_TEMPLATE, from the pairs below) for --duration seconds
+# (FAKE_PROBE_OWN_TID: its summary names its own process as the worker, for
+# a confined run's halfway check).
 cat >"$FAKE/probe" <<'EOF'
 #!/usr/bin/env bash
 log=; dur=1
@@ -306,6 +308,7 @@ while [ $# -gt 0 ]; do
 done
 cp "$FAKE_PROBE_TEMPLATE" "$log"
 cp "$FAKE_PROBE_TEMPLATE.summary.toml" "$log.summary.toml"
+[ -z "${FAKE_PROBE_OWN_TID:-}" ] || sed -i "s/^worker_tid = .*/worker_tid = $$/" "$log.summary.toml"
 echo "worker thread $(sed -n 's/^worker_tid = //p' "$log.summary.toml") (stand-in probe)"
 sleep "$dur"
 EOF
@@ -1451,6 +1454,7 @@ fi
 # check, the probe started off the excluded CPU, the open run left alone,
 # and the observer's masks restored afterwards.
 for c in "--placements confined|a confined placement needs --observers" \
+         "--placements confined --observers 1 --modes untraced,traced|a confined placement runs untraced or in the timer mode" \
          "--placements open --observers 1|--observers needs --placements with confined" \
          "--placements shut --observers 1|unknown placement 'shut'" \
          "--placements open,confined --observers 999999999|--observers: no process 999999999"; do
@@ -1484,9 +1488,12 @@ grep -q "^placement: open (observers $obs_pid left as they are)$" "$bo.run.txt" 
 grep -q "^placement: confined (observers $obs_pid moved off CPUs 0, the probe started on CPUs " "$bc.run.txt" &&
   grep -q '^command: taskset -c [0-9,\]* .*x7_bus_timing ' "$bc.run.txt" &&
   grep -q '^--- observer placement: python3 tools/observer_affinity.py confine (exit 0) ---$' "$bc.run.txt" &&
-  grep -Eq '^observer placement: 2 processes, [0-9]+ threads: [0-9]+ confined to CPUs ' "$bc.run.txt" &&
+  grep -Eq '^observer placement: 2 processes, [0-9]+ threads in [0-9]+ passes: [0-9]+ confined to CPUs ' "$bc.run.txt" &&
   grep -q '^observer placement restored: restored [0-9]*, exited 0, reused 0, changed 0' "$bc.run.txt" &&
   grep -Eq '^observer placement check \(halfway snapshot\): [0-9]+ observer threads, 0 allowed on CPUs 0; [0-9]+ probe helper threads, 0 allowed there$' "$bc.run.txt" &&
+  grep -Eq '^  lineage: 2 observer processes \(the recorded ones by ID and start time' "$bc.run.txt" &&
+  grep -q '^--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---$' "$bc.tasks.txt" &&
+  grep -q '"kind": "state", "passes": [0-9]*, "state": "confined"' "$bc.observers.jsonl" &&
   grep -Eq '^verdict: (pass|fail)' "$bc.run.txt" ||
   fail "the confined run's record" "$bc.run.txt"
 python3 - "$obs_pid" "$all_cpus" <<'EOF' || fail "the observer's masks were not restored" "$bc.run.txt"
@@ -1497,10 +1504,51 @@ for p in [pid] + kids:
     for t in os.listdir(f"/proc/{p}/task"):
         assert os.sched_getaffinity(int(t)) == want, (p, t, os.sched_getaffinity(int(t)))
 EOF
+# A confined timer run: the lineage listed right after the trace started,
+# published with the run, beside the halfway check's (reviewer, 2026-11-09).
+if [ -n "$SAMPLER" ]; then
+  FAKE_PROBE_OWN_TID=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 89 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion --placements confined \
+    --observers "$obs_pid" </dev/null >"$ROOT/pl-timer.log" 2>&1 || fail "the confined timer session failed" "$ROOT/pl-timer.log"
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-obs-confined-timer 89)
+  grep -q '^--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---$' "$b.lineage.txt" &&
+    grep -Eq "^$obs_pid $obs_pid [0-9]+ [0-9]+ [0-9]+ [0-9,-]+$" "$b.lineage.txt" &&
+    grep -Eq '^task lineage after the trace started: .*\.lineage\.txt, [0-9]+ tasks$' "$b.run.txt" &&
+    grep -Eq '^observer placement check \(halfway snapshot\): [0-9]+ observer threads, 0 allowed on CPUs 0; ' "$b.run.txt" &&
+    grep -q 'lineage.txt' "$b.staging.sha256" ||
+    fail "the confined timer run's lineage" "$b.run.txt"
+fi
 pkill -P "$obs_pid" 2>/dev/null || true
 kill "$obs_pid" 2>/dev/null || true
 wait "$obs_pid" 2>/dev/null || true
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
+
+# A confine that fails (here one that does not settle) stops the session
+# before the probe starts, and the observers are restored (reviewer,
+# 2026-11-09).
+cat >"$FAKE/obs_unsettled.py" <<'EOF'
+import os, sys
+with open(os.environ["FAKE_LOG"] + ".obs_unsettled", "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1] == "confine":
+    with open(sys.argv[sys.argv.index("--record") + 1], "w") as rec:
+        rec.write('{"kind": "header", "version": 2, "exclude": [0], "allowed": [1]}\n')
+    print("observer placement: 1 processes, 10 threads in 10 passes: 10 confined (stand-in); NOT SETTLED")
+    sys.exit(1)
+elif sys.argv[1] == "restore":
+    print("observer placement restored: restored 10 (stand-in)")
+EOF
+set +e
+OBS_TOOL="$FAKE/obs_unsettled.py" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 59 --duration 2 \
+  --modes untraced --runs current:100:idle:fast-motion --placements confined --observers $$ </dev/null \
+  >"$ROOT/pl-unsettled.log" 2>&1
+st=$?
+set -e
+b=$(base current-100hz-idle-bounded-fast-motion-obs-confined-untraced 59)
+[ "$st" -ne 0 ] && grep -q 'the observers were not all confined (exit 1): session stopped' "$ROOT/pl-unsettled.log" &&
+  grep -q '^verdict: not run (placement)$' "$b.run.txt" && [ ! -e "$b" ] && [ ! -e "$b.summary.toml" ] &&
+  ! grep -q '^worker thread ' "$b.run.txt" && grep -q '^restore ' "$ROOT/fake.obs_unsettled" ||
+  fail "an unsettled confine: status $st" "$ROOT/pl-unsettled.log"
 
 # A restoration that stays unresolved (a stand-in placement tool whose
 # restore fails) reaches the session's cleanup-failure handling: the run
