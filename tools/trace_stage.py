@@ -43,8 +43,8 @@ configuration; a guard, not a reservation): per run,
 assembled, A the other enabled streams (at least 512 MiB in a traced run),
 each mode budgeted for the streams it enables, Q = 64 MiB the guard's
 reserve; and before mounting MemAvailable must be at least S + K + H, K the
-kernel ring buffers the run allocates (the buffer size for every possible
-CPU in each trace array it uses), H = max(8 GiB, 15% of MemTotal). The guard
+kernel ring buffers' data-plus-reader allocation (below), H = max(8 GiB, 15%
+of MemTotal). The guard
 stops the run's recorders when the stage's free space falls below C + Q (what
 the run still writes after the stop, the assembled trace, and the reserve;
 Q alone in an untraced run) or MemAvailable below H / 2. The stage holds its
@@ -54,8 +54,29 @@ bound empty, while recording (the raw trace and the other streams, their
 the raw files). An untraced run has no recorder to stop: a trip there is
 recorded and fails the run.
 
+The kernel's ring buffers (Linux 7.0 kernel/trace/ring_buffer.c and
+trace.c), from each trace array's own geometry: its page header
+(events/header_page) gives the payload p of a subbuffer and the offset of
+the data in it, the subbuffer q = offset + payload (a power of two, at least
+1 KiB, and buffer_subbuf_size_kb times 1024 where that file exists). For B
+requested bytes per CPU the kernel takes n = max(2, ceil(B / p)) subbuffers.
+Two quantities follow, kept apart:
+- the expected tracefs readback: floor(n p / 1024) KiB per CPU in
+  per_cpu/cpuN/buffer_size_kb, and their sum, truncated per CPU before
+  summing, in buffer_total_size_kb; the session requires exactly these, for
+  every array and every configured CPU, before the probe (buffers);
+- the physical budget K: (n + 1) q bytes per CPU and array, the data
+  subbuffers plus the reader's, bookkeeping and transient allocations
+  excluded; it enters the RAM check only, never the readback check.
+The session reads the main array's geometry before any run (geometry) and
+checks every array against it once they exist; a missing or malformed
+geometry refuses.
+
 usage: trace_stage.py budget --mode M --duration-s D [--rate-hz R] --buffer-kb B --cpus N
-                             [--usbmon 0|1] [--perf-hz F] [--perf-stack S] [--exerciser 0|1]
+                             [--payload P --subbuf Q] [--usbmon 0|1] [--perf-hz F] [--perf-stack S]
+                             [--exerciser 0|1]
+       trace_stage.py geometry --tracefs DIR [--instance NAME]
+       trace_stage.py buffers --tracefs DIR [--instance NAME] --buffer-kb B --cpu-list LIST --payload P --subbuf Q
        trace_stage.py verify --stage DIR --size-mib M
        trace_stage.py mark --stage DIR --session ID --base NAME --outdir DIR
        trace_stage.py guard --stage DIR --min-free B --min-available B [--interval S] [--stop-pid PID ...]
@@ -114,6 +135,7 @@ OWN = (MARKER, MARKER + ".tmp", INVENTORY, INVENTORY + ".tmp")
 CHUNK = 4 * MIB
 PAGE = 4096
 STAGE_NAME = re.compile(r"^\d+-\d{8}T\d{6}-\d+-\d+-[0-9a-f]{8}$")
+HEADER_DATA = re.compile(r"field:\s*char\s+data(?:\[\d*\])?;\s*offset:\s*(\d+);\s*size:\s*(\d+);")
 
 
 class StageError(Exception):
@@ -136,9 +158,132 @@ def ceil_mib(n: float) -> int:
     return int(math.ceil(n / MIB))
 
 
+def parse_geometry(header: str, subbuf_kb: str | None) -> dict:
+    """A trace array's subbuffer geometry from its page header (and its
+    buffer_subbuf_size_kb, when the kernel offers one)."""
+    m = HEADER_DATA.findall(header)
+    if len(m) != 1:
+        raise StageError(f"the page header has {len(m)} data fields, not one")
+    offset, payload = int(m[0][0]), int(m[0][1])
+    subbuf = offset + payload
+    if offset < 1 or payload < 1 or subbuf < 1024 or subbuf & (subbuf - 1):
+        raise StageError(f"unsupported subbuffer geometry: data at offset {offset}, {payload} bytes")
+    if subbuf_kb is not None:
+        v = subbuf_kb.strip()
+        if not v.isdigit() or int(v) * 1024 != subbuf:
+            raise StageError(f"buffer_subbuf_size_kb reads {v!r}, not the page header's {subbuf // 1024} KiB")
+    return {"offset": offset, "payload": payload, "subbuf": subbuf, "subbuf_kb_file": subbuf_kb is not None}
+
+
+def array_dir(tracefs: pathlib.Path, instance: str | None) -> pathlib.Path:
+    return tracefs if instance is None else tracefs / "instances" / instance
+
+
+def read_geometry(tracefs: pathlib.Path, instance: str | None) -> dict:
+    d = array_dir(tracefs, instance)
+    try:
+        header = (d / "events" / "header_page").read_text()
+    except OSError as e:
+        raise StageError(f"no page header ({e})") from e
+    try:
+        subbuf_kb: str | None = (d / "buffer_subbuf_size_kb").read_text()
+    except FileNotFoundError:
+        subbuf_kb = None
+    return parse_geometry(header, subbuf_kb)
+
+
+def describe_geometry(g: dict) -> str:
+    return (f"subbuffer {g['subbuf']} bytes, payload {g['payload']} at offset {g['offset']} (page header"
+            f"{', buffer_subbuf_size_kb' if g['subbuf_kb_file'] else '; no buffer_subbuf_size_kb'})")
+
+
+def capacity(buffer_kb: int, payload: int, subbuf: int) -> dict:
+    """The kernel's subbuffers for buffer_kb KiB per CPU: their count, the
+    expected readback per CPU (KiB, truncated) and the data-plus-reader bytes."""
+    n = max(2, -(-buffer_kb * 1024 // payload))
+    return {"pages": n, "readback_kib": (n * payload) >> 10, "physical": (n + 1) * subbuf}
+
+
+def expand_cpus(cpu_list: str) -> list[int]:
+    out: list[int] = []
+    for part in cpu_list.strip().split(","):
+        a, _, b = part.partition("-")
+        if not a.isdigit() or (b and not b.isdigit()):
+            raise StageError(f"not a CPU list: {cpu_list!r}")
+        out.extend(range(int(a), int(b or a) + 1))
+    return out
+
+
+def read_kib(path: pathlib.Path) -> int:
+    """A buffer size file's KiB: a plain number (an unexpanded buffer, "N
+    (expanded: M)", or one with unequal CPUs, "X", is no capacity)."""
+    t = path.read_text().strip()
+    if not t.isdigit():
+        raise StageError(f"{path.name} reads {t!r}")
+    return int(t)
+
+
+def check_buffers(tracefs: pathlib.Path, instances: list[str], buffer_kb: int, cpu_list: str, payload: int,
+                  subbuf: int, out) -> bool:
+    """Every array's geometry as budgeted, and its per-CPU and total
+    capacities exactly as the kernel's rounding gives them."""
+    cpus = expand_cpus(cpu_list)
+    cap = capacity(buffer_kb, payload, subbuf)
+    ok = True
+    for inst in [None, *instances]:
+        name = "main" if inst is None else inst
+        d = array_dir(tracefs, inst)
+        problems = []
+        try:
+            g = read_geometry(tracefs, inst)
+            if (g["payload"], g["subbuf"]) != (payload, subbuf):
+                problems.append(f"its geometry ({describe_geometry(g)}) is not the budget's (subbuffer {subbuf} "
+                                f"bytes, payload {payload})")
+        except StageError as e:
+            problems.append(f"its geometry: {e}")
+        found = sorted(int(c.name[3:]) for c in (d / "per_cpu").glob("cpu*") if c.name[3:].isdigit())
+        if found != cpus:
+            problems.append(f"per-CPU buffers for {len(found)} CPUs, not the configured {cpu_list} ({len(cpus)})")
+        actual: dict[int, int] = {}
+        for c in cpus:
+            try:
+                actual[c] = read_kib(d / "per_cpu" / f"cpu{c}" / "buffer_size_kb")
+            except (OSError, StageError) as e:
+                problems.append(f"cpu{c}: {e}")
+        wrong = sorted((c, v) for c, v in actual.items() if v != cap["readback_kib"])
+        if wrong:
+            problems.append(f"{len(wrong)} CPUs not at {cap['readback_kib']} KiB: "
+                            + ", ".join(f"cpu{c} {v} KiB" for c, v in wrong[:8]) + (" ..." if len(wrong) > 8 else ""))
+        expected_total = cap["readback_kib"] * len(cpus)
+        try:
+            total = read_kib(d / "buffer_total_size_kb")
+            if total != expected_total:
+                problems.append(f"buffer_total_size_kb reads {total}, not {expected_total}")
+            elif len(actual) == len(cpus) and sum(actual.values()) != total:
+                problems.append(f"buffer_total_size_kb reads {total}, not its CPUs' sum {sum(actual.values())}")
+        except (OSError, StageError) as e:
+            problems.append(f"buffer_total_size_kb: {e}")
+        head = (f"kernel buffers, array {name}: requested {buffer_kb} KiB per CPU on CPUs {cpu_list}; "
+                f"{cap['pages']} subbuffers of {subbuf} bytes (payload {payload}); expected {cap['readback_kib']} KiB "
+                f"per CPU and {expected_total} KiB in all")
+        if problems:
+            ok = False
+            print(f"{head}: NOT AS EXPECTED: " + "; ".join(problems), file=out)
+        else:
+            print(f"{head}: read back exactly ({len(cpus)} CPUs at {cap['readback_kib']} KiB, buffer_total_size_kb "
+                  f"{expected_total}; geometry as budgeted)", file=out)
+    arrays = 1 + len(instances)
+    print(f"kernel buffers' physical budget: {cap['physical'] // 1024} KiB per CPU and array, the data subbuffers "
+          f"plus the reader's ({cap['pages'] + 1} of {subbuf} bytes), {arrays * len(cpus) * cap['physical']} bytes "
+          "for these arrays; bookkeeping and transient allocations excluded", file=out)
+    return ok
+
+
 def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: int, usbmon: bool,
-           perf_hz: int, perf_stack: int, exerciser: bool, mem: dict[str, int]) -> dict:
-    """The stage's size and the RAM a run needs, for the streams its mode enables."""
+           perf_hz: int, perf_stack: int, exerciser: bool, mem: dict[str, int], payload: int | None = None,
+           subbuf: int | None = None) -> dict:
+    """The stage's size and the RAM a run needs, for the streams its mode
+    enables (a traced mode needs the trace arrays' geometry)."""
     if mode not in MODES:
         raise StageError(f"unknown mode {mode}")
     t = duration_s + OVERHEAD_S
@@ -164,7 +309,12 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
     a = max(A_TRACED, other) if traced else other
     size_mib = ceil_mib(MARGIN * (raw + assembled + a) + GUARD_RESERVE)
     arrays = {"untraced": 0, "traced": 1, "profiled": 1, "controls": 1, "timer": 2}[mode]
-    kernel = buffer_kb * 1024 * cpus * arrays
+    cap = {"pages": 0, "readback_kib": 0, "physical": 0}
+    if arrays:
+        if payload is None or subbuf is None:
+            raise StageError(f"a {mode} run's budget needs the trace buffers' geometry (--payload, --subbuf)")
+        cap = capacity(buffer_kb, payload, subbuf)
+    kernel = cap["physical"] * cpus * arrays
     total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
     if total is None or avail is None:
         raise StageError("MemTotal or MemAvailable is missing from meminfo")
@@ -172,8 +322,9 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
     need = size_mib * MIB + kernel + headroom
     return {"mode": mode, "duration_s": duration_s, "raw": int(raw), "assembled": int(assembled), "other": int(other),
             "items": {k: int(v) for k, v in items.items()}, "a": int(a), "reserve": GUARD_RESERVE,
-            "size_mib": size_mib, "kernel": kernel, "headroom": headroom, "need": need, "available": avail,
-            "ok": avail >= need, "guard_min_free": int(assembled) + GUARD_RESERVE,
+            "size_mib": size_mib, "kernel": kernel, "arrays": arrays, "pages": cap["pages"],
+            "readback_kib": cap["readback_kib"], "physical": cap["physical"], "headroom": headroom, "need": need,
+            "available": avail, "ok": avail >= need, "guard_min_free": int(assembled) + GUARD_RESERVE,
             "guard_min_available": headroom // 2}
 
 
@@ -624,6 +775,18 @@ def main() -> int:
     b.add_argument("--perf-hz", type=int, default=0)
     b.add_argument("--perf-stack", type=int, default=0)
     b.add_argument("--exerciser", type=int, default=0)
+    b.add_argument("--payload", type=int)
+    b.add_argument("--subbuf", type=int)
+    g = sub.add_parser("geometry")
+    g.add_argument("--tracefs", type=pathlib.Path, required=True)
+    g.add_argument("--instance")
+    bu = sub.add_parser("buffers")
+    bu.add_argument("--tracefs", type=pathlib.Path, required=True)
+    bu.add_argument("--instance", action="append", default=[])
+    bu.add_argument("--buffer-kb", type=int, required=True)
+    bu.add_argument("--cpu-list", required=True)
+    bu.add_argument("--payload", type=int, required=True)
+    bu.add_argument("--subbuf", type=int, required=True)
     for name in ("verify", "mark", "guard", "usage", "publish", "release", "abort"):
         s = sub.add_parser(name)
         s.add_argument("--stage", type=pathlib.Path, required=True)
@@ -650,7 +813,7 @@ def main() -> int:
     try:
         if a.cmd == "budget":
             r = budget(a.mode, a.duration_s, a.rate_hz, a.buffer_kb, a.cpus, bool(a.usbmon), a.perf_hz,
-                       a.perf_stack, bool(a.exerciser), meminfo(a.meminfo))
+                       a.perf_stack, bool(a.exerciser), meminfo(a.meminfo), a.payload, a.subbuf)
             for k in ("size_mib", "kernel", "headroom", "need", "available", "guard_min_free",
                       "guard_min_available"):
                 print(f"{k}={r[k]}", file=out)
@@ -658,9 +821,20 @@ def main() -> int:
             print(f"staging budget ({a.mode}, {a.duration_s:g} s, provisional): raw trace {gb(r['raw'])}, assembled "
                   f"{gb(r['assembled'])}, other streams {gb(r['a'])} ({items}); guard reserve "
                   f"{r['reserve'] // MIB} MiB; tmpfs cap {r['size_mib']} MiB; "
-                  f"kernel buffers {gb(r['kernel'])}, headroom {gb(r['headroom'])}: MemAvailable needed "
+                  + (f"kernel buffers {gb(r['kernel'])} ({r['arrays']} arrays x {a.cpus} CPUs x "
+                     f"{r['physical'] // 1024} KiB, {r['pages']} subbuffers plus the reader's of {a.subbuf} bytes; "
+                     f"data-plus-reader allocation, bookkeeping excluded; expected readback {r['readback_kib']} KiB "
+                     f"per CPU for {a.buffer_kb} KiB requested), " if r["arrays"] else "no kernel buffers, ")
+                  + f"headroom {gb(r['headroom'])}: MemAvailable needed "
                   f"{gb(r['need'])}, available {gb(r['available'])}{'' if r['ok'] else ': NOT ENOUGH'}", file=out)
             return 0 if r["ok"] else 1
+        if a.cmd == "geometry":
+            gm = read_geometry(a.tracefs, a.instance)
+            print(f"payload={gm['payload']}\nsubbuf={gm['subbuf']}\noffset={gm['offset']}", file=out)
+            print(f"kernel buffers' geometry, array {a.instance or 'main'}: {describe_geometry(gm)}", file=out)
+            return 0
+        if a.cmd == "buffers":
+            return 0 if check_buffers(a.tracefs, a.instance, a.buffer_kb, a.cpu_list, a.payload, a.subbuf, out) else 1
         if a.cmd == "verify":
             print(f"verified: {a.stage}: {verify(a.stage, a.size_mib)}", file=out)
         elif a.cmd == "mark":

@@ -121,8 +121,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 # Its per-CPU temporary file in --temp's directory (FAKE_IGNORE_TEMP: beside
-# the output instead), and its buffers' total, -b for every possible CPU
-# (FAKE_BUFFER_TOTAL replaces it). FAKE_DROP_MEM: MemAvailable falls once it
+# the output instead), and its buffers sized as the kernel sizes them (the
+# stand-in ring, below). FAKE_DROP_MEM: MemAvailable falls once it
 # records (the staging guard's memory stop); FAKE_TRACE_FILL: its temporary
 # file fills the stage's modeled capacity but 1 MiB (the guard's space stop;
 # sparse, removed at its stop as trace-cmd removes its temporary files).
@@ -133,11 +133,7 @@ if [ "${FAKE_TRACE_FILL:-0}" = 1 ]; then
   cap=$("$FINDMNT" -n -b -o FSTYPE,SIZE,OPTIONS --mountpoint "$(dirname "$tdir")" | awk '{print $2}')
   truncate -s $((cap - 1048576)) "$tdir/$(basename "$out").cpu0"
 fi
-npos=$(python3 -c 'import sys; n=0
-for part in open("/sys/devices/system/cpu/possible").read().strip().split(","):
-    a, _, b = part.partition("-"); n += int(b or a) - int(a) + 1
-print(n)')
-echo "${FAKE_BUFFER_TOTAL:-$((bkb * npos))}" >"$TRACEFS/buffer_total_size_kb"
+"$(dirname "$0")/ring" "$TRACEFS" "$bkb"
 [ -n "${FAKE_DROP_MEM:-}" ] && sed -i 's/^MemAvailable:.*/MemAvailable:       1000 kB/' "$TRACE_SESSION_MEMINFO"
 [ -n "${FAKE_TRACE_CLOCK:-}" ] && clock=$FAKE_TRACE_CLOCK
 case "$clock" in
@@ -338,11 +334,13 @@ case "$1" in
            unknown) : >"$mark"; echo "sudo: a stand-in failure" >&2; exit 1 ;;
          esac
          : >"$mark"
-         mkdir -p "$TRACEFS/instances/$3"
-         echo "$(( $5 * $(python3 -c "n=0
-for p in open('/sys/devices/system/cpu/possible').read().strip().split(','):
- a,_,b=p.partition('-'); n+=int(b or a)-int(a)+1
-print(n)") ))" >"$TRACEFS/instances/$3/buffer_total_size_kb"
+         # Its own page header (FAKE_INSTANCE_PAYLOAD: another subbuffer
+         # payload than the main array's) and buffers, sized as the kernel does.
+         mkdir -p "$TRACEFS/instances/$3/events"
+         ip=${FAKE_INSTANCE_PAYLOAD:-4080}
+         sed "s/size:4080;/size:$ip;/" "$TRACEFS/events/header_page" >"$TRACEFS/instances/$3/events/header_page"
+         echo $(( (ip + 16) / 1024 )) >"$TRACEFS/instances/$3/buffer_subbuf_size_kb"
+         "$(dirname "$0")/ring" "$TRACEFS/instances/$3" "$5"
          echo "tsc instance $3: clock [x86-tsc], cpumask 1, buffer $5 kB per CPU, event irq_vectors:local_timer_entry" ;;
   stop) echo "# entries-in-buffer/entries-written: 1/1   #P:2"
         echo "          <idle>-0       [000] d.h1. 123456789: local_timer_entry: vector=236" ;;
@@ -429,8 +427,42 @@ echo "$*" >>"$FAKE_LOG.rmdir"
 [ -e "$FAKE_RMDIR_FAIL" ] && { echo "rmdir: failed to remove '$1': Device or resource busy" >&2; exit 1; }
 exec rmdir "$@"
 EOF
+# The stand-in kernel's ring-buffer sizing for one trace array ($1 its
+# directory, $2 the KiB requested per CPU), as Linux 7.0 sizes it: n = max(2,
+# ceil(B / p)) subbuffers of the array's page-header payload p, n p bytes
+# shown per CPU (KiB, truncated), the total their sum. FAKE_CPU_SKEW: cpu0
+# shows 3 KiB more and the next CPU 3 KiB less, the total unchanged;
+# FAKE_BUFFER_TOTAL replaces the total.
+cat >"$FAKE/ring" <<'EOF'
+#!/usr/bin/env bash
+exec python3 - "$1" "$2" <<'PY'
+import os, pathlib, re, sys
+d, kb = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+p = int(re.search(r"field: char data;\s*offset:\d+;\s*size:(\d+);", (d / "events" / "header_page").read_text())[1])
+n = max(2, -(-kb * 1024 // p))
+cpus = []
+for part in open("/sys/devices/system/cpu/possible").read().strip().split(","):
+    a, _, b = part.partition("-")
+    cpus += range(int(a), int(b or a) + 1)
+vals = {c: (n * p) >> 10 for c in cpus}
+if os.environ.get("FAKE_CPU_SKEW") and len(cpus) > 1:
+    vals[cpus[0]] += 3
+    vals[cpus[1]] -= 3
+for c, v in vals.items():
+    (d / "per_cpu" / f"cpu{c}").mkdir(parents=True, exist_ok=True)
+    (d / "per_cpu" / f"cpu{c}" / "buffer_size_kb").write_text(f"{v}\n")
+(d / "buffer_total_size_kb").write_text(os.environ.get("FAKE_BUFFER_TOTAL", str(sum(vals.values()))) + "\n")
+PY
+EOF
 chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
+# The main array's page header as this kernel prints it (4 KiB subbuffers,
+# 4,080 bytes of payload at offset 16), and its subbuffer size.
+mkdir -p "$ROOT/tracefs/events"
+printf '\tfield: u64 timestamp;\toffset:0;\tsize:8;\tsigned:0;\n\tfield: local_t commit;\toffset:8;\tsize:8;\tsigned:1;\n\tfield: int overwrite;\toffset:8;\tsize:1;\tsigned:1;\n\tfield: char data;\toffset:16;\tsize:4080;\tsigned:0;\n' \
+  >"$ROOT/tracefs/events/header_page"
+cp "$ROOT/tracefs/events/header_page" "$ROOT/header_page.good"
+echo 4 >"$ROOT/tracefs/buffer_subbuf_size_kb"
 : >"$ROOT/mounts"
 # 64 GB of RAM, 44 GB available (this host on 2026-11-09).
 meminfo() {  # MemAvailable in kB
@@ -1136,7 +1168,10 @@ if [ -n "$SAMPLER" ]; then
   done
   grep -q '^mode: timer' "$b.run.txt" && grep -q '^tsc instance rtctrl_tsc: clock \[x86-tsc\]' "$b.run.txt" &&
     grep -q '^tsc instance overruns: 0 ' "$b.run.txt" && grep -q '^trace overruns: 0 ' "$b.run.txt" &&
-    grep -Eq '^smi anchor monotonic_ns: [0-9]+ [0-9]+ ' "$b.run.txt" && grep -q "^session pid: " "$b.run.txt" ||
+    grep -Eq '^smi anchor monotonic_ns: [0-9]+ [0-9]+ ' "$b.run.txt" && grep -q "^session pid: " "$b.run.txt" &&
+    grep -q '^kernel buffers, array main: requested 16384 KiB per CPU .*4113 subbuffers of 4096 bytes (payload 4080); expected 16387 KiB per CPU .*: read back exactly' "$b.run.txt" &&
+    grep -q '^kernel buffers, array rtctrl_tsc: requested 16384 KiB per CPU .*: read back exactly' "$b.run.txt" &&
+    grep -q "^kernel buffers' physical budget: 16456 KiB per CPU and array, .* for these arrays; bookkeeping and transient allocations excluded" "$b.run.txt" ||
     fail "the timer record" "$b.run.txt"
   grep -q -- '-e timer:hrtimer_start -e timer:hrtimer_cancel -e timer:hrtimer_setup -e msr:write_msr -f msr == 0x6e0 && CPU == 0 -e power:cpu_idle -f cpu_id == 0 -e power:cpu_idle_miss -f cpu_id == 0 -e nmi:nmi_handler -f CPU == 0 .*-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit -e syscalls:sys_enter_clock_nanosleep -f comm == "probe" .*-e syscalls:sys_exit_nanosleep -f comm == "probe"' "$ROOT/fake.trace-cmd" ||
     fail "trace-cmd was not given the timer events" "$ROOT/fake.trace-cmd"
@@ -1558,7 +1593,9 @@ for mode in untraced traced; do
   (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") || fail "the $mode run's ledger" "$note"
   [ -f "$b.staging.inventory.json" ] || fail "the $mode run's inventory" "$note"
 done
-grep -q '^kernel buffers read back (buffer_total_size_kb): main ' "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
+grep -q "^kernel buffers' geometry, array main: subbuffer 4096 bytes, payload 4080 at offset 16 (page header, buffer_subbuf_size_kb) (read before any run)" "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
+  grep -q '^staging budget (traced, .*kernel buffers 0.54 GB (1 arrays x [0-9]* CPUs x 16456 KiB, 4113 subbuffers plus the reader.s of 4096 bytes; .*expected readback 16387 KiB per CPU for 16384 KiB requested)' "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
+  grep -q '^kernel buffers, array main: .*: read back exactly' "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
   grep -q "^staging: trace-cmd's per-CPU temporary files: 1 in $ROOT/stage/" "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
   grep -q '^staging usage: ' "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" ||
   fail "the traced run's kernel buffers, temporary files and usage" "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt"
@@ -1573,7 +1610,7 @@ grep -q '(mount point ' "$FAKE_LOG.mount" && ! grep -v "(mount point $(id -u):$(
 if grep -l '^guard stop:' "$OUT"/*.run.txt 2>/dev/null | grep -q .; then
   fail "a guard stopped a run on a stage of its budgeted size" "$(grep -l '^guard stop:' "$OUT"/*.run.txt | head -n 1)"
 fi
-if grep -q '^kernel buffers read back' "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"; then
+if grep -q '^kernel buffers' "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"; then
   fail "an untraced run read back trace buffers" "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"
 fi
 
@@ -1648,7 +1685,8 @@ grep -Eq '^guard stop: the stage has [0-9]+ bytes free \(bound [0-9]+\)' "$b.run
 # trace-cmd's temporary files beside its output, not in --temp's directory:
 # the run stops before the probe; and buffers above the budget's allowance.
 for case in "83:temp:FAKE_IGNORE_TEMP=1:temporary files are not on the stage only" \
-            "84:buffers:FAKE_BUFFER_TOTAL=999999999:exceed the staging budget"; do
+            "84:buffers:FAKE_BUFFER_TOTAL=999999999:buffer_total_size_kb reads 999999999, not " \
+            "86:skew:FAKE_CPU_SKEW=1:2 CPUs not at 16387 KiB: cpu0 16390 KiB"; do
   IFS=: read -r attempt name envset words <<<"$case"
   if env "$envset" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt "$attempt" --modes traced \
       --runs current:100:idle:full </dev/null >"$ROOT/stage-$name.log" 2>&1; then
@@ -1659,6 +1697,32 @@ for case in "83:temp:FAKE_IGNORE_TEMP=1:temporary files are not on the stage onl
     fail "the $name stop" "$b.run.txt"
   [ ! -e "$b" ] && [ -z "$(stage_left)" ] || fail "the $name stop ran the probe or left its stage" "$b.run.txt"
 done
+grep -q 'do not read back as expected (per array and per CPU' "$ROOT/stage-skew.log" ||
+  fail "the per-CPU skew's stop message" "$ROOT/stage-skew.log"
+# The TSC instance with another subbuffer geometry than the main array's:
+# stopped before the probe.
+if [ -n "$SAMPLER" ]; then
+  if FAKE_INSTANCE_PAYLOAD=8176 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+      --attempt 87 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/stage-geo.log" 2>&1; then
+    fail "a session whose arrays disagree in geometry went on" "$ROOT/stage-geo.log"
+  fi
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 87)
+  grep -q '^kernel buffers, array main: .*: read back exactly' "$b.run.txt" &&
+    grep -q '^kernel buffers, array rtctrl_tsc: .*NOT AS EXPECTED: its geometry (subbuffer 8192 bytes, payload 8176 at offset 16 .*) is not the budget.s (subbuffer 4096 bytes, payload 4080)' "$b.run.txt" &&
+    grep -q '^verdict: not run (staging)' "$b.run.txt" && [ -z "$(stage_left)" ] ||
+    fail "the instance's geometry stop" "$b.run.txt"
+fi
+# A page header without its data field: the session refuses before anything
+# is sent, and no run starts.
+printf '\tfield: u64 timestamp;\toffset:0;\tsize:8;\tsigned:0;\n' >"$ROOT/tracefs/events/header_page"
+status=0
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 88 --modes traced --runs current:100:idle:full \
+  </dev/null >"$ROOT/stage-header.log" 2>&1 || status=$?
+cp "$ROOT/header_page.good" "$ROOT/tracefs/events/header_page"
+[ "$status" -eq 2 ] && grep -q 'the page header has 0 data fields, not one' "$ROOT/stage-header.log" &&
+  grep -q "the trace buffers' geometry was not read or is not supported: nothing was sent" "$ROOT/stage-header.log" &&
+  [ ! -e "$(base current-100hz-idle-bounded-traced 88).run.txt" ] && [ -z "$(stage_left)" ] ||
+  fail "the malformed page header's refusal (status $status)" "$ROOT/stage-header.log"
 
 # A publication that fails keeps the stage and fails the session (status
 # 3), the capture judged from the kept stage; the retry publishes and

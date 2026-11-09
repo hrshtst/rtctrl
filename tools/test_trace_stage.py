@@ -6,9 +6,20 @@ stand-in umount emulates a real unmount: the tmpfs's contents vanish and the
 underlying mount point reappears as it was before the mount, its mode
 included (000 stands for a root-owned 0700 directory, which refuses the
 operator); it fails when told to, and so does a stand-in rmdir. No real
-mount is made. Pinned: the budget by mode (the timer examples of the
-approved design, the corrected kernel buffers of both trace arrays, the
-untraced, controls and profiled budgets, the refusal below the RAM needed);
+mount is made. Pinned: the kernel's ring-buffer geometry and rounding
+(Linux 7.0, review 2026-11-09): the page header's payload and offset, its
+validation (no data field, two, a subbuffer that is no power of two, a
+buffer_subbuf_size_kb that disagrees), n = max(2, ceil(B / p)) subbuffers,
+the expected readback truncated per CPU before summing (16,387 KiB per CPU
+and 524,384 KiB per array for 16 MiB requested; the two-subbuffer minimum's
+7 KiB), the physical data-plus-reader budget apart (16,456 KiB per CPU,
+1,078,460,416 bytes for a timer run's two arrays), and the readback check
+on a stand-in tracefs: exact, undersized, oversized, unequal CPUs behind a
+matching total, an unexpanded buffer, a missing CPU, a missing or malformed
+page header and an instance whose geometry disagrees; the budget by mode
+(the timer examples of the approved design, both trace arrays' kernel
+buffers, the untraced, controls and profiled budgets, a traced budget
+refused without geometry, the refusal below the RAM needed);
 in every mode and setting, the stage's capacity above the guard's bound
 when empty, with the budgeted streams while recording and at the assembly's
 end; the guard on a stage modeled with its bounded capacity (findmnt's size,
@@ -136,6 +147,27 @@ class Env:
             f.write(f"{stage} {fstype} {size_mib * MIB} {opts} {under}\n")
 
 
+HEADER = ("\tfield: u64 timestamp;\toffset:0;\tsize:8;\tsigned:0;\n"
+          "\tfield: local_t commit;\toffset:8;\tsize:8;\tsigned:1;\n"
+          "\tfield: int overwrite;\toffset:8;\tsize:1;\tsigned:1;\n"
+          "\tfield: char data;\toffset:16;\tsize:4080;\tsigned:0;\n")  # this kernel's, from a trace.dat
+GEO = ("--payload", "4080", "--subbuf", "4096")
+
+
+def fake_array(d: pathlib.Path, per_cpu: dict[int, str], total: str, header: str | None = HEADER,
+               subbuf_kb: str | None = "4") -> None:
+    """A stand-in trace array: page header, subbuffer size, per-CPU and total capacities."""
+    (d / "events").mkdir(parents=True, exist_ok=True)
+    if header is not None:
+        (d / "events" / "header_page").write_text(header)
+    if subbuf_kb is not None:
+        (d / "buffer_subbuf_size_kb").write_text(subbuf_kb + "\n")
+    for c, v in per_cpu.items():
+        (d / "per_cpu" / f"cpu{c}").mkdir(parents=True, exist_ok=True)
+        (d / "per_cpu" / f"cpu{c}" / "buffer_size_kb").write_text(v + "\n")
+    (d / "buffer_total_size_kb").write_text(total + "\n")
+
+
 def budget(e: Env, *args: str) -> tuple[int, dict[str, int], str]:
     r = e.run("budget", "--meminfo", str(e.meminfo), *args)
     kv = {}
@@ -205,16 +237,94 @@ def main() -> int:
         root = pathlib.Path(t)
         e = Env(root)
 
-        # The budget: the approved timer examples with both arrays' buffers,
-        # the stage holding the guard's 64 MiB reserve on top.
-        common = ("--rate-hz", "1000", "--buffer-kb", "16384", "--cpus", "32")
+        # The kernel's ring-buffer geometry and rounding.
+        g = ts.parse_geometry(HEADER, "4\n")
+        expect((g["offset"], g["payload"], g["subbuf"]) == (16, 4080, 4096), f"this kernel's geometry: {g}")
+        expect(ts.parse_geometry(HEADER, None)["subbuf"] == 4096, "no buffer_subbuf_size_kb: the header alone")
+        for header, kb_file, why in (
+                (HEADER, "8", "buffer_subbuf_size_kb reads '8'"),
+                (HEADER.replace("\tfield: char data;\toffset:16;\tsize:4080;\tsigned:0;\n", ""), None,
+                 "0 data fields"),
+                (HEADER + "\tfield: char data;\toffset:16;\tsize:4080;\tsigned:0;\n", None, "2 data fields"),
+                (HEADER.replace("size:4080", "size:4000"), None, "unsupported subbuffer geometry"),
+                (HEADER.replace("offset:16;\tsize:4080", "offset:x;\tsize:4080"), None, "0 data fields")):
+            try:
+                ts.parse_geometry(header, kb_file)
+                expect(False, f"malformed geometry accepted ({why})")
+            except ts.StageError as err:
+                expect(why in str(err), f"malformed geometry ({why}): {err}")
+        cap = ts.capacity(16384, 4080, 4096)
+        expect(cap == {"pages": 4113, "readback_kib": 16387, "physical": 4114 * 4096}, f"16 MiB per CPU: {cap}")
+        expect(cap["physical"] // 1024 == 16456, "16,456 KiB data-plus-reader per CPU")
+        expect(ts.capacity(1, 4080, 4096) == {"pages": 2, "readback_kib": 7, "physical": 3 * 4096},
+               "the two-subbuffer minimum (the kernel's unexpanded 7 KiB)")
+        expect(ts.capacity(16384, 8176, 8192)["readback_kib"] == 16391, "another geometry rounds by its own payload")
+        expect(32 * cap["readback_kib"] == 524384 and (32 * cap["pages"] * 4080) >> 10 == 524407,
+               "the total is the per-CPU KiB summed after truncation (524,384), not the truncated sum (524,407)")
+        # The readback check on a stand-in tracefs, main array and instance.
+        tfs = root / "tracefs"
+        cpus32 = {c: "16387" for c in range(32)}
+        fake_array(tfs, cpus32, "524384")
+        fake_array(tfs / "instances" / "rtctrl_tsc", cpus32, "524384")
+        bargs = ("--tracefs", str(tfs), "--buffer-kb", "16384", "--cpu-list", "0-31", *GEO)
+        r = e.run("geometry", "--tracefs", str(tfs))
+        expect(r.returncode == 0 and "payload=4080" in r.stdout and "subbuf=4096" in r.stdout and
+               "subbuffer 4096 bytes, payload 4080 at offset 16" in r.stdout, f"the geometry: {r.stdout}{r.stderr}")
+        r = e.run("buffers", *bargs, "--instance", "rtctrl_tsc")
+        expect(r.returncode == 0 and r.stdout.count("read back exactly") == 2 and
+               "4113 subbuffers of 4096 bytes (payload 4080); expected 16387 KiB per CPU and 524384 KiB in all" in r.stdout
+               and "16456 KiB per CPU and array" in r.stdout and "1078460416 bytes for these arrays" in r.stdout and
+               "bookkeeping and transient allocations excluded" in r.stdout, f"exact readbacks: {r.stdout}{r.stderr}")
+        for name, per_cpu, total, why in (
+                ("undersized", {c: "16384" for c in range(32)}, "524288",
+                 "32 CPUs not at 16387 KiB: cpu0 16384 KiB"),
+                ("oversized", {**cpus32, 5: "16390"}, "524387", "1 CPUs not at 16387 KiB: cpu5 16390 KiB"),
+                ("total", cpus32, "524385", "buffer_total_size_kb reads 524385, not 524384"),
+                ("skew", {**cpus32, 0: "16390", 1: "16384"}, "524384", "2 CPUs not at 16387 KiB: cpu0 16390 KiB, cpu1"),
+                ("unexpanded", {**cpus32, 3: "7 (expanded: 1408)"}, "524384", "cpu3: buffer_size_kb reads '7 (expanded"),
+                ("missing CPU", {c: "16387" for c in range(31)}, "508097", "per-CPU buffers for 31 CPUs, not the configured")):
+            d = root / f"tracefs-{name.replace(' ', '-')}"
+            fake_array(d, per_cpu, total)
+            r = e.run("buffers", "--tracefs", str(d), "--buffer-kb", "16384", "--cpu-list", "0-31", *GEO)
+            expect(r.returncode == 1 and "NOT AS EXPECTED" in r.stdout and why in r.stdout,
+                   f"{name} readback refused: {r.stdout}{r.stderr}")
+        d = root / "tracefs-geo"
+        fake_array(d, cpus32, "524384")
+        fake_array(d / "instances" / "rtctrl_tsc", {c: "16391" for c in range(32)}, "524512",
+                   header=HEADER.replace("size:4080", "size:8176"), subbuf_kb="8")
+        r = e.run("buffers", "--tracefs", str(d), "--instance", "rtctrl_tsc", "--buffer-kb", "16384", "--cpu-list",
+                  "0-31", *GEO)
+        expect(r.returncode == 1 and "array main: requested" in r.stdout and "read back exactly" in r.stdout and
+               "array rtctrl_tsc: requested 16384 KiB" in r.stdout and
+               "its geometry (subbuffer 8192 bytes, payload 8176 at offset 16" in r.stdout and
+               "is not the budget's (subbuffer 4096 bytes, payload 4080)" in r.stdout,
+               f"an instance whose geometry disagrees: {r.stdout}{r.stderr}")
+        d = root / "tracefs-noheader"
+        fake_array(d, cpus32, "524384", header=None)
+        r = e.run("buffers", "--tracefs", str(d), "--buffer-kb", "16384", "--cpu-list", "0-31", *GEO)
+        expect(r.returncode == 1 and "its geometry: no page header" in r.stdout, f"no header: {r.stdout}{r.stderr}")
+        r = e.run("geometry", "--tracefs", str(d))
+        expect(r.returncode == 1 and "no page header" in r.stderr, f"geometry without a header: {r.stderr}")
+        (d / "events" / "header_page").write_text("\tfield: u64 timestamp;\toffset:0;\tsize:8;\tsigned:0;\n")
+        r = e.run("geometry", "--tracefs", str(d))
+        expect(r.returncode == 1 and "the page header has 0 data fields" in r.stderr, f"malformed: {r.stderr}")
+
+        # The budget: the approved timer examples with both arrays' buffers
+        # (data-plus-reader allocation), the stage holding the guard's 64 MiB
+        # reserve on top.
+        common = ("--rate-hz", "1000", "--buffer-kb", "16384", "--cpus", "32", *GEO)
         st, kv, text = budget(e, "--mode", "timer", "--duration-s", "60", *common)
-        expect(st == 0 and kv["kernel"] == 2 * 32 * 16 * MIB, f"a timer run's kernel buffers are both arrays': {text}")
-        expect(abs(kv["need"] / 1e9 - 39.08) < 0.01, f"the 60 s timer run needs about 39.1 GB: {kv['need']}")
+        expect(st == 0 and kv["kernel"] == 1_078_460_416, f"a timer run's kernel buffers are both arrays': {text}")
+        expect("expected readback 16387 KiB per CPU for 16384 KiB requested" in text and "16456 KiB" in text,
+               f"the budget states the readback and the allocation apart: {text}")
+        expect(abs(kv["need"] / 1e9 - 39.088) < 0.001, f"the 60 s timer run needs about 39.1 GB: {kv['need']}")
         expect(abs(kv["size_mib"] * MIB / 1e9 - 28.08) < 0.01, f"its tmpfs cap is about 28.1 GB: {kv['size_mib']}")
         expect("guard reserve 64 MiB" in text, f"the reserve is stated: {text}")
+        st, kv, text = budget(e, "--mode", "timer", "--duration-s", "60", "--rate-hz", "1000", "--buffer-kb", "16384",
+                              "--cpus", "32")
+        expect(st == 1 and "needs the trace buffers' geometry" in text, f"no geometry, no traced budget: {text}")
         st, kv, text = budget(e, "--mode", "timer", "--duration-s", "10", *common)
-        expect(st == 0 and abs(kv["need"] / 1e9 - 19.55) < 0.01, f"the 10 s timer run needs about 19.55 GB: {text}")
+        expect(st == 0 and abs(kv["need"] / 1e9 - 19.556) < 0.001, f"the 10 s timer run needs about 19.56 GB: {text}")
         expect(kv["guard_min_free"] == int(250e6 * 20 / 4) + 64 * MIB and kv["guard_min_available"] == kv["headroom"] // 2,
                f"the guard's bounds: {text}")
         st, kv, text = budget(e, "--mode", "untraced", "--duration-s", "10", *common)
@@ -222,8 +332,8 @@ def main() -> int:
                f"the proposed untraced control: 109 MiB under a 64 MiB bound (45 MiB before the fix): {text}")
         st, kv, text = budget(e, "--mode", "untraced", "--duration-s", "60", *common)
         expect(st == 0 and kv["kernel"] == 0 and kv["size_mib"] < 256, f"an untraced run's small budget: {text}")
-        st, kv, text = budget(e, "--mode", "controls", "--duration-s", "23", "--buffer-kb", "16384", "--cpus", "32")
-        expect(st == 0 and "probe log" not in text and kv["kernel"] == 32 * 16 * MIB,
+        st, kv, text = budget(e, "--mode", "controls", "--duration-s", "23", "--buffer-kb", "16384", "--cpus", "32", *GEO)
+        expect(st == 0 and "probe log" not in text and kv["kernel"] == 32 * 4114 * 4096,
                f"the controls' budget is their own: {text}")
         st, kv1, _ = budget(e, "--mode", "profiled", "--duration-s", "60", *common, "--perf-hz", "999",
                             "--perf-stack", "4096")
@@ -248,7 +358,7 @@ def main() -> int:
                     for usbmon in (False, True):
                         for perf in ((0, 0), (999, 4096), (20000, 65528)):
                             for ex in (False, True):
-                                b = ts.budget(mode, d, rate, 16384, 32, usbmon, *perf, ex, mem)
+                                b = ts.budget(mode, d, rate, 16384, 32, usbmon, *perf, ex, mem, 4080, 4096)
                                 cap, bound = b["size_mib"] * MIB, b["guard_min_free"]
                                 for what, used in (("empty", 0), ("recording", b["raw"] + b["a"]),
                                                    ("recording, its margin used", ts.MARGIN * (b["raw"] + b["a"])),
@@ -263,7 +373,7 @@ def main() -> int:
         # expected files (the probe's log and the snapshots, at their budget),
         # it runs without a stop; filled to the bound, it trips (no recorder to
         # stop: recorded, and the run fails).
-        b = ts.budget("untraced", 10, 1000, 16384, 32, True, 0, 0, False, mem)
+        b = ts.budget("untraced", 10, 1000, 16384, 32, True, 0, 0, False, mem, 4080, 4096)
         cap = b["size_mib"] * MIB
         s = e.stage()
         e.mount(s, size_mib=b["size_mib"])
@@ -281,7 +391,7 @@ def main() -> int:
         # A 10 s timer stage: empty, while recording (the raw trace in
         # trace-cmd's per-CPU temporary files and the other streams), and at
         # the assembly's end, no stop; exhausted, the guard stops the recorder.
-        b = ts.budget("timer", 10, 1000, 16384, 32, True, 0, 0, False, mem)
+        b = ts.budget("timer", 10, 1000, 16384, 32, True, 0, 0, False, mem, 4080, 4096)
         cap = b["size_mib"] * MIB
         s = e.stage()
         e.mount(s, size_mib=b["size_mib"])

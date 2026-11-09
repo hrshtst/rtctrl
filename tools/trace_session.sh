@@ -86,8 +86,11 @@
 # run's budget (by mode: the raw trace, its assembly and the other enabled
 # streams, plus the kernel buffers and a headroom; provisional constants)
 # must fit in MemAvailable; the mount is verified (tmpfs, noswap, its size,
-# private) and marked as the session's; both trace arrays'
-# buffer_total_size_kb are read back against the budget before the probe;
+# private) and marked as the session's; the trace arrays' geometry is read
+# from the main array's page header before any run (a traced session), and
+# every array's per-CPU and total capacities must read back exactly as the
+# kernel rounds the requested size, with the budgeted geometry, before the
+# probe (the readback apart from the physical-memory budget);
 # and a guard on the tracer CPUs stops the recorders when the stage's free
 # space or MemAvailable falls below its bounds (a guard, not a
 # reservation; the stage holds the guard's reserve on top of the budgeted
@@ -517,8 +520,8 @@ is_uint "$buffer_kb" && [ "$buffer_kb" -gt 0 ] || die "--buffer-kb must be a pos
 
 online=$(expand_cpus "$(cat /sys/devices/system/cpu/online)") || die "cannot read the online CPUs"
 # The kernel sizes a trace array's buffers for every possible CPU.
-possible_cpus=$(expand_cpus "$(cat /sys/devices/system/cpu/possible)" | wc -w) ||
-  die "cannot read the possible CPUs"
+possible_list=$(cat /sys/devices/system/cpu/possible) || die "cannot read the possible CPUs"
+possible_cpus=$(expand_cpus "$possible_list" | wc -w) || die "cannot read the possible CPUs"
 if [ -z "$exclude_cpus" ]; then
   exclude_cpus=$(cat "/sys/devices/system/cpu/cpu$rt_cpu/topology/thread_siblings_list" 2>/dev/null) ||
     die "cannot read CPU $rt_cpu's SMT siblings (pass --exclude-cpus)"
@@ -796,10 +799,20 @@ if [ "$dry_run" -eq 1 ]; then
     echo "placements $placements: a confined run moves the trees of $observers off CPUs $exclude_cpus through $OBS_TOOL (recorded first, restored right after the probe and on every exit) and starts the probe on CPUs $other_cpus"
   fi
   echo "staging: each run's capture streams on a private noswap tmpfs under $STAGE_ROOT ($STAGE_TOOL), published to $outdir, verified and released after the run; the budgets (provisional) at today's MemAvailable:"
+  # A traced budget needs the trace buffers' geometry, read as root when the
+  # session starts; a dry run reads it only where tracefs lets it.
+  dgeo=()
+  if dg=$(python3 "$STAGE_TOOL" geometry --tracefs "$TRACEFS" 2>/dev/null); then
+    dgeo=(--payload "$(sed -n 's/^payload=//p' <<<"$dg")" --subbuf "$(sed -n 's/^subbuf=//p' <<<"$dg")")
+  fi
   for m in "${mode_list[@]}"; do
+    if [ "$m" != untraced ] && [ ${#dgeo[@]} -eq 0 ]; then
+      echo "  $m: budgeted when the session starts, from the trace buffers' geometry read as root"
+      continue
+    fi
     python3 "$STAGE_TOOL" budget --mode "$m" --duration-s "$duration" --rate-hz "$max_rate" --buffer-kb "$buffer_kb" \
       --cpus "$possible_cpus" --usbmon "$usbmon" --perf-hz "$perf_hz" --perf-stack "$perf_stack" \
-      --exerciser "$exerciser" --meminfo "$MEMINFO" 2>&1 | grep -v = | sed 's/^/  /'
+      --exerciser "$exerciser" "${dgeo[@]}" --meminfo "$MEMINFO" 2>&1 | grep -v = | sed 's/^/  /'
   done
   if [ ${#lt_list[@]} -gt 0 ]; then
     echo "latency steps $latency_steps on $lt_tty through $LATENCY_TOOL: read before anything is sent, set before each step's runs, read after each run, and restored on every exit"
@@ -1064,17 +1077,20 @@ restore_observers() {
 # stage_failed makes the session fail (status 3, 130 kept).
 stage_dir=; stage_owed=0; stage_note=; stage_failed=0; stage_seq=0; stage_published=0
 stage_kernel=0; stage_gfree=0; stage_gavail=0; guard_stop=
+sb_payload=; sb_subbuf=; sb_geometry=  # the trace arrays' geometry, read before any run
 stage_name() {  # -> stage_dir, a fresh name (nothing is created)
   stage_seq=$((stage_seq + 1))
   stage_dir="$STAGE_ROOT/$session_id-$attempt-$stage_seq-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 }
 stage_open() {  # mode duration_s rate_hz base note -> 0 once the stage is ready, 1 when the run must not start
-  local mode=$1 dur=$2 rate=$3 base=$4 note=$5 out st size_mib
+  local mode=$1 dur=$2 rate=$3 base=$4 note=$5 out st size_mib geo=()
   stage_note=$note; stage_published=0
+  [ -n "$sb_payload" ] && geo=(--payload "$sb_payload" --subbuf "$sb_subbuf")
   out=$(python3 "$STAGE_TOOL" budget --mode "$mode" --duration-s "$dur" --rate-hz "$rate" --buffer-kb "$buffer_kb" \
         --cpus "$possible_cpus" --usbmon "$usbmon" --perf-hz "$perf_hz" --perf-stack "$perf_stack" \
-        --exerciser "$exerciser" --meminfo "$MEMINFO" 2>&1); st=$?
+        --exerciser "$exerciser" "${geo[@]}" --meminfo "$MEMINFO" 2>&1); st=$?
   { echo; echo "--- staging ($STAGE_TOOL; provisional budget; the guard is not a reservation) ---"
+    [ -n "$sb_geometry" ] && [ "$mode" != untraced ] && echo "$sb_geometry (read before any run)"
     grep -v = <<<"$out"; } >>"$note"
   size_mib=$(sed -n 's/^size_mib=//p' <<<"$out")
   stage_kernel=$(sed -n 's/^kernel=//p' <<<"$out")
@@ -1188,20 +1204,18 @@ stage_temp_check() {  # temp dir, output basename, note -> 0 when they are
   fi
   echo "staging: trace-cmd's per-CPU temporary files: $n in $1 (the stage's filesystem), none in $outdir or beside the output" >>"$3"
 }
-# Both trace arrays' buffers, read back before the probe against the
-# budget's kernel allowance.
-stage_kernel_check() {  # 1 with the TSC instance, note -> 0 when they fit
-  local m i='' total
-  m=$(priv cat "$TRACEFS/buffer_total_size_kb" 2>&1 | awk 'NR == 1 {print $1}')
-  [ "$1" -eq 1 ] && i=$(priv cat "$TRACEFS/instances/$TSC_INSTANCE/buffer_total_size_kb" 2>&1 | awk 'NR == 1 {print $1}')
-  echo "kernel buffers read back (buffer_total_size_kb): main ${m:-none}${i:+, instance $TSC_INSTANCE $i} kB; the budget allows $((stage_kernel / 1024)) kB" >>"$2"
-  if ! is_uint "$m" || { [ "$1" -eq 1 ] && ! is_uint "$i"; }; then
-    echo "trace_session: the trace buffers' sizes were not read back: session stopped" | tee -a "$2"
-    return 1
-  fi
-  total=$((m + ${i:-0}))
-  if [ $((total * 1024)) -gt "$stage_kernel" ]; then
-    echo "trace_session: the trace buffers ($total kB) exceed the staging budget's $((stage_kernel / 1024)) kB: session stopped" | tee -a "$2"
+# Every trace array's buffers, read back before the probe: its geometry as
+# budgeted, and its per-CPU and total capacities exactly as the kernel's
+# rounding of the requested size gives them (tools/trace_stage.py buffers;
+# the expected readback, never the physical-memory budget).
+stage_kernel_check() {  # 1 with the TSC instance, note -> 0 when every array reads back as expected
+  local inst=() out st
+  [ "$1" -eq 1 ] && inst=(--instance "$TSC_INSTANCE")
+  out=$(priv python3 "$STAGE_TOOL" buffers --tracefs "$TRACEFS" "${inst[@]}" --buffer-kb "$buffer_kb" \
+        --cpu-list "$possible_list" --payload "$sb_payload" --subbuf "$sb_subbuf" 2>&1); st=$?
+  echo "$out" >>"$2"
+  if [ "$st" -ne 0 ]; then
+    echo "trace_session: the trace buffers do not read back as expected (per array and per CPU; see the record): session stopped" | tee -a "$2"
     return 1
   fi
 }
@@ -1390,6 +1404,20 @@ if [ ${#lt_list[@]} -gt 0 ]; then
     die "the adapter's latency timer reads $lt_device but sysfs $lt_sysfs ($lt_line): nothing was sent"
   fi
   lt_orig=$lt_sysfs; lt_now=$lt_orig
+fi
+# The trace arrays' geometry (the main array's page header), read before
+# anything is sent when any run traces: the traced budgets and the buffers'
+# readback follow from it, and every array is checked against it once it
+# exists. Missing or unsupported geometry refuses the session.
+if [ "$any_traced" -eq 1 ] || [ -n "$fs_controls_cpu" ]; then
+  if ! geo_out=$(priv python3 "$STAGE_TOOL" geometry --tracefs "$TRACEFS" 2>&1); then
+    echo "$geo_out" >&2
+    finish
+    die "the trace buffers' geometry was not read or is not supported: nothing was sent"
+  fi
+  sb_payload=$(sed -n 's/^payload=//p' <<<"$geo_out")
+  sb_subbuf=$(sed -n 's/^subbuf=//p' <<<"$geo_out")
+  sb_geometry=$(grep -v = <<<"$geo_out")
 fi
 # The timer mode's events, its trace clock and a free instance name, checked
 # before anything is sent; the trace arguments follow from what the kernel
