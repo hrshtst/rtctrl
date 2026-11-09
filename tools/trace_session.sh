@@ -74,6 +74,35 @@
 # process tree is exempt, and kernel workers are outside this mechanism. An
 # open run leaves the observers as they are.
 #
+# Recorder staging (every run; tools/trace_stage.py, approved 2026-11-09):
+# each run's capture streams (the probe's log and summary, the trace with
+# trace-cmd's per-CPU temporary files (--temp), usbmon, the SMI counts, the
+# TSC instance and sampler pairs, perf, the exerciser's log and the
+# snapshots) are written to a private, size-bounded noswap tmpfs mounted for
+# the run under the stage root (/run/rtctrl-stage), never to the output
+# directory, so no recorder writes to the output filesystem during the run;
+# the run record and the observer record stay in the output directory, so
+# every recovery command names a file that exists. Before the mount, the
+# run's budget (by mode: the raw trace, its assembly and the other enabled
+# streams, plus the kernel buffers and a headroom; provisional constants)
+# must fit in MemAvailable; the mount is verified (tmpfs, noswap, its size,
+# private) and marked as the session's; both trace arrays'
+# buffer_total_size_kb are read back against the budget before the probe;
+# and a guard on the tracer CPUs stops the recorders when the stage's free
+# space or MemAvailable falls below its bounds (a guard, not a
+# reservation). Once every writer has stopped, the stage is inventoried,
+# published to the output directory (each copy hashed as read back, linked
+# without overwriting and fsynced; the ledger <log>.csv.staging.sha256 last)
+# and only then released (emptied, unmounted, removed); failed captures are
+# published the same way, and the capture is judged from the published
+# copies. A publication or release that fails keeps the stage, names it with
+# the retry, and fails the session (status 3, an interruption keeping 130),
+# the capture's own verdict recorded apart. A stage left by an earlier session
+# refuses the session; a session never touches another's stage. Read-only,
+# system-wide memory and writeback counters (tools/vm_counters.py) bracket
+# every probe, beside the idle counters. These are diagnostic runs: they do
+# not qualify the production logging to disk.
+#
 # The session first records the host state once: the fair server's
 # settings (read with bpftrace, since the kernel's lockdown refuses the
 # debugfs files), lockdown, boot line, topology and the adapter. Every run
@@ -108,7 +137,10 @@
 #
 # Exit status: 0 the session completed; 1 a run stopped it (the stop rule);
 # 2 it was refused before anything was sent; 3 it completed but its cleanup
-# did not restore the adapter's latency timer; 130 it was interrupted.
+# failed (the adapter's latency timer, the trace instance, the observers, the
+# probes, or a stage not released), or, whatever the runs' own outcomes, a
+# run's staged evidence was not published and verified; 130 it was
+# interrupted (kept whatever the cleanup).
 #
 # Conditions: idle, loaded, loaded-excl, rt-idle, rt-loaded, rt-loaded-excl.
 # A loaded run starts stress-ng --cpu <n> --hdd 1; an -excl run pins it to
@@ -131,6 +163,9 @@
 #   <log>.csv.tasks.txt     tasks, CPUs and affinities halfway through
 #   <log>.csv.trace.dat     trace-cmd record (traced runs)
 #   <log>.csv.usbmon.pcap   usbmon capture of the adapter (traced runs)
+#   <log>.csv.staging.sha256  the published files' SHA-256 (sha256sum -c)
+#   <log>.csv.staging.inventory.json  the staged files, taken once the
+#                           writers stopped (written before the copies)
 #   <log>.csv.perf.data     perf samples of the real-time CPU (profiled runs)
 #   <log>.csv.perf.txt      the worker's sampled instruction pointers (profiled)
 #   <log>.csv.perf.stacks.txt  the worker's samples' call chains (profiled)
@@ -147,8 +182,10 @@
 # the probe runs as the invoking user. For tests, TRACE_SESSION_SUDO=none
 # runs them directly and TRACE_SESSION_SUDO=<command> uses that command in
 # sudo's place, TRACE_CMD, TCPDUMP, BPFTRACE, MODPROBE, STRESS_NG,
-# LATENCY_TOOL, PERF, FS_PROBE_TOOL, OBS_TOOL and TRACEFS replace the tools
-# and the tracefs path, and
+# LATENCY_TOOL, PERF, FS_PROBE_TOOL, OBS_TOOL, MOUNT, FINDMNT, UMOUNT and
+# TRACEFS replace the tools and the tracefs path,
+# TRACE_SESSION_STAGE_ROOT, TRACE_SESSION_MEMINFO and TRACE_SESSION_VMSTAT
+# the stage root and the /proc files read, and
 # TRACE_SESSION_RTPRIO_LIMIT replaces the real-time priority limit checked
 # (with a stand-in probe, which needs none).
 set -u
@@ -177,6 +214,12 @@ FS_CONTROL_PHASE_S=${FS_CONTROL_PHASE_S:-3}
 FS_CONTROL_SETTLE_S=${FS_CONTROL_SETTLE_S:-2}
 fs_controls_cpu=
 OBS_TOOL=${OBS_TOOL:-tools/observer_affinity.py}  # tests replace it
+STAGE_TOOL=tools/trace_stage.py
+VM_TOOL=tools/vm_counters.py
+MOUNT=${MOUNT:-mount}
+STAGE_ROOT=${TRACE_SESSION_STAGE_ROOT:-/run/rtctrl-stage}
+MEMINFO=${TRACE_SESSION_MEMINFO:-/proc/meminfo}
+VMSTAT=${TRACE_SESSION_VMSTAT:-/proc/vmstat}
 placements=; observers=
 obs_owed=0; obs_record=  # a confined run's placement record, owed a restoration while obs_owed is 1
 placement=  # the placement of the run being named or made
@@ -196,6 +239,8 @@ case "${TRACE_SESSION_SUDO:-sudo}" in
   none) sudo_cmd=() ;;
   *) sudo_cmd=("${TRACE_SESSION_SUDO:-sudo}") ;;
 esac
+# The staging tool unmounts and removes a stage through the same sudo.
+export TRACE_STAGE_SUDO="${TRACE_SESSION_SUDO:-sudo}"
 
 # The targeted set decided on 2026-11-05: Fast Sync Read with the
 # motion-only read at 500 and 1000 Hz, quiet and loaded, with and without
@@ -376,12 +421,13 @@ variant_flags() {
 IFS=, read -r -a run_list <<<"$runs"
 IFS=, read -r -a mode_list <<<"$modes"
 [ ${#run_list[@]} -gt 0 ] || die "--runs is empty"
-any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; any_timer=0; all_rt=1
+any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; any_timer=0; all_rt=1; max_rate=0
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v extra <<<"$spec"
   [ -z "${extra:-}" ] && [ -n "${v:-}" ] || die "run '$spec' is not profile:rate:condition:variant"
   case "$p" in current|position|cbp) ;; *) die "run '$spec': unknown profile '$p'" ;; esac
   is_uint "$r" && [ "$r" -gt 0 ] || die "run '$spec': the rate must be a positive integer"
+  [ "$r" -gt "$max_rate" ] && max_rate=$r
   case "$c" in
     idle|loaded|loaded-excl|rt-idle|rt-loaded|rt-loaded-excl) ;;
     *) die "run '$spec': unknown condition '$c'" ;;
@@ -466,6 +512,9 @@ is_uint "$buffer_kb" && [ "$buffer_kb" -gt 0 ] || die "--buffer-kb must be a pos
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
 
 online=$(expand_cpus "$(cat /sys/devices/system/cpu/online)") || die "cannot read the online CPUs"
+# The kernel sizes a trace array's buffers for every possible CPU.
+possible_cpus=$(expand_cpus "$(cat /sys/devices/system/cpu/possible)" | wc -w) ||
+  die "cannot read the possible CPUs"
 if [ -z "$exclude_cpus" ]; then
   exclude_cpus=$(cat "/sys/devices/system/cpu/cpu$rt_cpu/topology/thread_siblings_list" 2>/dev/null) ||
     die "cannot read CPU $rt_cpu's SMT siblings (pass --exclude-cpus)"
@@ -520,6 +569,18 @@ command -v taskset >/dev/null || problems+=("taskset is not installed (util-linu
 command -v stdbuf >/dev/null || problems+=("stdbuf is not installed (coreutils)")
 command -v python3 >/dev/null || problems+=("python3 is not installed")
 [ -f "$IDLE_TOOL" ] || problems+=("$IDLE_TOOL is missing (run from the repo root)")
+[ -f "$STAGE_TOOL" ] && [ -f "$VM_TOOL" ] || problems+=("$STAGE_TOOL or $VM_TOOL is missing (run from the repo root)")
+for c in "$MOUNT" "${FINDMNT:-findmnt}" "${UMOUNT:-umount}"; do
+  command -v "$c" >/dev/null || problems+=("$c is not installed (util-linux): the runs' staging needs it")
+done
+command -v timeout >/dev/null || problems+=("timeout is not installed (coreutils)")
+# A stage left by an earlier session may hold the only copy of a run's
+# evidence: it refuses the session, which never touches it.
+if [ -f "$STAGE_TOOL" ] && ! left=$(python3 "$STAGE_TOOL" leftovers --root "$STAGE_ROOT" 2>&1); then
+  problems+=("a stage remains under $STAGE_ROOT from an earlier session (it may hold the only copy of a run's evidence; this session never touches it):
+$(sed 's/^/      /' <<<"$left")
+      publish and release it (python3 $STAGE_TOOL publish --stage DIR --outdir OUTDIR, then release with the same arguments), or, if it holds no data, python3 $STAGE_TOOL abort --stage DIR")
+fi
 # The probes' controls run afresh in each session: an earlier attempt's
 # files, whatever their verdict or completeness, refuse it.
 if [ -n "$fs_controls_cpu" ]; then
@@ -661,7 +722,7 @@ probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
   cmd=("$PROBE")
   [ -n "$port" ] && cmd+=(--port "$port")
   cmd+=(--rate-hz "$2" --profile "$1" --duration "$duration"
-        --log "$outdir/$base.csv")
+        --log "${logdir:-$outdir}/$base.csv")
   case "$3" in rt-*) cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu") ;; esac
   cmd+=("${vflags[@]}")
   [ -n "${6:-}" ] && cmd+=(--expect-latency-timer-ms "${6%%:*}")
@@ -730,11 +791,17 @@ if [ "$dry_run" -eq 1 ]; then
   if [ -n "$placements" ]; then
     echo "placements $placements: a confined run moves the trees of $observers off CPUs $exclude_cpus through $OBS_TOOL (recorded first, restored right after the probe and on every exit) and starts the probe on CPUs $other_cpus"
   fi
+  echo "staging: each run's capture streams on a private noswap tmpfs under $STAGE_ROOT ($STAGE_TOOL), published to $outdir, verified and released after the run; the budgets (provisional) at today's MemAvailable:"
+  for m in "${mode_list[@]}"; do
+    python3 "$STAGE_TOOL" budget --mode "$m" --duration-s "$duration" --rate-hz "$max_rate" --buffer-kb "$buffer_kb" \
+      --cpus "$possible_cpus" --usbmon "$usbmon" --perf-hz "$perf_hz" --perf-stack "$perf_stack" \
+      --exerciser "$exerciser" --meminfo "$MEMINFO" 2>&1 | grep -v = | sed 's/^/  /'
+  done
   if [ ${#lt_list[@]} -gt 0 ]; then
     echo "latency steps $latency_steps on $lt_tty through $LATENCY_TOOL: read before anything is sent, set before each step's runs, read after each run, and restored on every exit"
   fi
   if [ "$any_traced" -eq 1 ]; then
-    printf 'traced runs add: stdbuf -oL -eL %s %s -o <log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
+    printf 'traced runs add: stdbuf -oL -eL %s %s --temp <stage>/<log>.csv.trace-tmp -o <stage>/<log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
     if [ "$any_timer" -eq 1 ]; then
       printf 'timer runs record: the traced events, plus (after the availability check) every timer arming and cancellation, CPU %s deadline writes, idle, NMIs, system calls and page faults, the worker'"'"'s sleep calls by name, and process lifecycle;\n' "$rt_cpu"
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
@@ -780,7 +847,7 @@ fi
 tmp=$(mktemp -d)
 stress_pid=
 keepalive_pid=
-trace_job=; usbmon_job=; perf_job=
+trace_job=; usbmon_job=; perf_job=; guard_job=; snap_pid=
 usbmon_loaded_here=0
 run_outputs=()  # the tracer outputs of the run in progress, for own_outputs
 results=()
@@ -872,6 +939,7 @@ own_outputs() {
   return 0
 }
 stop_all() {
+  if [ -n "$snap_pid" ]; then kill "$snap_pid" 2>/dev/null; wait "$snap_pid" 2>/dev/null; snap_pid=; fi
   if [ -n "$ex_pid" ]; then kill -TERM "$ex_pid" 2>/dev/null; wait "$ex_pid" 2>/dev/null; ex_pid=; fi
   if [ -n "$sampler_pid" ]; then kill -TERM "$sampler_pid" 2>/dev/null; wait "$sampler_pid" 2>/dev/null; sampler_pid=; fi
   if [ -n "$smi_job" ]; then stop_tracer smi "$smi_job"; smi_job=; fi
@@ -879,6 +947,10 @@ stop_all() {
   if [ -n "$trace_job" ]; then stop_tracer trace "$trace_job"; trace_job=; fi
   if [ -n "$usbmon_job" ]; then stop_tracer usbmon "$usbmon_job"; usbmon_job=; fi
   if [ -n "$perf_job" ]; then stop_tracer perf "$perf_job"; perf_job=; fi
+  if [ -n "$guard_job" ]; then  # the staging guard's record, on every path that stops it
+    stop_tracer guard "$guard_job"; guard_job=
+    [ -n "$last_note" ] && [ -f "$last_note" ] && { echo; echo "--- staging guard ---"; cat "$tmp/guard.out"; } >>"$last_note"
+  fi
   if [ -n "$stress_pid" ]; then
     kill -TERM -- "-$stress_pid" 2>/dev/null
     wait "$stress_pid" 2>/dev/null
@@ -979,6 +1051,175 @@ restore_observers() {
   return 1
 }
 
+# The run's stage (tools/trace_stage.py): stage_owed is 0 without one; 1
+# once its mount point exists; 2 once a mount was attempted (mounted or
+# not); 3 once it is verified and marked, the run's streams going there; 4
+# when it is kept after a failed publication, release or abort (reported,
+# never retried by this session). A stage without data (1, 2, or 3 before
+# any writer) is undone by abort; otherwise it is published and released.
+# stage_failed makes the session fail (status 3, 130 kept).
+stage_dir=; stage_owed=0; stage_note=; stage_failed=0; stage_seq=0; stage_published=0
+stage_kernel=0; stage_gfree=0; stage_gavail=0; guard_stop=
+stage_name() {  # -> stage_dir, a fresh name (nothing is created)
+  stage_seq=$((stage_seq + 1))
+  stage_dir="$STAGE_ROOT/$session_id-$attempt-$stage_seq-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+}
+stage_open() {  # mode duration_s rate_hz base note -> 0 once the stage is ready, 1 when the run must not start
+  local mode=$1 dur=$2 rate=$3 base=$4 note=$5 out st size_mib
+  stage_note=$note; stage_published=0
+  out=$(python3 "$STAGE_TOOL" budget --mode "$mode" --duration-s "$dur" --rate-hz "$rate" --buffer-kb "$buffer_kb" \
+        --cpus "$possible_cpus" --usbmon "$usbmon" --perf-hz "$perf_hz" --perf-stack "$perf_stack" \
+        --exerciser "$exerciser" --meminfo "$MEMINFO" 2>&1); st=$?
+  { echo; echo "--- staging ($STAGE_TOOL; provisional budget; the guard is not a reservation) ---"
+    grep -v = <<<"$out"; } >>"$note"
+  size_mib=$(sed -n 's/^size_mib=//p' <<<"$out")
+  stage_kernel=$(sed -n 's/^kernel=//p' <<<"$out")
+  stage_gfree=$(sed -n 's/^guard_min_free=//p' <<<"$out")
+  stage_gavail=$(sed -n 's/^guard_min_available=//p' <<<"$out")
+  if [ "$st" -ne 0 ] || [ -z "$size_mib" ] || [ -z "$stage_kernel" ]; then
+    echo "staging: refused: the run's budget does not fit (exit $st)" >>"$note"
+    return 1
+  fi
+  if ! out=$(priv mkdir -p -m 0755 "$STAGE_ROOT" 2>&1) || ! out=$(priv mkdir -m 0700 "$stage_dir" 2>&1); then
+    echo "staging: the mount point $stage_dir was not created: $out" >>"$note"
+    return 1
+  fi
+  stage_owed=1
+  stage_owed=2
+  if ! out=$(priv "$MOUNT" -t tmpfs -o "size=${size_mib}m,noswap,mode=0700,uid=$(id -u),gid=$(id -g),nosuid,nodev,noexec" \
+             rtctrl-stage "$stage_dir" 2>&1); then
+    echo "staging: the tmpfs was not mounted on $stage_dir: $out" >>"$note"
+    stage_abort
+    return 1
+  fi
+  if ! out=$(python3 "$STAGE_TOOL" verify --stage "$stage_dir" --size-mib "$size_mib" 2>&1); then
+    echo "staging: the mount was not verified: $out" >>"$note"
+    stage_abort
+    return 1
+  fi
+  echo "staging: $out" >>"$note"
+  if ! out=$(python3 "$STAGE_TOOL" mark --stage "$stage_dir" --session "$session_id" --base "$base" \
+             --outdir "$outdir" 2>&1); then
+    echo "staging: the stage was not marked: $out" >>"$note"
+    stage_abort
+    return 1
+  fi
+  stage_owed=3
+  echo "staging: $out" >>"$note"
+  echo "logging: the probe's log and every capture stream go to the stage $stage_dir (tmpfs), then are published to $outdir; a diagnostic arrangement, not a qualification of production logging to disk" >>"$note"
+}
+stage_abort() {  # undoes a stage that holds no data: 0 when undone, 1 when kept
+  local out
+  if out=$(python3 "$STAGE_TOOL" abort --stage "$stage_dir" 2>&1); then
+    stage_owed=0
+    [ -n "$stage_note" ] && echo "staging: $out" >>"$stage_note"
+    return 0
+  fi
+  stage_owed=4; stage_failed=1
+  echo "trace_session: CLEANUP FAILED: the stage $stage_dir was not undone: $out" >&2
+  [ -n "$stage_note" ] && echo "staging: NOT undone (kept): $out" >>"$stage_note"
+  return 1
+}
+# Publishes the run's stage once every writer has stopped, then releases it:
+# 0 when published, verified and released (or nothing was owed); 1 when the
+# stage is kept (stage_published says whether its copies were verified).
+stage_close() {
+  local out st
+  case "$stage_owed" in
+    0|4) return 0 ;;
+    1|2) stage_abort; return $? ;;
+  esac
+  [ ${#sudo_cmd[@]} -gt 0 ] && priv chown -R "$(id -u):$(id -g)" "$stage_dir" 2>/dev/null
+  out=$(timeout -k 10 600 python3 "$STAGE_TOOL" publish --stage "$stage_dir" --outdir "$outdir" --meminfo "$MEMINFO" 2>&1)
+  st=$?
+  { echo; echo "--- staging: publication (exit $st) ---"; echo "$out"; } >>"$stage_note"
+  if [ "$st" -ne 0 ]; then
+    stage_owed=4; stage_failed=1
+    echo "preservation: NOT published: the staged evidence is kept at $stage_dir" >>"$stage_note"
+    echo "trace_session: PRESERVATION FAILED: the run's staged evidence is kept at $stage_dir (see $stage_note)" >&2
+    echo "  retry: python3 $STAGE_TOOL publish --stage $stage_dir --outdir $outdir" >&2
+    echo "  then:  python3 $STAGE_TOOL release --stage $stage_dir --outdir $outdir" >&2
+    return 1
+  fi
+  stage_published=1
+  out=$(python3 "$STAGE_TOOL" release --stage "$stage_dir" --outdir "$outdir" 2>&1); st=$?
+  { echo "--- staging: release (exit $st) ---"; echo "$out"; } >>"$stage_note"
+  if [ "$st" -ne 0 ]; then
+    stage_owed=4; stage_failed=1
+    echo "preservation: published and verified; the stage was NOT released ($stage_dir)" >>"$stage_note"
+    echo "trace_session: CLEANUP FAILED: the stage $stage_dir was not released: $out" >&2
+    echo "  retry: python3 $STAGE_TOOL release --stage $stage_dir --outdir $outdir" >&2
+    return 1
+  fi
+  stage_owed=0
+  echo "preservation: published and verified, the stage released" >>"$stage_note"
+  return 0
+}
+stage_usage() {  # -> "used free" bytes of the stage
+  python3 "$STAGE_TOOL" usage --stage "$stage_dir" 2>/dev/null | awk '{print $2, $4}'
+}
+# trace-cmd's per-CPU temporary files: on the stage, in its temporary
+# directory, and nowhere else (the output directory, beside the output).
+stage_temp_check() {  # temp dir, output basename, note -> 0 when they are
+  local i n=0 stray
+  for ((i = 0; i < 50; i++)); do
+    n=$(find "$1" -maxdepth 1 -name "$2.cpu*" 2>/dev/null | wc -l)
+    [ "$n" -gt 0 ] && break
+    sleep 0.1
+  done
+  stray=$(find "$outdir" "$stage_dir" -maxdepth 1 -name "$2.cpu*" 2>/dev/null | head -n 3 | tr '\n' ' ')
+  if [ "$n" -eq 0 ] || [ -n "$stray" ] || [ "$(stat -c %d "$1")" != "$(stat -c %d "$stage_dir")" ]; then
+    echo "trace_session: trace-cmd's per-CPU temporary files are not on the stage only ($n in $1; elsewhere: ${stray:-none}): session stopped" | tee -a "$3"
+    return 1
+  fi
+  echo "staging: trace-cmd's per-CPU temporary files: $n in $1 (the stage's filesystem), none in $outdir or beside the output" >>"$3"
+}
+# Both trace arrays' buffers, read back before the probe against the
+# budget's kernel allowance.
+stage_kernel_check() {  # 1 with the TSC instance, note -> 0 when they fit
+  local m i='' total
+  m=$(priv cat "$TRACEFS/buffer_total_size_kb" 2>&1 | awk 'NR == 1 {print $1}')
+  [ "$1" -eq 1 ] && i=$(priv cat "$TRACEFS/instances/$TSC_INSTANCE/buffer_total_size_kb" 2>&1 | awk 'NR == 1 {print $1}')
+  echo "kernel buffers read back (buffer_total_size_kb): main ${m:-none}${i:+, instance $TSC_INSTANCE $i} kB; the budget allows $((stage_kernel / 1024)) kB" >>"$2"
+  if ! is_uint "$m" || { [ "$1" -eq 1 ] && ! is_uint "$i"; }; then
+    echo "trace_session: the trace buffers' sizes were not read back: session stopped" | tee -a "$2"
+    return 1
+  fi
+  total=$((m + ${i:-0}))
+  if [ $((total * 1024)) -gt "$stage_kernel" ]; then
+    echo "trace_session: the trace buffers ($total kB) exceed the staging budget's $((stage_kernel / 1024)) kB: session stopped" | tee -a "$2"
+    return 1
+  fi
+}
+stage_guard_start() {  # note -> 0 once the guard samples the stage
+  local pids=()
+  [ -n "$trace_job" ] && [ -s "$tmp/trace.pid" ] && pids+=(--stop-pid "$(cat "$tmp/trace.pid")")
+  [ -n "$perf_job" ] && [ -s "$tmp/perf.pid" ] && pids+=(--stop-pid "$(cat "$tmp/perf.pid")")
+  start_tracer guard python3 "$STAGE_TOOL" guard --stage "$stage_dir" --min-free "$stage_gfree" \
+    --min-available "$stage_gavail" --meminfo "$MEMINFO" "${pids[@]}"
+  if ! wait_line guard "$guard_job" "guard: every" 30; then
+    { echo "--- the staging guard did not start ---"; cat "$tmp/guard.out"; } | tee -a "$1"
+    return 1
+  fi
+}
+stage_guard_stop() {  # note -> guard_stop, the guard's stop if it made one (not in a subshell: it ends the job)
+  guard_stop=
+  [ -n "$guard_job" ] || return 0
+  stop_tracer guard "$guard_job"; guard_job=
+  { echo; echo "--- staging guard ---"; cat "$tmp/guard.out"; } >>"$1"
+  guard_stop=$(sed -n 's/^guard stop: \(.*\) at monotonic_ns.*/the staging guard stopped the recorders (\1)/p' "$tmp/guard.out" | head -n 1)
+}
+stage_assembly_note() {  # "used free" before trace-cmd's stop, the trace, note -> "the staging filled ..." if it did
+  local after size free
+  after=$(stage_usage)
+  size=$(stat -c %s "$2" 2>/dev/null || echo 0)
+  echo "staging usage: ${1%% *} bytes just before trace-cmd's stop (its raw files), ${after%% *} after its exit; the assembled trace $size bytes; conservative peak bound $(( ${1%% *} + size )) bytes (the raw files and the output together)" >>"$3"
+  free=${after##* }
+  if [ "${free:-0}" -lt 1048576 ] || grep -qi 'no space left' "$tmp/trace.out" 2>/dev/null; then
+    echo "the staging filled (${free:-unknown} bytes free at the end)"
+  fi
+}
+
 # The adapter experiment's latency timer: the value found at the start,
 # the value set last, whether the session owes the starting value back (from
 # the first stepped run on, set or not), and the record of the last run,
@@ -1047,6 +1288,17 @@ on_exit() {
   if [ "$fs_owed" -ne 0 ] && ! remove_fs_probes; then
     echo "trace_session: the session fails: its cleanup did not remove the fair server's probes" >&2
     cleanup_ok=0
+  fi
+  # The stage last, independently of the cleanups above: published and
+  # released, or kept and named.
+  if [ "$stage_owed" -eq 4 ]; then
+    echo "trace_session: the stage $stage_dir is kept (see $stage_note)" >&2
+  elif [ "$stage_owed" -ne 0 ]; then
+    stage_close || :
+  fi
+  if [ "$stage_failed" -eq 1 ]; then
+    echo "trace_session: the session fails: a run's staged evidence was not published and verified, or its stage not released" >&2
+    [ "$status" -eq 130 ] || exit 3
   fi
   [ "$cleanup_ok" -eq 1 ] || { [ "$status" -eq 0 ] && exit 3; }
   return 0
@@ -1316,6 +1568,7 @@ EOF
 commit="$(git rev-parse --short HEAD 2>/dev/null) ($(git status --porcelain --untracked-files=no 2>/dev/null | wc -l) tracked files modified)"
 
 mono_ns() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }
+session_id="$$-$(date +%Y%m%dT%H%M%S)"
 
 # A buffer's losses from per-CPU stats in "CPU: N" blocks (as trace-cmd
 # report --stat prints them, and tsc_instance.sh stats): the sum of the
@@ -1377,20 +1630,24 @@ wait_quiet() {
 k=0
 run_one() {
   local profile=$1 rate=$2 cond=$3 variant=$4 mode=$5 step=${6:-} base csv note
-  local loaded=0 probe_status check_status seen stress_out stress_status snap_pid
+  local loaded=0 probe_status check_status seen stress_out stress_status sb pub filled
   local dat pcap lt_ms=${step%%:*} lt_out lt_status irq_before irq_after t_before t_after
   local traced=0 profiled=0 timered=0 perfdat perftxt perfstacks targs tsc_txt tsc_pairs
   case "$mode" in traced) traced=1 ;; profiled) traced=1; profiled=1 ;; timer) traced=1; timered=1 ;; esac
   base=$(log_base "$profile" "$rate" "$cond" "$variant" "$mode" "$step")
   csv="$outdir/$base.csv"
   note="$csv.run.txt"
-  dat="$csv.trace.dat"
-  pcap="$csv.usbmon.pcap"
-  perfdat="$csv.perf.data"
-  perftxt="$csv.perf.txt"
-  perfstacks="$csv.perf.stacks.txt"
-  tsc_txt="$csv.tsc.txt"
-  tsc_pairs="$csv.tsc-pairs.csv"
+  # The capture streams go to the run's stage (sb), the records stay here.
+  stage_name
+  sb="$stage_dir/$base.csv"
+  logdir=$stage_dir
+  dat="$sb.trace.dat"
+  pcap="$sb.usbmon.pcap"
+  perfdat="$sb.perf.data"
+  perftxt="$sb.perf.txt"
+  perfstacks="$sb.perf.stacks.txt"
+  tsc_txt="$sb.tsc.txt"
+  tsc_pairs="$sb.tsc-pairs.csv"
   targs=("${trace_args[@]}")
   [ "$profiled" -eq 1 ] && targs=("${profile_args[@]}")
   [ "$timered" -eq 1 ] && targs=("${timer_args[@]}")
@@ -1442,14 +1699,14 @@ run_one() {
     echo "uptime:$(uptime)"
     printf 'command:'; printf ' %q' "${cmd[@]}"; echo
     if [ "$traced" -eq 1 ]; then
-      printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${targs[@]}"; printf ' -o %q\n' "$dat"
+      printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${targs[@]}"; printf ' --temp %q -o %q\n' "$sb.trace-tmp" "$dat"
       if [ "$profiled" -eq 1 ]; then
         printf 'perf: %s' "$PERF"; printf ' %q' "${perf_args[@]}"; printf ' -o %q\n' "$perfdat"
       fi
       if [ "$timered" -eq 1 ]; then
         echo "tsc instance: $TSC_INSTANCE_TOOL start $TRACEFS $TSC_INSTANCE $rt_cpu $buffer_kb (x86-tsc, local_timer_entry on CPU $rt_cpu)"
         echo "tsc sampler: $TSC_SAMPLER on CPU ${others[0]} throughout, and on CPU $rt_cpu for 0.5 s before and after the probe"
-        echo "smi: $PERF stat -e msr/smi/ -C $rt_cpu -I 10 -x , -o $csv.smi.csv"
+        echo "smi: $PERF stat -e msr/smi/ -C $rt_cpu -I 10 -x , -o $sb.smi.csv"
         if [ "$exerciser" -eq 1 ]; then
           echo "exerciser: python3 $EXERCISER --cpu $rt_cpu --duration $((duration + 60)) --seed $k (rehearsal; stopped after the probe)"
         fi
@@ -1466,6 +1723,15 @@ run_one() {
     echo
   } >"$note"
   last_note=$note
+  # The run's stage, before anything else runs (tools/trace_stage.py): a
+  # run whose stage is refused or fails does not start.
+  if ! stage_open "$mode" "$duration" "$rate" "$base.csv" "$note"; then
+    echo "trace_session: the run's staging failed: session stopped. See $note" | tee -a "$note"
+    echo "verdict: not run (staging)" >>"$note"
+    outcome=stop
+    return
+  fi
+  [ "$traced" -eq 1 ] && mkdir "$sb.trace-tmp"
   # A confined run: the observers off the excluded CPUs, recorded first.
   if [ "$placement" = confined ]; then
     local obs_out obs_status
@@ -1506,7 +1772,7 @@ run_one() {
     fi
   fi
   if [ "$timered" -eq 1 ]; then
-    ps -eo pid,ppid,comm >"$csv.procs.txt"
+    ps -eo pid,ppid,comm >"$sb.procs.txt"
   fi
   if [ "$traced" -eq 1 ]; then
     run_outputs=("$dat")
@@ -1516,7 +1782,7 @@ run_one() {
     # recording" until it exits; stdbuf (which execs it, keeping the PID)
     # makes its output line-buffered. tcpdump reports on stderr, which is
     # unbuffered.
-    start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${targs[@]}" -o "$dat"
+    start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${targs[@]}" --temp "$sb.trace-tmp" -o "$dat"
     if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
       stop_all
       { echo "--- trace-cmd did not start ---"; cat "$tmp/trace.out"; } | tee -a "$note"
@@ -1535,6 +1801,12 @@ run_one() {
         outcome=stop
         return ;;
     esac
+    if ! stage_temp_check "$sb.trace-tmp" "$(basename "$dat")" "$note"; then
+      stop_all
+      echo "verdict: not run (staging)" >>"$note"
+      outcome=stop
+      return
+    fi
     if [ "$usbmon" -eq 1 ]; then
       start_tracer usbmon "$TCPDUMP" "${usbmon_opts[@]}" -w "$pcap" "$usbmon_filter"
       if ! wait_line usbmon "$usbmon_job" "listening on usbmon$usb_bus" 30; then
@@ -1589,16 +1861,16 @@ run_one() {
         outcome=stop
         return
       fi
-      run_outputs+=("$csv.smi.csv")
+      run_outputs+=("$sb.smi.csv")
       smi_before=$(mono_ns)
-      start_tracer smi "$PERF" stat -e msr/smi/ -C "$rt_cpu" -I 10 -x , -o "$csv.smi.csv"
+      start_tracer smi "$PERF" stat -e msr/smi/ -C "$rt_cpu" -I 10 -x , -o "$sb.smi.csv"
       for ((i = 0; i < 6000; i++)); do
-        grep -qv '^#' "$csv.smi.csv" 2>/dev/null && break
+        grep -qv '^#' "$sb.smi.csv" 2>/dev/null && break
         alive "$smi_job" || break
         sleep 0.005
       done
       smi_seen=$(mono_ns)
-      if ! grep -qv '^#' "$csv.smi.csv" 2>/dev/null; then
+      if ! grep -qv '^#' "$sb.smi.csv" 2>/dev/null; then
         stop_all
         { echo "--- perf stat did not start ---"; cat "$tmp/smi.out"; } | tee -a "$note"
         echo "verdict: not run (tracer)" >>"$note"
@@ -1607,6 +1879,20 @@ run_one() {
       fi
       echo "smi anchor monotonic_ns: $smi_before $smi_seen (before perf stat started; when its first interval was seen)" >>"$note"
     fi
+  fi
+  # Both trace arrays' buffers, read back against the budget, and the
+  # staging guard on the tracer CPUs, through the run and the assembly.
+  if [ "$traced" -eq 1 ] && ! stage_kernel_check "$timered" "$note"; then
+    stop_all
+    echo "verdict: not run (staging)" >>"$note"
+    outcome=stop
+    return
+  fi
+  if ! stage_guard_start "$note"; then
+    stop_all
+    echo "verdict: not run (staging)" >>"$note"
+    outcome=stop
+    return
   fi
   # The load starts once the recorders are recording, so their startup
   # takes none of its time, and it must outlast the probe.
@@ -1643,23 +1929,25 @@ run_one() {
     if [ "$timered" -eq 1 ] && [ "$exerciser" -eq 1 ]; then
       # It outlasts the probe, so the stop (SIGTERM, status 0) always finds
       # it running: a signal during its own exit would kill it.
-      python3 "$EXERCISER" --cpu "$rt_cpu" --duration $((duration + 60)) --seed "$k" --output "$csv.exerciser.csv" &
+      python3 "$EXERCISER" --cpu "$rt_cpu" --duration $((duration + 60)) --seed "$k" --output "$sb.exerciser.csv" &
       ex_pid=$!
     fi
   fi
   ( taskset -cp "$other_cpus" "$BASHPID" >/dev/null
-    sleep $((duration / 2)); tasks_snapshot >"$csv.tasks.txt" ) &
+    sleep $((duration / 2)); tasks_snapshot >"$sb.tasks.txt" ) &
   snap_pid=$!
   local fs_before='' fs_after='' fs_b_status=0 fs_a_status=0
   if [ "$timered" -eq 1 ]; then
     fs_before=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); fs_b_status=$?
   fi
   python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label before --root "$CPU_ROOT" >"$tmp/idle_before.txt" 2>&1
+  python3 "$VM_TOOL" snapshot --label before --vmstat "$VMSTAT" --meminfo "$MEMINFO" >"$tmp/vm_before.txt" 2>&1
   irq_before=$(xhci_interrupts); t_before=$(date +%s.%N)
   "${cmd[@]}" 2>&1 | tee -a "$note"
   probe_status=${PIPESTATUS[0]}
   irq_after=$(xhci_interrupts); t_after=$(date +%s.%N)
   python3 "$IDLE_TOOL" snapshot --cpus "$idle_cpus" --label after --root "$CPU_ROOT" >"$tmp/idle_after.txt" 2>&1
+  python3 "$VM_TOOL" snapshot --label after --vmstat "$VMSTAT" --meminfo "$MEMINFO" >"$tmp/vm_after.txt" 2>&1
   local placement_problem=''
   if [ "$placement" = confined ]; then
     { echo; echo "--- observer placement: restore ---"; } >>"$note"
@@ -1678,11 +1966,13 @@ run_one() {
     tracer_problem=$(recorders_ended)
     [ -n "$tracer_problem" ] && tracer_problem+=" before the probe did"
   fi
+  alive "$guard_job" || tracer_problem+="${tracer_problem:+, }the staging guard ended before the probe did"
   wait "$snap_pid" 2>/dev/null
+  snap_pid=
   if [ "$placement" = confined ] && [ -z "$placement_problem" ]; then
     local chk wtid_c
-    wtid_c=$(sed -n 's/^worker_tid = //p' "$csv.summary.toml" 2>/dev/null)
-    chk=$(python3 "$OBS_TOOL" check --record "$obs_record" --tasks "$csv.tasks.txt" --worker-tid "${wtid_c:-0}" 2>&1) ||
+    wtid_c=$(sed -n 's/^worker_tid = //p' "$sb.summary.toml" 2>/dev/null)
+    chk=$(python3 "$OBS_TOOL" check --record "$obs_record" --tasks "$sb.tasks.txt" --worker-tid "${wtid_c:-0}" 2>&1) ||
       placement_problem="the placement was not in effect halfway through the run"
     { echo "--- observer placement: check of the halfway snapshot ---"; echo "$chk"; } >>"$note"
   fi
@@ -1692,7 +1982,7 @@ run_one() {
       local ex_status samp_status smi_status inst_out inst_status n_over
       if [ -n "$ex_pid" ]; then
         kill -TERM "$ex_pid" 2>/dev/null; wait "$ex_pid"; ex_status=$?; ex_pid=
-        echo "exerciser: exit $ex_status, $(grep -cvE '^(#|round)' "$csv.exerciser.csv" 2>/dev/null) rows" >>"$note"
+        echo "exerciser: exit $ex_status, $(grep -cvE '^(#|round)' "$sb.exerciser.csv" 2>/dev/null) rows" >>"$note"
         [ "$ex_status" -eq 0 ] || tracer_problem+="${tracer_problem:+, }exerciser exit $ex_status"
       fi
       "$TSC_SAMPLER" --cpu "$rt_cpu" --duration-ms 500 --output "$tsc_pairs" ||
@@ -1702,7 +1992,7 @@ run_one() {
       echo "tsc sampler pairs: $(grep -cv '^#' "$tsc_pairs" 2>/dev/null)" >>"$note"
       stop_tracer smi "$smi_job"; smi_status=$?; smi_job=
       { echo; echo "--- perf stat (exit $smi_status) ---"; cat "$tmp/smi.out"; } >>"$note"
-      { [ "$smi_status" -eq 0 ] || [ "$smi_status" -eq 130 ]; } && grep -qv '^#' "$csv.smi.csv" 2>/dev/null ||
+      { [ "$smi_status" -eq 0 ] || [ "$smi_status" -eq 130 ]; } && grep -qv '^#' "$sb.smi.csv" 2>/dev/null ||
         tracer_problem+="${tracer_problem:+, }perf stat exit $smi_status"
       priv "$TSC_INSTANCE_TOOL" stop "$TRACEFS" "$TSC_INSTANCE" >"$tsc_txt" 2>"$tmp/tsc_stop.err" ||
         tracer_problem+="${tracer_problem:+, }the TSC instance was not read ($(cat "$tmp/tsc_stop.err"))"
@@ -1738,25 +2028,14 @@ run_one() {
           <(echo "$fs_before") <(echo "$fs_after") >>"$note"
       fi
     fi
-    local trace_status usbmon_status=0 stat_out stat_status n_trace
+    local trace_status usbmon_status=0 used_before
+    used_before=$(stage_usage)
     stop_tracer trace "$trace_job"; trace_status=$?; trace_job=
     { echo; echo "--- trace-cmd (exit $trace_status) ---"; cat "$tmp/trace.out"; } >>"$note"
     [ "$trace_status" -eq 0 ] && [ -s "$dat" ] ||
       tracer_problem+="${tracer_problem:+, }trace-cmd exit $trace_status"
-    # The buffers' losses, as trace-cmd recorded them at the end.
-    stat_out=$(priv "$TRACE_CMD" report --stat -i "$dat" 2>&1); stat_status=$?
-    { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
-    if [ "$stat_status" -ne 0 ]; then
-      n_trace="unknown (trace-cmd report --stat exited $stat_status)"
-    elif ! n_trace=$(loss_sum "$stat_out" "$online"); then
-      n_trace="unknown ($n_trace)"
-    fi
-    echo "trace overruns: $n_trace (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
-    if ! [[ $n_trace =~ ^[0-9]+$ ]]; then
-      tracer_problem+="${tracer_problem:+, }the trace's loss counts: $n_trace"
-    elif [ "$n_trace" -gt 0 ]; then
-      tracer_problem+="${tracer_problem:+, }the trace lost $n_trace events: the capture is invalid"
-    fi
+    filled=$(stage_assembly_note "$used_before" "$dat" "$note")
+    [ -n "$filled" ] && tracer_problem+="${tracer_problem:+, }$filled"
     if [ "$usbmon" -eq 1 ]; then
       stop_tracer usbmon "$usbmon_job"; usbmon_status=$?; usbmon_job=
       { echo; echo "--- tcpdump (exit $usbmon_status) ---"; cat "$tmp/usbmon.out"; } >>"$note"
@@ -1779,7 +2058,7 @@ run_one() {
       # The worker's samples as text, symbols resolved as root: the sampled
       # instruction pointers alone, then with their call chains; and perf's
       # own counts of samples, lost samples and throttling.
-      wtid=$(sed -n 's/^worker_tid = //p' "$csv.summary.toml" 2>/dev/null)
+      wtid=$(sed -n 's/^worker_tid = //p' "$sb.summary.toml" 2>/dev/null)
       if [ -n "$wtid" ] && [ "$perf_clean" -eq 1 ]; then
         local stacks_status
         priv "$PERF" script -i "$perfdat" --ns -G -F comm,tid,cpu,time,ip,sym,dso --tid "$wtid" \
@@ -1808,6 +2087,9 @@ run_one() {
     fi
     own_outputs
   fi
+  # The guard, last: its sampled peak, and any stop it made.
+  stage_guard_stop "$note"
+  [ -n "$guard_stop" ] && tracer_problem+="${tracer_problem:+, }$guard_stop"
   if [ "$loaded" -eq 1 ]; then
     # A failed probe ends the load at once; otherwise it runs out its
     # timeout and must report success.
@@ -1823,10 +2105,36 @@ run_one() {
       load_problem="stress-ng exit $stress_status"
     fi
   fi
+  # Every writer has stopped: the stage is published, verified and released
+  # before the capture is judged from the published copies (from the kept
+  # stage when publication failed, so the run's own verdict is not lost).
+  stage_close || :
+  pub=$csv
+  [ "$stage_published" -eq 1 ] || pub=$sb
+  if [ "$traced" -eq 1 ]; then
+    local stat_out stat_status n_trace
+    # The buffers' losses, as trace-cmd recorded them at the end.
+    stat_out=$(priv "$TRACE_CMD" report --stat -i "$pub.trace.dat" 2>&1); stat_status=$?
+    { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
+    if [ "$stat_status" -ne 0 ]; then
+      n_trace="unknown (trace-cmd report --stat exited $stat_status)"
+    elif ! n_trace=$(loss_sum "$stat_out" "$online"); then
+      n_trace="unknown ($n_trace)"
+    fi
+    echo "trace overruns: $n_trace (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
+    if ! [[ $n_trace =~ ^[0-9]+$ ]]; then
+      tracer_problem+="${tracer_problem:+, }the trace's loss counts: $n_trace"
+    elif [ "$n_trace" -gt 0 ]; then
+      tracer_problem+="${tracer_problem:+, }the trace lost $n_trace events: the capture is invalid"
+    fi
+  fi
   { echo; echo "--- IRQ placement after ---"; irq_state; } >>"$note"
   { echo; echo "--- idle counters, CPUs $idle_cpus (read-only, right before and after the probe) ---"
     cat "$tmp/idle_before.txt" "$tmp/idle_after.txt"
     python3 "$IDLE_TOOL" delta "$tmp/idle_before.txt" "$tmp/idle_after.txt" 2>&1; } >>"$note"
+  { echo; echo "--- memory and writeback counters (system-wide, read-only; $VM_TOOL), right before and after the probe ---"
+    cat "$tmp/vm_before.txt" "$tmp/vm_after.txt"
+    python3 "$VM_TOOL" delta "$tmp/vm_before.txt" "$tmp/vm_after.txt" 2>&1; } >>"$note"
   awk -v n=$((irq_after - irq_before)) -v a="$t_before" -v b="$t_after" 'BEGIN {
     printf "xhci interrupts around the probe: %d in %.3f s (%.0f per s; every device on the controller)\n", n, b - a, n / (b - a)}' >>"$note"
   local latency_problem=''
@@ -1872,7 +2180,7 @@ run_one() {
   local check_args=(--rate-hz "$rate" --check)
   [ "$loaded" -eq 1 ] && check_args+=(--loaded)
   { echo; echo "--- timing_summary.py ${check_args[*]} ---"; } >>"$note"
-  uv run --project tools "$SUMMARY_TOOL" "$csv" "${check_args[@]}" 2>&1 | tee -a "$note"
+  uv run --project tools "$SUMMARY_TOOL" "$pub" "${check_args[@]}" 2>&1 | tee -a "$note"
   check_status=${PIPESTATUS[0]}
   seen=$(awk '/^--- timing_summary/ {s = 1} s && /^criteria/ {print "yes"; exit}' "$note")
   failed=$(awk '/^--- timing_summary/ {s = 1} s && /^criteria/ {c = 1; next}
@@ -1889,13 +2197,17 @@ run_one() {
     echo "trace_session: timing_summary.py failed (exit $check_status): session stopped. See $note"
     outcome=stop
   fi
+  if [ "$stage_failed" -eq 1 ]; then
+    echo "trace_session: the run's staged evidence was not published and verified, or its stage not released: session stopped. See $note"
+    outcome=stop
+  fi
 }
 
 # The probes' controls (--fs-controls): 0 when they pass (an inconclusive
 # negative control is reported, not a stop), 1 when the session must stop.
 run_controls() {
   local base="$outdir/fs-controls-$date_tag-$attempt" note dat ctl ctl_args prof_b prof_a pb pa ctl_status
-  local st stat_out stat_status n_loss problem='' an_status e f
+  local st stat_out stat_status n_loss problem='' an_status e f sbase pubb ctl_dur used_before filled
   note=$base.run.txt; dat=$base.trace.dat; ctl=$base.controls.txt
   echo
   echo "=== fair-server controls on CPU $fs_controls_cpu (supervisor on CPU $ctl_sup): $(basename "$base")"
@@ -1903,6 +2215,12 @@ run_controls() {
     echo "trace_session: the controls of this attempt were attempted earlier: controls are never reused; session stopped"
     return 1
   fi
+  # The controls' streams go to their own stage (their record stays here);
+  # their budget's duration is theirs: three phases, two settles and 10 s.
+  stage_name
+  sbase="$stage_dir/fs-controls-$date_tag-$attempt"
+  dat=$sbase.trace.dat; ctl=$sbase.controls.txt
+  ctl_dur=$(awk -v p="$FS_CONTROL_PHASE_S" -v s="$FS_CONTROL_SETTLE_S" 'BEGIN {print 3 * p + 2 * s + 10}')
   ctl_args=("${trace_args[@]}" -e timer:hrtimer_start)
   while read -r e f; do
     ctl_args+=(-e "$FS_GROUP:$e" -f "$f")
@@ -1921,13 +2239,19 @@ EOF
     echo "control CPU: $fs_controls_cpu; supervisor CPU: $ctl_sup; tracers on CPUs $ctl_tracer_cpus"
     printf 'controls: python3 %s run --cpu %s --supervisor-cpu %s --phase-s %s --settle-s %s --output %q\n' \
       "$FS_CONTROL_TOOL" "$fs_controls_cpu" "$ctl_sup" "$FS_CONTROL_PHASE_S" "$FS_CONTROL_SETTLE_S" "$ctl"
-    printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${ctl_args[@]}"; printf ' -o %q\n' "$dat"
+    printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${ctl_args[@]}"; printf ' --temp %q -o %q\n' "$sbase.trace-tmp" "$dat"
     cat "$tmp/session.txt"
   } >"$note"
   last_note=$note
+  if ! stage_open controls "$ctl_dur" 0 "fs-controls-$date_tag-$attempt" "$note"; then
+    echo "trace_session: the controls' staging failed: session stopped. See $note" | tee -a "$note"
+    echo "verdict: not run (staging)" >>"$note"
+    return 1
+  fi
+  mkdir "$sbase.trace-tmp"
   run_outputs=("$dat")
   tracer_cpus=$ctl_tracer_cpus
-  start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${ctl_args[@]}" -o "$dat"
+  start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${ctl_args[@]}" --temp "$sbase.trace-tmp" -o "$dat"
   tracer_cpus=$other_cpus
   if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
     stop_all
@@ -1935,15 +2259,39 @@ EOF
     echo "verdict: not run (tracer)" >>"$note"
     return 1
   fi
+  if ! stage_temp_check "$sbase.trace-tmp" "$(basename "$dat")" "$note" || ! stage_kernel_check 0 "$note"; then
+    stop_all
+    echo "verdict: not run (staging)" >>"$note"
+    return 1
+  fi
+  tracer_cpus=$ctl_tracer_cpus
+  if ! stage_guard_start "$note"; then
+    tracer_cpus=$other_cpus
+    stop_all
+    echo "verdict: not run (staging)" >>"$note"
+    return 1
+  fi
+  tracer_cpus=$other_cpus
   prof_b=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); pb=$?
   python3 "$FS_CONTROL_TOOL" run --cpu "$fs_controls_cpu" --supervisor-cpu "$ctl_sup" \
     --phase-s "$FS_CONTROL_PHASE_S" --settle-s "$FS_CONTROL_SETTLE_S" --output "$ctl" 2>&1 | tee -a "$note"
   ctl_status=${PIPESTATUS[0]}
   prof_a=$(priv "$FS_PROBE_TOOL" profile "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1); pa=$?
+  used_before=$(stage_usage)
   stop_tracer trace "$trace_job"; st=$?; trace_job=
   { echo; echo "--- trace-cmd (exit $st) ---"; cat "$tmp/trace.out"; } >>"$note"
   [ "$st" -eq 0 ] && [ -s "$dat" ] || problem+="${problem:+, }trace-cmd exit $st"
-  stat_out=$(priv "$TRACE_CMD" report --stat -i "$dat" 2>&1); stat_status=$?
+  filled=$(stage_assembly_note "$used_before" "$dat" "$note")
+  [ -n "$filled" ] && problem+="${problem:+, }$filled"
+  stage_guard_stop "$note"
+  [ -n "$guard_stop" ] && problem+="${problem:+, }$guard_stop"
+  own_outputs
+  # Every writer has stopped: publish, verify and release, then judge the
+  # published copies (the kept stage's if publication failed).
+  stage_close || :
+  pubb=$base
+  [ "$stage_published" -eq 1 ] || pubb=$sbase
+  stat_out=$(priv "$TRACE_CMD" report --stat -i "$pubb.trace.dat" 2>&1); stat_status=$?
   { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
   if [ "$stat_status" -ne 0 ]; then
     n_loss="unknown (trace-cmd report --stat exited $stat_status)"
@@ -1966,15 +2314,15 @@ EOF
          END { printf "fair-server probe hits during the controls: %s; misses during the controls: %d\n", hits, miss }' \
       <(echo "$prof_b") <(echo "$prof_a") >>"$note"
   fi
-  own_outputs
   [ "$ctl_status" -eq 0 ] || problem+="${problem:+, }the controls tool exited $ctl_status"
+  [ "$stage_failed" -eq 0 ] || problem+="${problem:+, }the controls' staged evidence was not published and verified, or their stage not released"
   if [ -n "$problem" ]; then
     { echo; echo "verdict: tracer failure ($problem)"; } >>"$note"
     echo "trace_session: fair-server controls: $problem: session stopped. See $note"
     return 1
   fi
   { echo; echo "--- $FS_TOOL controls ---"; } >>"$note"
-  TRACE_CMD="$TRACE_CMD" python3 "$FS_TOOL" controls --controls "$ctl" --record "$note" --trace-dat "$dat" 2>&1 |
+  TRACE_CMD="$TRACE_CMD" python3 "$FS_TOOL" controls --controls "$pubb.controls.txt" --record "$note" --trace-dat "$pubb.trace.dat" 2>&1 |
     tee -a "$note"
   an_status=${PIPESTATUS[0]}
   case "$an_status" in

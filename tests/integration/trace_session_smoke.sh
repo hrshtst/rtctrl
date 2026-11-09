@@ -20,7 +20,16 @@
 # trace, the sampler's pairs, the SMI count's anchors, the losses counted in
 # the record, the refusals for a missing event and a stale instance, the
 # instance's removal on every exit (status 3 when it fails), and the
-# exerciser of the rehearsal. Functional only: a
+# exerciser of the rehearsal; and every run's staging (stand-in mount,
+# findmnt and umount, a stand-in meminfo): each run's records (budget,
+# verification, marker, temporary files, kernel buffers, guard, publication,
+# release, ledger and inventory, memory counters), the refusals of a stage
+# that is not a private noswap tmpfs or cannot be mounted, and of a budget
+# MemAvailable cannot hold; a stage that fills, the guard's memory stop,
+# trace-cmd's temporary files off the stage and buffers above the budget; a
+# failed publication (status 3, and 130 when interrupted) and its retry; a
+# failed unmount (status 3), the next session's refusal while that stage
+# remains, and its retried release. Functional only: a
 # pty answers instantly and the tracers record nothing real, so no verdict
 # is asserted. Real-time conditions need a real-time priority limit, so
 # they stay out of this test (the plan is checked with --dry-run).
@@ -106,11 +115,24 @@ if [ "$1" = list ]; then
 fi
 [ "${FAKE_TRACE_FAIL:-0}" = 1 ] && { echo "stand-in trace-cmd: failing as asked"; exit 1; }
 python3 -c 'import os; print("affinity", ",".join(map(str, sorted(os.sched_getaffinity(0)))))' >>"$FAKE_LOG.trace-affinity"
-out=; clock=local
+out=; clock=local; temp=; bkb=0
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out=$2; shift ;; -C) clock=$2; shift ;; esac
+  case "$1" in -o) out=$2; shift ;; -C) clock=$2; shift ;; --temp) temp=$2; shift ;; -b) bkb=$2; shift ;; esac
   shift
 done
+# Its per-CPU temporary file in --temp's directory (FAKE_IGNORE_TEMP: beside
+# the output instead), and its buffers' total, -b for every possible CPU
+# (FAKE_BUFFER_TOTAL replaces it). FAKE_DROP_MEM: MemAvailable falls once it
+# records (the staging guard's memory stop).
+tdir=${temp:-$(dirname "$out")}
+[ "${FAKE_IGNORE_TEMP:-0}" = 1 ] && tdir=$(dirname "$out")
+: >"$tdir/$(basename "$out").cpu0"
+npos=$(python3 -c 'import sys; n=0
+for part in open("/sys/devices/system/cpu/possible").read().strip().split(","):
+    a, _, b = part.partition("-"); n += int(b or a) - int(a) + 1
+print(n)')
+echo "${FAKE_BUFFER_TOTAL:-$((bkb * npos))}" >"$TRACEFS/buffer_total_size_kb"
+[ -n "${FAKE_DROP_MEM:-}" ] && sed -i 's/^MemAvailable:.*/MemAvailable:       1000 kB/' "$TRACE_SESSION_MEMINFO"
 [ -n "${FAKE_TRACE_CLOCK:-}" ] && clock=$FAKE_TRACE_CLOCK
 case "$clock" in
   mono) echo "local global counter uptime perf [mono] mono_raw boot tai x86-tsc" >"$TRACEFS/trace_clock" ;;
@@ -128,6 +150,12 @@ echo "trace-ready" >>"$FAKE_LOG.events"
 # FAKE_TRACE_LIFE: end on its own after that many seconds, successfully.
 end=$(( $(date +%s) + ${FAKE_TRACE_LIFE:-100000} ))
 while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
+rm -f "$tdir/$(basename "$out").cpu0"
+if [ "${FAKE_TRACE_ENOSPC:-0}" = 1 ]; then
+  echo "partial stand-in trace" >"$out"
+  echo "trace-cmd: No space left on device"
+  exit 1
+fi
 echo "stand-in trace data" >"$out"
 [ -n "$held" ] && echo "$held"
 echo "CPU0 data recorded at offset=0x0"
@@ -304,6 +332,11 @@ case "$1" in
            unknown) : >"$mark"; echo "sudo: a stand-in failure" >&2; exit 1 ;;
          esac
          : >"$mark"
+         mkdir -p "$TRACEFS/instances/$3"
+         echo "$(( $5 * $(python3 -c "n=0
+for p in open('/sys/devices/system/cpu/possible').read().strip().split(','):
+ a,_,b=p.partition('-'); n+=int(b or a)-int(a)+1
+print(n)") ))" >"$TRACEFS/instances/$3/buffer_total_size_kb"
          echo "tsc instance $3: clock [x86-tsc], cpumask 1, buffer $5 kB per CPU, event irq_vectors:local_timer_entry" ;;
   stop) echo "# entries-in-buffer/entries-written: 1/1   #P:2"
         echo "          <idle>-0       [000] d.h1. 123456789: local_timer_entry: vector=236" ;;
@@ -347,8 +380,42 @@ case "$1" in
            done ;;
 esac
 EOF
+# The runs' staging: mount adds a line to a stand-in mount table that
+# findmnt answers from and umount removes (FAKE_MOUNT_FAIL: the mount fails;
+# FAKE_MOUNT_TYPE replaces tmpfs; FAKE_MOUNT_DROP leaves an option out;
+# $FAKE_UMOUNT_FAIL existing: the unmount fails).
+cat >"$FAKE/mount" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.mount"
+[ "${FAKE_MOUNT_FAIL:-0}" = 1 ] && { echo "mount: stand-in failing as asked" >&2; exit 32; }
+opts=$4; target=${*: -1}
+size=$(sed -n 's/.*size=\([0-9]*\)m.*/\1/p' <<<"$opts")
+[ -n "${FAKE_MOUNT_DROP:-}" ] && opts=$(tr , '\n' <<<"$opts" | grep -vx "$FAKE_MOUNT_DROP" | paste -sd,)
+chmod 700 "$target"
+echo "$target ${FAKE_MOUNT_TYPE:-tmpfs} $((size * 1048576)) $opts" >>"$FAKE_MOUNTS"
+EOF
+cat >"$FAKE/findmnt" <<'EOF'
+#!/usr/bin/env bash
+target=${*: -1}
+while read -r path fstype size opts; do
+  [ "$path" = "$target" ] && { echo "$fstype $size $opts"; exit 0; }
+done <"$FAKE_MOUNTS"
+exit 1
+EOF
+cat >"$FAKE/umount" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.umount"
+[ -e "$FAKE_UMOUNT_FAIL" ] && { echo "umount: $1: target is busy" >&2; exit 32; }
+grep -v "^$1 " "$FAKE_MOUNTS" >"$FAKE_MOUNTS.new"; mv "$FAKE_MOUNTS.new" "$FAKE_MOUNTS"
+EOF
 chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
+: >"$ROOT/mounts"
+# 64 GB of RAM, 44 GB available (this host on 2026-11-09).
+meminfo() {  # MemAvailable in kB
+  printf 'MemTotal:       64625280 kB\nMemFree:        1000000 kB\nMemAvailable:   %s kB\nDirty:          100 kB\nWriteback:      0 kB\n' "$1"
+}
+meminfo 43557304 >"$ROOT/meminfo"
 # The excluded CPU 0's idle states (the idle counters' stand-in sysfs): state
 # 2 without the optional above and below counters.
 for st in 0:POLL:0:0 1:C1_ACPI:1:1 2:C2_ACPI:127:381; do
@@ -372,6 +439,8 @@ export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stre
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
+export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" FAKE_MOUNTS="$ROOT/mounts"
+export FAKE_UMOUNT_FAIL="$ROOT/umount-fail" TRACE_SESSION_STAGE_ROOT="$ROOT/stage" TRACE_SESSION_MEMINFO="$ROOT/meminfo"
 export FS_PROBE_TOOL="$FAKE/fs_probes" FAIR_SERVER_BTF_RAW="$PWD/tests/data/btf_raw_fair_server.txt"
 if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
@@ -504,7 +573,7 @@ for run in current-100hz-idle-bounded-fast-motion position-100hz-idle-bounded; d
 done
 # The recorder ran on the mono clock with the scheduler and xHCI events;
 # tcpdump captured only the adapter (bus 1, device 9).
-grep -q '^record -C mono -b 16384 .*-e sched:sched_switch .*-e xhci-hcd:xhci_urb_giveback -o ' "$ROOT/fake.trace-cmd" ||
+grep -q "^record -C mono -b 16384 .*-e sched:sched_switch .*-e xhci-hcd:xhci_urb_giveback --temp $ROOT/stage/[^ ]*\\.csv\\.trace-tmp -o $ROOT/stage/" "$ROOT/fake.trace-cmd" ||
   fail "trace-cmd was not asked for the mono clock and the events" "$ROOT/fake.trace-cmd"
 grep -q '^-i usbmon1 -Z root -s 0 -w .*\.csv\.usbmon\.pcap link\[11\] == 9$' "$ROOT/fake.tcpdump" ||
   fail "tcpdump was not limited to the adapter" "$ROOT/fake.tcpdump"
@@ -669,10 +738,14 @@ os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --ye
     fail "the interrupt was not reported" "$ROOT/int-$sig.log"
   [ -s "$b.trace.dat" ] && [ -s "$b.usbmon.pcap" ] ||
     fail "the interrupted run's recorders did not write their files" "$ROOT/int-$sig.log"
-  for f in "$b.trace.dat" "$b.usbmon.pcap"; do
-    grep -qxF "chown $(id -u):$(id -g) $f" "$ROOT/fake.sudo" ||
-      fail "$f was not given back after SIG$sig" "$ROOT/fake.sudo"
-  done
+  # Their stage was given back, published (the ledger checks) and released.
+  grep -q "^chown -R $(id -u):$(id -g) $ROOT/stage/" "$ROOT/fake.sudo" ||
+    fail "the stage was not given back after SIG$sig" "$ROOT/fake.sudo"
+  (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") ||
+    fail "the interrupted run's ledger does not check after SIG$sig" "$b.run.txt"
+  grep -q '^preservation: published and verified, the stage released$' "$b.run.txt" ||
+    fail "the interrupted run's preservation verdict after SIG$sig" "$b.run.txt"
+  [ -z "$(ls -A "$ROOT/stage")" ] || fail "a stage remains after SIG$sig" "$ROOT/int-$sig.log"
   [ ! -e "$(base cbp-100hz-idle-bounded-traced "$attempt").run.txt" ] ||
     fail "a run started after SIG$sig" "$ROOT/int-$sig.log"
 done
@@ -922,7 +995,7 @@ for f in "$b" "$b.run.txt" "$b.trace.dat" "$b.usbmon.pcap" "$b.perf.data" "$b.pe
 done
 grep -Eq '^verdict: (pass|fail)' "$b.run.txt" || fail "no verdict in $b.run.txt" "$b.run.txt"
 # (printf %q may quote the comma)
-grep -Eq "^perf: $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf\\\\?,4096 -o $b.perf.data" "$b.run.txt" ||
+grep -Eq "^perf: $FAKE/perf record -k mono -C 0 -F 999 --call-graph dwarf\\\\?,4096 -o $ROOT/stage/[^ ]*/$(basename "$b").perf.data" "$b.run.txt" ||
   fail "the record does not name the perf command" "$b.run.txt"
 grep -q '^--- perf (exit 130, a clean stop) ---' "$b.run.txt" || fail "perf's SIGINT stop not accepted" "$b.run.txt"
 grep -q "^perf script --tid $wtid (exit 0): 1 samples; with call chains (exit 0): 1 samples" "$b.run.txt" ||
@@ -1439,5 +1512,172 @@ grep -q '^plan: 14 runs' "$ROOT/plan.log"
 grep -q 'load: taskset -c 1[0-9,]* [^ ]*stress-ng --cpu [0-9]* --hdd 1' "$ROOT/plan.log"
 grep -q -- "rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-traced-$DATE-1.csv --rt-priority 80 --rt-cpu 0" "$ROOT/plan.log"
 grep -q "rate-trace-cbp-1000hz-rt-idle-bounded-fast-untraced-$DATE-1.csv" "$ROOT/plan.log"
+
+
+# The runs' staging (tools/trace_stage.py). Every session above ran its runs
+# on a stand-in stage; here, the records of an untraced and a traced run, and
+# the paths that refuse, stop or keep a stage.
+stage_left() { ls -A "$ROOT/stage" 2>/dev/null; }
+[ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "a stage remains after the sessions above" "$ROOT/mounts"
+for mode in untraced traced; do
+  b=$(base "current-100hz-idle-bounded-fast-motion-$mode" 1)
+  note="$b.run.txt"
+  grep -q '^staging budget (' "$note" && grep -q "^staging: verified: $ROOT/stage/" "$note" &&
+    grep -q 'noswap' "$note" && grep -q "^staging: marked: $ROOT/stage/" "$note" &&
+    grep -q "^logging: the probe's log and every capture stream go to the stage $ROOT/stage/" "$note" &&
+    grep -q '^--- staging guard ---' "$note" && grep -q 'stop: none$' "$note" &&
+    grep -q '^published: ' "$note" && grep -q '^preservation: published and verified, the stage released$' "$note" &&
+    grep -q '^--- memory and writeback counters (system-wide, read-only' "$note" &&
+    grep -q '^vm counter changes (after - before; ' "$note" ||
+    fail "the $mode run's staging record" "$note"
+  (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") || fail "the $mode run's ledger" "$note"
+  [ -f "$b.staging.inventory.json" ] || fail "the $mode run's inventory" "$note"
+done
+grep -q '^kernel buffers read back (buffer_total_size_kb): main ' "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
+  grep -q "^staging: trace-cmd's per-CPU temporary files: 1 in $ROOT/stage/" "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" &&
+  grep -q '^staging usage: ' "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" ||
+  fail "the traced run's kernel buffers, temporary files and usage" "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt"
+# The guard's record once per run, the session's last run included.
+for f in "$(base current-100hz-idle-bounded-fast-motion-traced 1).run.txt" "$(base position-100hz-idle-bounded-traced 1).run.txt"; do
+  [ "$(grep -c '^--- staging guard ---$' "$f")" -eq 1 ] || fail "the guard's record is not once in $f" "$f"
+done
+if grep -q '^kernel buffers read back' "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"; then
+  fail "an untraced run read back trace buffers" "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"
+fi
+
+# A stage the session cannot use: the run does not start, the probe never
+# runs, and the mount point is undone (unmounted when mounted, removed).
+for case in "71:ext4:FAKE_MOUNT_TYPE=ext4:is a ext4 mount, not tmpfs" \
+            "72:swap:FAKE_MOUNT_DROP=noswap:a tmpfs without noswap" \
+            "73:nomount:FAKE_MOUNT_FAIL=1:the tmpfs was not mounted"; do
+  IFS=: read -r attempt name envset words <<<"$case"
+  if env "$envset" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt "$attempt" --modes traced \
+      --runs current:100:idle:full </dev/null >"$ROOT/stage-$name.log" 2>&1; then
+    fail "a session on a bad stage ($name) went on" "$ROOT/stage-$name.log"
+  fi
+  b=$(base current-100hz-idle-bounded-traced "$attempt")
+  grep -q "$words" "$b.run.txt" && grep -q '^verdict: not run (staging)' "$b.run.txt" &&
+    grep -q '^staging: aborted: ' "$b.run.txt" || fail "the bad stage ($name) was not refused and undone" "$b.run.txt"
+  [ ! -e "$b" ] || fail "the probe ran on a bad stage ($name)" "$b.run.txt"
+  [ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "the bad stage ($name) was left" "$ROOT/mounts"
+done
+
+# Too little MemAvailable for the run's budget: refused before any mount.
+meminfo 4000000 >"$ROOT/meminfo-low"
+: >"$ROOT/fake.mount"
+if TRACE_SESSION_MEMINFO="$ROOT/meminfo-low" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 80 \
+    --modes traced --runs current:100:idle:full </dev/null >"$ROOT/stage-mem.log" 2>&1; then
+  fail "a session without the memory for its stage went on" "$ROOT/stage-mem.log"
+fi
+b=$(base current-100hz-idle-bounded-traced 80)
+grep -q 'NOT ENOUGH' "$b.run.txt" && grep -q '^staging: refused: ' "$b.run.txt" && [ ! -s "$ROOT/fake.mount" ] ||
+  fail "the memory refusal" "$b.run.txt"
+
+# A stage that fills: trace-cmd fails on ENOSPC; its partial trace is
+# published and verified all the same, and the capture is a tracer failure.
+if FAKE_TRACE_ENOSPC=1 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 81 --modes traced \
+    --runs current:100:idle:full </dev/null >"$ROOT/stage-full.log" 2>&1; then
+  fail "a session whose stage filled went on" "$ROOT/stage-full.log"
+fi
+b=$(base current-100hz-idle-bounded-traced 81)
+grep -q '^verdict: tracer failure (.*the staging filled' "$b.run.txt" &&
+  grep -q '^preservation: published and verified, the stage released$' "$b.run.txt" &&
+  grep -q '^partial stand-in trace$' "$b.trace.dat" || fail "the filled stage" "$b.run.txt"
+[ -z "$(stage_left)" ] || fail "the filled stage was left" "$ROOT/stage-full.log"
+
+# The guard's memory stop: MemAvailable falls once trace-cmd records; the
+# guard stops it and says why, and the run fails.
+meminfo 43557304 >"$ROOT/meminfo-drop"
+if FAKE_DROP_MEM=1 TRACE_SESSION_MEMINFO="$ROOT/meminfo-drop" setsid tools/trace_session.sh "${COMMON[@]}" --yes \
+    --attempt 82 --duration 3 --modes traced --runs current:100:idle:full </dev/null >"$ROOT/stage-guard.log" 2>&1; then
+  fail "a session whose guard stopped the recorders went on" "$ROOT/stage-guard.log"
+fi
+b=$(base current-100hz-idle-bounded-traced 82)
+# (Stopped before the probe started, or during its run: either way the
+# guard's stop is recorded and the run fails.)
+grep -q '^guard stop: MemAvailable is 1024000 bytes' "$b.run.txt" &&
+  grep -Eq '^verdict: (not run \(tracer\)|tracer failure \(.*the staging guard stopped the recorders \(MemAvailable is 1024000 bytes)' "$b.run.txt" ||
+  fail "the guard's memory stop" "$b.run.txt"
+[ -z "$(stage_left)" ] || fail "the guard's stage was left" "$ROOT/stage-guard.log"
+
+# trace-cmd's temporary files beside its output, not in --temp's directory:
+# the run stops before the probe; and buffers above the budget's allowance.
+for case in "83:temp:FAKE_IGNORE_TEMP=1:temporary files are not on the stage only" \
+            "84:buffers:FAKE_BUFFER_TOTAL=999999999:exceed the staging budget"; do
+  IFS=: read -r attempt name envset words <<<"$case"
+  if env "$envset" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt "$attempt" --modes traced \
+      --runs current:100:idle:full </dev/null >"$ROOT/stage-$name.log" 2>&1; then
+    fail "a session with $name went on" "$ROOT/stage-$name.log"
+  fi
+  b=$(base current-100hz-idle-bounded-traced "$attempt")
+  grep -q "$words" "$b.run.txt" && grep -q '^verdict: not run (staging)' "$b.run.txt" ||
+    fail "the $name stop" "$b.run.txt"
+  [ ! -e "$b" ] && [ -z "$(stage_left)" ] || fail "the $name stop ran the probe or left its stage" "$b.run.txt"
+done
+
+# A publication that fails keeps the stage and fails the session (status
+# 3), the capture judged from the kept stage; the retry publishes and
+# releases it. Interrupted, the session keeps 130.
+retry_stage() {
+  local st
+  st="$ROOT/stage/$(stage_left)"
+  [ -d "$st" ] || fail "no kept stage to retry" "$ROOT/mounts"
+  TRACE_STAGE_SUDO=none python3 tools/trace_stage.py publish --stage "$st" --outdir "$OUT" --settle-s 1 \
+    --meminfo "$ROOT/meminfo" >"$ROOT/retry.log" 2>&1 || fail "the retried publication failed" "$ROOT/retry.log"
+  TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$st" --outdir "$OUT" \
+    >>"$ROOT/retry.log" 2>&1 || fail "the retried release failed" "$ROOT/retry.log"
+  [ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "the retry left the stage" "$ROOT/retry.log"
+}
+status=0
+TRACE_STAGE_FAIL=copy setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 90 --modes traced \
+  --runs current:100:idle:full </dev/null >"$ROOT/stage-copy.log" 2>&1 || status=$?
+b=$(base current-100hz-idle-bounded-traced 90)
+[ "$status" -eq 3 ] && grep -q 'PRESERVATION FAILED' "$ROOT/stage-copy.log" &&
+  grep -q "retry: python3 tools/trace_stage.py publish --stage $ROOT/stage/" "$ROOT/stage-copy.log" &&
+  grep -q '^preservation: NOT published: the staged evidence is kept at ' "$b.run.txt" &&
+  grep -Eq '^verdict: (pass|fail)' "$b.run.txt" && [ ! -e "$b" ] && [ -n "$(stage_left)" ] ||
+  fail "the failed publication (status $status)" "$ROOT/stage-copy.log"
+retry_stage
+(cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") && [ -s "$b.trace.dat" ] ||
+  fail "the retry's ledger" "$ROOT/retry.log"
+TRACE_STAGE_FAIL=copy python3 -c '
+import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --yes --attempt 91 --duration 4 \
+  --modes traced --runs current:100:idle:full </dev/null >"$ROOT/stage-int.log" 2>&1 &
+pid=$!
+b=$(base current-100hz-idle-bounded-traced 91)
+for _ in $(seq 1 300); do grep -q '^clock pair before' "$b.run.txt" 2>/dev/null && break; sleep 0.1; done
+sleep 1
+kill -TERM "$pid"
+status=0
+wait "$pid" || status=$?
+[ "$status" -eq 130 ] && grep -q 'PRESERVATION FAILED' "$ROOT/stage-int.log" && [ -n "$(stage_left)" ] ||
+  fail "the interrupted, failed publication (status $status)" "$ROOT/stage-int.log"
+retry_stage
+
+# A release whose unmount fails: published and verified, the stage kept,
+# status 3; the next session refuses while it remains and never touches it;
+# the retried release then removes it.
+: >"$ROOT/umount-fail"
+status=0
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 92 --modes traced \
+  --runs current:100:idle:full </dev/null >"$ROOT/stage-umount.log" 2>&1 || status=$?
+b=$(base current-100hz-idle-bounded-traced 92)
+[ "$status" -eq 3 ] && grep -q '^preservation: published and verified; the stage was NOT released' "$b.run.txt" &&
+  grep -q 'CLEANUP FAILED: the stage .* was not released' "$ROOT/stage-umount.log" && [ -n "$(stage_left)" ] ||
+  fail "the failed unmount (status $status)" "$ROOT/stage-umount.log"
+kept="$ROOT/stage/$(stage_left)"
+status=0
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 93 --modes traced \
+  --runs current:100:idle:full </dev/null >"$ROOT/stage-left.log" 2>&1 || status=$?
+[ "$status" -eq 2 ] && grep -q "a stage remains under $ROOT/stage" "$ROOT/stage-left.log" &&
+  grep -q "$kept: run rate-trace-current-100hz-idle-bounded-traced-$DATE-92.csv" "$ROOT/stage-left.log" &&
+  [ -d "$kept" ] && [ -e "$kept/.rtctrl-stage" ] || fail "the leftover stage's refusal (status $status)" "$ROOT/stage-left.log"
+[ ! -e "$(base current-100hz-idle-bounded-traced 93).run.txt" ] || fail "a session ran beside a leftover stage" "$ROOT/stage-left.log"
+rm -f "$ROOT/umount-fail"
+TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$kept" --outdir "$OUT" >"$ROOT/retry.log" 2>&1 &&
+  [ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "the retried release" "$ROOT/retry.log"
 
 echo "trace session script OK"
