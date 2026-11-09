@@ -1439,13 +1439,32 @@ makes each listed run once per placement, its log name labelled `-obs-open`
 or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
 - takes the operator's explicit PIDs and their descendants (the session's
   own tree is exempt), and before any change writes
-  `<log>.csv.observers.jsonl`: every thread's process and thread IDs, start
+  `<log>.csv.observers.jsonl`: every process's and thread's IDs, start
   times (a guard against reused IDs) and mask, flushed to disk;
 - sets each thread's mask to its own less the excluded CPUs, writing the
   intended mask to the record (flushed) before each change and reading the
   mask back after it. A thread that holds only excluded CPUs, or a live
-  thread whose change or read-back fails, refuses the run (a failure, never
-  counted as an exited thread);
+  thread whose mask cannot be read or whose change or read-back fails,
+  refuses the run (a failure, never counted as an exited thread);
+- repeats that pass (approved 2026-11-09). A new thread inherits its
+  creator's mask, so one created between a listing and its creator's change
+  keeps the excluded CPUs (rehearsal 8, below). Each pass lists the trees
+  afresh (the roots and every process found before, by ID and start time,
+  even if reparented since, with their descendants, less the exempt trees,
+  also listed afresh) and every live thread in them; a process or thread not
+  seen before is recorded before any change to it. Confine ends after a pass
+  that finds nothing new and every live thread off the excluded CPUs: every
+  thread alive then held such a mask, so a thread one of them creates later
+  inherits one too. Ten passes that do not settle, or a thread that holds
+  the excluded CPUs again after confine confined it or found it off them (an
+  application setting its own mask), refuse the run; the observers are
+  restored before any probe starts. A placement is no freeze of the
+  applications, so the checks below stay mandatory;
+- records each thread's mask with its origin: the first pass's listing (the
+  original mask), a later pass's thread still on the excluded CPUs (its mask
+  before the change), or a later pass's thread already off them, which
+  inherited a confined creator's mask and is left as found (its mask is no
+  evidence of its original placement);
 - starts the probe with its mask outside them, so only its worker pins
   itself to CPU 3;
 - restores right after the probe, and on every exit. Restoration reconciles
@@ -1458,18 +1477,30 @@ or `-obs-confined`. For a confined run, `tools/observer_affinity.py`:
   read-back that does not match, is unresolved: the record stays for a
   retry, the tool exits 1, and the session reports a cleanup failure (the
   run stops; an otherwise successful session exits 3) with the command to
-  retry (reviewer findings, 2026-11-08). A thread or process created during the run inherited
-  its creator's mask, and a multithreaded process has no single original
-  mask: it gets its process's (or nearest recorded ancestor's) original
-  mask only when all that process's recorded threads shared one, and is
-  otherwise left and reported.
+  retry (reviewer findings, 2026-11-08). A thread found already off the
+  excluded CPUs, and a thread or process created after the last pass,
+  inherited its creator's mask, and a multithreaded process has no single
+  original mask: it gets its process's original mask (for a process none of
+  whose threads was found before its change, its recorded parent's; for a
+  new process, its nearest recorded ancestor's) only when all that
+  process's threads listed before their change shared one, and only while it
+  holds that mask's confined form. Otherwise it is left at its mask and
+  reported as left, never given an invented wider mask.
 
-The run's halfway task snapshot is checked: an observer thread or a probe
-helper allowed on an excluded CPU stops the session as a placement failure.
-In a traced run, `tools/trace_correlate.py` also counts the time observer
-threads (with those they created during the run) and probe helpers spent
-on the excluded CPUs, and any such time fails the analysis. The open runs
-leave the observers as they are, and C2 stays enabled in both placements.
+The run's halfway task snapshot lists every task's process, parent, start
+times and allowed CPUs, and is checked: a task of a recorded process
+(matched by ID and start time) or of a descendant (by the snapshot's
+parents, the exempt trees left out), or a probe helper, allowed on an
+excluded CPU or with an unreadable mask, stops the session as a placement
+failure. A snapshot is one moment, not the whole run. A confined run is
+untraced or in the timer mode. In a timer run, the session lists the same
+lineage right after the trace started (`<log>.csv.lineage.txt`), and
+`tools/trace_correlate.py` counts the time spent on the excluded CPUs by
+every observer task (the record's, the lineage's, so that a task created
+before the trace and absent from the record is one, and every task they
+forked during the trace) and by the probe helpers. Any such time, a missing
+lineage or missing process events fails the analysis. The open runs leave
+the observers as they are, and C2 stays enabled in both placements.
 The same-session open and confined comparison, with its run count and
 labels, comes to the reviewer before it runs.
 
@@ -1681,21 +1712,42 @@ verified ledgers, unmounted and removed; no confined run started. This
 validates the staging lifecycle and a short untraced run, not sustained
 recording without losses, complete timing and SMI coverage, or the confined
 placement. The readback now follows the kernel's rounding (above; approved
-2026-11-09). Its implementation comes to the reviewer, then both rehearsals
-repeat with fresh attempts and directories; hardware waits for their review.
-With the emulator prepared as above:
+2026-11-09). Its implementation was confirmed the same day, and both
+rehearsals repeated as attempts 7 and 8.
+
+**Rehearsals 7 and 8 (2026-11-09).** At `8318db6`, archived in
+`stage1_rehearsal/` (`stage1-controls-7`, `stage1-placement-8`, with their
+analysis reports). Attempt 7 is accepted for the recording and controls
+checks (reviewer, 2026-11-09). The controls pass (positive and both
+negatives). Its timer run has zero main-trace and TSC-instance losses and
+zero packets reported dropped by tcpdump; its 9,465 sleeps were all on time,
+U is 2,020 ns, and the SMI counts cover the run. Its analysis fails only the
+expected PTY USB association, and its untraced control fails T1, T2 and T6a,
+as every emulator run has. The root-only geometry and readback checks
+worked: every trace array read back exactly. No recorder off-CPU span over
+5 ms began in D state during the probe windows (tcpdump's came before
+them). The controls count toward acceptance while the kernel, the probe
+definitions and the relevant events stay unchanged. Attempt 8's open timer
+run is as complete (its 9,460 paired sleeps on time, one cycle having begun
+without sleeping; U 1,920 ns), but its confined untraced control was a
+placement failure. Halfway through it, a thread of a Claude Code process
+(`JITWorker`), absent from the placement record, was allowed on every CPU,
+and the session stopped before the confined timer run. Confine had listed
+that process's threads, then changed them; the thread is consistent with
+being created in between, though the untraced record does not date its
+creation. The placement rehearsal is not accepted. Confine now repeats its
+pass, and the checks follow the observers' lineage (above; approved
+2026-11-09). Its implementation comes to the reviewer; then the open and
+confined placement session repeats as attempt 9 in a fresh directory.
+Hardware waits for accepted confined-placement and recording evidence. With
+the emulator prepared as above:
 
 ```
 tools/quiet_host.sh stop
 tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
-  --fs-controls 5 --modes untraced,timer --runs current:1000:rt-idle:fast-motion --duration 10 \
-  --attempt 7 --outdir <dir7>
-tools/quiet_host.sh restore   # also after a failed or interrupted session
-tools/quiet_host.sh stop
-tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
   --modes untraced,timer --placements open,confined --observers <PID,...> \
-  --runs current:1000:rt-idle:fast-motion --duration 10 --attempt 8 --outdir <dir8>
-tools/quiet_host.sh restore
+  --runs current:1000:rt-idle:fast-motion --duration 10 --attempt 9 --outdir <dir9>
+tools/quiet_host.sh restore   # also after a failed or interrupted session
 ```
 
 ## Later steps (after the bounded transaction and Phases B and C)

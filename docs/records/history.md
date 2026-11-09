@@ -888,9 +888,20 @@ allowance having ignored the kernel's rounding of each CPU's buffer to whole
 subbuffers (524,384 KiB read back per array against 524,288). Real `noswap`
 stages were mounted, published with verified ledgers and released, and the
 open untraced control ran. The rehearsal was not accepted, and the readback
-was corrected to the kernel's rounding (approved 2026-11-09). The details are
-in the [control-rate qualification](../hardware/control-rate.md). Hardware
-runs wait for a successful rehearsal.
+was corrected to the kernel's rounding (approved 2026-11-09). Rehearsals 7
+and 8 (2026-11-09, at `8318db6`, archived in `stage1_rehearsal/`) recorded
+completely: the controls passed, and both timer runs had zero main-trace and
+TSC-instance losses and complete clock, sampler and SMI coverage, failing
+only the expected PTY USB association; attempt 7 was accepted for its
+recording and controls checks. The confined untraced control failed its
+placement check: halfway through it, a thread of an observer, absent from
+the placement record, was allowed on every CPU, consistent with its creation
+between confine's listing of its process and the change of its creator.
+Confine now repeats its pass until one finds nothing new, and the halfway
+snapshot and the trace follow the observers' lineage (approved 2026-11-09).
+The details are in the
+[control-rate qualification](../hardware/control-rate.md). Hardware runs
+wait for a successful rehearsal.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
@@ -917,6 +928,7 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-09 | a full `ctest -j8` at about 09:31, no sweep (load near 2) | failed: "command rejected in cycle 1112" (source feedback stale), 1 stale sample, 1 deadline miss, a 7.0 ms cycle |
 | 2026-11-09 | full `ctest -j8` runs at 09:37, 10:22 and 10:31, no sweep | passed, each |
 | 2026-11-09 | full `ctest -j8` runs at about 13:13, 13:26 and 14:57, no sweep | passed, each |
+| 2026-11-09 | full `ctest -j8` runs at about 18:19, 18:38 and 18:48, no sweep | passed, each |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
@@ -940,6 +952,7 @@ rehearsals, and no bound is changed for it.
 | 2026-11-09 | a full `ctest -j8` at about 13:13, no sweep | failed: the stand-in `tcpdump` ignored its SIGINT for 120 s (attempt 28) |
 | 2026-11-09 | the stand-in alone, 150 SIGINTs at random delays | stopped promptly, each |
 | 2026-11-09 | a full `ctest -j8` at about 13:26, no sweep | passed |
+| 2026-11-09 | full `ctest -j8` runs at about 14:57, 18:19, 18:38 and 18:48, no sweep | passed, each |
 
 ## Consistency audit
 
