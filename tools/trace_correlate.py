@@ -127,7 +127,8 @@ BH_WORK = "usb_giveback_urb_bh"
 TTY_WORK = "flush_to_ldisc"
 BARRIER_WORK = "wq_barrier_func"
 # The session's recorders, by the comm the kernel gives them, and the length
-# of an uninterruptible wait the analysis lists (context, not a check).
+# of an off-CPU span begun in D state that the analysis lists (context, not a
+# check).
 RECORDERS = ("trace-cmd", "perf", "tcpdump", "tsc_mono_pairs")
 RECORDER_WAIT_NS = 5_000_000
 
@@ -151,10 +152,12 @@ class Trace:
         self.excl_cur: dict[int, tuple] = {}  # cpu -> (tid, comm, since)
         self.excl_ns: dict[int, int] = {}
         self.excl_comm: dict[int, str] = {}
-        # The recorders' uninterruptible waits: when one left a CPU, and the
-        # spans over RECORDER_WAIT_NS it spent in D state (start, end, comm, pid).
-        self.rec_off: dict[int, tuple[int, str, str]] = {}
-        self.rec_waits: list[tuple[int, int, str, int]] = []
+        # The recorders' off-CPU spans: when one left a CPU, in which state,
+        # and its first sched_waking and sched_wakeup after that ([switch-out,
+        # comm, state, waking, wakeup]); and the spans over RECORDER_WAIT_NS
+        # begun in D state (switch-out, switch-in, comm, pid, waking, wakeup).
+        self.rec_off: dict[int, list] = {}
+        self.rec_waits: list[tuple[int, int, str, int, int | None, int | None]] = []
         self.last_ts = 0
         self.expiring: dict[int, list] = {}   # cpu -> stack of (entry ts, now, wakeup)
         self.timer_wakes: list[tuple] = []    # (entry ts, now, cpu, waking ts, running)
@@ -220,6 +223,9 @@ class Trace:
             p = PID.search(rest)
             if not p:
                 return
+            off = self.rec_off.get(int(p[1]))
+            if off is not None and off[3] is None:
+                off[3] = ts
             if int(p[1]) != self.tid:
                 if rest.startswith("comm=kworker/"):
                     tc = re.search(r"target_cpu=(\d+)", rest)
@@ -233,17 +239,22 @@ class Trace:
             else:
                 work = self.active_work(flags, cpu, pid)
                 self.other_wakes.append((ts, cpu, m["comm"], pid, work))
+        elif ev == "sched_wakeup":
+            p = fair_server.WAKEUP.search(rest) or PID.search(rest)  # "comm:pid [prio] CPU:nnn" on this kernel
+            off = self.rec_off.get(int(p[1])) if p else None
+            if off is not None and off[4] is None:
+                off[4] = ts
         elif ev == "sched_switch":
             s = SWITCH.match(rest)
             if not s:
                 return
             npid, ppid = int(s["npid"]), int(s["ppid"])
             if s["prev"] in RECORDERS:
-                self.rec_off[ppid] = (ts, s["prev"], s["state"])
+                self.rec_off[ppid] = [ts, s["prev"], s["state"], None, None]
             if s["next"] in RECORDERS:
                 off = self.rec_off.pop(npid, None)
                 if off and off[2].startswith("D") and ts - off[0] > RECORDER_WAIT_NS:
-                    self.rec_waits.append((off[0], ts, off[1], npid))
+                    self.rec_waits.append((off[0], ts, off[1], npid, off[3], off[4]))
             if self.timer is not None:
                 self.timer.switch(ts, cpu, ppid, s["prev"], npid, s["next"])
             if self.excl is not None and cpu in self.excl:
@@ -812,14 +823,27 @@ def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failure
 
 
 def recorder_waits(run: Run, tr: Trace, out) -> None:
-    """The recorders' uninterruptible spans over 5 ms, from the trace's own
-    sched_switch events: context for a capture's losses, not a check."""
+    """The recorders' off-CPU spans over 5 ms that began with a switch-out in
+    D state, from the trace's own events, each split at the recorder's
+    wakeup: blocked from the switch-out to its sched_wakeup (from then on
+    runnable), then runnable until its next switch-in. A span whose wakeup
+    the trace does not show is not split. Context for a capture's losses,
+    not a check."""
     w = sorted(tr.rec_waits)
-    print(f"  recorder waits (context, not a check): {len(w)} uninterruptible spans over "
-          f"{RECORDER_WAIT_NS / 1e6:.0f} ms of {', '.join(RECORDERS)} (sched_switch, D state)", file=out)
-    for a, b, comm, pid in w[:20]:
-        print(f"    {comm} {pid}: {(b - a) / 1e6:.1f} ms from {(a - run.origin) / 1e9:+.3f} s to "
-              f"{(b - run.origin) / 1e9:+.3f} s (the probe's epoch)", file=out)
+    print(f"  recorder waits (context, not a check): {len(w)} off-CPU spans over "
+          f"{RECORDER_WAIT_NS / 1e6:.0f} ms of {', '.join(RECORDERS)} begun with a switch-out in D state "
+          "(sched_switch), each split at its wakeup (sched_wakeup): blocked before it, runnable after it until "
+          "the switch-in", file=out)
+    for a, b, comm, pid, waking, wakeup in w[:20]:
+        if wakeup is not None:
+            split = f"blocked {(wakeup - a) / 1e6:.2f} ms, then runnable {(b - wakeup) / 1e6:.2f} ms"
+        elif waking is not None:
+            split = (f"blocked {(waking - a) / 1e6:.2f} ms to its sched_waking (no sched_wakeup in the trace), "
+                     f"then {(b - waking) / 1e6:.2f} ms to the switch-in")
+        else:
+            split = "no wakeup in the trace: not split"
+        print(f"    {comm} {pid}: off CPU {(b - a) / 1e6:.2f} ms from {(a - run.origin) / 1e9:+.3f} s to "
+              f"{(b - run.origin) / 1e9:+.3f} s (the probe's epoch); {split}", file=out)
     if len(w) > 20:
         print(f"    and {len(w) - 20} more", file=out)
 

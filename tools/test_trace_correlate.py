@@ -476,26 +476,48 @@ def main() -> int:
             out = p.stdout + p.stderr
             expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok)
                    and (ok or "ran on CPUs 2,3" in out), f"the placement check ({name})", out)
-        # The recorders' uninterruptible waits over 5 ms are listed, from the
-        # trace's switches (context, not a check): trace-cmd's 6.1 ms is; perf's
-        # 1 ms, a preemption (R) and a task that is no recorder are not.
+        # The recorders' off-CPU spans over 5 ms begun in D state are listed,
+        # from the trace's events (context, not a check), each split at its
+        # wakeup: trace-cmd's 6.1 ms, switched out in D at 0.5 ms and woken
+        # (sched_wakeup) at 0.7 ms, is 0.2 ms blocked and 5.9 ms runnable
+        # (the reviewer's case, 2026-11-09); a span with only a sched_waking
+        # is split there and says so, one with no wake event is not split.
+        # perf's 1 ms, a preemption (R) and a task that is no recorder are
+        # not listed.
         r = Run()
         for us, prev, nxt in ((500.0, ("trace-cmd", 6000, "D"), ("swapper/12", 0)),
                               (520.0, ("perf", 6001, "D"), ("swapper/13", 0)),
                               (530.0, ("tcpdump", 6002, "R"), ("other", 6100)),
                               (540.0, ("chrome", 6003, "D"), ("swapper/14", 0)),
+                              (550.0, ("tsc_mono_pairs", 6004, "D"), ("swapper/15", 0)),
+                              (560.0, ("perf", 6005, "D"), ("swapper/16", 0)),
                               (1520.0, ("swapper/13", 0, "R"), ("perf", 6001)),
                               (6530.0, ("other", 6100, "S"), ("tcpdump", 6002)),
                               (6540.0, ("swapper/14", 0, "R"), ("chrome", 6003)),
-                              (6600.0, ("swapper/12", 0, "R"), ("trace-cmd", 6000))):
+                              (6600.0, ("swapper/12", 0, "R"), ("trace-cmd", 6000)),
+                              (7000.0, ("swapper/15", 0, "R"), ("tsc_mono_pairs", 6004)),
+                              (8000.0, ("swapper/16", 0, "R"), ("perf", 6005))):
             r.ev(us, prev[0], prev[1], 12, "d..2.", "sched_switch",
                  f"{prev[0]}:{prev[1]} [120] {prev[2]} ==> {nxt[0]}:{nxt[1]} [120]")
+        # (sched_waking and sched_wakeup in this kernel's formats.)
+        for us, event, rest in ((600.0, "sched_waking", "comm=trace-cmd pid=6000 prio=120 target_cpu=012"),
+                                (700.0, "sched_wakeup", "trace-cmd:6000 [120] CPU:012"),
+                                (900.0, "sched_waking", "comm=trace-cmd pid=6000 prio=120 target_cpu=012"),
+                                (950.0, "sched_wakeup", "trace-cmd:6000 [120] CPU:012"),
+                                (5560.0, "sched_waking", "comm=perf pid=6005 prio=120 target_cpu=016")):
+            r.ev(us, "other", 6100, 12, "d..2.", event, rest)
         path = r.write(root, "recwait")
         p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
                             str(root / "recwait.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
         out = p.stdout + p.stderr
-        expect(p.returncode == 0 and "recorder waits (context, not a check): 1 uninterruptible spans over 5 ms" in out
-               and "trace-cmd 6000: 6.1 ms from +0.000500 s" not in out and "trace-cmd 6000: 6.1 ms from +0.001 s" in out
+        expect(p.returncode == 0 and "recorder waits (context, not a check): 3 off-CPU spans over 5 ms" in out
+               and "begun with a switch-out in D state" in out and "uninterruptible" not in out
+               and "trace-cmd 6000: off CPU 6.10 ms from +0.001 s to +0.007 s (the probe's epoch); "
+                   "blocked 0.20 ms, then runnable 5.90 ms" in out
+               and "perf 6005: off CPU 7.44 ms from +0.001 s to +0.008 s (the probe's epoch); blocked 5.00 ms to "
+                   "its sched_waking (no sched_wakeup in the trace), then 2.44 ms to the switch-in" in out
+               and "tsc_mono_pairs 6004: off CPU 6.45 ms from +0.001 s to +0.007 s (the probe's epoch); no wakeup "
+                   "in the trace: not split" in out
                and "perf 6001" not in out and "tcpdump 6002" not in out and "chrome 6003" not in out,
                "the recorders' waits", out)
         code, out, _ = correlate(root, "timer_fs_empty", timer=True, fs_layout=True)
