@@ -37,9 +37,17 @@ check's: a process created after the placement covered by its parent, an
 exempt tree and a reused process ID left out, a snapshot without the
 lineage refused for this record and a legacy one checked as before, said
 so.
+
+And read failures (reviewer, 2026-11-09), on a fake /proc with injected
+permission errors and stand-in masks: a live process's stat, a thread's
+stat, a task directory and a mask that cannot be read fail confinement
+(before any change, or in a later pass), leave restoration unresolved and
+retryable, and make the task listing incomplete (status 1), which the
+check refuses; a task that exits during a pass is still left out.
 """
 
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -140,7 +148,7 @@ def lineage_snapshot(root: pathlib.Path, pids: set[int], extra: list[tuple], ove
             rows.append(" ".join(w))
     rows += [f"{p_} {t_} 1 1 1 {cpu_list(m)}" for p_, t_, m in extra]
     path = root / name
-    path.write_text("taken: x\n" + "\n".join(listing[:2] + rows) + "\n")
+    path.write_text("taken: x\n" + "\n".join(listing[:2] + rows + [f"{oa.COMPLETE} {len(rows)} tasks"]) + "\n")
     return path
 
 
@@ -506,7 +514,7 @@ def repeated_scan_checks(root: pathlib.Path, mine: list[int]) -> None:
         rec = root / "unreadable.jsonl"
         with patched(processes=count, os_sched_getaffinity=unreadable):
             st = quiet(oa.confine, [o.pid], ex, rec, [])
-        expect(st == 1 and "its mask cannot be read" in rec.read_text(), f"an unreadable live thread fails: {st}")
+        expect(st == 1 and "mask: injected" in rec.read_text(), f"an unreadable live thread fails: {st}")
         restored(o, rec, "after an unreadable thread")
     finally:
         oa.threads, oa.processes, oa.start_time = real_threads, real_processes, real_start
@@ -568,9 +576,10 @@ def lineage_checks(root: pathlib.Path, mine: list[int]) -> None:
     allowed = full - ex
     # The listing: this process's row with its parent, start time and CPUs.
     r = tool("tasks")
-    lin, taken = oa.parse_lineage(r.stdout.splitlines())
+    lin, taken, problem = oa.parse_lineage(r.stdout.splitlines())
     me = (lin or {}).get((os.getpid(), os.getpid()))
-    expect(r.returncode == 0 and taken is not None and taken[0] <= taken[1] and me is not None
+    expect(r.returncode == 0 and problem is None and r.stdout.splitlines()[-1] == f"{oa.COMPLETE} {len(lin)} tasks"
+           and taken is not None and taken[0] <= taken[1] and me is not None
            and me[0] == os.getppid() and me[1] == oa.start_time(os.getpid()) and me[3] == os.sched_getaffinity(0),
            f"the listing's row of this process: {me} {taken}")
     # A process created after the placement is an observer by its parent:
@@ -600,7 +609,8 @@ def lineage_checks(root: pathlib.Path, mine: list[int]) -> None:
         rp, tp = root / "syn.jsonl", root / "syn-tasks.txt"
         rp.write_text("".join(json.dumps(x) + "\n" for x in record))
         if lineage:
-            tp.write_text("taken: x\n" + oa.LINEAGE + "\ntaken monotonic_ns: 1 2\n" + "\n".join(rows) + "\n")
+            tp.write_text("taken: x\n" + oa.LINEAGE + "\ntaken monotonic_ns: 1 2\n" + "\n".join(rows)
+                          + f"\n{oa.COMPLETE} {len(rows)} tasks\n")
         else:
             tp.write_text("taken: x\n" + "\n".join(rows) + "\n")
         return tool("check", "--record", str(rp), "--tasks", str(tp), "--worker-tid", "4243")
@@ -626,6 +636,219 @@ def lineage_checks(root: pathlib.Path, mine: list[int]) -> None:
     r = check(v1, ["/proc/5000/task/5000/status 0-2", "/proc/5001/task/5001/status 0-3",
                    "/proc/4242/task/4243/status 3"], lineage=False)
     expect(r.returncode == 0 and "lineage: none in this snapshot" in r.stdout, f"a legacy snapshot: {r.stdout}")
+
+
+class FakeProc:
+    """A fake /proc tree with stand-in masks (no real mask changes): tasks
+    {pid: (ppid, start, {tid: start})}; `denied` holds paths whose read or
+    listing raises EACCES, and ("mask", tid) entries whose mask read does."""
+
+    def __init__(self, root: pathlib.Path, tasks: dict) -> None:
+        self.proc = root / "proc"
+        self.masks: dict[int, set[int]] = {}
+        self.sets: list[tuple] = []
+        self.denied: set = set()
+        for pid, (ppid, start, threads) in tasks.items():
+            for tid, s in threads.items():
+                self.thread(pid, ppid, tid, s)
+            (self.proc / str(pid) / "stat").write_text(self.stat(pid, ppid, start))
+            (self.proc / str(pid) / "comm").write_text("task\n")
+
+    @staticmethod
+    def stat(pid: int, ppid: int, start: int) -> str:
+        return f"{pid} (task) " + " ".join(["S", str(ppid)] + ["0"] * 17 + [str(start)]) + "\n"
+
+    def thread(self, pid: int, ppid: int, tid: int, start: int, mask: set[int] | None = None) -> None:
+        d = self.proc / str(pid) / "task" / str(tid)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "stat").write_text(self.stat(tid, ppid, start))
+        self.masks[tid] = set(mask if mask is not None else {0, 1, 2, 3})
+
+    @contextlib.contextmanager
+    def active(self):
+        real_read, real_iter = pathlib.Path.read_text, pathlib.Path.iterdir
+        fake = self
+
+        def read(path, *a, **k):
+            if path in fake.denied:
+                raise PermissionError(errno.EACCES, "injected denial", str(path))
+            return real_read(path, *a, **k)
+
+        def iterdir(path):
+            if path in fake.denied:
+                raise PermissionError(errno.EACCES, "injected denial", str(path))
+            return real_iter(path)
+
+        def getaff(tid):
+            if ("mask", tid) in fake.denied:
+                raise PermissionError(errno.EACCES, "injected denial")
+            if tid not in fake.masks:
+                raise ProcessLookupError(errno.ESRCH, "No such process")
+            return set(fake.masks[tid])
+
+        def setaff(tid, mask):
+            fake.sets.append((tid, set(mask)))
+            fake.masks[tid] = set(mask)
+        with patched(PROC=self.proc, os_sched_getaffinity=getaff, os_sched_setaffinity=setaff):
+            pathlib.Path.read_text, pathlib.Path.iterdir = read, iterdir
+            try:
+                yield self
+            finally:
+                pathlib.Path.read_text, pathlib.Path.iterdir = real_read, real_iter
+
+
+def read_failure_checks(root: pathlib.Path) -> None:
+    """Unreadable is never gone (reviewer, 2026-11-09): an observer 100
+    (threads 100, 101) and a probe 200 (its worker 200) on a fake /proc."""
+    ex = {2, 3}
+    full, confined = {0, 1, 2, 3}, {0, 1}
+    case = {"n": 0}
+
+    def fresh() -> FakeProc:
+        case["n"] += 1
+        d = root / f"case{case['n']}"
+        d.mkdir()
+        f = FakeProc(d, {100: (1, 10, {100: 10, 101: 11}), 200: (1, 20, {200: 20})})
+        f.masks[200] = {3}
+        return f
+
+    def rec_path() -> pathlib.Path:
+        return root / f"case{case['n']}" / "observers.jsonl"
+
+    def confine(f: FakeProc) -> tuple:
+        return capture(oa.confine, [100], ex, rec_path(), [])
+
+    # A live thread's stat that cannot be read: confine fails before any
+    # change (the reviewer's first case), and a restore has nothing to undo.
+    f = fresh()
+    f.denied.add(f.proc / "100" / "task" / "101" / "stat")
+    with f.active():
+        st, out = confine(f)
+        expect(st == 1 and not f.sets and "1 failed" in out and "it cannot be read" in rec_path().read_text()
+               and '"state": "confined with failures"' in rec_path().read_text(),
+               f"an unreadable thread's identity fails confine, nothing changed: {st} {out} {f.sets}")
+        f.denied.clear()
+        expect(capture(oa.restore, rec_path())[0] == 0 and f.masks[100] == full, "nothing to restore")
+    # A live process's stat: refused before the record (the trees unknown).
+    f = fresh()
+    f.denied.add(f.proc / "100" / "stat")
+    with f.active():
+        st, out = confine(f)
+        expect(st == 2 and not rec_path().exists() and not f.sets and "cannot be listed" in out,
+               f"an unreadable process refuses confine: {st} {out}")
+    # A task directory that cannot be listed.
+    f = fresh()
+    f.denied.add(f.proc / "100" / "task")
+    with f.active():
+        st, out = confine(f)
+        expect(st == 1 and not f.sets and "it cannot be read" in rec_path().read_text(),
+               f"an unreadable task directory fails confine: {st} {out}")
+    # A mask that cannot be read (the existing rule, on this fake).
+    f = fresh()
+    f.denied.add(("mask", 101))
+    with f.active():
+        st, out = confine(f)
+        expect(st == 1 and not f.sets, f"an unreadable mask fails confine: {st} {out}")
+    # A process's stat unreadable in a later pass: a failure after the first
+    # pass's changes; restore then fails (the trees cannot be listed) and is
+    # retryable, and its retry restores everything.
+    f = fresh()
+    calls: list[int] = []
+    real_processes = oa.processes
+
+    def deny_later():
+        calls.append(1)
+        if len(calls) == 3:  # the second pass's listing
+            f.denied.add(f.proc / "100" / "stat")
+        return real_processes()
+    with f.active():
+        with patched(processes=deny_later):
+            st, out = confine(f)
+        expect(st == 1 and f.masks[100] == confined and f.masks[101] == confined
+               and "the trees cannot be listed" in rec_path().read_text(),
+               f"a later pass's unreadable process fails confine: {st} {out}")
+        st, out = capture(oa.restore, rec_path())
+        expect(st == 1 and "INCOMPLETE" in out and "restore incomplete" in rec_path().read_text(),
+               f"restore with an unreadable process is unresolved: {st} {out}")
+        f.denied.clear()
+        st, out = capture(oa.restore, rec_path())
+        expect(st == 0 and f.masks[100] == full and f.masks[101] == full, f"and its retry restores: {st} {out}")
+    # Restore with an intended thread's identity unreadable (the reviewer's
+    # second case): unresolved, never "exited"; the retry restores it.
+    f = fresh()
+    with f.active():
+        expect(confine(f)[0] == 0 and f.masks[101] == confined, "a clean confinement on the fake")
+        f.denied.add(f.proc / "100" / "task" / "101" / "stat")
+        st, out = capture(oa.restore, rec_path())
+        expect(st == 1 and "exited 0" in out and f.masks[101] == confined and f.masks[100] == full
+               and '"state": "restore incomplete"' in rec_path().read_text(),
+               f"an unreadable intended identity is unresolved: {st} {out}")
+        f.denied.clear()
+        st, out = capture(oa.restore, rec_path())
+        expect(st == 0 and f.masks[101] == full, f"and its retry restores it: {st} {out}")
+    # Restore with a recorded process's task directory unreadable (threads
+    # created during the session cannot be listed): unresolved, retryable.
+    f = fresh()
+    with f.active():
+        expect(confine(f)[0] == 0, "a clean confinement on the fake")
+        f.thread(100, 1, 102, 12, confined)  # created during the session, inherited the confined mask
+        f.denied.add(f.proc / "100" / "task")
+        st, out = capture(oa.restore, rec_path())
+        expect(st == 1 and f.masks[102] == confined, f"an unreadable task directory leaves restore unresolved: {out}")
+        f.denied.clear()
+        st, out = capture(oa.restore, rec_path())
+        expect(st == 0 and f.masks[102] == full and "new restored 1" in out, f"and its retry restores: {st} {out}")
+
+    # The listing: complete, then each denial makes it incomplete (status 1),
+    # and the check refuses it (the reviewer's third case).
+    f = fresh()
+    with f.active():
+        expect(confine(f)[0] == 0, "a clean confinement on the fake")
+        snap = root / f"case{case['n']}" / "tasks.txt"
+
+        def listing() -> tuple:
+            o = io.StringIO()
+            with contextlib.redirect_stderr(io.StringIO()):
+                st = oa.tasks(o)
+            snap.write_text("taken: x\n" + o.getvalue())
+            return st, o.getvalue()
+        st, text = listing()
+        expect(st == 0 and text.splitlines()[-1] == f"{oa.COMPLETE} 3 tasks" and "100 101 1 10 11 0-1" in text,
+               f"a complete listing: {st} {text}")
+        st, out = capture(oa.check, rec_path(), snap, 200)
+        expect(st == 0 and "2 observer threads, 0 allowed" in out, f"which the check takes: {st} {out}")
+        for denial in (f.proc / "100" / "stat", f.proc / "100" / "task", f.proc / "100" / "task" / "101" / "stat",
+                       ("mask", 101)):
+            f.denied = {denial}
+            st, text = listing()
+            expect(st == 1 and text.splitlines()[-1].startswith(f"{oa.INCOMPLETE} 1 unreadable"),
+                   f"an unreadable {denial} makes the listing incomplete: {st} {text}")
+            f.denied = set()
+            st, out = capture(oa.check, rec_path(), snap, 200)
+            expect(st == 1 and "task lineage is incomplete" in out, f"and the check refuses it: {st} {out}")
+        # A listing that did not finish (no completeness line) is refused too.
+        st, text = listing()
+        snap.write_text("taken: x\n" + "\n".join(text.splitlines()[:-1]) + "\n")
+        st, out = capture(oa.check, rec_path(), snap, 200)
+        expect(st == 1 and "no completeness line" in out, f"a truncated listing is refused: {st} {out}")
+
+    # Tasks that exit during a pass stay benign: a thread whose entry is gone
+    # (its directory listed, its stat missing), one whose mask read finds it
+    # gone (ESRCH), and a process directory without its stat.
+    f = fresh()
+    (f.proc / "100" / "task" / "103").mkdir()
+    f.thread(100, 1, 104, 14)
+    del f.masks[104]
+    (f.proc / "300").mkdir()
+    with f.active():
+        st, out = confine(f)
+        e = entries(rec_path())
+        expect(st == 0 and {x["tid"] for x in e if x["kind"] == "thread"} == {100, 101}
+               and f.masks[101] == confined, f"tasks gone during a pass are left out: {st} {out}")
+        o = io.StringIO()
+        expect(oa.tasks(o) == 0 and o.getvalue().splitlines()[-1] == f"{oa.COMPLETE} 3 tasks",
+               f"and from the listing: {o.getvalue()}")
+        expect(capture(oa.restore, rec_path())[0] == 0 and f.masks[101] == full, "restored")
 
 
 def main() -> int:
@@ -767,6 +990,8 @@ def main() -> int:
             lineage_checks(pathlib.Path(t), mine)
         with tempfile.TemporaryDirectory() as t:
             counterexample_checks(pathlib.Path(t))
+        with tempfile.TemporaryDirectory() as t:
+            read_failure_checks(pathlib.Path(t))
     finally:
         for p in procs:
             p.kill()

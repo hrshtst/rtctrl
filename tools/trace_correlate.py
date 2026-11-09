@@ -818,10 +818,12 @@ def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failure
     notes = []
     linf = pathlib.Path(str(csv_path) + ".lineage.txt")
     if linf.exists():
-        lineage, _ = observer_affinity.parse_lineage(linf.read_text(errors="replace").splitlines())
+        lineage, _, problem = observer_affinity.parse_lineage(linf.read_text(errors="replace").splitlines())
         if lineage is None:
             failures.append(f"observer placement: {linf.name} has no task lineage")
             lineage = {}
+        elif problem:  # a partial lineage is no evidence: its surviving subset is not checked as if whole
+            failures.append(f"observer placement: {linf.name}'s task lineage is incomplete ({problem})")
         procs, new = observer_affinity.observers_in(entries, lineage)
         seeded = {t for (p, t) in lineage if p in procs}
         notes.append(f"lineage after the trace started ({linf.name}): {len(seeded)} observer tasks in "

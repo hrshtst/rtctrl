@@ -73,8 +73,11 @@
 # status 3). The run's halfway task snapshot, which lists every task's parent
 # and start times, is checked: an observer task (a recorded process's, or a
 # descendant's) or a probe helper allowed on an excluded CPU stops the
-# session as a placement failure, as does a confine that fails or does not
-# settle (before the probe). A confined traced run lists the same lineage
+# session as a placement failure, as do a listing that could not read a live
+# task (an incomplete lineage is no evidence) and a confine that fails or
+# does not settle (before the probe). Repeated passes are no atomic view: a
+# process forked by a thread not yet confined, whose parent exits before the
+# next pass, leaves the trees unseen. A confined traced run lists the same lineage
 # right after its trace started (<log>.csv.lineage.txt), for the trace's
 # check to follow with the fork events; a confined run is therefore untraced
 # or in the timer mode. The session's own process tree is exempt, and kernel
@@ -1589,7 +1592,8 @@ tasks_snapshot() {
   echo "--- Cpus_allowed_list per task (/proc/<pid>/task/<tid>/status) ---"
   awk '/^Cpus_allowed_list/ {print FILENAME, $2}' /proc/[0-9]*/task/[0-9]*/status 2>/dev/null
   # Every task's parent and start times with its CPUs: the placement check's
-  # lineage (required with a confined run's record).
+  # lineage (required with a confined run's record). Its status is the
+  # snapshot's: nonzero when a live task could not be read.
   python3 "$OBS_TOOL" tasks 2>&1
 }
 clock_offsets() {  # BOOTTIME and TAI minus MONOTONIC, for timers on those clocks (timer mode)
@@ -1873,7 +1877,7 @@ run_one() {
     # and follows the fork events (reviewer, 2026-11-09).
     if [ "$placement" = confined ]; then
       if python3 "$OBS_TOOL" tasks >"$sb.lineage.txt" 2>"$tmp/lineage.err"; then
-        echo "task lineage after the trace started: $(basename "$sb").lineage.txt, $(($(wc -l <"$sb.lineage.txt") - 2)) tasks" >>"$note"
+        echo "task lineage after the trace started: $(basename "$sb").lineage.txt, $(sed -n 's/^lineage complete: //p' "$sb.lineage.txt")" >>"$note"
       else
         { echo "trace_session: the task lineage was not listed after the trace started: session stopped"
           cat "$tmp/lineage.err"; } | tee -a "$note"
@@ -2044,8 +2048,15 @@ run_one() {
     [ -n "$tracer_problem" ] && tracer_problem+=" before the probe did"
   fi
   alive "$guard_job" || tracer_problem+="${tracer_problem:+, }the staging guard ended before the probe did"
-  wait "$snap_pid" 2>/dev/null
+  # The snapshot's own status: its task listing exits nonzero when a live
+  # task could not be read (an incomplete lineage is no placement evidence).
+  local snap_status=0
+  wait "$snap_pid" 2>/dev/null || snap_status=$?
   snap_pid=
+  echo "halfway snapshot: the task listing's exit $snap_status" >>"$note"
+  if [ "$placement" = confined ] && [ "$snap_status" -ne 0 ] && [ -z "$placement_problem" ]; then
+    placement_problem="the halfway snapshot was not complete (its task listing's exit $snap_status)"
+  fi
   if [ "$placement" = confined ] && [ -z "$placement_problem" ]; then
     local chk wtid_c
     wtid_c=$(sed -n 's/^worker_tid = //p' "$sb.summary.toml" 2>/dev/null)

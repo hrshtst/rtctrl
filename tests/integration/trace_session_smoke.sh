@@ -1492,6 +1492,8 @@ grep -q "^placement: confined (observers $obs_pid moved off CPUs 0, the probe st
   grep -q '^observer placement restored: restored [0-9]*, exited 0, reused 0, changed 0' "$bc.run.txt" &&
   grep -Eq '^observer placement check \(halfway snapshot\): [0-9]+ observer threads, 0 allowed on CPUs 0; [0-9]+ probe helper threads, 0 allowed there$' "$bc.run.txt" &&
   grep -Eq '^  lineage: 2 observer processes \(the recorded ones by ID and start time' "$bc.run.txt" &&
+  grep -q "^halfway snapshot: the task listing's exit 0$" "$bc.run.txt" &&
+  grep -Eq '^lineage complete: [0-9]+ tasks$' "$bc.tasks.txt" &&
   grep -q '^--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---$' "$bc.tasks.txt" &&
   grep -q '"kind": "state", "passes": [0-9]*, "state": "confined"' "$bc.observers.jsonl" &&
   grep -Eq '^verdict: (pass|fail)' "$bc.run.txt" ||
@@ -1549,6 +1551,48 @@ b=$(base current-100hz-idle-bounded-fast-motion-obs-confined-untraced 59)
   grep -q '^verdict: not run (placement)$' "$b.run.txt" && [ ! -e "$b" ] && [ ! -e "$b.summary.toml" ] &&
   ! grep -q '^worker thread ' "$b.run.txt" && grep -q '^restore ' "$ROOT/fake.obs_unsettled" ||
   fail "an unsettled confine: status $st" "$ROOT/pl-unsettled.log"
+
+# A task listing that cannot read a live task exits 1 (an incomplete
+# lineage): the halfway snapshot's status makes the confined run a placement
+# failure even when the check passes, and right after a timer run's trace
+# started it stops the session before the probe (reviewer, 2026-11-09).
+cat >"$FAKE/obs_unreadable.py" <<'EOF'
+import os, sys
+with open(os.environ["FAKE_LOG"] + ".obs_unreadable", "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1] == "confine":
+    with open(sys.argv[sys.argv.index("--record") + 1], "w") as rec:
+        rec.write('{"kind": "header", "version": 2, "exclude": [0], "allowed": [1]}\n')
+    print("observer placement: 1 processes, 1 threads in 2 passes: 1 confined (stand-in)")
+elif sys.argv[1] == "restore":
+    print("observer placement restored: restored 1 (stand-in)")
+elif sys.argv[1] == "tasks":
+    print("--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---")
+    print("lineage INCOMPLETE: 1 unreadable: /proc/1/task (stand-in)")
+    sys.exit(1)
+else:
+    print("observer placement check (stand-in)")
+EOF
+OBS_TOOL="$FAKE/obs_unreadable.py" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 60 --duration 2 \
+  --modes untraced --runs current:100:idle:fast-motion --placements confined --observers $$ </dev/null \
+  >"$ROOT/pl-unreadable.log" 2>&1 || true
+b=$(base current-100hz-idle-bounded-fast-motion-obs-confined-untraced 60)
+grep -q "^halfway snapshot: the task listing's exit 1$" "$b.run.txt" &&
+  grep -q "^verdict: placement failure (the halfway snapshot was not complete (its task listing's exit 1))$" "$b.run.txt" ||
+  fail "an incomplete halfway snapshot" "$b.run.txt"
+if [ -n "$SAMPLER" ]; then
+  set +e
+  OBS_TOOL="$FAKE/obs_unreadable.py" FAKE_PROBE_OWN_TID=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh \
+    "${PROFILE[@]}" --yes --attempt 90 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion \
+    --placements confined --observers $$ </dev/null >"$ROOT/pl-unreadable-timer.log" 2>&1
+  st=$?
+  set -e
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-obs-confined-timer 90)
+  [ "$st" -ne 0 ] && grep -q 'the task lineage was not listed after the trace started: session stopped' "$b.run.txt" &&
+    grep -q '^verdict: not run (placement)$' "$b.run.txt" && ! grep -q '^worker thread ' "$b.run.txt" &&
+    [ "$(grep -c '^restore ' "$ROOT/fake.obs_unreadable")" -ge 2 ] ||
+    fail "an incomplete lineage after the trace started: status $st" "$b.run.txt"
+fi
 
 # A restoration that stays unresolved (a stand-in placement tool whose
 # restore fails) reaches the session's cleanup-failure handling: the run

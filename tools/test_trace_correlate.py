@@ -495,7 +495,8 @@ def main() -> int:
                    "7770 7775 1 5 6 0-1\n"     # a thread absent from the record
                    "7780 7780 7770 9 9 0-1\n"  # a descendant absent from it
                    "8000 8000 7770 80 80 0-31\n"  # the session, run from the observer's tree: exempt
-                   "6600 6600 1 3 3 0-31\n")   # another application
+                   "6600 6600 1 3 3 0-31\n"    # another application
+                   "lineage complete: 5 tasks\n")
         for name, extra, forks, ok in (
                 ("v2-placed", [], [], True),
                 ("v2-absent", [(1000.0, "JITWorker", 7775), (1050.0, None, 0)], [], False),
@@ -503,7 +504,8 @@ def main() -> int:
                 ("v2-forked", [(1000.0, "forked", 7790), (1050.0, None, 0)], [(900.0, 7780, 7790)], False),
                 ("v2-other", [(1000.0, "other", 6600), (1050.0, "session", 8000), (1060.0, "sesskid", 8001),
                               (1070.0, None, 0)], [(900.0, 8000, 8001)], True),
-                ("v2-nolineage", [], [], False)):
+                ("v2-nolineage", [], [], False),
+                ("v2-incomplete", [], [], False)):
             r = Run(timer=True)
             prev = ("swapper/2", 0)
             for us, parent, child in forks:
@@ -516,15 +518,19 @@ def main() -> int:
                 prev = nxt
             path = r.write(root, name)
             pathlib.Path(str(path) + ".observers.jsonl").write_text(v2)
-            if name != "v2-nolineage":
+            if name == "v2-incomplete":  # a listing that could not read a live task: no evidence
+                pathlib.Path(str(path) + ".lineage.txt").write_text(
+                    lineage.replace("lineage complete: 5 tasks", "lineage INCOMPLETE: 1 unreadable: /proc/7781/stat"))
+            elif name != "v2-nolineage":
                 pathlib.Path(str(path) + ".lineage.txt").write_text(lineage)
             p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
                                 str(root / f"{name}.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
             out = p.stdout + p.stderr
             words = ("no task lineage after the trace started" if name == "v2-nolineage" else
+                     "task lineage is incomplete (lineage INCOMPLETE: 1 unreadable" if name == "v2-incomplete" else
                      "lineage after the trace started (" if ok else "ran on CPUs 2,3")
             expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok) and words in out
-                   and (name == "v2-nolineage" or "3 observer tasks in 2 processes (1 processes not in the placement "
+                   and (name in ("v2-nolineage", "v2-incomplete") or "3 observer tasks in 2 processes (1 processes not in the placement "
                         "record), 2 tasks absent from the record" in out),
                    f"the version 2 placement check ({name})", out)
         # The recorders' off-CPU spans over 5 ms begun in D state are listed,
