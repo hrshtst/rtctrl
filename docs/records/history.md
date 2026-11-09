@@ -860,6 +860,26 @@ details are in the
 [control-rate qualification](../hardware/control-rate.md#timer-service-diagnostics-design-torque-off-1-ms).
 The targeted torque-off captures follow; no rate is qualified.
 
+## Control-rate Stage 1 rehearsals (2026-11-08)
+
+The fair server's probes and controls and the observer placement comparison
+(Stage 1 of the 1 kHz diagnosis) were rehearsed over the emulator, current at
+1000 Hz, rt-idle, 10 s per run, and archived in `stage1_rehearsal/`. The first
+rehearsal (attempt 1, `dcb3244`) showed that a return probe read through a
+pointer that can be NULL (56,712 NULL-page kernel faults); the probes were
+corrected (`de74364`, `3a2d12d`). On the corrected probes (attempts 3 and 4)
+the three controls passed with their preconditions established, and every
+observer thread of the confined runs was confined and restored with no
+failure. No timer capture passed every evidence check: two lost events on
+CPU 3 (108,445 and 2,674,161) and all three failed the SMI coverage rule.
+Each loss and each long SMI interval coincided with trace-cmd and perf in
+uninterruptible sleep together; the reviewer keeps the cause provisional. The
+rehearsal was not accepted (2026-11-09), and staging the recorders' outputs
+on a private bounded `noswap` tmpfs was approved for implementation, with the
+evidence rules unchanged. The details are in the
+[control-rate qualification](../hardware/control-rate.md). Hardware runs wait
+for a successful rehearsal.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
@@ -880,6 +900,7 @@ kind, from log writes on the control thread, was fixed on 2026-10-16
 | 2026-11-08 | a full `ctest -j8` at 16:25, no sweep (load 0.99) | passed |
 | 2026-11-08 | a full `ctest -j8` at 18:45, no sweep (load 0.45) | passed |
 | 2026-11-08 | six full `ctest -j8` runs from 19:53 to 21:19 (the preflights of the Stage 1 commits), no sweep (load 0.6 to 2.9 at their starts) | passed, each |
+| 2026-11-08 | the full `ctest -j8` runs of the preflights from 21:56 to 23:57 (the Stage 1 fixes, `8242631` to `96e6602`), no sweep | passed, each |
 
 The reviewer keeps it open (2026-11-08): the passes on a quiet host
 support load sensitivity, but eight parallel tests still contend without
