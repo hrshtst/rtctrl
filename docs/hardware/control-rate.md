@@ -1838,9 +1838,11 @@ without H3), each reviewed before the next probe:
 Each confined run is an invocation of its own, so its restoration is checked
 before any later probe; each H2 invocation keeps its attempt and label. The
 invocations go through an operator procedure kept outside the repository,
-`~/rtctrl-hw/stage1-procedure.bash` (397 lines, SHA-256
-`2f91431f11070aa204538b4cd089ddb54f19a712a8ebd09bf1558f14b029ad0c`, installed
-read-only on 2026-11-10 and its hash verified). The procedure:
+`~/rtctrl-hw/stage1-procedure.bash` (400 lines, SHA-256
+`5a6ac9884a8b5af0060ef5041d1db852d62321854b8d6aff6f98b244410a7619`, installed
+read-only on 2026-11-10 and its hash verified; it replaced the first
+sitting's 397-line `2f91431f11070aa204538b4cd089ddb54f19a712a8ebd09bf1558f14b029ad0c`,
+kept beside it as `stage1-procedure-rev54-2f91431f.bash`). The procedure:
 
 - records the identity at execution (the commit, any tracked change, the
   kernel, the diff since `8318db6` of the probe, its definitions and the
@@ -1857,9 +1859,10 @@ read-only on 2026-11-10 and its hash verified). The procedure:
 - latches every catchable signal that would end it as `STOP`, letting the
   running step finish first (Ctrl-C reaches the session's own cleanup);
 - checks the session's and the restoration's statuses, the stage root, the
-  planned run records and timer runs, each stage's release and recorded
-  cleanup, and for a confined run a complete restoration with no thread left
-  at its mask;
+  planned run records and timer runs (a timer run is a run record, so a
+  run's own `.csv.smi.csv` and `.csv.tsc-pairs.csv` are not counted), each
+  stage's release and recorded cleanup, and for a confined run a complete
+  restoration with no thread left at its mask;
 - analyses each timer run with `tools/trace_correlate.py` only after those
   checks pass;
 - latches any `STOP` in the calling shell and records it beside the identity
@@ -1873,6 +1876,34 @@ exit whose recovery stayed unresolved, and SIGKILL or a power loss. On the
 reviewer's approval, each invocation's files go to a new `stage1_hardware/`
 section of the private archive with their analysis reports, the identity
 record, any stop record and the procedure file.
+
+**H1 attempt 3 (2026-11-10; accepted).** The first sitting began at
+`b3979b0` with the 397-line procedure, its identity record reviewed.
+Invocation 1 (`stage1-mechanism-3`) ran both runs (`trace_session` exit 0):
+both stages were published with verified ledgers and released, the stage
+root was left empty and the host settings were restored. The invocation then
+stopped on a false count, "3 timer runs ..., 1 planned": its `*-timer-*.csv`
+pattern also matched the timer run's own `.csv.smi.csv` and
+`.csv.tsc-pairs.csv`, which its stand-in tests had never written. That STOP
+ended the sitting, and it stays ended (its stop record kept). The timer
+run's analysis was run by hand afterwards, outside the capture directory,
+and copied into it after review as derived evidence with a provenance note
+(its SHA-256, the analysis revision at `b3979b0`, and the fact that it ran
+after the STOP); the capture's ledgers are its own. The reviewer accepted the
+diagnosis and the corrected procedure, and counted attempt 3 as H1's first
+attempt, not to be repeated (2026-11-10):
+
+| Run | Recording | Timer service |
+|---|---|---|
+| untraced | (untraced); 13,216 cycles, mean 660.8 Hz, 0 read and 0 write failures | (untraced) |
+| timer | 0 main-trace, TSC-instance and tcpdump losses; SMI counts cover the run, 0 SMIs; 14,491 cycles, mean 724.5 Hz, 0 read and 0 write failures | 14,489 paired sleeps, two served late as interrupt late from idle state 1 (70.3 and 57.5 us); U 2,035 ns, all 40,700 anchors matched; no fair-server selection; the worker's waits after waking on CPU 3 at most 20.0 us |
+
+Both runs fail T1, T2 and T6a, as diagnostic results. No fair-server
+selection in this capture is valid negative evidence, not proof that the
+mechanism never occurs; the two late services locate interrupt delays and
+establish no idle-state cause. One untraced and timer pair does not show that
+tracing improves throughput. H1 resumes at attempt 4 in a new sitting, with a
+new shell and a new identity record, and the remaining order unchanged.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
