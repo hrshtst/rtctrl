@@ -221,6 +221,11 @@ TRACEFS=${TRACEFS:-/sys/kernel/tracing}
 LATENCY_TOOL=${LATENCY_TOOL:-tools/latency_timer.py}
 PERF=${PERF:-perf}
 TSC_INSTANCE_TOOL=${TSC_INSTANCE_TOOL:-tools/tsc_instance.sh}
+TK_RECORDER_TOOL=${TK_RECORDER_TOOL:-tools/tk_recorder.sh}  # the timekeeping recorder (timer mode)
+TK_RECORD_TOOL=tools/tk_record.py
+TK_INSTANCE=rtctrl_tk   # the name tools/tk_record.py's parser accepts
+TK_SETTLE_S=${TK_SETTLE_S:-0.5}  # from arming to the first state read: complete updates must finish in it
+JOURNALCTL=${JOURNALCTL:-journalctl}
 TSC_SAMPLER=${TSC_SAMPLER:-./build/apps/tsc_mono_pairs}
 EXERCISER=tools/timer_exerciser.py
 IDLE_TOOL=tools/idle_counters.py
@@ -538,11 +543,15 @@ is_uint "$max_runnable" || die "--max-runnable must be an integer"
 is_uint "$load_tail" && [ "$load_tail" -gt 0 ] || die "--load-tail must be a positive integer"
 is_uint "$buffer_kb" && [ "$buffer_kb" -gt 0 ] || die "--buffer-kb must be a positive integer"
 [[ $date_tag =~ ^[0-9]{8}$ ]] || die "--date must be YYYYMMDD"
+# The timekeeping recorder's buffer per CPU: at HZ=1000, two records of at most
+# 64 bytes per update, every update possibly on one CPU, over the run and its margins.
+tk_buffer_kb=$(awk -v d="$duration" 'BEGIN { k = (d + 30) * 2000 * 64 / 1024; i = int(k); if (k > i) i++; print (i < 1024 ? 1024 : i) }')
 
 online=$(expand_cpus "$(cat /sys/devices/system/cpu/online)") || die "cannot read the online CPUs"
 # The kernel sizes a trace array's buffers for every possible CPU.
 possible_list=$(cat /sys/devices/system/cpu/possible) || die "cannot read the possible CPUs"
 possible_cpus=$(expand_cpus "$possible_list" | wc -w) || die "cannot read the possible CPUs"
+possible_expanded=$(expand_cpus "$possible_list")  # the recorder's per-CPU stats name every possible CPU
 if [ -z "$exclude_cpus" ]; then
   exclude_cpus=$(cat "/sys/devices/system/cpu/cpu$rt_cpu/topology/thread_siblings_list" 2>/dev/null) ||
     die "cannot read CPU $rt_cpu's SMT siblings (pass --exclude-cpus)"
@@ -661,6 +670,9 @@ fi
 if [ "$any_timer" -eq 1 ]; then
   command -v "$PERF" >/dev/null || problems+=("$PERF is not installed (linux-tools): it counts SMIs")
   [ -x "$TSC_INSTANCE_TOOL" ] || problems+=("$TSC_INSTANCE_TOOL is not executable")
+  [ -x "$TK_RECORDER_TOOL" ] || problems+=("$TK_RECORDER_TOOL is not executable")
+  [ -f "$TK_RECORD_TOOL" ] || problems+=("$TK_RECORD_TOOL is missing (run from the repo root)")
+  command -v "$JOURNALCTL" >/dev/null || problems+=("$JOURNALCTL is not installed: the certificate needs the kernel log")
   [ -x "$TSC_SAMPLER" ] || problems+=("$TSC_SAMPLER is not built (cmake --build build --target tsc_mono_pairs)")
   [ -f "$EXERCISER" ] || [ "$exerciser" -eq 0 ] || problems+=("$EXERCISER is missing")
   [ -e /sys/bus/event_source/devices/msr/events/smi ] || problems+=("no msr/smi/ perf event: the SMI count needs it")
@@ -833,7 +845,7 @@ if [ "$dry_run" -eq 1 ]; then
     fi
     python3 "$STAGE_TOOL" budget --mode "$m" --duration-s "$duration" --rate-hz "$max_rate" --buffer-kb "$buffer_kb" \
       --cpus "$possible_cpus" --usbmon "$usbmon" --perf-hz "$perf_hz" --perf-stack "$perf_stack" \
-      --exerciser "$exerciser" "${dgeo[@]}" --meminfo "$MEMINFO" 2>&1 | grep -v = | sed 's/^/  /'
+      --exerciser "$exerciser" "${dgeo[@]}" --tk-buffer-kb "$tk_buffer_kb" --meminfo "$MEMINFO" 2>&1 | grep -v = | sed 's/^/  /'
   done
   if [ ${#lt_list[@]} -gt 0 ]; then
     echo "latency steps $latency_steps on $lt_tty through $LATENCY_TOOL: read before anything is sent, set before each step's runs, read after each run, and restored on every exit"
@@ -845,6 +857,8 @@ if [ "$dry_run" -eq 1 ]; then
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
         "$TSC_INSTANCE_TOOL" "$TRACEFS" "$TSC_INSTANCE" "$rt_cpu" "$buffer_kb" "$TSC_SAMPLER" "${others[0]}" "$rt_cpu" \
         "$PERF" "$rt_cpu" "$([ "$exerciser" -eq 1 ] && echo "; the exerciser on CPU $rt_cpu")"
+      printf '                   %s start %s %s %s (timekeeping probes, private instance, armed before the TSC instance), read back, state reads around the capture on CPUs %s, %s extract -B %s, %s -k\n' \
+        "$TK_RECORDER_TOOL" "$TRACEFS" "$TK_INSTANCE" "$tk_buffer_kb" "$tracer_cpus" "$TRACE_CMD" "$TK_INSTANCE" "$JOURNALCTL"
     fi
     if [ -n "$fs_controls_cpu" ]; then
       printf 'before the runs: the fair server'"'"'s probe controls on CPU %s (supervisor CPU %s, tracers on CPUs %s): python3 %s run --cpu %s --supervisor-cpu %s --output fs-controls-%s-%s.controls.txt\n' \
@@ -981,6 +995,8 @@ stop_all() {
   if [ -n "$sampler_pid" ]; then kill -TERM "$sampler_pid" 2>/dev/null; wait "$sampler_pid" 2>/dev/null; sampler_pid=; fi
   if [ -n "$smi_job" ]; then stop_tracer smi "$smi_job"; smi_job=; fi
   remove_tsc_instance
+  tk_collect
+  remove_tk_recorder
   if [ -n "$trace_job" ]; then stop_tracer trace "$trace_job"; trace_job=; fi
   if [ -n "$usbmon_job" ]; then stop_tracer usbmon "$usbmon_job"; usbmon_job=; fi
   if [ -n "$perf_job" ]; then stop_tracer perf "$perf_job"; perf_job=; fi
@@ -1024,6 +1040,113 @@ remove_tsc_instance() {
   echo "  remove it by hand: sudo rmdir $TRACEFS/instances/$TSC_INSTANCE" >&2
   if [ -n "$last_note" ] && [ -f "$last_note" ]; then
     printf '\n--- session end ---\ncleanup: trace instance %s NOT removed: %s\n' "$TSC_INSTANCE" "$out" >>"$last_note"
+  fi
+  return 1
+}
+
+# The timekeeping recorder (tools/tk_recorder.sh, the certificate's evidence;
+# tools/timer_clock.py): tk_owed as tsc_owed. While a run's recorder is armed
+# tk_base names its files on the stage, and every path that stops it collects
+# them first (tk_collect, once per run): a failed step leaves that file absent
+# or partial, which the certificate treats as UNSUPPORTED and never as an empty
+# record. Its user-space helpers stay on the tracer CPUs; the kernel probes run
+# wherever the updates do.
+tk_owed=0; tk_base=; tk_note=; tk_problem=; tk_armed_t=
+tk_run() { taskset -c "$tracer_cpus" "$@"; }
+tk_priv() { taskset -c "$tracer_cpus" "${sudo_cmd[@]}" "$TK_RECORDER_TOOL" "$1" "$TRACEFS" "$TK_INSTANCE"; }
+tk_mono() { tk_run python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }
+# Registers and arms it, reads every probe back, waits for the settling updates
+# and takes the first state read; then records the main event's enable state.
+tk_arm() {  # stage base, note -> 0 once all of that held
+  local b=$1 note=$2 line st main
+  tk_owed=2
+  line=$(tk_run "${sudo_cmd[@]}" "$TK_RECORDER_TOOL" start "$TRACEFS" "$TK_INSTANCE" "$tk_buffer_kb" 2>&1); st=$?
+  case "$st" in 0|4) tk_owed=1 ;; 2) tk_owed=0 ;; *) tk_owed=2 ;; esac
+  if [ "$st" -ne 0 ]; then
+    { echo "--- the timekeeping recorder did not start (exit $st) ---"; echo "$line"; } | tee -a "$note"
+    return 1
+  fi
+  echo "$line" >>"$note"
+  tk_note=$note
+  mkdir "$b.tk-tmp"
+  run_outputs+=("$b.tk-before.json" "$b.tk-after.json" "$b.tk-log.json" "$b.tk-times.txt" "$b.tk-enable-before.txt"
+                "$b.tk-enable-after.txt" "$b.tk-profile.txt" "$b.tk-stats.txt" "$b.tk.dat" "$b.tk.txt" "$b.tk-journal.txt")
+  tk_base=$b
+  if ! tk_priv states >"$b.tk-enable-before.txt" 2>"$tmp/tk.err" || grep -qv ' 1$' "$b.tk-enable-before.txt"; then
+    { echo "--- the timekeeping recorder's probes did not read back enabled ---"
+      cat "$b.tk-enable-before.txt" "$tmp/tk.err"; } | tee -a "$note"
+    return 1
+  fi
+  tk_armed_t=$(tk_mono)
+  echo "armed_t $tk_armed_t" >"$b.tk-times.txt"
+  sleep "$TK_SETTLE_S"
+  if ! tk_run python3 "$TK_RECORD_TOOL" state --out "$b.tk-before.json" 2>"$tmp/tk.err"; then
+    { echo "--- the first timekeeping state read failed ---"; cat "$tmp/tk.err"; } | tee -a "$note"
+    return 1
+  fi
+  main=$(priv cat "$TRACEFS/events/irq_vectors/local_timer_entry/enable" 2>&1); st=$?
+  echo "main timer event enable before the TSC instance: $main" >>"$note"
+  if [ "$st" -ne 0 ] || [ "$main" != 1 ]; then
+    echo "trace_session: the main trace's timer event is not enabled before the TSC instance ($main)" | tee -a "$note"
+    return 1
+  fi
+}
+# The last state read, the read-back and confirmation, then the entry probe off
+# first, the counts, the record in nanoseconds and the kernel log's scan.
+tk_collect() {
+  local b=$tk_base note=$tk_note err="$tmp/tk.err" st confirmed=
+  [ -n "$b" ] || return 0
+  tk_base=; tk_problem=
+  tk_run python3 "$TK_RECORD_TOOL" state --out "$b.tk-after.json" 2>"$err" ||
+    tk_problem+="${tk_problem:+, }the last state read failed ($(cat "$err"))"
+  if tk_priv states >"$b.tk-enable-after.txt" 2>"$err" && ! grep -qv ' 1$' "$b.tk-enable-after.txt"; then
+    confirmed=$(tk_mono)
+    echo "confirmed_t $confirmed" >>"$b.tk-times.txt"
+  else
+    tk_problem+="${tk_problem:+, }the probes did not read back enabled at the end"
+  fi
+  tk_priv disable >/dev/null 2>"$err" || tk_problem+="${tk_problem:+, }the probes were not disabled ($(cat "$err"))"
+  tk_priv profile >"$b.tk-profile.txt" 2>"$err" || tk_problem+="${tk_problem:+, }the probes' counts were not read ($(cat "$err"))"
+  tk_priv stats >"$b.tk-stats.txt" 2>"$err" || tk_problem+="${tk_problem:+, }the recorder's buffer stats were not read ($(cat "$err"))"
+  tk_run "${sudo_cmd[@]}" "$TRACE_CMD" extract -B "$TK_INSTANCE" --temp "$b.tk-tmp" -o "$b.tk.dat" >"$err" 2>&1; st=$?
+  if [ "$st" -ne 0 ] || [ ! -s "$b.tk.dat" ]; then
+    tk_problem+="${tk_problem:+, }the record was not extracted (exit $st)"
+  elif ! tk_run "${sudo_cmd[@]}" "$TRACE_CMD" report -t -i "$b.tk.dat" >"$b.tk.txt" 2>"$err"; then
+    tk_problem+="${tk_problem:+, }the record was not reported ($(tail -n 1 "$err"))"
+  fi
+  priv rm -rf "$b.tk-tmp"
+  if tk_run "${sudo_cmd[@]}" "$JOURNALCTL" -k -b -o short-monotonic --no-pager >"$b.tk-journal.txt" 2>"$err"; then
+    tk_run python3 "$TK_RECORD_TOOL" log --journal "$b.tk-journal.txt" --from-t "$tk_armed_t" \
+      --to-t "${confirmed:-$(tk_mono)}" --out "$b.tk-log.json" 2>"$err" ||
+      tk_problem+="${tk_problem:+, }the kernel log was not scanned ($(cat "$err"))"
+  else
+    tk_problem+="${tk_problem:+, }the kernel log was not read ($(tail -n 1 "$err"))"
+  fi
+  { echo; echo "--- timekeeping recorder: probes (hits misses) ---"; cat "$b.tk-profile.txt" 2>/dev/null
+    echo "--- timekeeping recorder: problems: ${tk_problem:-none} ---"; } >>"$note"
+  [ -z "$tk_problem" ]
+}
+remove_tk_recorder() {
+  local out
+  [ "$tk_owed" -ne 0 ] || return 0
+  if [ "$tk_owed" -eq 2 ]; then
+    tk_owed=0
+    priv "$TK_RECORDER_TOOL" exists "$TRACEFS" "$TK_INSTANCE" || return 0
+    echo "trace_session: the timekeeping recorder $TK_INSTANCE exists after a start whose outcome is unknown; it was left in place (it may be another session's)" >&2
+    echo "  if it is this session's, remove it by hand: sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE" >&2
+    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+      printf '\n--- session end ---\ncleanup: timekeeping recorder %s left in place (the outcome of its start unknown)\n' "$TK_INSTANCE" >>"$last_note"
+    fi
+    return 1
+  fi
+  if out=$(priv "$TK_RECORDER_TOOL" remove "$TRACEFS" "$TK_INSTANCE" 2>&1); then
+    tk_owed=0
+    return 0
+  fi
+  echo "trace_session: CLEANUP FAILED: the timekeeping recorder $TK_INSTANCE was not removed: $out" >&2
+  echo "  remove it by hand: sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE" >&2
+  if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+    printf '\n--- session end ---\ncleanup: timekeeping recorder %s NOT removed: %s\n' "$TK_INSTANCE" "$out" >>"$last_note"
   fi
   return 1
 }
@@ -1108,7 +1231,7 @@ stage_open() {  # mode duration_s rate_hz base note -> 0 once the stage is ready
   [ -n "$sb_payload" ] && geo=(--payload "$sb_payload" --subbuf "$sb_subbuf")
   out=$(python3 "$STAGE_TOOL" budget --mode "$mode" --duration-s "$dur" --rate-hz "$rate" --buffer-kb "$buffer_kb" \
         --cpus "$possible_cpus" --usbmon "$usbmon" --perf-hz "$perf_hz" --perf-stack "$perf_stack" \
-        --exerciser "$exerciser" "${geo[@]}" --meminfo "$MEMINFO" 2>&1); st=$?
+        --exerciser "$exerciser" "${geo[@]}" --tk-buffer-kb "$tk_buffer_kb" --meminfo "$MEMINFO" 2>&1); st=$?
   { echo; echo "--- staging ($STAGE_TOOL; provisional budget; the guard is not a reservation) ---"
     [ -n "$sb_geometry" ] && [ "$mode" != untraced ] && echo "$sb_geometry (read before any run)"
     grep -v = <<<"$out"; } >>"$note"
@@ -1230,7 +1353,7 @@ stage_temp_check() {  # temp dir, output basename, note -> 0 when they are
 # the expected readback, never the physical-memory budget).
 stage_kernel_check() {  # 1 with the TSC instance, note -> 0 when every array reads back as expected
   local inst=() out st
-  [ "$1" -eq 1 ] && inst=(--instance "$TSC_INSTANCE")
+  [ "$1" -eq 1 ] && inst=(--instance "$TSC_INSTANCE" --instance "$TK_INSTANCE:$tk_buffer_kb")
   out=$(priv python3 "$STAGE_TOOL" buffers --tracefs "$TRACEFS" "${inst[@]}" --buffer-kb "$buffer_kb" \
         --cpu-list "$possible_list" --payload "$sb_payload" --subbuf "$sb_subbuf" 2>&1); st=$?
   echo "$out" >>"$2"
@@ -1327,6 +1450,11 @@ on_exit() {
   fi
   if [ "$tsc_owed" -ne 0 ] && ! remove_tsc_instance; then
     echo "trace_session: the session fails: its cleanup did not remove the trace instance" >&2
+    cleanup_ok=0
+  fi
+  [ -z "$tk_base" ] || tk_collect
+  if [ "$tk_owed" -ne 0 ] && ! remove_tk_recorder; then
+    echo "trace_session: the session fails: its cleanup did not remove the timekeeping recorder" >&2
     cleanup_ok=0
   fi
   if [ "$obs_owed" -ne 0 ] && ! restore_observers; then
@@ -1488,6 +1616,10 @@ if [ "$any_timer" -eq 1 ]; then
   if priv "$TSC_INSTANCE_TOOL" exists "$TRACEFS" "$TSC_INSTANCE"; then
     finish
     die "the trace instance $TSC_INSTANCE remains from an earlier session (sudo rmdir $TRACEFS/instances/$TSC_INSTANCE): nothing was sent"
+  fi
+  if priv "$TK_RECORDER_TOOL" exists "$TRACEFS" "$TK_INSTANCE"; then
+    finish
+    die "the timekeeping recorder $TK_INSTANCE remains from an earlier session (sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE): nothing was sent"
   fi
   # The fair server's probes, defined once for the session, before anything
   # is sent; a group left by an earlier session refuses it.
@@ -1798,6 +1930,7 @@ run_one() {
         printf 'perf: %s' "$PERF"; printf ' %q' "${perf_args[@]}"; printf ' -o %q\n' "$perfdat"
       fi
       if [ "$timered" -eq 1 ]; then
+        echo "timekeeping recorder: $TK_RECORDER_TOOL start $TRACEFS $TK_INSTANCE $tk_buffer_kb (ntp_adjtimex, ntp_clear, update_wall_time entry and return)"
         echo "tsc instance: $TSC_INSTANCE_TOOL start $TRACEFS $TSC_INSTANCE $rt_cpu $buffer_kb (x86-tsc, local_timer_entry on CPU $rt_cpu)"
         echo "tsc sampler: $TSC_SAMPLER on CPU ${others[0]} throughout, and on CPU $rt_cpu for 0.5 s before and after the probe"
         echo "smi: $PERF stat -e msr/smi/ -C $rt_cpu -I 10 -x , -o $sb.smi.csv"
@@ -1945,6 +2078,14 @@ run_one() {
       # throughout on a tracer CPU and briefly on the real-time CPU; the SMI
       # count, anchored before its start and when its first interval is seen.
       local inst_line inst_start smi_before smi_seen i
+      # The timekeeping recorder first: everything the certificate covers
+      # depends on it, so it is armed and confirmed before any of it.
+      if ! tk_arm "$sb" "$note"; then
+        echo "verdict: not run (timekeeping recorder)" >>"$note"
+        stop_all
+        outcome=stop
+        return
+      fi
       # Its start's status says whether it created the instance: 0 and 4
       # (created, then a step failed) make it this session's to remove; 2
       # (not created: it exists, or cannot be made) leaves it alone, so
@@ -2129,6 +2270,18 @@ run_one() {
       # Its evidence is read; a failed removal is a cleanup failure, which
       # ends the session after this run (status 3 if it would succeed).
       remove_tsc_instance
+      # The timekeeping recorder last: its state read closes the interval
+      # that holds everything the conversion used.
+      local tk_stats tk_over
+      tk_collect || tracer_problem+="${tracer_problem:+, }the timekeeping recorder: $tk_problem"
+      if tk_stats=$(cat "$sb.tk-stats.txt" 2>&1) && tk_over=$(loss_sum "$tk_stats" "$possible_expanded"); then
+        echo "timekeeping recorder overruns: $tk_over (overrun, commit overrun and dropped events over all CPUs)" >>"$note"
+        [ "$tk_over" -eq 0 ] || tracer_problem+="${tracer_problem:+, }the timekeeping recorder lost $tk_over events: the capture is invalid"
+      else
+        echo "timekeeping recorder overruns: unknown (${tk_over:-its stats were not read})" >>"$note"
+        tracer_problem+="${tracer_problem:+, }the timekeeping recorder's loss counts are unknown"
+      fi
+      remove_tk_recorder
       # The fair server's probes: their hits and misses (kprobe_profile)
       # right before and after the probe; a read that fails, or an event
       # missing from it, leaves the probes' coverage unknown.

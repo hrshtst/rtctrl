@@ -273,8 +273,19 @@ def main() -> int:
         r = e.run("buffers", *bargs, "--instance", "rtctrl_tsc")
         expect(r.returncode == 0 and r.stdout.count("read back exactly") == 2 and
                "4113 subbuffers of 4096 bytes (payload 4080); expected 16387 KiB per CPU and 524384 KiB in all" in r.stdout
-               and "16456 KiB per CPU and array" in r.stdout and "1078460416 bytes for these arrays" in r.stdout and
+               and "per CPU main 16456 KiB, rtctrl_tsc 16456 KiB," in r.stdout and "1078460416 bytes for these 2 arrays" in r.stdout and
                "bookkeeping and transient allocations excluded" in r.stdout, f"exact readbacks: {r.stdout}{r.stderr}")
+        # An instance with its own size is read back and budgeted at that size, and a wrong one is caught.
+        tk_cap = ts.capacity(1024, 4080, 4096)
+        tk_total = str(tk_cap["readback_kib"] * 32)
+        fake_array(tfs / "instances" / "rtctrl_tk", {c: str(tk_cap["readback_kib"]) for c in range(32)}, tk_total)
+        r = e.run("buffers", *bargs, "--instance", "rtctrl_tsc", "--instance", "rtctrl_tk:1024")
+        expect(r.returncode == 0 and r.stdout.count("read back exactly") == 3 and "array rtctrl_tk: requested 1024 KiB" in r.stdout
+               and f"rtctrl_tk {tk_cap['physical'] // 1024} KiB" in r.stdout and "for these 3 arrays" in r.stdout,
+               f"an instance's own size: {r.stdout}{r.stderr}")
+        r = e.run("buffers", *bargs, "--instance", "rtctrl_tk:2048")
+        expect(r.returncode != 0 and "array rtctrl_tk: requested 2048 KiB" in r.stdout and "NOT AS EXPECTED" in r.stdout,
+               f"an instance at another size: {r.stdout}{r.stderr}")
         for name, per_cpu, total, why in (
                 ("undersized", {c: "16384" for c in range(32)}, "524288",
                  "32 CPUs not at 16387 KiB: cpu0 16384 KiB"),
@@ -314,17 +325,22 @@ def main() -> int:
         # reserve on top.
         common = ("--rate-hz", "1000", "--buffer-kb", "16384", "--cpus", "32", *GEO)
         st, kv, text = budget(e, "--mode", "timer", "--duration-s", "60", *common)
-        expect(st == 0 and kv["kernel"] == 1_078_460_416, f"a timer run's kernel buffers are both arrays': {text}")
+        expect(st == 1 and "needs the timekeeping recorder's buffer" in text, f"no recorder buffer, no timer budget: {text}")
+        common = (*common, "--tk-buffer-kb", "11250")
+        st, kv, text = budget(e, "--mode", "timer", "--duration-s", "60", *common)
+        tk_physical = 32 * 4096 * (ts.capacity(11250, 4080, 4096)["pages"] + 1)
+        expect(st == 0 and kv["tk_physical"] == tk_physical and kv["kernel"] == 1_078_460_416 + tk_physical,
+               f"a timer run's kernel buffers are its arrays' and the recorder's: {text}")
         expect("expected readback 16387 KiB per CPU for 16384 KiB requested" in text and "16456 KiB" in text,
                f"the budget states the readback and the allocation apart: {text}")
-        expect(abs(kv["need"] / 1e9 - 39.088) < 0.001, f"the 60 s timer run needs about 39.1 GB: {kv['need']}")
+        expect(abs(kv["need"] / 1e9 - 39.458) < 0.001, f"the 60 s timer run needs about 39.5 GB with the recorder's buffers: {kv['need']}")
         expect(abs(kv["size_mib"] * MIB / 1e9 - 28.08) < 0.01, f"its tmpfs cap is about 28.1 GB: {kv['size_mib']}")
         expect("guard reserve 64 MiB" in text, f"the reserve is stated: {text}")
         st, kv, text = budget(e, "--mode", "timer", "--duration-s", "60", "--rate-hz", "1000", "--buffer-kb", "16384",
                               "--cpus", "32")
         expect(st == 1 and "needs the trace buffers' geometry" in text, f"no geometry, no traced budget: {text}")
         st, kv, text = budget(e, "--mode", "timer", "--duration-s", "10", *common)
-        expect(st == 0 and abs(kv["need"] / 1e9 - 19.556) < 0.001, f"the 10 s timer run needs about 19.56 GB: {text}")
+        expect(st == 0 and abs(kv["need"] / 1e9 - 19.926) < 0.001, f"the 10 s timer run needs about 19.93 GB with the recorder's buffers: {text}")
         expect(kv["guard_min_free"] == int(250e6 * 20 / 4) + 64 * MIB and kv["guard_min_available"] == kv["headroom"] // 2,
                f"the guard's bounds: {text}")
         st, kv, text = budget(e, "--mode", "untraced", "--duration-s", "10", *common)
@@ -358,7 +374,7 @@ def main() -> int:
                     for usbmon in (False, True):
                         for perf in ((0, 0), (999, 4096), (20000, 65528)):
                             for ex in (False, True):
-                                b = ts.budget(mode, d, rate, 16384, 32, usbmon, *perf, ex, mem, 4080, 4096)
+                                b = ts.budget(mode, d, rate, 16384, 32, usbmon, *perf, ex, mem, 4080, 4096, tk_buffer_kb=11250)
                                 cap, bound = b["size_mib"] * MIB, b["guard_min_free"]
                                 for what, used in (("empty", 0), ("recording", b["raw"] + b["a"]),
                                                    ("recording, its margin used", ts.MARGIN * (b["raw"] + b["a"])),
@@ -391,7 +407,7 @@ def main() -> int:
         # A 10 s timer stage: empty, while recording (the raw trace in
         # trace-cmd's per-CPU temporary files and the other streams), and at
         # the assembly's end, no stop; exhausted, the guard stops the recorder.
-        b = ts.budget("timer", 10, 1000, 16384, 32, True, 0, 0, False, mem, 4080, 4096)
+        b = ts.budget("timer", 10, 1000, 16384, 32, True, 0, 0, False, mem, 4080, 4096, tk_buffer_kb=5000)
         cap = b["size_mib"] * MIB
         s = e.stage()
         e.mount(s, size_mib=b["size_mib"])

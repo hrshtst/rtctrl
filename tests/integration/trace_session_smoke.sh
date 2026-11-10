@@ -19,8 +19,11 @@
 # TSC sampler): its events with their CPU filters, the instance inside the
 # trace, the sampler's pairs, the SMI count's anchors, the losses counted in
 # the record, the refusals for a missing event and a stale instance, the
-# instance's removal on every exit (status 3 when it fails), and the
-# exerciser of the rehearsal; and every run's staging (stand-in mount,
+# instance's removal on every exit (status 3 when it fails), the timekeeping
+# recorder's order around everything it covers, its files on the stage, its
+# failures and interruption (a stand-in for its tool, and tools/tk_recorder.sh
+# itself in tools/test_tk_record.py), and the exerciser of the rehearsal; and
+# every run's staging (stand-in mount,
 # findmnt and umount, a stand-in meminfo): each run's records (budget,
 # verification, marker, temporary files, kernel buffers, guard, publication,
 # release, ledger and inventory, memory counters), the refusals of a stage
@@ -76,6 +79,19 @@ echo "$*" >>"$FAKE_LOG.trace-cmd"
 # leaves the last CPU out, bad prints a counter that is not a number); list
 # -e: the events (all the timer mode needs, less FAKE_MISSING_EVENT), or a
 # format.
+# extract -B: the timekeeping recorder's record (FAKE_TK_EXTRACT=fail, none
+# written); report -t -i of it: its rows.
+if [ "$1" = extract ]; then
+  [ "${FAKE_TK_EXTRACT:-}" = fail ] && { echo "stand-in: cannot extract" >&2; exit 1; }
+  while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; esac; shift; done
+  echo "stand-in record" >"$out"
+  exit 0
+fi
+if [ "$1" = report ] && [ "$2" = -t ] && [[ ${4:-} == *.tk.dat ]]; then
+  echo "cpus=4"
+  echo "   tk_record-1   [001] d..1.  1.000000000: ntp_adjtimex: (x) tkid=0 modes=0"
+  exit 0
+fi
 if [ "$1" = report ]; then
   [ "${FAKE_STATS:-}" = fail ] && { echo "stand-in: cannot read the buffer statistics" >&2; exit 1; }
   cpus=()
@@ -325,9 +341,59 @@ EOF
 # read fails; FAKE_TSC_OVERRUN: its overrun count; FAKE_TSC_START: race, another session creates it first and
 # the start exits 2; partial, the start creates it and fails, 4; unknown,
 # it creates it and exits 1, a status that does not say).
+# The timekeeping recorder's tool: a marker file stands for its instance and
+# group, and FAKE_LOG.order orders its steps against the TSC instance's
+# (FAKE_TK_START: race, partial, unknown, as FAKE_TSC_START;
+# FAKE_TK_STATES=off: read-backs report a probe off, offend at the end only;
+# FAKE_TK_OVERRUN; FAKE_TK_STATS=fail; FAKE_TK_REMOVE_FAIL).
+cat >"$FAKE/tk_recorder" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.tk_recorder"
+echo "tk $1" >>"$FAKE_LOG.order"
+mark="$FAKE_LOG.tk_recorder_exists"
+PROBES="ntp_adjtimex ntp_clear update_return update_entry"
+case "$1" in
+  start) [ -e "$mark" ] && exit 2
+         case "${FAKE_TK_START:-}" in
+           race) : >"$mark"; echo "tk_recorder: it exists (another session's)" >&2; exit 2 ;;
+           partial) : >"$mark"; echo "tk_recorder: cannot enable" >&2; exit 4 ;;
+           unknown) : >"$mark"; echo "sudo: a stand-in failure" >&2; exit 1 ;;
+         esac
+         : >"$mark"
+         mkdir -p "$TRACEFS/instances/$3/events"
+         cp "$TRACEFS/events/header_page" "$TRACEFS/instances/$3/events/header_page"
+         echo 4 >"$TRACEFS/instances/$3/buffer_subbuf_size_kb"
+         "$(dirname "$0")/ring" "$TRACEFS/instances/$3" "$4"
+         echo "timekeeping recorder $3: clock [mono], buffer $4 kB per CPU, events $PROBES" ;;
+  states) n=$(grep -c . "$FAKE_LOG.tk_states" 2>/dev/null); echo x >>"$FAKE_LOG.tk_states"
+         for p in $PROBES; do
+           if [ "${FAKE_TK_STATES:-}" = off ] && [ "${n:-0}" -ge 1 ] && [ "$p" = update_entry ]; then echo "$p 0"; else echo "$p 1"; fi
+         done ;;
+  disable) ;;
+  profile) for p in $PROBES; do echo "$p 10 0"; done ;;
+  stats) [ "${FAKE_TK_STATS:-}" = fail ] && { echo "stand-in: cannot read the stats" >&2; exit 1; }
+         n=0
+         for c in "$TRACEFS/instances/$3"/per_cpu/cpu*; do
+           ov=0; [ "$n" -eq 0 ] && ov=${FAKE_TK_OVERRUN:-0}
+           printf 'CPU: %s\nentries: 1\noverrun: %s\ncommit overrun: 0\nbytes: 1\ndropped events: 0\n' "${c##*/cpu}" "$ov"
+           n=$((n + 1))
+         done
+         echo "cpus: $n" ;;
+  remove) [ "${FAKE_TK_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: it remains" >&2; exit 1; }
+         rm -f "$mark"; rm -rf "$TRACEFS/instances/$3" ;;
+  exists) [ -e "$mark" ] ;;
+esac
+EOF
+cat >"$FAKE/journalctl" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG.journalctl"
+[ "${FAKE_JOURNAL:-}" = fail ] && { echo "stand-in: no journal" >&2; exit 1; }
+echo "[    1.000000] host kernel: tsc: Detected 3187.200 MHz TSC"
+EOF
 cat >"$FAKE/tsc_instance" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.tsc_instance"
+echo "tsc $1" >>"$FAKE_LOG.order"
 mark="$FAKE_LOG.tsc_instance_exists"
 case "$1" in
   start) [ -e "$mark" ] && exit 2
@@ -461,7 +527,8 @@ chmod +x "$FAKE"/*
 echo "[local] global counter uptime perf mono mono_raw boot tai x86-tsc" >"$ROOT/tracefs/trace_clock"
 # The main array's page header as this kernel prints it (4 KiB subbuffers,
 # 4,080 bytes of payload at offset 16), and its subbuffer size.
-mkdir -p "$ROOT/tracefs/events"
+mkdir -p "$ROOT/tracefs/events" "$ROOT/tracefs/events/irq_vectors/local_timer_entry"
+echo 1 >"$ROOT/tracefs/events/irq_vectors/local_timer_entry/enable"
 printf '\tfield: u64 timestamp;\toffset:0;\tsize:8;\tsigned:0;\n\tfield: local_t commit;\toffset:8;\tsize:8;\tsigned:1;\n\tfield: int overwrite;\toffset:8;\tsize:1;\tsigned:1;\n\tfield: char data;\toffset:16;\tsize:4080;\tsigned:0;\n' \
   >"$ROOT/tracefs/events/header_page"
 cp "$ROOT/tracefs/events/header_page" "$ROOT/header_page.good"
@@ -493,6 +560,7 @@ export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
+export TK_RECORDER_TOOL="$FAKE/tk_recorder" JOURNALCTL="$FAKE/journalctl" TK_SETTLE_S=0.01
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
 export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" RMDIR="$FAKE/rmdir" FAKE_MOUNTS="$ROOT/mounts"
@@ -1253,8 +1321,26 @@ if [ -n "$SAMPLER" ]; then
     grep -Eq '^smi anchor monotonic_ns: [0-9]+ [0-9]+ ' "$b.run.txt" && grep -q "^session pid: " "$b.run.txt" &&
     grep -q '^kernel buffers, array main: requested 16384 KiB per CPU .*4113 subbuffers of 4096 bytes (payload 4080); expected 16387 KiB per CPU .*: read back exactly' "$b.run.txt" &&
     grep -q '^kernel buffers, array rtctrl_tsc: requested 16384 KiB per CPU .*: read back exactly' "$b.run.txt" &&
-    grep -q "^kernel buffers' physical budget: 16456 KiB per CPU and array, .* for these arrays; bookkeeping and transient allocations excluded" "$b.run.txt" ||
+    grep -q '^kernel buffers, array rtctrl_tk: requested [0-9]* KiB per CPU .*: read back exactly' "$b.run.txt" &&
+    grep -q "^kernel buffers' physical budget: per CPU main 16456 KiB, rtctrl_tsc 16456 KiB, rtctrl_tk [0-9]* KiB, .* for these 3 arrays; bookkeeping and transient allocations excluded" "$b.run.txt" ||
     fail "the timer record" "$b.run.txt"
+  # The timekeeping recorder: armed before the TSC instance, confirmed and
+  # finished after it, the entry probe's disable before the counts, removed
+  # after; every file on the stage, published and in the ledger.
+  awk '{ print $1 "_" $2 }' "$ROOT/fake.order" | tr '\n' ' ' | grep -q 'tk_start tk_states tsc_start .*tsc_stop .*tk_states tk_disable tk_profile tk_stats tk_remove' ||
+    fail "the timekeeping recorder's order around the TSC instance" "$ROOT/fake.order"
+  [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "the timekeeping recorder remains"
+  for f in tk-before.json tk-after.json tk-log.json tk-times.txt tk-enable-before.txt tk-enable-after.txt tk-profile.txt tk-stats.txt tk.dat tk.txt tk-journal.txt; do
+    [ -s "$b.$f" ] && grep -q "$f" "$b.staging.sha256" || fail "the recorder's $f is not published and in the ledger" "$b.staging.sha256"
+  done
+  [ ! -e "$b.tk-tmp" ] || fail "the recorder's temporary directory remains" "$b.run.txt"
+  grep -Eq '^armed_t [0-9]+$' "$b.tk-times.txt" && grep -Eq '^confirmed_t [0-9]+$' "$b.tk-times.txt" || fail "the recorder's times" "$b.tk-times.txt"
+  grep -q '^timekeeping recorder overruns: 0 ' "$b.run.txt" && grep -q '^main timer event enable before the TSC instance: 1$' "$b.run.txt" &&
+    grep -q '^timekeeping recorder rtctrl_tk: clock' "$b.run.txt" && grep -q '^--- timekeeping recorder: problems: none ---$' "$b.run.txt" ||
+    fail "the recorder in the record" "$b.run.txt"
+  grep -q -- '^extract -B rtctrl_tk --temp .*\.tk-tmp -o .*\.tk\.dat$' "$ROOT/fake.trace-cmd" && grep -q -- '^report -t -i .*\.tk\.dat$' "$ROOT/fake.trace-cmd" ||
+    fail "the recorder's extraction" "$ROOT/fake.trace-cmd"
+  grep -q -- '^-k -b -o short-monotonic --no-pager$' "$ROOT/fake.journalctl" || fail "the kernel log's read" "$ROOT/fake.journalctl"
   grep -q -- '-e timer:hrtimer_start -e timer:hrtimer_cancel -e timer:hrtimer_setup -e msr:write_msr -f msr == 0x6e0 && CPU == 0 -e power:cpu_idle -f cpu_id == 0 -e power:cpu_idle_miss -f cpu_id == 0 -e nmi:nmi_handler -f CPU == 0 .*-e sched:sched_process_fork -e sched:sched_process_exec -e sched:sched_process_exit -e syscalls:sys_enter_clock_nanosleep -f comm == "probe" .*-e syscalls:sys_exit_nanosleep -f comm == "probe"' "$ROOT/fake.trace-cmd" ||
     fail "trace-cmd was not given the timer events" "$ROOT/fake.trace-cmd"
   grep -Eq '^clock offsets: boottime_minus_monotonic_ns -?[0-9]+ tai_minus_monotonic_ns -?[0-9]+ bracket_ns [0-9]+$' "$b.run.txt" ||
@@ -1378,6 +1464,101 @@ if [ -n "$SAMPLER" ]; then
   grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/timer-own-unknown.log" ||
     fail "the unknown start's instance was not reported" "$ROOT/timer-own-unknown.log"
   rm -f "$ROOT/fake.tsc_instance_exists"
+  # The timekeeping recorder: one left by an earlier session refuses the
+  # session; ownership follows its start's status; a failed removal is
+  # status 3; each failed step is a tracer failure, never an empty success;
+  # an interruption collects what it can and still removes it.
+  : >"$ROOT/fake.tk_recorder_exists"
+  if TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 60 --duration 2 \
+      --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-stale.log" 2>&1; then
+    fail "a timer session beside a stale recorder started" "$ROOT/tk-stale.log"
+  fi
+  grep -q 'the timekeeping recorder rtctrl_tk remains from an earlier session' "$ROOT/tk-stale.log" && [ -e "$ROOT/fake.tk_recorder_exists" ] ||
+    fail "no refusal for the stale recorder, or it was removed" "$ROOT/tk-stale.log"
+  rm -f "$ROOT/fake.tk_recorder_exists"
+  for c in "61 race left" "62 partial removed" "63 unknown left"; do
+    read -r att how want_mark <<<"$c"
+    rm -f "$ROOT/fake.tk_recorder_exists"
+    set +e
+    FAKE_TK_START=$how TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+      --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-own-$how.log" 2>&1
+    st=$?
+    set -e
+    [ "$st" -eq 1 ] && grep -q '^verdict: not run (timekeeping recorder)' "$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att").run.txt" ||
+      fail "recorder start $how: status $st" "$ROOT/tk-own-$how.log"
+    [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "recorder start $how: a TSC instance was left" "$ROOT/tk-own-$how.log"
+    if [ "$want_mark" = left ]; then
+      [ -e "$ROOT/fake.tk_recorder_exists" ] || fail "recorder start $how: it was removed" "$ROOT/tk-own-$how.log"
+    else
+      [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "recorder start $how: it remains" "$ROOT/tk-own-$how.log"
+    fi
+  done
+  grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/tk-own-unknown.log" ||
+    fail "the unknown recorder start was not reported" "$ROOT/tk-own-unknown.log"
+  rm -f "$ROOT/fake.tk_recorder_exists"
+  set +e
+  FAKE_TK_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 64 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-rmfail.log" 2>&1
+  st=$?
+  set -e
+  [ "$st" -eq 3 ] && grep -q 'CLEANUP FAILED: the timekeeping recorder rtctrl_tk was not removed' "$ROOT/tk-rmfail.log" &&
+    grep -q 'cleanup: timekeeping recorder rtctrl_tk NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 64).run.txt" ||
+    fail "a failed recorder removal gave status $st" "$ROOT/tk-rmfail.log"
+  rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tk_states"
+  for c in "65 FAKE_TK_STATES=off the probes did not read back enabled at the end" \
+           "66 FAKE_TK_EXTRACT=fail the record was not extracted" \
+           "67 FAKE_TK_STATS=fail the recorder's buffer stats were not read" \
+           "68 FAKE_TK_OVERRUN=3 the timekeeping recorder lost 3 events: the capture is invalid" \
+           "69 FAKE_JOURNAL=fail the kernel log was not read"; do
+    read -r att envv why <<<"$c"
+    rm -f "$ROOT/fake.tk_states"
+    set +e
+    env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" \
+      --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-fail-$att.log" 2>&1
+    st=$?
+    set -e
+    b=$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att")
+    [ "$st" -eq 1 ] && grep -qF -- "$why" "$b.run.txt" && grep -q '^verdict: tracer failure' "$b.run.txt" ||
+      fail "$envv: status $st, or the record lacks '$why' and the tracer failure" "$b.run.txt"
+    if grep -qE '^verdict: (pass|fail)' "$b.run.txt"; then fail "$envv: a timing verdict" "$b.run.txt"; fi
+    [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "$envv: the recorder remains" "$b.run.txt"
+    [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "$envv: the TSC instance remains" "$b.run.txt"
+  done
+  rm -f "$ROOT/fake.tk_states"
+  # The end's read-back failed: no confirmation is written.
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 65)
+  if grep -q '^confirmed_t' "$b.tk-times.txt"; then fail "a recorder that read back off was confirmed" "$b.tk-times.txt"; fi
+  # The main trace's event read as off before the TSC instance: not run.
+  echo 0 >"$ROOT/tracefs/events/irq_vectors/local_timer_entry/enable"
+  set +e
+  TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 70 --duration 2 \
+    --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-main.log" 2>&1
+  st=$?
+  set -e
+  echo 1 >"$ROOT/tracefs/events/irq_vectors/local_timer_entry/enable"
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 70)
+  [ "$st" -eq 1 ] && grep -q '^main timer event enable before the TSC instance: 0$' "$b.run.txt" && grep -q '^verdict: not run (timekeeping recorder)' "$b.run.txt" &&
+    [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "a main event that was off: status $st" "$b.run.txt"
+  # An interruption during the run: the recorder's evidence is collected, and it is removed.
+  rm -f "$ROOT/fake.tk_states"
+  TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 71 --duration 30 \
+    --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-int.log" 2>&1 &
+  pid=$!
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 71)
+  for _ in $(seq 1 300); do grep -q '^tsc sampler\|^clock pair before' "$b.run.txt" 2>/dev/null && [ -e "$ROOT/fake.tsc_instance_exists" ] && break; sleep 0.1; done
+  [ -e "$ROOT/fake.tk_recorder_exists" ] || fail "the recorder was not armed for the interruption" "$ROOT/tk-int.log"
+  sleep 1
+  kill -TERM "$pid"
+  st=0
+  wait "$pid" || st=$?
+  [ "$st" -eq 130 ] || fail "the interrupted recorder session exited $st" "$ROOT/tk-int.log"
+  [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "the recorder remains after the interruption" "$ROOT/tk-int.log"
+  for f in tk-before.json tk-after.json tk-enable-before.txt tk-enable-after.txt tk-profile.txt tk-stats.txt tk.dat tk.txt; do
+    [ -s "$b.$f" ] || fail "the interrupted run lost the recorder's $f" "$b.run.txt"
+  done
+  (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") || fail "the interrupted recorder run's ledger" "$b.run.txt"
+  # Its one reading of the fair server's counts would flip the parity that stand-in's misses go by.
+  rm -f "$ROOT/fake.fs_profile_calls"
   # The fair server's probes: a group left by an earlier session, and a
   # definition the kernel refuses, refuse the session before anything is
   # sent; a partly made group is removed; one of unknown ownership (an

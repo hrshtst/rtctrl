@@ -124,6 +124,8 @@ USBMON_RATE = 2_000_000    # bytes per second of the adapter's capture
 TSC_TEXT_FACTOR = 4        # the TSC instance's text, per byte of one CPU's buffer
 SAMPLER = MIB              # sampler pairs and SMI counts, fixed part
 SAMPLER_RATE = 64 * 1024   # and per second
+TK_FILES = 4 * MIB         # the timekeeping record: the kernel log and the small files
+TK_RATE = (64 + 160) * 2000  # and per second, its raw data and text: two records per update at 1 kHz
 EXERCISER = 16 * MIB
 CONTROLS_TXT = 16 * MIB
 PERF_TEXT_PER_SAMPLE = 8 * 1024
@@ -226,12 +228,21 @@ def read_kib(path: pathlib.Path) -> int:
 def check_buffers(tracefs: pathlib.Path, instances: list[str], buffer_kb: int, cpu_list: str, payload: int,
                   subbuf: int, out) -> bool:
     """Every array's geometry as budgeted, and its per-CPU and total
-    capacities exactly as the kernel's rounding gives them."""
+    capacities exactly as the kernel's rounding gives them. An instance
+    given as NAME:KB has its own requested size."""
     cpus = expand_cpus(cpu_list)
-    cap = capacity(buffer_kb, payload, subbuf)
     ok = True
-    for inst in [None, *instances]:
+    physical = 0
+    per_array = []
+    for spec in [None, *instances]:
+        inst, this_kb = spec, buffer_kb
+        if spec is not None and ":" in spec:
+            inst, kb = spec.split(":", 1)
+            this_kb = int(kb)
+        cap = capacity(this_kb, payload, subbuf)
+        physical += cap["physical"] * len(cpus)
         name = "main" if inst is None else inst
+        per_array.append(f"{name} {cap['physical'] // 1024} KiB")
         d = array_dir(tracefs, inst)
         problems = []
         try:
@@ -263,7 +274,7 @@ def check_buffers(tracefs: pathlib.Path, instances: list[str], buffer_kb: int, c
                 problems.append(f"buffer_total_size_kb reads {total}, not its CPUs' sum {sum(actual.values())}")
         except (OSError, StageError) as e:
             problems.append(f"buffer_total_size_kb: {e}")
-        head = (f"kernel buffers, array {name}: requested {buffer_kb} KiB per CPU on CPUs {cpu_list}; "
+        head = (f"kernel buffers, array {name}: requested {this_kb} KiB per CPU on CPUs {cpu_list}; "
                 f"{cap['pages']} subbuffers of {subbuf} bytes (payload {payload}); expected {cap['readback_kib']} KiB "
                 f"per CPU and {expected_total} KiB in all")
         if problems:
@@ -272,16 +283,15 @@ def check_buffers(tracefs: pathlib.Path, instances: list[str], buffer_kb: int, c
         else:
             print(f"{head}: read back exactly ({len(cpus)} CPUs at {cap['readback_kib']} KiB, buffer_total_size_kb "
                   f"{expected_total}; geometry as budgeted)", file=out)
-    arrays = 1 + len(instances)
-    print(f"kernel buffers' physical budget: {cap['physical'] // 1024} KiB per CPU and array, the data subbuffers "
-          f"plus the reader's ({cap['pages'] + 1} of {subbuf} bytes), {arrays * len(cpus) * cap['physical']} bytes "
-          "for these arrays; bookkeeping and transient allocations excluded", file=out)
+    print(f"kernel buffers' physical budget: per CPU {', '.join(per_array)}, each array's data subbuffers plus the "
+          f"reader's ({subbuf} bytes each), {physical} bytes for these {1 + len(instances)} arrays; bookkeeping and "
+          "transient allocations excluded", file=out)
     return ok
 
 
 def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: int, usbmon: bool,
            perf_hz: int, perf_stack: int, exerciser: bool, mem: dict[str, int], payload: int | None = None,
-           subbuf: int | None = None) -> dict:
+           subbuf: int | None = None, tk_buffer_kb: int | None = None) -> dict:
     """The stage's size and the RAM a run needs, for the streams its mode
     enables (a traced mode needs the trace arrays' geometry)."""
     if mode not in MODES:
@@ -300,6 +310,7 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
     if mode == "timer":
         items["TSC instance text"] = TSC_TEXT_FACTOR * buffer_kb * 1024
         items["sampler and SMI counts"] = SAMPLER + SAMPLER_RATE * t
+        items["timekeeping record"] = TK_FILES + TK_RATE * t
         if exerciser:
             items["exerciser"] = EXERCISER
     if mode == "profiled":
@@ -315,6 +326,12 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
             raise StageError(f"a {mode} run's budget needs the trace buffers' geometry (--payload, --subbuf)")
         cap = capacity(buffer_kb, payload, subbuf)
     kernel = cap["physical"] * cpus * arrays
+    tk_physical = 0
+    if mode == "timer":  # the timekeeping recorder's private array, sized by itself
+        if tk_buffer_kb is None or payload is None or subbuf is None:
+            raise StageError("a timer run's budget needs the timekeeping recorder's buffer (--tk-buffer-kb)")
+        tk_physical = capacity(tk_buffer_kb, payload, subbuf)["physical"] * cpus
+        kernel += tk_physical
     total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
     if total is None or avail is None:
         raise StageError("MemTotal or MemAvailable is missing from meminfo")
@@ -322,7 +339,7 @@ def budget(mode: str, duration_s: float, rate_hz: float, buffer_kb: int, cpus: i
     need = size_mib * MIB + kernel + headroom
     return {"mode": mode, "duration_s": duration_s, "raw": int(raw), "assembled": int(assembled), "other": int(other),
             "items": {k: int(v) for k, v in items.items()}, "a": int(a), "reserve": GUARD_RESERVE,
-            "size_mib": size_mib, "kernel": kernel, "arrays": arrays, "pages": cap["pages"],
+            "size_mib": size_mib, "kernel": kernel, "tk_physical": tk_physical, "arrays": arrays, "pages": cap["pages"],
             "readback_kib": cap["readback_kib"], "physical": cap["physical"], "headroom": headroom, "need": need,
             "available": avail, "ok": avail >= need, "guard_min_free": int(assembled) + GUARD_RESERVE,
             "guard_min_available": headroom // 2}
@@ -777,6 +794,7 @@ def main() -> int:
     b.add_argument("--exerciser", type=int, default=0)
     b.add_argument("--payload", type=int)
     b.add_argument("--subbuf", type=int)
+    b.add_argument("--tk-buffer-kb", type=int)
     g = sub.add_parser("geometry")
     g.add_argument("--tracefs", type=pathlib.Path, required=True)
     g.add_argument("--instance")
@@ -813,8 +831,8 @@ def main() -> int:
     try:
         if a.cmd == "budget":
             r = budget(a.mode, a.duration_s, a.rate_hz, a.buffer_kb, a.cpus, bool(a.usbmon), a.perf_hz,
-                       a.perf_stack, bool(a.exerciser), meminfo(a.meminfo), a.payload, a.subbuf)
-            for k in ("size_mib", "kernel", "headroom", "need", "available", "guard_min_free",
+                       a.perf_stack, bool(a.exerciser), meminfo(a.meminfo), a.payload, a.subbuf, tk_buffer_kb=a.tk_buffer_kb)
+            for k in ("size_mib", "kernel", "tk_physical", "headroom", "need", "available", "guard_min_free",
                       "guard_min_available"):
                 print(f"{k}={r[k]}", file=out)
             items = ", ".join(f"{k} {gb(v)}" for k, v in r["items"].items())
@@ -824,7 +842,9 @@ def main() -> int:
                   + (f"kernel buffers {gb(r['kernel'])} ({r['arrays']} arrays x {a.cpus} CPUs x "
                      f"{r['physical'] // 1024} KiB, {r['pages']} subbuffers plus the reader's of {a.subbuf} bytes; "
                      f"data-plus-reader allocation, bookkeeping excluded; expected readback {r['readback_kib']} KiB "
-                     f"per CPU for {a.buffer_kb} KiB requested), " if r["arrays"] else "no kernel buffers, ")
+                     f"per CPU for {a.buffer_kb} KiB requested"
+                     + (f"; timekeeping recorder {gb(r['tk_physical'])} for {a.tk_buffer_kb} KiB per CPU" if r["tk_physical"] else "")
+                     + "), " if r["arrays"] else "no kernel buffers, ")
                   + f"headroom {gb(r['headroom'])}: MemAvailable needed "
                   f"{gb(r['need'])}, available {gb(r['available'])}{'' if r['ok'] else ': NOT ENOUGH'}", file=out)
             return 0 if r["ok"] else 1
