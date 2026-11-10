@@ -1816,6 +1816,64 @@ descendant was isolated. The emulator's expected timing and USB failures
 qualify no hardware control rate. Hardware diagnostic runs wait for the
 review of their concrete run plan.
 
+**Stage 1 hardware sitting (plan approved 2026-11-10).** The concrete run
+plan was reviewed four times on 2026-11-09 and 2026-11-10 and accepted at its
+revision 54. It runs torque-off with the owner physically at the robot: every
+servo torque-off, the arm at rest and supported, the actuator power cutoff
+within reach and the servo power on. It approves no remote execution and no
+torque-on, and it qualifies no control rate. Every run is 20 s at attempt 2's
+condition (current profile, 1000 Hz, `rt-loaded-excl`, Fast Sync Read with
+the motion-only read, SCHED_FIFO 80 on CPU 3), in ten invocations (nine
+without H3), each reviewed before the next probe:
+
+| # | Session | Attempt | Runs | Directory under `~/rtctrl-hw/` |
+|---|---|---|---|---|
+| 1 to 3 | H1, mechanism reproduction | 3 to 5 | untraced, timer (observers open) | `stage1-mechanism-3` to `-5` |
+| 4 | H2, placement comparison, open first | 6 | open untraced, open timer | `stage1-placement-6-open` |
+| 5, 6 | H2 | 6 | confined untraced, then confined timer | `stage1-placement-6-confined-untraced`, `-timer` |
+| 7, 8 | H2, confined first | 7 | confined untraced, then confined timer | `stage1-placement-7-confined-untraced`, `-timer` |
+| 9 | H2 | 7 | open untraced, open timer | `stage1-placement-7-open` |
+| 10 | H3, only after valid H1 and H2 | 8 | untraced, timer at 500 Hz, `rt-loaded` | `stage1-500hz-8` |
+
+Each confined run is an invocation of its own, so its restoration is checked
+before any later probe; each H2 invocation keeps its attempt and label. The
+invocations go through an operator procedure kept outside the repository,
+`~/rtctrl-hw/stage1-procedure.bash` (397 lines, SHA-256
+`2f91431f11070aa204538b4cd089ddb54f19a712a8ebd09bf1558f14b029ad0c`, installed
+read-only on 2026-11-10 and its hash verified). The procedure:
+
+- records the identity at execution (the commit, any tracked change, the
+  kernel, the diff since `8318db6` of the probe, its definitions and the
+  timer analysis, and the probe binary's and its own SHA-256), and runs no
+  invocation until the developer has reviewed that record by its SHA-256;
+- runs each invocation in a bash of its own, started without `BASH_ENV` and
+  with every signal defaulted, which refuses to start when a latched signal
+  is not caught or is blocked;
+- stops the resident services with `tools/quiet_host.sh`, owes their
+  restoration from then on and makes it after the session, a failure or an
+  interruption; on a fault signal it restores only once the running step's
+  end is confirmed, and otherwise leaves the host as it is and reports the
+  recovery;
+- latches every catchable signal that would end it as `STOP`, letting the
+  running step finish first (Ctrl-C reaches the session's own cleanup);
+- checks the session's and the restoration's statuses, the stage root, the
+  planned run records and timer runs, each stage's release and recorded
+  cleanup, and for a confined run a complete restoration with no thread left
+  at its mask;
+- analyses each timer run with `tools/trace_correlate.py` only after those
+  checks pass;
+- latches any `STOP` in the calling shell and records it beside the identity
+  record, and refuses every later invocation of the sitting.
+
+Its 82 stand-in cases and the reviewers' reproducers pass, and the accepted
+emulator rehearsals needed no repeat for these procedure-only changes. Any
+`STOP` or failed validity check ends the sitting with no retry and no changed
+setting, limit or criterion, and goes to the reviewer; so does a fault-signal
+exit whose recovery stayed unresolved, and SIGKILL or a power loss. On the
+reviewer's approval, each invocation's files go to a new `stage1_hardware/`
+section of the private archive with their analysis reports, the identity
+record, any stop record and the procedure file.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
