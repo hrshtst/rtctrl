@@ -30,7 +30,9 @@
 # refresh_stop DIR TIMEOUT_S
 #   Stops the loop and confirms, within TIMEOUT_S, that it ended by itself
 #   (status 0, 1 or 2) and that its ledger shows it reaped every process it
-#   started. It waits for the loop only once the loop is known to have
+#   started. The stop request (USR1) is repeated at each poll: in stress runs
+#   about 1 request in 1600 went unanswered, the loop's trap never running.
+#   It waits for the loop only once the loop is known to have
 #   ended, so an unknown state never blocks it. Status 1, with refresh_pid
 #   kept and the ledger left in place, when any of that cannot be confirmed:
 #   the loop still running, its state unknown, its status not collected, its
@@ -167,8 +169,8 @@ refresh_stop() {  # DIR TIMEOUT_S
   local dir=$1 timeout=$2 i state got
   [ -n "$refresh_pid" ] || return 0
   if [ -z "$refresh_status" ]; then
-    kill -USR1 "$refresh_pid" 2>/dev/null
     for ((i = 0; i < timeout * 20; i++)); do
+      kill -USR1 "$refresh_pid" 2>/dev/null
       refresh_ended "$refresh_pid" && break
       sleep 0.05
     done

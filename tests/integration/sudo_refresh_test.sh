@@ -301,4 +301,25 @@ unconfirmed "a ledger missing its last line" "did not reap every process it star
 refresh_pid=
 refresh_status=
 
+# A stop request that goes unanswered: it is repeated while the stop waits.
+fresh unanswered
+refresh_start "$dir" "$pin" 30 "$ROOT/fsudo"
+for _ in $(seq 1 200); do grep -q 'spawned [0-9]* sleep' "$dir/children" 2>/dev/null && break; sleep 0.01; done
+grep -q 'spawned [0-9]* sleep' "$dir/children" || fail "the loop started no sleep"
+loop=$refresh_pid
+requests=0
+kill() {
+  if [ "$1" = -USR1 ]; then
+    requests=$((requests + 1))
+    [ "$requests" -gt 1 ] || return 0
+  fi
+  builtin kill "$@"
+}
+refresh_stop "$dir" 5 2>"$ROOT/stop.err" || fail "a stop whose first request went unanswered was not confirmed" "$ROOT/stop.err"
+unset -f kill
+[ "$requests" -ge 2 ] || fail "the stop request was not repeated"
+[ -z "$refresh_pid" ] || fail "refresh_pid kept after the confirmed stop"
+# shellcheck disable=SC2046
+gone "$loop" $(pids "$dir") || fail "a process outlived the stop whose first request went unanswered" "$dir/children"
+
 echo "sudo refresh OK"
