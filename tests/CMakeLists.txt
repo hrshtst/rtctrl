@@ -312,6 +312,17 @@ set_tests_properties(timer_service_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timer service regressions OK"
   LABELS unit)
 
+# The clock alignment and certificate of the timer analysis
+# (tools/timer_clock.py) on synthetic records, the frozen design's cases.
+add_test(NAME timer_clock_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_timer_clock.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(timer_clock_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "ALL OK"
+  LABELS unit)
+
 # The read-only idle-state counter snapshots of every traced session run
 # (tools/idle_counters.py) on a fake cpuidle tree.
 add_test(NAME idle_counters_regressions
