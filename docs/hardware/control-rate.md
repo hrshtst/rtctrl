@@ -1043,6 +1043,26 @@ paired with an untraced control of the same condition):
   removed (verified) on every exit, even if a later step of the start
   failed; after a status that does not say (sudo's own failure, an
   interruption), an instance found is left in place and reported;
+- a timekeeping record (`tools/tk_recorder.sh`, through sudo; the certificate's
+  evidence): kprobes on `ntp_adjtimex` and `ntp_clear` and on the entry and
+  return of `update_wall_time`, in a private instance on the mono clock with
+  its own buffer ((duration + 30) x 2000 x 64 bytes per CPU, at least 1 MiB),
+  counted in the buffer read-back, the memory budget, the stage and its
+  inventory. It is armed after the main trace is confirmed running and before
+  the TSC instance: the return probe is enabled before the entry probe, every
+  enable state is read back, then 0.5 s of settling updates and the first state
+  read (`tools/tk_record.py state`, `adjtimex` with modes 0 and
+  `ADJ_OFFSET_SS_READ`, which change nothing). After the TSC instance is read
+  come the last state read, the second read-back, the entry probe's disable
+  before the others, the hit, miss and buffer counts, `trace-cmd extract -B`
+  and `trace-cmd report -t` (nanosecond stamps, which the parser requires), the
+  kernel log's scan, and the removal, with ownership as for the TSC instance. A
+  failed step is a tracer failure and leaves that file absent or partial, never
+  an empty record, and an interrupted run collects what it can before it
+  removes the recorder. Its user-space helpers are pinned to the tracer CPUs;
+  the kernel probes run on the CPU doing each update, CPU 3 included. The main
+  trace's timer event is read as enabled before the TSC instance starts, and
+  the run record keeps that read;
 - bracketed TSC and CLOCK_MONOTONIC pairs (`build/apps/tsc_mono_pairs`:
   the tightest of 16 reads every 10 ms) on a tracer CPU throughout, and on
   CPU 3 for 0.5 s before and after the probe;
@@ -1120,32 +1140,46 @@ service, mask for this boot and stop the indexer, and check that its
 extractor has exited. Either way, the services are restored after every
 session, also after a failed or interrupted one.
 
-**Conversion and its validation.** The anchors are matched one-to-one, in
-order, by their interval pattern, which uses only the TSC frequency from
-the sampler, never the conversion's offset; a missing or duplicate anchor
-fails the run. A suspect anchor, one whose two stamps disagree (both of its
-intervals disagree, by equal and opposite amounts), is left out of the
-conversion, its interrupt kept in the timeline, only when the interval
-across it agrees, its disagreement is at most 50 us, it lies more than 50
-anchors after the previous suspect, and the next 50 intervals (at least 5
-when the trace ends sooner) agree at the same offset while no offset of one
-or two anchors either way agrees with them all; at most 0.1% of the anchors
-may be left out, and each is reported (reviewer decision, 2026-11-07).
-Equal counts and opposing errors do not by themselves prove that nothing is
-missing: the zero loss counts and these conditions are the evidence. A
-missing anchor replaced by an extra one close to it cannot be told from a
-stamp disagreement and is left out the same way, its neighbours still paired
-with their own anchors; other missing, extra and compensating anchors fail.
-The conversion must cover the whole run. A deadline is converted by linear interpolation between the
-anchors around it, and never extrapolated (outside them it is
-INDETERMINATE). Interpolation has no residual at its own anchors, so the
-uncertainty U is validated independently: the residuals of held-out
-anchors (each odd anchor predicted from the even ones) and of the sampler's
-pairs, each with half its bracket added, which also detects a systematic
-offset of the instance's timestamps (for example a constant skew between
-the two callbacks). A U above 5 us fails the run; it is an engineering
-acceptance target, not an accuracy claim, and the classification's
-boundaries include it.
+**Conversion and its bound** (`tools/timer_clock.py`, design revision 53,
+frozen 2026-11-11; revision 53 of the analysis replaces interval-pattern
+matching, and the reports name the revision). An anchor is identified by the
+deadline written for its interrupt: each interrupt's slot holds the earliest
+non-zero deadline written since the previous CPU 3 entry and after the last
+write of zero, and each TSC stamp of the instance goes to the last slot at or
+before it, one stamp to a slot. The deadlines are TSC counts, so this uses no
+conversion. A zero write fails closed: a slot holding only a pending deadline
+needs the sampler to prove it expired before the zero. The sampler is only an
+independent check of the pairs, with sign checks at every pair. At most 0.1% of
+the anchors may be left out, only the ones that set the bound's maximum, and U
+is recomputed from the final set.
+
+U bounds the error of every converted value, not a sample of them. For each
+interval it is the larger of the two anchors' measured stamp differences plus
+the sampler's bound, plus the chord over the interval and the clock-read
+difference; U is the largest over all intervals. The slope range and the
+10 ms clock-read maximum in it come from a certificate for that acquisition,
+from the timekeeping record: the audited kernel (7.0.0-42-generic, its config
+hash) and trace-cmd, clocksource `tsc` before and after with a clean kernel log,
+a complete record (every probe enabled before and after, no misses, no losses,
+hits equal to records), no modifying timekeeping call from arming to the last
+state read, settled updates before the first read, no unmatched update entry
+up to the end of the interval, every overlapping update within 10 ms, unchanged
+frequency, constant and tick, the nominal 10,000 us tick, no `ntp_tick_adj` boot
+argument under the kernel's own parsing, and the offset recurrence between the
+two reads. The sampler brackets used and the conversion span must lie inside
+the interval between the state reads. A hit with no record, as when a return
+probe's instance is still outstanding at its disable (the kernel counts it and
+writes nothing), makes the acquisition UNSUPPORTED rather than being explained
+away.
+
+Without a certificate the run fails. `trace_correlate.py --exploratory-slope-ppm`
+computes a U labelled exploratory for archived captures, which stay failed and
+keep their original verdicts. A deadline is converted by linear interpolation
+between the retained anchors around it, and never extrapolated (outside them it
+is INDETERMINATE). A U above 5 us fails the run; it is an engineering acceptance
+target, not an accuracy claim, and the classification's boundaries include it.
+The residuals of held-out anchors and of the sampler are printed as diagnostics
+only.
 
 **The deadline timeline** (`tools/timer_service.py`, through
 `tools/trace_correlate.py` for a run recorded in the timer mode). The
@@ -2021,6 +2055,17 @@ synthetic cases, a replay over archived captures with original verdicts
 preserved, then the emulator controls and end-to-end timer validation on
 7.0.0-42 and a revised H2 plan with fresh labels and identity. The invocations
 are archived in `stage1_hardware/`, each with its own verdict.
+
+That design was frozen as revision 53 on 2026-11-11, and the session and the
+analysis now implement it (the conversion and the timekeeping record, above),
+pending the reviewer's implementation review. Changing `tools/timer_service.py`
+voids the controls accepted under the earlier analysis for new work; their
+recorded results stand. Nothing here has run on the real kernel inside a
+session: the extraction and report path, the recorder's cost under load on the
+update CPUs including CPU 3, and the guarded 10 ms maximum are for the fresh
+emulator controls and end-to-end validation on 7.0.0-42 that follow the review.
+Hardware stays paused until those and the revised H2 plan are accepted, and no
+failed historical slot is promoted. This qualifies no control rate.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
