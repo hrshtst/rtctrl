@@ -253,6 +253,8 @@ TSC_INSTANCE=rtctrl_tsc
 # the resident ones, and its record goes into every run record.
 # shellcheck source=tools/batch_workloads.sh
 . "$(dirname "$0")/batch_workloads.sh"
+# shellcheck source=tools/sudo_refresh.sh
+. "$(dirname "$0")/sudo_refresh.sh"
 batch_list=$BATCH_LIST
 case "${TRACE_SESSION_SUDO:-sudo}" in
   none) sudo_cmd=() ;;
@@ -882,7 +884,6 @@ fi
 
 tmp=$(mktemp -d)
 stress_pid=
-keepalive_pid=
 trace_job=; usbmon_job=; perf_job=; guard_job=; snap_pid=
 usbmon_loaded_here=0
 run_outputs=()  # the tracer outputs of the run in progress, for own_outputs
@@ -1314,15 +1315,6 @@ cleanup_note() {  # what happened, the tool's output
     printf '\n--- session end ---\ncleanup: latency timer %s: %s\n' "$1" "${line:-$2}" >>"$last_note"
   fi
 }
-# The sudo refresh's sleep (a killed sleep also ends the loop), then the
-# loop: none of it outlives the session, whatever ends it (finish and every
-# exit, after the cleanups that may need sudo).
-end_keepalive() {
-  [ -n "$keepalive_pid" ] || return 0
-  pkill -P "$keepalive_pid" 2>/dev/null
-  kill "$keepalive_pid" 2>/dev/null
-  keepalive_pid=
-}
 # Every exit ends here. A second interrupt cannot cut the cleanup short,
 # and a cleanup failure turns an otherwise successful exit into status 3.
 on_exit() {
@@ -1352,7 +1344,17 @@ on_exit() {
   elif [ "$stage_owed" -ne 0 ]; then
     stage_close || :
   fi
-  end_keepalive  # after every cleanup above, which may need sudo
+  # The sudo refresh ends last, after every cleanup and retry above (they
+  # may need sudo), and its end is confirmed; the session's temporary files
+  # go only then (the refresh's ledger among them).
+  if [ -n "$refresh_pid" ]; then
+    if ! refresh_stop "$tmp/refresh" 10 2>"$tmp/refresh.stop"; then
+      echo "trace_session: the session fails: its cleanup could not confirm the sudo refresh's end: $(cat "$tmp/refresh.stop")" >&2
+      echo "  its record is kept in $tmp" >&2
+      cleanup_ok=0
+    fi
+  fi
+  [ -n "$refresh_pid" ] || { [ -n "${tmp:-}" ] && rm -rf "$tmp"; }
   if [ "$stage_failed" -eq 1 ]; then
     echo "trace_session: the session fails: a run's staged evidence was not published and verified, or its stage not released" >&2
     [ "$status" -eq 130 ] || exit 3
@@ -1364,8 +1366,6 @@ finish() {
   stop_all
   remove_fs_probes || :  # a failure is reported, and retried and counted at exit
   if [ "$usbmon_loaded_here" -eq 1 ]; then priv "$MODPROBE" -r usbmon; fi
-  end_keepalive
-  rm -rf "$tmp"
 }
 on_interrupt() {
   echo
@@ -1378,32 +1378,24 @@ on_interrupt() {
 trap on_interrupt INT TERM HUP
 trap on_exit EXIT
 
-keepalive_cpus=
+refresh_cpus=
 if [ ${#sudo_cmd[@]} -gt 0 ]; then
   "${sudo_cmd[@]}" -v || die "sudo is needed for the tracers and the fair-server read"
-  # Keep sudo's timestamp fresh for the whole session (the cleanup needs it
-  # too), off the excluded CPUs: the loop pins itself to the tracers' and
-  # the load's CPUs before its first sleep, so every sleep and refresh it
-  # starts inherits that placement, and reports the CPUs it then reads back.
-  # (Unpinned, a refresh's sudo ran on the real-time CPU during a timer run
-  # on 2026-11-10, where its statx with a NULL path faulted.) Nothing is
-  # sent unless the read-back placement is exactly those CPUs.
-  ( if ! taskset -cp "$other_cpus" "$BASHPID" >/dev/null; then
-      echo "(taskset failed)" >"$tmp/keepalive.cpus.part"
-      mv "$tmp/keepalive.cpus.part" "$tmp/keepalive.cpus"
-      exit 1  # never a refresh where it was not pinned
-    fi
-    sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "/proc/$BASHPID/status" >"$tmp/keepalive.cpus.part"
-    mv "$tmp/keepalive.cpus.part" "$tmp/keepalive.cpus"
-    while sleep 60; do "${sudo_cmd[@]}" -n -v </dev/null 2>/dev/null || exit; done ) &
-  keepalive_pid=$!
+  # Keep sudo's timestamp fresh for the whole session, its cleanup included
+  # (tools/sudo_refresh.sh), off the excluded CPUs: the loop pins itself to
+  # the tracers' and the load's CPUs before its first sleep, so every sleep
+  # and refresh it starts inherits that placement. (Unpinned, a refresh's
+  # sudo ran on the real-time CPU during a timer run on 2026-11-10, where its
+  # statx with a NULL path faulted.) Nothing is sent unless the CPUs it reads
+  # back are exactly those; it ends last, at exit, and its end is confirmed.
+  refresh_start "$tmp/refresh" "$other_cpus" 60 "${sudo_cmd[@]}" || die "cannot start the sudo refresh"
   for _ in $(seq 1 100); do
-    [ -e "$tmp/keepalive.cpus" ] && break
+    [ -e "$tmp/refresh/cpus" ] && break
     sleep 0.05
   done
-  keepalive_cpus=$(cat "$tmp/keepalive.cpus" 2>/dev/null) || keepalive_cpus="(no read-back)"
-  if [ "$(expand_cpus "$keepalive_cpus" 2>/dev/null)" != "${others[*]}" ]; then
-    die "the sudo refresh (loop $keepalive_pid) is not on CPUs $other_cpus (read back: $keepalive_cpus): nothing was sent"
+  refresh_cpus=$(cat "$tmp/refresh/cpus" 2>/dev/null) || refresh_cpus="(no read-back)"
+  if [ "$(expand_cpus "$refresh_cpus" 2>/dev/null)" != "${others[*]}" ]; then
+    die "the sudo refresh (loop $refresh_pid) is not on CPUs $other_cpus (read back: $refresh_cpus): nothing was sent"
   fi
 fi
 
@@ -1577,8 +1569,8 @@ fi
   sed 's/^/  /' "$tmp/dl_servers.txt"
   echo "online CPUs: $(cat /sys/devices/system/cpu/online); CPU $rt_cpu SMT siblings: $(cat "/sys/devices/system/cpu/cpu$rt_cpu/topology/thread_siblings_list" 2>&1)"
   echo "excluded CPUs (no -excl load, no tracers): $exclude_cpus; tracer and -excl load CPUs: $other_cpus"
-  if [ -n "$keepalive_pid" ]; then
-    echo "sudo refresh: loop $keepalive_pid on CPUs $keepalive_cpus (read back at the session's start), now $(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "/proc/$keepalive_pid/status" 2>&1)"
+  if [ -n "$refresh_pid" ]; then
+    echo "sudo refresh: loop $refresh_pid on CPUs $refresh_cpus (read back at the session's start), now $(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "/proc/$refresh_pid/status" 2>&1)"
   else
     echo "sudo refresh: none (no sudo)"
   fi

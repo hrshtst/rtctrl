@@ -769,6 +769,15 @@ set_tests_properties(quiet_host_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "quiet host smoke OK"
   LABELS integration)
 
+# The traced session's sudo refresh (tools/sudo_refresh.sh) with a stand-in
+# sudo: its pin, its confirmed stop at any moment, and its failure cases.
+add_test(NAME sudo_refresh_test
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/sudo_refresh_test.sh ${CMAKE_BINARY_DIR}/sudo_refresh_test
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(sudo_refresh_test PROPERTIES
+  PASS_REGULAR_EXPRESSION "sudo refresh OK"
+  LABELS integration)
+
 # The traced torque-off session (tools/trace_session.sh) over the emulator,
 # with stand-in tracers and no sudo.
 add_test(NAME trace_session_script_smoke

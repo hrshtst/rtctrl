@@ -848,8 +848,8 @@ done
 
 # A session that ends normally: the refresh was on the tracers' CPUs when the
 # run's record was written, and none of it remains.
-b=$(base current-100hz-idle-bounded-traced 35)
-TRACE_SESSION_SUDO="$FAKE/sudo" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 35 \
+b=$(base current-100hz-idle-bounded-traced 65)
+TRACE_SESSION_SUDO="$FAKE/sudo" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 65 \
   --modes traced --runs current:100:idle:full </dev/null >"$ROOT/refresh-end.log" 2>&1 ||
   fail "the session with the sudo refresh failed" "$ROOT/refresh-end.log"
 line=$(grep -m1 '^sudo refresh: loop ' "$b.run.txt") || fail "the record has no sudo refresh line" "$b.run.txt"
@@ -872,7 +872,7 @@ exec $real_taskset "\$@"
 EOF
 chmod +x "$FAKE/tsbin/taskset"
 for pin in fail noop; do
-  case "$pin" in fail) attempt=36; seen='\(taskset failed\)' ;; noop) attempt=37; seen='0[-,]' ;; esac
+  case "$pin" in fail) attempt=66; seen='\(taskset failed\)' ;; noop) attempt=67; seen='0[-,]' ;; esac
   status=0
   FAKE_TASKSET_PIN=$pin PATH="$FAKE/tsbin:$PATH" TRACE_SESSION_SUDO="$FAKE/sudo" setsid tools/trace_session.sh \
     "${COMMON[@]}" --yes --attempt "$attempt" --modes traced --runs current:100:idle:full \
