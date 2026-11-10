@@ -1986,6 +1986,42 @@ the resumed sitting's provenance records it: `linux-perf` 7.0.0-42.42 to
 to 0.14-1ubuntu0.1. Hardware resumes only after the final plan and a fresh
 execution identity are reviewed.
 
+**Sitting 3: H2 attempt 7, and the pause (2026-11-10).** The final plan
+(revision 81) and a fresh execution identity at `5adb1a5` were reviewed, and H2
+attempt 7 ran three invocations, each reviewed before the next:
+
+| Invocation | Verdict | Evidence |
+|---|---|---|
+| open pair | accepted as valid diagnostic evidence | USB association PASS (25,886 transfers); all 41,620 instance anchors matched with no suspects; U = 1,873 ns; no losses, no SMIs, no NULL-page faults |
+| confined untraced | accepted as independent diagnostic evidence, within its midpoint-snapshot and ancestry limits | 1,198 threads confined in 2 passes with no failure; at the midpoint none of 1,172 observer threads or 2 helpers allowed on CPUs 2 and 3; restoration left none behind |
+| confined timer | failed validity check 3, not accepted; its STOP ended the sitting | the matcher could not establish an acceptable match at anchor 22810, whose continuation passes the same interval test at offsets -2, 0 and +2. The accepted span ends 14.07 s into the run, and U = 1,668 ns applies only to it |
+
+The confined timer run's USB association (26,490 submissions for 26,490
+transfers), placement (no attributable observer or helper time on CPUs 2 and 3)
+and cleanup subchecks passed and remain diagnostic evidence only. Equal or
+compatible anchor counts, zero losses and a low uncertainty for the accepted
+prefix do not repair the missing full-run coverage. This differs from attempt
+10's unequal-tolerance boundary case; the two runs are two of the last four
+timer acquisitions, which is a small selected set and establishes no recurrence
+probability.
+
+Normal-priority scheduled residency on CPU 3 derived from `sched_switch`, inside
+the run window, was 101.9 ms in the open timer run and 285.4 ms in the failed
+confined one. These figures do not establish that confinement worsened
+performance, and they cover the tasks attributable through the saved lineage
+and forks; no observer-set change was made during the series.
+
+H2 is incomplete, and no retry, attempt 8 or H3 is cleared. Hardware is paused
+for an offline clock-alignment and anchor-exclusion design, reviewed before the
+production acceptance rule changes. It needs a general criterion distinguishing
+an isolated stamp disagreement from missing or duplicated events and unresolved
+periodic aliases, with tolerances from an independently justified error budget.
+Its validation is planned as frozen examples of both observed failures, negative
+synthetic cases, a replay over archived captures with original verdicts
+preserved, then the emulator controls and end-to-end timer validation on
+7.0.0-42 and a revised H2 plan with fresh labels and identity. The invocations
+are archived in `stage1_hardware/`, each with its own verdict.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

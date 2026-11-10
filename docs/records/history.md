@@ -922,6 +922,15 @@ reviewer authorized one retry with every rule unchanged, and attempt 11 was
 accepted within its task-attribution limits and the emulator's PTY USB
 exception. Both are archived in `stage1_rehearsal/`, attempt 10 under its
 failed verdict. Neither qualifies a hardware control rate.
+H2 attempt 7 then ran on the arm, torque-off, in a third sitting: the open pair
+and the confined untraced run were accepted, the latter within its
+midpoint-snapshot and ancestry limits. The confined timer run failed validity
+check 3, because the matcher could not establish an acceptable match where
+periodic anchors passed its continuation test at offsets -2, 0 and +2, and
+its STOP ended the sitting. H2 is incomplete and hardware is paused for an
+offline clock-alignment and anchor-exclusion design. H1, the failed attempt 6
+and all three attempt 7 invocations are archived in `stage1_hardware/`, each
+with its own verdict.
 The details are in the
 [control-rate qualification](../hardware/control-rate.md).
 
