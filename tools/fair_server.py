@@ -36,9 +36,11 @@ deferred-running and enqueue the server), so their entry states never
 establish the state after them. The state read at the deadline class's pick
 entry is the state at that moment.
 
-A kernel page fault at a NULL-page address on the CPU during the run (a read
-through a NULL pointer: in practice a probe's) is counted, and in a capture
-with the probes it fails the run.
+A kernel page fault at a NULL-page address on the CPU during the run is
+counted, and in a capture with the probes it fails the run. The event does
+not establish its source: a probe's read through a NULL pointer can cause
+one, and so can another task's system call given a NULL pointer (a sudo's
+statx on the real-time CPU, 2026-11-10); the trace has to show which.
 
 The probes are kprobe events whose arguments are memory offsets read from the
 kernel's BTF at each session (they change with the kernel's build), so a
@@ -586,8 +588,9 @@ def report(ev: FairServerEvents, misses: int | None, top: int, out, failures: li
     nf = [x for x in ev.null_faults if not ev.window or ev.window[0] <= x <= ev.window[1]]
     print(f"    kernel page faults at NULL-page addresses on CPU {ev.cpu} during the run: {len(nf)}", file=out)
     if nf and ev.layout is not None:
-        failures.append(f"fair server: {len(nf)} kernel page faults at NULL-page addresses on CPU {ev.cpu}: "
-                        "a read through a NULL pointer (a probe's) perturbed the run")
+        failures.append(f"fair server: {len(nf)} kernel page faults at NULL-page addresses on CPU {ev.cpu} "
+                        "during the run were observed; their source needs inspection in the trace, and the rule "
+                        "fails the capture")
     long = [w for w in ws if w["class"] is not None]
     if long:
         n = {k: sum(1 for w in long if w["class"] == k)

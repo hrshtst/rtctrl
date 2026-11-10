@@ -1252,8 +1252,10 @@ timer calls and CPU 3's deadline-class timers as context. Normal tasks
 running without a recorded `dl_server_start` never invalidate a capture;
 probes defined for a run that recorded no pick on CPU 3 do (their evidence
 is missing), and so does any kernel page fault at a NULL-page address on
-CPU 3 during the run (a read through a NULL pointer, in practice a
-probe's), which the analysis counts in every capture. A capture without the probes, such as the earlier ones, gets
+CPU 3 during the run, which the analysis counts in every capture. The
+event does not establish its source (a probe's read through a NULL pointer
+causes one, and so does another task's system call given a NULL pointer, as
+in H2 attempt 6 below), so the trace has to show which. A capture without the probes, such as the earlier ones, gets
 the same waits with its normal-task time unattributed.
 
 **Rehearsal** over `dxl_emu`, before any run on the arm:

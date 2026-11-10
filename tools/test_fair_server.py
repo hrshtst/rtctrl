@@ -263,8 +263,9 @@ def analysis_checks(lay: dict) -> None:
     expect(ev.counts["unidentified"] == 1 and w["by"]["server-backed"] == 0 and w["class"] == "INDETERMINATE",
            f"an unidentified selection: {w} {ev.counts}")
 
-    # A kernel fault at a NULL-page address on the CPU (a probe's read through
-    # NULL) is counted, and fails a capture with the probes.
+    # A kernel fault at a NULL-page address on the CPU is counted, and fails a
+    # capture with the probes; the failure names no source (a probe's read
+    # through NULL and another task's system call look the same here).
     for layout_, fails in ((lay, True), (None, False)):
         ev = fs.FairServerEvents(3, layout_, W, (0, 10**9))
         ev.feed(5, 3, W, "w", "page_fault_kernel", "address=0xaf0 ip=0xffffffffad000000 error_code=0x0")
@@ -276,6 +277,12 @@ def analysis_checks(lay: dict) -> None:
         fs.report(ev, 0, 10, out, failures)
         expect("kernel page faults at NULL-page addresses on CPU 3 during the run: 1" in out.getvalue()
                and bool(failures) == fails, f"NULL-page faults (probes {layout_ is not None}): {failures}")
+        nfail = [f for f in failures if "NULL-page" in f]
+        expect(not fails or (nfail == ["fair server: 1 kernel page faults at NULL-page addresses on CPU 3 during "
+                                       "the run were observed; their source needs inspection in the trace, and "
+                                       "the rule fails the capture"]
+                             and "probe" not in nfail[0] and "perturb" not in nfail[0]),
+               f"the NULL-page failure names no cause: {failures}")
 
     # A normal task left running after the wake, then the stopper (the 54.2 us
     # case's shape): another mechanism with complete probes, INDETERMINATE without.
