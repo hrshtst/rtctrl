@@ -8,10 +8,17 @@ tracers' CPUs, alongside the run's shared validity checks
 
 - the run record's "sudo refresh:" line: the loop, and the CPUs read back at
   the session's start and at the record, both the tracers' CPUs;
-- the tree: the loop, its descendants in the pre-run process listing
-  (<run>.csv.procs.txt) and in the halfway snapshot's task lineage
-  (<run>.csv.tasks.txt), then every fork the trace records from a member;
-- the halfway snapshot: the loop listed, and every member it lists allowed
+- the evidence itself: the pre-run process listing (<run>.csv.procs.txt)
+  finished with every row readable; the halfway snapshot's recorded task
+  listing status 0; its task lineage (<run>.csv.tasks.txt) closed by its
+  completeness line, read by tools/observer_affinity.py's parser;
+- the tree: the loop and its descendants in those two listings, then every
+  task of those processes the lineage lists, by (PID, TID), then every fork
+  the trace records from a member. The members are tasks, as the trace names
+  them. (The pre-run listing is per process: of a process gone by the halfway
+  snapshot, only the thread with the process's ID is known, plus what the
+  trace shows forking from it.)
+- the halfway snapshot: the loop listed, and every task of the tree allowed
   only on the tracers' CPUs;
 - the trace (trace-cmd report, streamed; its exit must be 0): every CPU a
   member is seen on (its own events, its switch-ins and switch-outs,
@@ -39,6 +46,8 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
+
+import observer_affinity
 
 LINE = re.compile(r"^\s*(.+?)-(\d+)\s+\[(\d+)\]\s+\S+\s+([\d.]+):\s+(\w+):\s*(.*)$")
 
@@ -68,31 +77,50 @@ def window(run_csv: Path) -> tuple[float, float]:
 
 
 def procs_children(path: Path) -> dict[int, list[int]]:
-    """The pre-run process listing (PID PPID COMMAND): each parent's children."""
+    """The pre-run process listing (PID PPID COMMAND): each parent's children.
+    ValueError for anything but a finished listing of readable rows: a row
+    that cannot be read could be a member of the tree."""
+    text = path.read_text(errors="replace")
+    lines = text.splitlines()
+    if not lines or lines[0].split() != ["PID", "PPID", "COMMAND"]:
+        raise ValueError(f"{path.name} is not a PID PPID COMMAND listing")
+    if len(lines) < 2:
+        raise ValueError(f"{path.name} lists no processes")
+    if not text.endswith("\n"):
+        raise ValueError(f"{path.name} ends with an unfinished line")
     kids: dict[int, list[int]] = {}
-    lines = path.read_text(errors="replace").splitlines()
-    if not lines or not lines[0].split()[:2] == ["PID", "PPID"]:
-        raise ValueError(f"{path.name} is not a PID PPID listing")
+    listed: set[int] = set()
     for ln in lines[1:]:
-        f = ln.split()
-        if len(f) >= 2 and f[0].isdigit() and f[1].isdigit():
-            kids.setdefault(int(f[1]), []).append(int(f[0]))
+        f = ln.split(None, 2)
+        if len(f) != 3 or not f[0].isdigit() or not f[1].isdigit():
+            raise ValueError(f"{path.name} has a row it cannot read: {ln[:60]!r}")
+        pid = int(f[0])
+        if pid in listed:
+            raise ValueError(f"{path.name} lists process {pid} twice")
+        listed.add(pid)
+        kids.setdefault(int(f[1]), []).append(pid)
     return kids
 
 
-def lineage(path: Path) -> list[tuple[int, int, int, str]]:
-    """The halfway snapshot's task lineage: (pid, tid, ppid, allowed) per task."""
-    rows, on = [], False
-    for ln in path.read_text(errors="replace").splitlines():
-        if ln.startswith("--- "):
-            on = ln.startswith("--- task lineage")
-            continue
-        f = ln.split()
-        if on and len(f) == 6 and all(x.isdigit() for x in f[:5]):
-            rows.append((int(f[0]), int(f[1]), int(f[2]), f[5]))
-    if not rows:
+def lineage(path: Path) -> dict[tuple[int, int], tuple[int, set[int] | None]]:
+    """The halfway snapshot's task lineage: (pid, tid) -> (ppid, allowed CPUs).
+    ValueError unless the listing is complete evidence: tools/observer_affinity.py's
+    parser finds its completeness line, it says when it was taken, and the
+    count that line gives is the rows it holds."""
+    lines = path.read_text(errors="replace").splitlines()
+    rows, taken, problem = observer_affinity.parse_lineage(lines)
+    if rows is None:
         raise ValueError(f"{path.name} has no task lineage")
-    return rows
+    if problem:
+        raise ValueError(f"{path.name}'s task lineage is not complete evidence: {problem}")
+    if taken is None:
+        raise ValueError(f"{path.name}'s task lineage does not say when it was taken")
+    start = lines.index(observer_affinity.LINEAGE)
+    closing = next(ln for ln in lines[start:] if ln.startswith(observer_affinity.COMPLETE))
+    n = re.fullmatch(re.escape(observer_affinity.COMPLETE) + r" (\d+) tasks", closing)
+    if n is None or int(n.group(1)) != len(rows):
+        raise ValueError(f"{path.name}'s task lineage holds {len(rows)} tasks but closes with {closing!r}")
+    return {k: (v[0], v[3]) for k, v in rows.items()}
 
 
 def descendants(root: int, kids: dict[int, list[int]]) -> set[int]:
@@ -141,34 +169,38 @@ def check(run_csv: Path, out=sys.stdout) -> str:
         return report(fails, None, out)
     print(f"run window {win[0]:.6f}..{win[1]:.6f} s", file=out)
 
-    # The tree, from the pre-run listing and the halfway lineage, then forks.
-    tree = {loop}
+    # The tree: its processes from the pre-run listing and the halfway lineage,
+    # then its tasks (every (PID, TID) the lineage lists of them), then forks.
+    procs = {loop}
     try:
         kids = procs_children(Path(str(run_csv) + ".procs.txt"))
         need(any(loop in v for v in kids.values()), "the pre-run process listing does not list the loop")
-        tree |= descendants(loop, kids)
+        procs |= descendants(loop, kids)
     except (OSError, ValueError) as e:
         need(False, f"no usable pre-run process listing ({e})")
-    allowed: dict[int, str] = {}
+    listing = re.findall(r"^halfway snapshot: the task listing's exit (\S+)$", rec, re.M)
+    if len(listing) != 1:
+        need(False, f"the run record has {len(listing)} halfway task-listing statuses, not one")
+    else:
+        need(listing[0] == "0", f"the halfway task listing exited {listing[0]}")
+    masks: dict[tuple[int, int], set[int] | None] = {}
     try:
         rows = lineage(Path(str(run_csv) + ".tasks.txt"))
         lkids: dict[int, list[int]] = {}
-        for pid, tid, ppid, mask in rows:
-            if pid == tid:
-                lkids.setdefault(ppid, []).append(pid)
-        need(any(r[0] == loop for r in rows), "the halfway snapshot does not list the loop")
-        tree |= descendants(loop, lkids)
-        for pid, _, _, mask in rows:
-            if pid in tree:
-                allowed[pid] = mask
+        for (pid, _), (ppid, _) in rows.items():
+            lkids.setdefault(ppid, []).append(pid)
+        need((loop, loop) in rows, "the halfway snapshot does not list the loop")
+        for p in sorted(procs):
+            procs |= descendants(p, lkids)
+        masks = {k: v[1] for k, v in rows.items() if k[0] in procs}
     except (OSError, ValueError) as e:
         need(False, f"no usable halfway snapshot ({e})")
-    for pid, mask in sorted(allowed.items()):
-        try:
-            need(cpus(mask) == tracers, f"pid {pid} of the refresh is allowed on CPUs {mask} halfway")
-        except ValueError:
-            need(False, f"pid {pid}'s halfway mask is not a CPU list: {mask}")
-    print(f"tree before the trace: {sorted(tree)}; halfway masks: {allowed or 'none'}", file=out)
+    for (pid, tid), mask in sorted(masks.items(), key=lambda kv: kv[0]):
+        shown = "(not listed)" if mask is None else observer_affinity.cpu_list(mask)
+        need(mask == tracers, f"task {tid} (pid {pid}) of the refresh is allowed on CPUs {shown} halfway")
+    tree = procs | {tid for _, tid in masks}
+    shown = {f"{p}/{t}": "(not listed)" if m is None else observer_affinity.cpu_list(m) for (p, t), m in sorted(masks.items(), key=lambda kv: kv[0])}
+    print(f"processes before the trace: {sorted(procs)}; halfway masks (pid/tid): {shown or 'none'}", file=out)
 
     # The trace, streamed.
     seen: dict[int, set[int]] = {}
@@ -221,14 +253,14 @@ def check(run_csv: Path, out=sys.stdout) -> str:
         diag = err.read().decode(errors="replace").strip()
     need(status == 0, f"trace-cmd report exited {status}{': ' + diag[-300:] if diag else ''}")
     need(lines > 0, "the trace has no events")
-    print(f"trace: {lines} events read; the tree, {len(tree)} processes:", file=out)
-    for pid in sorted(tree):
-        print(f"  pid {pid}: seen on CPUs {sorted(seen.get(pid, set())) or 'none'}", file=out)
-        bad = seen.get(pid, set()) - tracers
-        need(not bad, f"pid {pid} of the refresh was on CPUs {sorted(bad)}, outside the tracers' (excluded {sorted(excluded)})")
+    print(f"trace: {lines} events read; the tree, {len(tree)} tasks:", file=out)
+    for tid in sorted(tree):
+        print(f"  task {tid}: seen on CPUs {sorted(seen.get(tid, set())) or 'none'}", file=out)
+        bad = seen.get(tid, set()) - tracers
+        need(not bad, f"task {tid} of the refresh was on CPUs {sorted(bad)}, outside the tracers' (excluded {sorted(excluded)})")
     for ts, pid, fn, cpu in execs:
         inside = win[0] <= ts <= win[1]
-        print(f"  exec {fn}, pid {pid}, at {ts:.6f} s on CPU {cpu}{' (in the run window)' if inside else ''}", file=out)
+        print(f"  exec {fn}, task {pid}, at {ts:.6f} s on CPU {cpu}{' (in the run window)' if inside else ''}", file=out)
     refreshes = [e for e in execs if e[2].endswith("/sudo") and win[0] <= e[0] <= win[1]]
     print(f"refreshes in the run window: {len(refreshes)}", file=out)
     print(f"kernel page faults at NULL-page addresses in the run window (recorded on CPU {fault_cpu} only): {len(faults)}", file=out)
