@@ -768,6 +768,42 @@ grep -q '^verdict: not run (tracer)' "$b.run.txt"
 # would ignore SIGINT (and bash cannot trap a signal ignored at entry); like
 # one started at a terminal, this one does not, and it leads its own
 # process group.
+# The sudo refresh (with the stand-in sudo): its loop and every process it
+# starts are on the tracers' CPUs, never the excluded one, read from /proc
+# while the session runs; none of it outlives the session.
+cpu_set() {  # CPU list -> the CPUs, one per word
+  local part a out=()
+  IFS=, read -r -a parts <<<"$1"
+  for part in "${parts[@]}"; do
+    if [[ $part =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      for ((a = BASH_REMATCH[1]; a <= BASH_REMATCH[2]; a++)); do out+=("$a"); done
+    else out+=("$part"); fi
+  done
+  echo "${out[*]}"
+}
+allowed() { sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "/proc/$1/status" 2>/dev/null; }
+refresh_pinned() {  # RECORD: the loop's pid, once it and its children are on the tracers' CPUs
+  local line loop want c kids
+  line=$(grep -m1 '^sudo refresh: loop ' "$1") || fail "the record has no sudo refresh line" "$1"
+  loop=$(sed -E 's/^sudo refresh: loop ([0-9]+) .*/\1/' <<<"$line")
+  want=$(cpu_set "$(sed -nE 's/^excluded CPUs .*tracer and -excl load CPUs: ([0-9,]+)$/\1/p' "$1")")
+  [ -n "$want" ] || fail "the record names no tracer CPUs" "$1"
+  [[ $line =~ "on CPUs "([0-9,-]+)" (read back at the session's start), now "([0-9,-]+)$ ]] ||
+    fail "the sudo refresh line reads back no CPUs" "$1"
+  [ "$(cpu_set "${BASH_REMATCH[1]}")" = "$want" ] && [ "$(cpu_set "${BASH_REMATCH[2]}")" = "$want" ] ||
+    fail "the sudo refresh is not on the tracers' CPUs ($want): $line" "$1"
+  [ "$(cpu_set "$(allowed "$loop")")" = "$want" ] || fail "the refresh loop $loop is on $(allowed "$loop"), not $want" "$1"
+  kids=$(pgrep -P "$loop") || fail "the refresh loop $loop has no sleep" "$1"
+  for c in $kids; do
+    [ "$(cpu_set "$(allowed "$c")")" = "$want" ] || fail "the refresh loop's child $c is on $(allowed "$c"), not $want" "$1"
+  done
+  echo "$loop $kids"
+}
+gone() {  # PID...: none of them alive
+  local q
+  for q in "$@"; do ! kill -0 "$q" 2>/dev/null || return 1; done
+}
+
 for sig in INT TERM; do
   case "$sig" in INT) attempt=11; target=group ;; TERM) attempt=12; target=script ;; esac
   : >"$ROOT/fake.sudo"
@@ -786,11 +822,14 @@ os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --ye
   done
   grep -q '^clock pair before' "$b.run.txt" || fail "the probe never started" "$ROOT/int-$sig.log"
   [ "$(ps -o pgid= -p "$pid" | tr -d ' ')" = "$pid" ] || fail "the session does not lead its process group"
+  refresh=$(refresh_pinned "$b.run.txt")
   sleep 1
   if [ "$target" = group ]; then kill -INT -- "-$pid"; else kill -TERM "$pid"; fi
   status=0
   wait "$pid" || status=$?
   [ "$status" -eq 130 ] || fail "the interrupted session exited $status" "$ROOT/int-$sig.log"
+  # shellcheck disable=SC2086  # the pids, one per word
+  gone $refresh || fail "the sudo refresh ($refresh) outlived the session after SIG$sig" "$ROOT/int-$sig.log"
   grep -q 'INTERRUPTED (counts as attempted)' "$ROOT/int-$sig.log" ||
     fail "the interrupt was not reported" "$ROOT/int-$sig.log"
   [ -s "$b.trace.dat" ] && [ -s "$b.usbmon.pcap" ] ||
@@ -805,6 +844,46 @@ os.execvp(sys.argv[1], sys.argv[1:])' tools/trace_session.sh "${COMMON[@]}" --ye
   [ -z "$(ls -A "$ROOT/stage")" ] || fail "a stage remains after SIG$sig" "$ROOT/int-$sig.log"
   [ ! -e "$(base cbp-100hz-idle-bounded-traced "$attempt").run.txt" ] ||
     fail "a run started after SIG$sig" "$ROOT/int-$sig.log"
+done
+
+# A session that ends normally: the refresh was on the tracers' CPUs when the
+# run's record was written, and none of it remains.
+b=$(base current-100hz-idle-bounded-traced 35)
+TRACE_SESSION_SUDO="$FAKE/sudo" setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 35 \
+  --modes traced --runs current:100:idle:full </dev/null >"$ROOT/refresh-end.log" 2>&1 ||
+  fail "the session with the sudo refresh failed" "$ROOT/refresh-end.log"
+line=$(grep -m1 '^sudo refresh: loop ' "$b.run.txt") || fail "the record has no sudo refresh line" "$b.run.txt"
+want=$(cpu_set "$(sed -nE 's/^excluded CPUs .*tracer and -excl load CPUs: ([0-9,]+)$/\1/p' "$b.run.txt")")
+[[ $line =~ "on CPUs "([0-9,-]+)" (read back at the session's start), now "([0-9,-]+)$ ]] &&
+  [ "$(cpu_set "${BASH_REMATCH[1]}")" = "$want" ] && [ "$(cpu_set "${BASH_REMATCH[2]}")" = "$want" ] ||
+  fail "the sudo refresh was not on the tracers' CPUs ($want): $line" "$b.run.txt"
+loop=$(sed -E 's/^sudo refresh: loop ([0-9]+) .*/\1/' <<<"$line")
+gone "$loop" && [ -z "$(pgrep -P "$loop")" ] || fail "the sudo refresh loop $loop outlived the session" "$ROOT/refresh-end.log"
+# Without the sudo refresh's pin (taskset fails), or with a pin that does not
+# read back (taskset does nothing), nothing is sent, and the loop is ended.
+real_taskset=$(command -v taskset)
+mkdir -p "$FAKE/tsbin"
+cat >"$FAKE/tsbin/taskset" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = -cp ]; then
+  case "\${FAKE_TASKSET_PIN:-}" in fail) echo "stand-in: taskset failed" >&2; exit 1 ;; noop) exit 0 ;; esac
+fi
+exec $real_taskset "\$@"
+EOF
+chmod +x "$FAKE/tsbin/taskset"
+for pin in fail noop; do
+  case "$pin" in fail) attempt=36; seen='\(taskset failed\)' ;; noop) attempt=37; seen='0[-,]' ;; esac
+  status=0
+  FAKE_TASKSET_PIN=$pin PATH="$FAKE/tsbin:$PATH" TRACE_SESSION_SUDO="$FAKE/sudo" setsid tools/trace_session.sh \
+    "${COMMON[@]}" --yes --attempt "$attempt" --modes traced --runs current:100:idle:full \
+    </dev/null >"$ROOT/pin-$pin.log" 2>&1 || status=$?
+  [ "$status" -eq 2 ] || fail "a session whose refresh pin $pin exited $status" "$ROOT/pin-$pin.log"
+  grep -Eq "the sudo refresh \(loop [0-9]+\) is not on CPUs [0-9,]+ \(read back: $seen.*\): nothing was sent" "$ROOT/pin-$pin.log" ||
+    fail "the refresh pin's failure ($pin) was not reported" "$ROOT/pin-$pin.log"
+  [ ! -e "$(base current-100hz-idle-bounded-traced "$attempt").run.txt" ] && [ ! -e "$(base current-100hz-idle-bounded-traced "$attempt")" ] ||
+    fail "a run started without the refresh's pin ($pin)" "$ROOT/pin-$pin.log"
+  loop=$(sed -nE 's/.*the sudo refresh \(loop ([0-9]+)\).*/\1/p' "$ROOT/pin-$pin.log")
+  gone "$loop" && [ -z "$(pgrep -P "$loop")" ] || fail "the unpinned refresh loop $loop outlived the session" "$ROOT/pin-$pin.log"
 done
 
 # The adapter experiment. No session above touched the latency timer.
