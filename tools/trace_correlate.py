@@ -200,6 +200,8 @@ class Trace:
     def feed(self, line: str) -> None:
         m = LINE.match(line)
         if not m:
+            if self.timer is not None:
+                self.timer.unparsed(line)
             return
         self.lines += 1
         ev, rest = m["ev"], m["rest"]
@@ -1254,6 +1256,9 @@ def main() -> int:
     parser.add_argument("--segments-csv", type=pathlib.Path, help="write each read's receive path here")
     parser.add_argument("--perf-txt", type=pathlib.Path,
                         help="a profiled run's worker samples (default: <run>.csv.perf.txt if it exists)")
+    parser.add_argument("--exploratory-slope-ppm", type=float,
+                        help="a slope range for a timer capture with no certificate: its U is labelled exploratory "
+                        "and the run still fails (for replays of archived captures)")
     args = parser.parse_args()
     if tomllib is None:
         print("trace_correlate: needs Python 3.11 or later (tomllib)", file=sys.stderr)
@@ -1326,7 +1331,7 @@ def main() -> int:
     if tr.timer is not None:
         tr.timer.finish(tr.last_ts)
         timer_service.report(args.csv, tr.timer, timer["pairs"], record, failures, args.top, out,
-                             sleep_calls=tr.sleep_calls)
+                             sleep_calls=tr.sleep_calls, exploratory_ppm=args.exploratory_slope_ppm)
     if tr.fs is not None:
         tr.fs.finish(tr.last_ts)
         fair_server.report(tr.fs, probe_misses(record), args.top, out, failures)

@@ -2,11 +2,12 @@
 """Regressions for tools/timer_service.py on synthetic events.
 
 The TSC and CLOCK_MONOTONIC follow a known mapping (3187.2 MHz from an
-origin), so every conversion has a true value. Covered: the anchors'
-one-to-one matching by their interval pattern, and its refusal of a missing
-and a duplicate anchor; interpolation without extrapolation; the
-uncertainty from held-out anchors and the bracketed sampler, which alone
-detects a systematic offset of the instance's timestamps; each class of a
+origin), so every conversion has a true value. (The pairing of the anchors,
+the bound and the certificate are tools/test_timer_clock.py's.) Covered:
+interpolation without extrapolation; the residuals of held-out anchors and
+the bracketed sampler, of which only the sampler's detect a systematic
+offset of the instance's timestamps; a strict ledger of the real-time CPU's
+records, with an unreadable record reported; each class of a
 late service (a deadline written late or disarmed, an interrupt late from
 idle and while busy in user mode and in a system call, a late sleep call,
 a timer armed late, and INDETERMINATE deadlines), on a deadline timeline
@@ -21,8 +22,8 @@ earlier and after an expiry, cancellations with and without a write and
 after an expiry, an expiry inside the arming call, a missing write, a timer
 on another CPU or of unknown residency, a pinned arming, an action with no
 event, and a cancellation without its event while its arming is pending);
-the background load by lineage, with a batch workload; and the instance,
-sampler and SMI files, with the SMI series' problems.
+the background load by lineage, with a batch workload; and the SMI file,
+with the SMI series' problems.
 """
 
 from __future__ import annotations
@@ -81,114 +82,44 @@ def conversion() -> None:
     samp = sampler((mono[0], mono[-1]))
     rate = ts.fit_rate(samp)
     expect(rate is not None and abs(1e9 / rate[1] - HZ) < 1_000, f"sampler rate {rate}")
-    pairs, problems, susp = ts.match_anchors(mono, t, rate)
-    expect(not problems and not susp and len(pairs) == len(t), f"matching: {problems}, {len(pairs)}")
-    # Extra main anchors before and after the instance's span still match.
-    pre = [mono[0] - 700_000, mono[0] - 300_000]
-    pairs2, problems2, _ = ts.match_anchors(pre + mono + [mono[-1] + 900_000], t, rate)
-    expect(not problems2 and pairs2 == pairs, f"matching inside a longer main trace: {problems2}")
+    pairs = list(zip(t, mono))
     m = ts.TscMap(pairs)
     mid = (mono[100] + mono[101]) / 2
     expect(abs(m.mono(tsc(mid)) - mid) < 300, "interpolation")
     expect(m.mono(t[0] - 1) is None and m.mono(t[-1] + 1) is None, "no extrapolation")
     v = ts.validate(pairs, samp)
     expect(v["u"] is not None and v["u"] < 1_000, f"U {v['u']}")
-    # A missing instance anchor, and a duplicate main anchor, are refused.
-    _, p, _ = ts.match_anchors(mono, t[:200] + t[201:], rate)
-    expect(any("missing or duplicate" in x for x in p), f"missing anchor: {p}")
-    _, p, _ = ts.match_anchors(mono[:150] + [mono[150] - 40_000] + mono[150:], t, rate)
-    expect(any("missing or duplicate" in x for x in p), f"duplicate anchor: {p}")
     # A constant skew of the instance's stamps: held-out anchors cannot see
     # it, the bracketed sampler does.
     skew = [x + round(10_000 * HZ / 1e9) for x in t]
-    pairs3, _, _ = ts.match_anchors(mono, skew, rate)
-    v3 = ts.validate(pairs3, samp)
+    v3 = ts.validate(list(zip(skew, mono)), samp)
     expect(max(v3["held"]) < 1_000 and v3["u"] > ts.U_LIMIT_NS, f"skew: held {max(v3['held'])}, U {v3['u']}")
 
 
-def suspects() -> None:
-    """Suspect anchors: an isolated anchor whose two stamps disagree is left
-    out of the conversion only under every condition; missing and extra
-    anchors, in either buffer, and compensating pairs still fail."""
-    mono, t = anchors(n=3000, jitter=50, seed=2)
-    rate = ts.fit_rate(sampler((mono[0], mono[-1])))
-    c = round(3_000 * HZ / 1e9)  # 3 us of TSC counts
-    truth = dict(zip(t, mono))
-
-    def match(m, tt):
-        return ts.match_anchors(m, tt, rate)
-
-    def pass_(what, m, tt, n_susp):
-        pairs, p, s = match(m, tt)
-        expect(not p and len(s) == n_susp and len(pairs) == len(tt) - n_susp, f"{what}: {p} {s} {len(pairs)}")
-        return pairs, s
-
-    def fails(what, m, tt, words):
-        _, p, _ = match(m, tt)
-        expect(any(words in x for x in p), f"{what} should fail with '{words}': {p}")
-
-    # One instance stamp late by 3 us: left out, every other anchor paired
-    # with its own main anchor.
-    t1 = list(t)
-    t1[1500] += c
-    pairs, s = pass_("one suspect", mono, t1, 1)
-    expect(s[0][0] == 1500 and -3_200 < s[0][2] < -2_800 and t1[1500] not in dict(pairs), f"the suspect: {s}")
-    expect(all(truth.get(a) == b for a, b in pairs), "the pairs around a suspect")
-    # Two far apart, within the cap (3 of 3000).
-    t2 = list(t)
-    t2[500] += c
-    t2[2000] -= c
-    pass_("two suspects", mono, t2, 2)
-    # Over the cap.
-    t3 = list(t)
-    for i in (300, 900, 1500, 2100):
-        t3[i] += c
-    fails("four suspects", mono, t3, "4 suspect anchors, more than 0.1% of 3000")
-    # Not isolated: adjacent, or another within ANCHOR_CHECK anchors; or a
-    # disagreement too large for a stamp.
-    t4 = list(t)
-    t4[1500] += c
-    t4[1501] += 2 * c
-    fails("adjacent suspects", mono, t4, "the interval across it disagrees")
-    t5 = list(t)
-    t5[1500] += c
-    t5[1530] += c
-    fails("a suspect 30 anchors after another", mono, t5, "not an isolated suspect anchor: the anchors after it disagree")
-    t6 = list(t)
-    t6[1500] += round(60_000 * HZ / 1e9)
-    fails("a 60 us disagreement", mono, t6, "more than 50000 ns")
-    # Missing and extra anchors, in either buffer.
-    fails("a missing instance anchor", mono, t[:1500] + t[1501:], "missing or duplicate")
-    fails("a missing main anchor", mono[:1500] + mono[1501:], t, "missing or duplicate")
-    fails("an extra instance anchor", mono, t[:1500] + [(t[1499] + t[1500]) // 2] + t[1500:], "missing or duplicate")
-    fails("an extra main anchor", mono[:1500] + [mono[1500] - 40_000] + mono[1500:], t, "missing or duplicate")
-    # A missing anchor and an extra one 200 anchors later: equal counts, and
-    # still a failure.
-    fails("a compensating pair far apart", mono[:1000] + mono[1001:1200] + [mono[1200] - 30_000] + mono[1200:], t,
-          "missing or duplicate")
-    # A missing main anchor replaced by an extra one 5 us away: the same
-    # shape as a stamp disagreement, left out, and the rest stay paired
-    # with their own anchors.
-    pairs, s = pass_("an adjacent replacement", mono[:1500] + [mono[1500] + 5_000] + mono[1501:], t, 1)
-    expect(all(truth.get(a) == b for a, b in pairs), "the pairs around a replaced anchor")
-    # The continuation must be unambiguous: after a suspect, periodic
-    # anchors agree at shifted offsets too.
-    mp, tp = list(mono[:1000]), list(t[:1000])
-    m = mono[999]
-    for _ in range(200):
-        m += 500_000
-        mp.append(m)
-        tp.append(tsc(m))
-    tp[1001] += c
-    fails("a suspect before periodic anchors", mp, tp, "ambiguous")
+def ledger() -> None:
+    """The real-time CPU's records are taken strictly; another CPU's are not its business; an unreadable one is reported."""
+    ev = ts.TimerEvents(TID, RT)
+    ev.feed(100, RT, 0, "<idle>", "local_timer_entry", "vector=236", "d.h1.")
+    ev.feed(200, RT, 0, "<idle>", "write_msr", "6e0, value 2723d67a9bc2", "d.h1.")
+    ev.feed(300, RT, 0, "<idle>", "local_timer_exit", "vector=236", "d.h1.")
+    ev.feed(250, 5, 0, "<idle>", "local_timer_entry", "vector=236", "d.h1.")
+    expect(ev.ledger.events == [(100, "E", None), (200, "W", 0x2723d67a9bc2), (300, "X", None)] and not ev.ledger.problems,
+           f"ledger {ev.ledger.events} {ev.ledger.problems}")
+    ev.feed(290, RT, 0, "<idle>", "local_timer_entry", "vector=236", "d.h1.")
+    expect(any("out of order" in x for x in ev.ledger.problems), f"out of order: {ev.ledger.problems}")
+    ev = ts.TimerEvents(TID, RT)
+    ev.unparsed("cpus=32\n")
+    ev.unparsed("some other event's odd line\n")
+    expect(not ev.ledger.problems, f"harmless rows: {ev.ledger.problems}")
+    ev.unparsed("  <idle>-0 [003] d.h1. 100.000100: local_timer_entry: vector=236\n")
+    expect(any("unreadable" in x for x in ev.ledger.problems), f"a microsecond ledger row: {ev.ledger.problems}")
 
 
 def base_events() -> tuple[ts.TimerEvents, ts.TscMap, float]:
     mono, t = anchors(n=200, jitter=0)
     ev = ts.TimerEvents(TID, RT)
     ev.anchors = list(mono)
-    pairs, _, _ = ts.match_anchors(mono, t, ts.fit_rate(sampler((mono[0], mono[-1]))))
-    return ev, ts.TscMap(pairs), 500.0
+    return ev, ts.TscMap(list(zip(t, mono))), 500.0
 
 
 def classes() -> None:
@@ -575,20 +506,6 @@ def load() -> None:
 def files() -> None:
     with tempfile.TemporaryDirectory() as d:
         p = pathlib.Path(d)
-        inst = p / "i.txt"
-        inst.write_text("# entries-in-buffer/entries-written: 3/3   #P:32\n"
-                        "          <idle>-0       [003] d.h1. 9000000001000: local_timer_entry: vector=236\n"
-                        "          <idle>-0       [005] d.h1. 9000000002000: local_timer_entry: vector=236\n"
-                        "   stress-ng-cpu-12      [003] d.h1. 9000000003000: local_timer_entry: vector=236\n")
-        t, pr = ts.load_instance(inst, RT)
-        expect(t == [9000000001000, 9000000003000] and not pr, f"instance {t} {pr}")
-        inst.write_text("# entries-in-buffer/entries-written: 3/5   #P:32\n"
-                        "          <idle>-0       [003] d.h1.  1234.567890: local_timer_entry: vector=236\n")
-        _, pr = ts.load_instance(inst, RT)
-        expect(any("lost 2" in x for x in pr) and any("not raw" in x for x in pr), f"instance problems {pr}")
-        pf = p / "pairs.csv"
-        pf.write_text("# tsc_mono_pairs cpu=1\n100,5000,140,1\n200,5300,230,3\n")
-        expect(ts.load_pairs(pf) == [(100, 5000, 140, 1), (200, 5300, 230, 3)], "pairs")
         sf = p / "smi.csv"
         sf.write_text("# started\n0.010000000,0,,msr/smi/,1,100.00,,\n0.020000000,2,,msr/smi/,1,100.00,,\n")
         # perf started between 1.000 s (before) and 1.015 s - 0.010 s (its
@@ -610,7 +527,7 @@ def files() -> None:
 
 def main() -> int:
     conversion()
-    suspects()
+    ledger()
     classes()
     residency()
     exerciser()

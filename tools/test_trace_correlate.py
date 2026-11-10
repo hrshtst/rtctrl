@@ -32,6 +32,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import test_tk_record  # noqa: E402
+
 ORIGIN = 1_000_000_000_000   # the probe's epoch on CLOCK_MONOTONIC, ns
 TID = 4242
 PERIOD_US = 2000.0
@@ -254,6 +257,21 @@ class Run:
                 "skipped_periods": 1 if (i == 1 and o.get("overran")) else 0, "read_len": 10,
             }
             self.rows.append(row)
+        if o.get("timer"):
+            self.ledger(not o.get("no_writes"))
+
+    def ledger(self, writes: bool) -> None:
+        """Each local timer interrupt's exit, and the deadline that raised it, written after the previous exit."""
+        entries = sorted(t for t, _, line in self.events if ": local_timer_entry:" in line)
+        prev_exit = None
+        for k, t in enumerate(entries):
+            gap = (entries[k + 1] - t) if k + 1 < len(entries) else 1_000_000
+            exit_t = t + min(300, gap // 3)
+            write_t = (prev_exit + (t - prev_exit) // 3) if prev_exit is not None else t - 30_000
+            if writes:
+                self.ev((write_t - ORIGIN) / 1000, "<idle>", 0, 3, "d..1.", "write_msr", f"6e0, value {tsc_of(t - 400):x}")
+            self.ev((exit_t - ORIGIN) / 1000, "<idle>", 0, 3, "d.h1.", "local_timer_exit", "vector=236")
+            prev_exit = exit_t
 
     def write(self, root: pathlib.Path, name: str) -> pathlib.Path:
         path = root / f"{name}.csv"
@@ -286,6 +304,7 @@ class Run:
             smi_before = ORIGIN - 2_000_000  # perf stat started 2 ms before the origin
             pathlib.Path(str(path) + ".run.txt").write_text(
                 "mode: timer\nscheduling: --rt-priority 80 --rt-cpu 3 (rtprio limit 90)\n"
+                f"main timer event enable before the TSC instance: {self.opt.get('main_enable', 1)}\n"
                 f"trace overruns: {self.opt.get('trace_overruns', '0')} (trace-cmd report --stat)\n"
                 "tsc instance overruns: 0\nsession pid: 1\n"
                 "clock pair before: monotonic_before_ns 1 realtime_ns 2 monotonic_after_ns 3 "
@@ -311,12 +330,15 @@ class Run:
             pathlib.Path(str(path) + ".tsc.txt").write_text("\n".join(lines) + "\n")
             pairs = ["# tsc_mono_pairs cpu=1 interval_ms=10"]
             for k in range(40):
-                m = marks[0] + (marks[-1] - marks[0]) * (k + 0.5) / 40
+                m = marks[0] - 500_000 + (marks[-1] - marks[0] + 1_000_000) * (k + 0.5) / 40
                 pairs.append(f"{round(m) - 20},{tsc_of(round(m))},{round(m) + 20},1")
             # The real-time CPU's windows, before and after the run.
             for m in ([] if self.opt.get("no_rt_pairs") else [ORIGIN - ns(200.0), ORIGIN + ns(6200.0)]):
                 pairs.append(f"{m - 20},{tsc_of(m)},{m + 20},3")
             pathlib.Path(str(path) + ".tsc-pairs.csv").write_text("\n".join(pairs) + "\n")
+            if not self.opt.get("no_tk"):
+                test_tk_record.write_record(path, armed=ORIGIN - 1_500_000_000, s0=ORIGIN - 1_000_000_000, s1=ORIGIN + 1_000_000_000,
+                                            tick=self.opt.get("tk_tick", 10000))
         if self.opt.get("profiled_record"):
             pathlib.Path(str(path) + ".run.txt").write_text(
                 "mode: profiled\nperf stats: SAMPLE 0, LOST 0, LOST_SAMPLES 0, THROTTLE 0 "
@@ -445,8 +467,10 @@ def main() -> int:
         code, out, _ = correlate(root, "timer", timer=True)
         expect(code == 0 and "timer service (the real-time CPU's deadlines" in out
                and "sleep timing: 2 sleeps; 2 with their sleep call and timer" in out
-               and "matched one-to-one" in out and "conversion uncertainty U:" in out
-               and "sleeps: 2; on time 2" in out and "deadline writes: 2, 0 disarming" in out
+               and "analysis: clock alignment revision 53" in out and "conversion certificate: CERTIFIED" in out
+               and "paired by deadline slot" in out and "clock model (certificate):" in out
+               and ", validated; longest conversion" in out and "certificate provenance: 7.0.0-42.42" in out
+               and "sleeps: 2; on time 2" in out and ", 0 disarming" in out
                and "SMIs 0" in out and "MISSING" not in out, "the timer-mode run", out)
         # Its waits after waking (tools/fair_server.py), unattributed without
         # the probes; with the probes' layout in the record but no pick in the
@@ -587,11 +611,15 @@ def main() -> int:
                 ("timer_no_writes", {"timer": True, "no_writes": True},
                  "the timer-mode run has no deadline writes on CPU 3"),
                 ("timer_noinst", {"timer": True, "no_instance": True}, "no TSC instance or sampler pairs"),
+                ("timer_no_tk", {"timer": True, "no_tk": True}, "no timekeeping record for this capture"),
+                ("timer_tick", {"timer": True, "tk_tick": 9000}, "adjtimex tick is 9000 us"),
+                ("timer_no_main_enable", {"timer": True, "main_enable": 0},
+                 "the main trace's timer event was not confirmed enabled before the TSC instance"),
                 ("timer_no_rt_pairs", {"timer": True, "no_rt_pairs": True},
                  "no sampler pairs on CPU 3 inside the anchors both before and after the run"),
                 ("timer_no_smi", {"timer": True, "no_smi": True}, "timer service: no SMI count file"),
                 ("timer_short_instance", {"timer": True, "short_instance": True},
-                 "timer service: the conversion's anchors do not cover the run"),
+                 "timer service: the pairs do not cover the run window"),
                 ("timer_bad_losses", {"timer": True, "trace_overruns": "unknown (stats unreadable)"},
                  "the record has no valid count of the trace's losses")):
             code, out, _ = correlate(root, name, **opt)

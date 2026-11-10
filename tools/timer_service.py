@@ -10,18 +10,18 @@ CPU's idle transitions, its interrupts and NMIs, and the worker's service.
 The deadlines are TSC counts. They are converted to CLOCK_MONOTONIC with
 anchors: the real-time CPU's local timer interrupts, recorded both in the
 main trace (mono clock) and in a second trace instance on the x86-tsc
-clock. The anchors are matched one-to-one by their interval pattern,
-which uses only the TSC frequency (from the independent sampler), never
-the conversion under test, and a missing or duplicate anchor fails; an
-isolated suspect anchor, whose own two stamps disagree, is left out of the
-conversion under match_anchors' conditions, and the conversion must cover
-the run. A deadline is converted by linear interpolation between the anchors around
-it, never extrapolated. The conversion's uncertainty U is validated
-independently: the residuals of held-out anchors (every second anchor,
-predicted from the others), and the residuals of a bracketed TSC and
-CLOCK_MONOTONIC sampler (tools' tsc_mono_pairs), each bounded by its
-bracket. The classification uses U in its boundaries, and a U above 5 us
-fails the run.
+clock. tools/timer_clock.py pairs them by the deadline written before each
+interrupt, which is in TSC units and needs no clock mapping; a bracketed
+TSC and CLOCK_MONOTONIC sampler (tsc_mono_pairs) checks the assignment. A
+deadline is converted by linear interpolation between the retained anchors
+around it, never extrapolated. U is a bound on the error of every converted
+value, from each anchor's measured stamp difference, the sampler's bound, the
+chord over the conversion's interval and the clock-read difference. It holds
+under a clock model that tools/timer_clock.py certifies from the acquisition's
+timekeeping record (tools/tk_record.py); without a certificate the run fails,
+and a U computed under an exploratory model is labelled as such. The
+classification uses U in its boundaries, and a U above 5 us fails the run. The
+residuals of held-out anchors and of the sampler are printed as diagnostics.
 
 The deadline in effect is followed as a timeline: a write arms the device
 for its deadline (0 disarms it; a failed write leaves it unknown), and a
@@ -59,22 +59,21 @@ absence fails the run.
 from __future__ import annotations
 
 import bisect
-import csv
 import pathlib
 import re
 import statistics
 from typing import NamedTuple
 
-U_LIMIT_NS = 5_000       # the provisional bound on the validated uncertainty
+import timer_clock
+import tk_record
+
+ANALYSIS_REVISION = "clock alignment revision 53"
+U_LIMIT_NS = int(timer_clock.U_LIMIT)  # the provisional bound on the validated uncertainty
 LATE_NS = 50_000         # a timer service this late is classified
 RES_NS = 1               # timestamp resolution added to U (mono 1 ns; the TSC finer)
 MSR_TSC_DEADLINE = "6e0"
 IDLE_EXIT = 4294967295   # power:cpu_idle's state on leaving idle
-ANCHOR_CHECK = 50        # intervals compared when aligning the anchors
-SUSPECT_CAP = 0.001      # the most anchors left out of the conversion as suspect (a fraction)
-SUSPECT_MAX_NS = 50_000  # the largest disagreement of a suspect anchor's two stamps
-MIN_CONTINUATION = 5     # the fewest clean intervals after a suspect anchor (at the trace's end)
-TIMER_EVENTS = {"write_msr", "local_timer_entry", "cpu_idle", "cpu_idle_miss", "nmi_handler",
+TIMER_EVENTS = {"write_msr", "local_timer_entry", "local_timer_exit", "cpu_idle", "cpu_idle_miss", "nmi_handler",
                 "sys_enter", "sys_exit", "page_fault_user", "page_fault_kernel", "hrtimer_start",
                 "hrtimer_cancel", "hrtimer_expire_entry", "hrtimer_init", "hrtimer_setup",
                 "sched_process_fork", "sched_process_exec", "sched_process_exit",
@@ -131,9 +130,18 @@ class TimerEvents:
         self.comm: dict[int, str] = {}
         self._cur: dict[int, tuple] = {}  # cpu -> (pid, since)
         self.seen = set()
+        self.ledger = timer_clock.Ledger()  # the real-time CPU's deadline writes, entries and exits, strictly
+
+    def unparsed(self, line: str) -> None:
+        """A report row that is not in the event format. Other events' odd rows are not this analysis's evidence,
+        but a record of the ledger's events that cannot be read must not be lost silently."""
+        if any(name in line for name in timer_clock.KIND):
+            self.ledger.problems.append(f"an unreadable row of the report: {line.strip()[:120]}")
 
     def feed(self, ts: int, cpu: int, pid: int, comm: str, ev: str, rest: str, flags: str) -> None:
         rt = cpu == self.rt_cpu
+        if rt and ev in timer_clock.KIND:
+            self.ledger.feed(ts, ev, rest)
         if ev == "write_msr":
             w = WRITE.match(rest)
             if rt and w and w[1] == MSR_TSC_DEADLINE:
@@ -237,44 +245,9 @@ class TimerEvents:
 # --- The TSC to CLOCK_MONOTONIC conversion -------------------------------------------------
 
 
-def load_instance(path: pathlib.Path, rt_cpu: int) -> tuple[list[int], list[str]]:
-    """The x86-tsc instance's anchors (local_timer_entry on the real-time
-    CPU, raw TSC counts) and its problems (a clock other than raw counts,
-    overwritten entries)."""
-    tscs, problems = [], []
-    for line in path.read_text(errors="replace").splitlines():
-        if line.startswith("#"):
-            e = re.search(r"entries-in-buffer/entries-written:\s*(\d+)/(\d+)", line)
-            if e and int(e[2]) > int(e[1]):
-                problems.append(f"the TSC instance lost {int(e[2]) - int(e[1])} entries (overwritten)")
-            continue
-        m = INST_LINE.match(line)
-        if not m or m["ev"] != "local_timer_entry" or int(m["cpu"]) != rt_cpu:
-            continue
-        if "." in m["ts"]:
-            problems.append("the TSC instance's timestamps are not raw counts (its clock is not x86-tsc)")
-            break
-        tscs.append(int(m["ts"]))
-    if any(b < a for a, b in zip(tscs, tscs[1:])):
-        problems.append("the TSC instance's anchors go backwards")
-    return tscs, problems
-
-
-def load_pairs(path: pathlib.Path) -> list[tuple]:
-    """A tsc_mono_pairs file: (mono before, tsc, mono after, cpu)."""
-    pairs = []
-    if not path.exists():
-        return pairs
-    for row in csv.reader(line for line in path.read_text().splitlines() if line and not line.startswith("#")):
-        if len(row) >= 4 and row[0].isdigit():
-            pairs.append((int(row[0]), int(row[1]), int(row[2]), int(row[3])))
-    return pairs
-
-
 def fit_rate(pairs: list[tuple]) -> tuple[float, float] | None:
     """mono ~ a + tsc / hz from the sampler's pairs (least squares on the
-    brackets' midpoints): (a, ns per count). Used only for the anchors'
-    interval pattern and their coarse alignment."""
+    brackets' midpoints): (a, ns per count), a figure the report prints."""
     if len(pairs) < 2:
         return None
     xs = [p[1] for p in pairs]
@@ -285,100 +258,6 @@ def fit_rate(pairs: list[tuple]) -> tuple[float, float] | None:
         return None
     slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
     return my - slope * mx, slope
-
-
-def match_anchors(mono: list[int], tsc: list[int],
-                  rate: tuple[float, float]) -> tuple[list[tuple], list[str], list[tuple]]:
-    """Pairs the instance's anchors one-to-one with the main trace's, in
-    order, by their interval pattern: the instance's first anchors' intervals
-    (TSC counts times the sampler's slope) must match one place in the main
-    trace, and every following interval must match the next main interval
-    at the same offset. The offset of the conversion is never used.
-
-    A suspect anchor, one whose own two stamps disagree (both of its
-    intervals disagree, opposite and equal), is left out of the conversion
-    (its interrupt stays in the timeline) only when: the interval across it
-    agrees; it lies more than ANCHOR_CHECK intervals after the previous
-    suspect; its disagreement is at most SUSPECT_MAX_NS; and the next
-    ANCHOR_CHECK intervals (at least MIN_CONTINUATION, at the trace's end)
-    agree at the same offset while no offset of 1 or 2 anchors either way
-    agrees with all of them. At most SUSPECT_CAP of the anchors may be left
-    out. Any other disagreement is a missing or duplicate anchor and fails.
-    Equal counts and opposing errors do not prove that nothing is missing:
-    the zero loss counts of both buffers, and these conditions, are the
-    evidence. Returns the pairs, the problems and the suspects (instance
-    index, main stamp, disagreement in ns: the main interval into it minus
-    the instance's)."""
-    slope = rate[1]
-    if len(tsc) < 3 or len(mono) < 3:
-        return [], ["fewer than three anchors in an instance"], []
-
-    def dev(i: int, j: int) -> float:  # the interval into instance anchor i, main anchor j
-        return (mono[j] - mono[j - 1]) - (tsc[i] - tsc[i - 1]) * slope
-
-    def close(dm: float, dt: float) -> bool:
-        return abs(dm - dt) <= 2_000 + 1e-4 * abs(dt)
-
-    def agrees(i: int, j: int) -> bool:
-        return 1 <= j < len(mono) and close(mono[j] - mono[j - 1], (tsc[i] - tsc[i - 1]) * slope)
-
-    k = min(ANCHOR_CHECK, len(tsc) - 1)
-    want = [(tsc[i + 1] - tsc[i]) * slope for i in range(k)]
-    starts = [j for j in range(len(mono) - k)
-              if all(close(mono[j + i + 1] - mono[j + i], want[i]) for i in range(k))]
-    if len(starts) != 1:
-        return [], [f"the anchors' interval pattern matched {len(starts)} places in the main trace (one required)"], []
-    j0 = starts[0]
-
-    def suspect(i: int, j: int, last: int) -> str | None:
-        """None if instance anchor i (main anchor j) is an isolated suspect,
-        else why not."""
-        if i + 1 >= len(tsc) or j + 1 >= len(mono):
-            return "it is the last anchor"
-        if i - last <= ANCHOR_CHECK:
-            return f"another suspect anchor {i - last} anchors before it"
-        if agrees(i + 1, j + 1):
-            return "only the interval into it disagrees"
-        across = (mono[j + 1] - mono[j - 1]) - (tsc[i + 1] - tsc[i - 1]) * slope
-        if abs(across) > 2_000 + 1e-4 * abs((tsc[i + 1] - tsc[i - 1]) * slope):
-            return f"the interval across it disagrees by {across:+.0f} ns"
-        if abs(dev(i, j)) > SUSPECT_MAX_NS:
-            return f"its stamps disagree by {dev(i, j):+.0f} ns, more than {SUSPECT_MAX_NS} ns"
-        n = min(ANCHOR_CHECK, len(tsc) - (i + 2), len(mono) - (j + 2))
-        if n < MIN_CONTINUATION:
-            return f"only {max(n, 0)} intervals follow it"
-        after = range(i + 2, i + 2 + n)
-        if not all(agrees(ii, j0 + ii) for ii in after):
-            return "the anchors after it disagree"
-        for d in (-2, -1, 1, 2):
-            if all(agrees(ii, j0 + ii + d) for ii in after):
-                return f"the anchors after it also agree {d:+d} anchors off (ambiguous)"
-        return None
-
-    pairs, problems, suspects = [], [], []
-    last = -10**9
-    i = 0
-    while i < len(tsc):
-        j = j0 + i
-        if j >= len(mono):
-            problems.append(f"{len(tsc) - i} TSC anchors after the main trace's last")
-            break
-        if i == 0 or agrees(i, j):
-            pairs.append((tsc[i], mono[j]))
-            i += 1
-            continue
-        why = suspect(i, j, last)
-        if why is not None:
-            problems.append(f"anchor {i}: the intervals disagree (a missing or duplicate anchor near monotonic "
-                            f"{mono[j - 1]}; not an isolated suspect anchor: {why})")
-            break
-        suspects.append((i, mono[j], dev(i, j)))
-        last = i
-        pairs.append((tsc[i + 1], mono[j + 1]))  # its successor, checked across it
-        i += 2
-    if len(suspects) > SUSPECT_CAP * len(tsc):
-        problems.append(f"{len(suspects)} suspect anchors, more than {SUSPECT_CAP:.1%} of {len(tsc)}")
-    return pairs, problems, suspects
 
 
 class TscMap:
@@ -403,7 +282,7 @@ class TscMap:
 
 
 def validate(pairs: list[tuple], samples: list[tuple]) -> dict:
-    """The conversion's independently validated uncertainty: held-out
+    """The conversion's residuals, a diagnostic and not a bound: held-out
     anchors (the odd ones predicted from the even ones) and the bracketed
     sampler pairs inside the anchors' span (residual plus half the
     bracket)."""
@@ -1085,16 +964,28 @@ def record_offsets(record: list[str]) -> dict:
     return out
 
 
+def reference_pairs(samp: list[tuple], rt_cpu: int) -> list[tuple]:
+    """The sampler pairs of the tracer CPU that sampled the most (the one sampling throughout the run)."""
+    by: dict[int, list] = {}
+    for s in samp:
+        if s[3] != rt_cpu:
+            by.setdefault(s[3], []).append(s)
+    return max(by.values(), key=len) if by else []
+
+
 def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple], record: list[str],
-           failures: list, top: int, out, sleep_calls: list[int] | None = None) -> None:
+           failures: list, top: int, out, sleep_calls: list[int] | None = None,
+           exploratory_ppm: float | None = None) -> None:
     """The timer service section of trace_correlate's report, for a run
     recorded in the timer mode. The evidence the mode records must be
     there: the deadline writes, local timer interrupts and system calls on
     the real-time CPU, the worker's sleep calls and timer armings, both
     buffers' loss counts (zero), the TSC instance, sampler pairs on a
     tracer CPU and on the real-time CPU before and after the run, a valid
-    SMI count series, and the exerciser's file when the record says it ran.
-    A late service is a result, not a failure."""
+    SMI count series, the timekeeping record, and the exerciser's file when
+    the record says it ran. A late service is a result, not a failure.
+    exploratory_ppm supplies a slope range for a capture with no certificate:
+    its U is labelled exploratory and the run still fails."""
     rt = ev.rt_cpu
     calls = sorted(sleep_calls or [])
     print("  timer service (the real-time CPU's deadlines, idle transitions and interrupts):", file=out)
@@ -1117,42 +1008,62 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
         elif tok != "0":
             failures.append(f"timer service: {what} lost events ({over})")
         print(f"    {key} {over}", file=out)
-    # The conversion.
+    # The conversion, assigned by deadline slot, bounded and certified.
+    print(f"    analysis: {ANALYSIS_REVISION}", file=out)
+    if "main timer event enable before the TSC instance: 1" not in [ln.strip() for ln in record]:
+        failures.append("timer service: the main trace's timer event was not confirmed enabled before the TSC instance")
     inst = pathlib.Path(str(csv_path) + ".tsc.txt")
-    samp = load_pairs(pathlib.Path(str(csv_path) + ".tsc-pairs.csv"))
-    rate = fit_rate(samp)
+    pairs_file = pathlib.Path(str(csv_path) + ".tsc-pairs.csv")
     u = None
     conv = TscMap([])
-    if not inst.exists() or rate is None:
+    if not inst.exists() or not pairs_file.exists():
         failures.append("timer service: no TSC instance or sampler pairs")
     else:
-        tsc, problems = load_instance(inst, rt)
-        pairs, mp, suspects = match_anchors(ev.anchors, tsc, rate)
-        problems += mp
-        if pairs and ev.window and not (pairs[0][1] <= ev.window[0] and pairs[-1][1] >= ev.window[1]):
-            problems.append("the conversion's anchors do not cover the run")
-        for p in problems:
-            failures.append(f"timer service: {p}")
-        conv = TscMap(pairs)
-        v = validate(pairs, samp)
-        u = v["u"]
-        print(f"    anchors: {len(tsc)} in the TSC instance, {len(ev.anchors)} in the main trace, {len(pairs)} "
-              f"matched one-to-one, {len(suspects)} suspect left out of the conversion; TSC {1e3 / rate[1]:.4f} MHz "
-              f"from {len(samp)} sampler pairs", file=out)
-        for si, sm, sd in suspects:
-            print(f"      suspect anchor {si} at monotonic {sm}: its two stamps disagree by {sd:+.0f} ns "
-                  "(kept in the timeline)", file=out)
-        held = v["held"]
-        if held:
-            print(f"    held-out anchors: n={len(held)} p50 {pct(held, .5):.0f} p99 {pct(held, .99):.0f} "
-                  f"max {max(held):.0f} ns", file=out)
-        for cpu, rs in sorted(v["by_cpu"].items()):
-            res = [r for r, _ in rs]
-            print(f"    sampler on CPU {cpu}: n={len(rs)} residual median {statistics.median(res):+.0f} ns, "
-                  f"|residual| + half bracket max {max(abs(r) + h for r, h in rs):.0f} ns", file=out)
+        tsc, inst_problems = timer_clock.parse_instance(inst.read_text(errors="replace"), rt)
+        samp, pair_problems = timer_clock.parse_pairs(pairs_file.read_text(errors="replace"))
+        model = timer_clock.Model(exploratory_ppm * 1e-6) if exploratory_ppm is not None else None
+        r = timer_clock.analyze((ev.ledger.events, ev.ledger.problems), (tsc, inst_problems + pair_problems),
+                                reference_pairs(samp, rt), window=ev.window, evidence=tk_record.load(csv_path), model=model)
+        for why in r["why"]:
+            failures.append(f"timer service: {why}")
+        print(f"    conversion certificate: {r['cert']}", file=out)
+        for why in r["cert_reasons"]:
+            print(f"      {why}", file=out)
+        if not r["accepted"] and r["status"] == "PASS":
+            failures.append("timer service: the conversion's bound is not certified: "
+                            + "; ".join(r["cert_reasons"][:3]))
+        elif r["status"] != "PASS" and r["status"] != "FAIL":
+            failures.append("timer service: the conversion was not analysed: " + "; ".join(r["cert_reasons"][:3]))
+        if r.get("U") is not None:
+            m = r["model"]
+            print(f"    anchors: {len(tsc)} in the TSC instance, {len(ev.ledger.events)} ledger records, {r['paired']} paired by "
+                  f"deadline slot, {len(r['left_out'])} left out of the conversion, {r['nomap']} with no independent "
+                  f"check; {len(samp)} sampler pairs", file=out)
+            print(f"    clock model ({m['source']}): slope range {m['ds'] * 1e6:.3f} ppm, read allowance {m['W_ns'] / 1e6:.1f} ms, "
+                  f"R {m['R_ns']:.1f} ns", file=out)
+            if r.get("provenance"):
+                prov = r["provenance"]
+                print(f"    certificate provenance: {prov['audit']}, mult {prov['mult']} shift {prov['shift']}, tick "
+                      f"{prov['tick_us']} us, deviation {prov['deviation_ppm']:.1f} ppm, longest update "
+                      f"{prov['observed_max_update_ns']} ns over {prov['updates_in_interval']} updates", file=out)
+            print(f"    conversion bound U: {r['U']:.0f} ns (limit {U_LIMIT_NS} ns), {r['U_label']}; longest conversion "
+                  f"interval {r['g_conv_ms']:.1f} ms", file=out)
+            if r["status"] == "PASS":
+                conv = TscMap(r["pairs"])
+                u = r["U"]
+                # Diagnostics: the residuals are not the bound.
+                v = validate(r["pairs"], samp)
+                held = v["held"]
+                if held:
+                    print(f"    held-out anchors (diagnostic): n={len(held)} p50 {pct(held, .5):.0f} p99 "
+                          f"{pct(held, .99):.0f} max {max(held):.0f} ns", file=out)
+                for cpu, rs in sorted(v["by_cpu"].items()):
+                    res = [x for x, _ in rs]
+                    print(f"    sampler on CPU {cpu} (diagnostic): n={len(rs)} residual median {statistics.median(res):+.0f} ns, "
+                          f"|residual| + half bracket max {max(abs(x) + h for x, h in rs):.0f} ns", file=out)
         # The sampler's promised windows, inside the anchors: a tracer CPU,
         # and the real-time CPU before and after the run.
-        lo, hi = (pairs[0][1], pairs[-1][1]) if pairs else (0, -1)
+        lo, hi = (min(p[1] for p in r["pairs"]), max(p[1] for p in r["pairs"])) if r.get("pairs") else (0, -1)
         inside = [s for s in samp if lo <= s[0] and s[2] <= hi]
         if not any(s[3] != rt for s in inside):
             failures.append("timer service: no sampler pairs on a tracer CPU inside the anchors")
@@ -1160,14 +1071,6 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
                               and any(s[3] == rt and s[0] > ev.window[1] for s in inside)):
             failures.append(f"timer service: no sampler pairs on CPU {rt} inside the anchors both before and after "
                             "the run")
-        if u is None:
-            failures.append("timer service: the conversion's uncertainty is not validated (no held-out anchors "
-                            "or sampler pairs inside the anchors)")
-            print("    conversion uncertainty: not validated", file=out)
-        else:
-            print(f"    conversion uncertainty U: {u:.0f} ns (limit {U_LIMIT_NS} ns)", file=out)
-            if u > U_LIMIT_NS:
-                failures.append(f"timer service: the conversion's uncertainty {u:.0f} ns exceeds {U_LIMIT_NS} ns")
     tl = Timeline(ev, conv, u)
     offsets = record_offsets(record)
     lt = Lifetimes(ev, conv, u, offsets)
