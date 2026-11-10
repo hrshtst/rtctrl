@@ -323,6 +323,17 @@ set_tests_properties(timer_clock_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "ALL OK"
   LABELS unit)
 
+# The timekeeping recorder (tools/tk_recorder.sh on a scratch tree with
+# stand-ins for the kernel's side) and its evidence (tools/tk_record.py).
+add_test(NAME tk_record_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_tk_record.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(tk_record_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "timekeeping record regressions OK"
+  LABELS unit)
+
 # The read-only idle-state counter snapshots of every traced session run
 # (tools/idle_counters.py) on a fake cpuidle tree.
 add_test(NAME idle_counters_regressions
