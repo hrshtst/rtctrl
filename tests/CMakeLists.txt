@@ -346,6 +346,18 @@ set_tests_properties(trace_stage_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "trace stage regressions OK"
   LABELS unit)
 
+# The sudo refresh's placement check (tools/refresh_check.py) on stand-in
+# evidence: complete evidence passes; every missing, failed or contrary
+# piece fails; no refresh inside the run window is inconclusive.
+add_test(NAME refresh_check_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_refresh_check.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(refresh_check_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "refresh check regressions OK"
+  LABELS unit)
+
 # The fair server's probes (tools/fair_server.py): their layout from an
 # excerpt of the kernel's BTF, their definitions and filters, the waits
 # after waking with their attribution, and the controls' judgement.
