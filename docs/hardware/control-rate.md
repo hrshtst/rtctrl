@@ -1907,6 +1907,85 @@ establish no idle-state cause. One untraced and timer pair does not show that
 tracing improves throughput. H1 resumes at attempt 4 in a new sitting, with a
 new shell and a new identity record, and the remaining order unchanged.
 
+**The sudo refresh and its rehearsal (attempts 10 and 11, 2026-11-10).** The
+second sitting ran H1 attempts 4 and 5, both accepted, then H2 attempt 6's
+open pair. That timer run failed its validity check with two kernel page
+faults at NULL-page addresses on CPU 3: both fall in one `sudo` started by the
+session's sudo refresh, unpinned at the time, inside its `statx` call with a
+NULL path. The failed verdict stands, the capture does not count toward H2 and
+the full open pair is repeated. H2 restarts as attempts 7 (open first) and 8
+(confined first), and H3 becomes attempt 9, which supersedes the table's labels
+above (directories `stage1-placement-7-open`, `-7-confined-untraced`,
+`-7-confined-timer`, `-8-confined-untraced`, `-8-confined-timer`, `-8-open` and
+`stage1-500hz-9`).
+
+The refresh now pins itself off the excluded CPUs (`96e79a3`), its end is
+confirmed (`d710b9f`) and `tools/refresh_check.py` (`e416178`) checks its
+placement in a timer run. The review of those two found four defects,
+corrected and approved: `fb0d514` (the checker requires complete, well-formed
+evidence and checks every task) and `53386ed` (the stop tells ended, running
+and not known apart, and requires a valid ledger). `25eb359`, retained by the
+reviewer, repeats the stop request at each poll inside the same polling limit:
+a request can go unanswered (the signal is sent and USR1 is caught, but the
+trap does not run), the cause is unknown, and an unconfirmed stop must still
+fail.
+
+Both rehearsals ran at `25eb359` on Linux 7.0.0-42-generic #42, over `dxl_emu`,
+50 s, `rt-idle`, timer mode, observers open, and are archived in
+`stage1_rehearsal/`:
+
+| Attempt | Verdict | Refresh and placement | Timer conversion |
+|---|---|---|---|
+| 10 | failed as a complete rehearsal | one refresh 47.52 s into the run; its four attributable tasks only on CPUs 22, 27 and 28; no CPU 3 NULL-page fault | the matcher could not establish an acceptable match at anchor 44370; the accepted span ends about 22.75 s into the run, before the refresh, and U = 1,761 ns applies only to it |
+| 11 | accepted within its stated limits | one refresh 48.37 s into the run; its four attributable tasks only on CPUs 4, 20, 25 and 28; no CPU 3 NULL-page fault | all 97,556 instance anchors paired with no suspects; the run and the refresh covered; U = 1,914 ns |
+
+At attempt 10's anchor 44369 the incoming interval deviates by about
+-2,018 ns against a 2,099 ns tolerance, and the outgoing one by about
++2,023 ns against 2,001 ns, failing by about 22 ns; the next interval agrees,
+so the isolated-suspect rule rejects it. Equal anchor counts and continued
+alignment support a boundary-case explanation but do not establish an
+acceptable match under the approved rule, and the capture establishes no
+recurrence probability. The margin is no reason to waive or round a
+threshold, and `tools/timer_service.py` is unchanged; a future change to which
+anchors may be excluded would be an evidence-rule change, with its own design,
+regression review and controls validation. A what-if that removes that anchor
+is kept apart as diagnostic work, never as acceptance evidence. Attempt 11 was
+the one further attempt the reviewer explicitly authorized, with the code,
+kernel, duration, event set, thresholds and rules unchanged, and with its
+output directory created first, by a creation that refuses an existing
+directory, before any quiet-host change (attempt 10's first invocation had
+refused for a missing directory, before any capture).
+
+Attempt 11 passes the stated requirements within the recorded limits. The only
+failure of the shared analysis is the emulator's PTY USB association, an
+exception that cannot be used on hardware; it has zero losses, 5,102 SMI
+intervals covered, and verified publication and cleanup. Its five late sleeps
+are classified as interrupt late from idle (about 56.7 to 121.8 us), a class
+that locates the delay and establishes no cause. Of its two worker waits of
+50 us or more, classified as other mechanism with no recorded fair-server
+selection, the 124.6 us one is mostly recorded interrupt time and the
+104.4 us one mostly recorded idle and switching time. T1, T2 and T6a remain
+failed, and no hardware control rate is qualified. The checker proves
+placement only for attributable tasks from its listings and fork events: the
+pre-run listing is per process, so it does not prove that every possible
+descendant, or every pre-existing thread that vanished before the midpoint,
+was isolated. Cleanup statements cover the session's tools and the refresh's
+ownership, not every unrelated host process.
+
+An `apt upgrade` on 2026-11-10 installed 7.0.0-43, on which `rq.ext_server`
+and `rq.fair_server` move by 8 bytes and three operands of `rtfs_dl_pick` with
+them: a layout change, not a shown change of behaviour. The reviewer and the
+owner returned to 7.0.0-42 for attempts 10 and 11 and the remaining H2 runs
+(the default boot entry, the versioned packages marked manual); after the
+reboot the kernel line, probe layout, eight definitions and boot line matched
+the records. H1 and the controls stay accepted as 7.0.0-42 evidence and do not
+qualify 7.0.0-43. The old kernel does not restore the rest of that upgrade, and
+the resumed sitting's provenance records it: `linux-perf` 7.0.0-42.42 to
+7.0.0-43.43, `bpftool` 7.7.0+7.0.0-42.42 to 7.7.0+7.0.0-43.43,
+`google-chrome-stable` 156.0.8078.47-1 to 157.0.8103.50-1 and `rtkit` 0.14-1
+to 0.14-1ubuntu0.1. Hardware resumes only after the final plan and a fresh
+execution identity are reviewed.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

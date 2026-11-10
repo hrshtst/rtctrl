@@ -910,6 +910,18 @@ keeping every attributable observer task off CPUs 2 and 3 (the untraced one
 by its midpoint snapshot); its confine caught, in its second pass, a thread
 still on the excluded CPUs. It qualifies no hardware control rate, and
 hardware runs wait for the review of their run plan.
+H2 attempt 6 (2026-11-10) failed its validity check on two NULL-page kernel
+faults on CPU 3 from the session's then unpinned sudo refresh, which led to
+the pinned refresh, its confirmed end and its placement check (`96e79a3`,
+`d710b9f`, `e416178`, corrected after review in `fb0d514` and `53386ed`;
+`25eb359` repeats the stop request). Attempt 10 (at `25eb359`, on 7.0.0-42,
+to which the machine was returned after an upgrade to 7.0.0-43) failed as a
+complete rehearsal: the anchor matcher could not establish an acceptable
+match at anchor 44370, so the timer conversion did not cover the run. The
+reviewer authorized one retry with every rule unchanged, and attempt 11 was
+accepted within its task-attribution limits and the emulator's PTY USB
+exception. Both are archived in `stage1_rehearsal/`, attempt 10 under its
+failed verdict. Neither qualifies a hardware control rate.
 The details are in the
 [control-rate qualification](../hardware/control-rate.md).
 
