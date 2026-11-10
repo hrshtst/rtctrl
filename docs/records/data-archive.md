@@ -12,7 +12,8 @@ below were archived on 2026-07-28. The control-rate sections (`e0/`,
 `b2b3_bounded/`, taken 2026-11-05; `traced_torque_off/`, `latency_timer/`
 and `profiled_torque_off/`, taken 2026-11-06; `timer_rehearsal/`, an
 emulator rehearsal, taken 2026-11-07; `timer_torque_off/`, taken 2026-11-08;
-`stage1_rehearsal/`, emulator rehearsals, taken 2026-11-09)
+`stage1_rehearsal/`, emulator rehearsals, taken 2026-11-09 and, for attempts
+10 and 11, 2026-11-10)
 are kept on a separate volume of the
 same private archive; their paths are
 relative to that volume's project folder. A citation in the project records
@@ -1712,11 +1713,12 @@ events. The folder also holds a `SHA256SUMS` of these files, attempt 2's
 | `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-2.csv.summary.toml` | timer-mode torque-off run (untraced control, attempt 2; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), probe summary | `dbc2faa5144c02a69a10612033745db9222e9c00164b92258713040dc129e8d5` |
 | `rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-untraced-20261108-2.csv.tasks.txt` | timer-mode torque-off run (untraced control, attempt 2; current, 1000 Hz, rt-loaded-excl, Fast Sync Read with the motion-only read), task snapshot | `b69b14b35033c7f778707628209c30969e9d811686c31220ec7ace379afbb509` |
 
-## `stage1_rehearsal/` — control-rate Stage 1 emulator rehearsals (2026-11-08 and 2026-11-09)
+## `stage1_rehearsal/` — control-rate Stage 1 emulator rehearsals (2026-11-08 to 2026-11-10)
 
 The fair-server instrumentation's and observer placement's rehearsals over
 `dxl_emu` (emulated servos on a pty: no servo and no USB adapter), current
-at 1000 Hz, rt-idle, 10 s per run, every run torque-off. Emulator data, not
+at 1000 Hz, rt-idle, 10 s per run (50 s in attempts 10 and 11), every run
+torque-off. Emulator data, not
 hardware telemetry, kept with checksums at the reviewer's request, failed
 captures included. Each subfolder keeps its session directory's name and
 holds a `SHA256SUMS` of its files. Described in
@@ -1749,8 +1751,17 @@ holds a `SHA256SUMS` of its files. Described in
   observer, absent from the placement record, was allowed on CPUs 2 and 3,
   and the session stopped before the confined timer run. The placement
   rehearsal was not accepted.
+- `rehearsal-10-refresh/` (attempt 10, acquired and analysed at `25eb359`,
+  kernel 7.0.0-42-generic, 50 s): failed as a complete rehearsal (reviewer,
+  2026-11-10). Its refresh observations passed (`tools/refresh_check.py`), but
+  the matcher could not establish an acceptable match at anchor 44370: the
+  accepted span ends about 22.75 s into the run, before the refresh at
+  47.52 s, and the conversion's coverage fails with it. Its README states the
+  verdict and limits; its `diagnostic-what-if-not-evidence/` holds a what-if
+  that changes the matcher's input and is never acceptance evidence. The
+  reviewer authorized one retry, attempt 11.
 
-**Accepted rehearsals (reviewer, 2026-11-09):**
+**Accepted rehearsals (reviewer, 2026-11-09 and, for attempt 11, 2026-11-10):**
 
 - `stage1-controls-7/` (attempt 7, at `8318db6`), accepted for its recording
   and controls checks: the controls pass; its timer run has zero main-trace
@@ -1767,6 +1778,13 @@ holds a `SHA256SUMS` of its files. Described in
   both confined runs kept every attributable observer task off CPUs 2 and 3,
   the untraced one by its midpoint snapshot, the timer one also in its
   trace.
+- `rehearsal-11-refresh/` (attempt 11, acquired and analysed at `25eb359`,
+  kernel 7.0.0-42-generic, 50 s; accepted by the reviewer on 2026-11-10), the
+  focused rehearsal of the sudo refresh's placement and cleanup, within the
+  recorded task-attribution limits and the emulator's PTY USB exception: one
+  refresh inside the window; its four attributable tasks only off CPUs 2 and
+  3; no CPU 3 NULL-page fault; all 97,556 instance anchors paired with no
+  suspects; zero losses. It qualifies no hardware control rate.
 
 Every analysis here fails the USB association check by design, the one
 exception the acceptances allow: over the pty no USB OUT submission exists,
@@ -1775,13 +1793,19 @@ strict). All the probe runs fail T1, T2 and T6a, as every emulator run has;
 no hardware control rate is qualified by these rehearsals.
 
 The operator quieted the host with `tools/quiet_host.sh` around attempts 3
-to 9 (its record is in every session record). The `.correlate.txt` files
+to 11 (its record is in every session record). The `.correlate.txt` files
 are `tools/trace_correlate.py` outputs. Those of attempts 1, 3 and 4 were run
 by the operator after each session and saved in the session directories
 (they were there before the developer first read them). Those of attempts 7,
 8 and 9 were run by the developer (Claude Code) after the session, at
 `8318db6` (attempts 7 and 8) and `6933d33` (attempt 9), with `--adapter 1-9`,
 and added to the archived folders; the session directories do not hold them.
+Those of attempts 10 and 11 were run by the developer after the session at
+`25eb359`, unmodified, and are in the archived folders with their resource
+use (`.correlate.time.txt`) and the refresh check (`.refresh-check.txt`);
+each folder also holds the operator's terminal output, verbatim, and in
+`review/` the reviewer's decision and evidence. The originals stay in the
+operator's session directories.
 
 | file | role | sha256 |
 |---|---|---|
@@ -1962,3 +1986,58 @@ and added to the archived folders; the session directories do not hold them.
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-9.csv.staging.sha256` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 9), staging ledger (sha256sum format; the published staged files) | `140018c755a3fae8070613373f54c6826817611e444db7ae936e91bc15eb8638` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-9.csv.summary.toml` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 9), probe summary | `b12af14c789d410eef851292b8348c19774f43a536393956e5dd9dcda474f64a` |
 | `stage1-placement-9/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-untraced-20261109-9.csv.tasks.txt` | Stage 1 emulator rehearsal (untraced control, open placement, attempt 9), task snapshot halfway through the run, with its task lineage and completeness line | `f8efe27fea5dd533c09a121e9d8b11473cacddd825f4eea101f1ae7684277e48` |
+| `rehearsal-10-refresh/README.md` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), verdict and provenance note | `bb8c8c5af0e3ea1551ee3a7e5f7226f752e97cdfdd94f13114eda50fca6e3727` |
+| `rehearsal-10-refresh/diagnostic-what-if-not-evidence/README.md` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), DIAGNOSTIC WHAT-IF, NOT ACCEPTANCE EVIDENCE, README.md | `0a85485298d0784e2adbdb9b1c9b01866862cec4c2e96f32b534f3f5a2cb20cd` |
+| `rehearsal-10-refresh/diagnostic-what-if-not-evidence/anchor_diag.py` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), DIAGNOSTIC WHAT-IF, NOT ACCEPTANCE EVIDENCE, anchor_diag.py | `afadb238c52e20bfc299c06bcda8f28bb0f9b6cb902f0447df45b4394121fcfc` |
+| `rehearsal-10-refresh/diagnostic-what-if-not-evidence/whatif_drop_anchor_44369.err` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), DIAGNOSTIC WHAT-IF, NOT ACCEPTANCE EVIDENCE, whatif_drop_anchor_44369.err | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `rehearsal-10-refresh/diagnostic-what-if-not-evidence/whatif_drop_anchor_44369.py` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), DIAGNOSTIC WHAT-IF, NOT ACCEPTANCE EVIDENCE, whatif_drop_anchor_44369.py | `a76156a03bfdd1e387ef7636bfdac4e7dcd3e0d437cacb56df4d267763ec308a` |
+| `rehearsal-10-refresh/diagnostic-what-if-not-evidence/whatif_drop_anchor_44369.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), DIAGNOSTIC WHAT-IF, NOT ACCEPTANCE EVIDENCE, whatif_drop_anchor_44369.txt | `d99154beb9d17a3a4c96477acad74a53f30016950c460d9a1237bc30839ec1ed` |
+| `rehearsal-10-refresh/operator-terminal.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the operator's terminal output, verbatim | `b7de40136536b3172a2a7e3ba0795b28946e68c5dd81838f8a6b092f7c81b564` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), per-cycle log | `c17cf68fd05c057da7998ef2e175835b413267f84937005141df7047efbd1f1e` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.correlate.time.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), resource use of that analysis (/usr/bin/time -v) | `4919b7dac74f6bf24f947b9ccc42bc446e6d53f1f5575a6e70a705505de15f41` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), trace_correlate.py output, unmodified, run by the developer at `25eb359` after the session | `980e212275960e1d918cc446b266cbfbc678dffe9375d7eb96e7d1890b64857c` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), process listing at the run's start | `affc2837c900b3297f19e78e70963de249978796c40a8d946708e81da6aa8258` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.refresh-check.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), tools/refresh_check.py output, run by the developer at `25eb359` after the session | `52623637854c6460c9e2e22694d3807dac0cdd83de4b4bcd3dbdcd12a430b1df` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.run.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), session record | `912fb137528064ebd10c81094dedc6dbef846c84b350ce1611a8a0e74e1152b8` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.smi.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), CPU 3 SMI counts (perf stat -I 10) | `956f3b3946514db8b82280cf9d40f626b0975c1bec31ffd9a4e7b44e27be28f6` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.staging.inventory.json` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), staging inventory (each staged file's SHA-256, taken before any copy) | `73664a50747837c57f3ffb2de06e430ca663e8b3fd5828709f12af660d85d03b` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.staging.sha256` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), staging ledger (sha256sum format; the published staged files) | `5dcdb8247d4aac5d2cfff188f7ee77c1d2d1af3e0c823d24a02d586c0ceca938` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.summary.toml` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), probe summary | `cb9e18941e5d13e11d2434c99c91661aac33f419bc1953af158a8c70fd9a960b` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.tasks.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), task snapshot halfway through the run, with its task lineage and completeness line | `e87ae5ea0c5a52e8dc60553aa925cafdfd6325e412895a13730d4e788c3d48d3` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.trace.dat` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), timer-mode trace with the fair server's probe events (trace-cmd, mono clock) | `bd832cdb4e20464b2303bc95fc5e4584e80ecec58dd378bb8ffd7fe2bb0c425d` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.tsc-pairs.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `e7fc5202c8669ef45d21311ce85643a72d5a0ad18b69c74edd3fc6192efb9799` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.tsc.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), TSC-clock trace instance (CPU 3 local timer entries) | `93f9e580c02ce14ff63ad782227dc9fa2aab6468ca6e4e60776cab548bc6c582` |
+| `rehearsal-10-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-10.csv.usbmon.pcap` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), usbmon capture (empty: no USB adapter behind the emulator's pty) | `21d2251098fbcb943fdc1c3f1198c441421baf3069fc7de4aabf9dbcaa1f0508` |
+| `rehearsal-10-refresh/review/SHA256SUMS` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, SHA256SUMS | `5bee0948079fd75ccc745c67a19d1d61f191575bdd0bee1d7e2a319fedd849ac` |
+| `rehearsal-10-refresh/review/anchor-diagnosis.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, anchor-diagnosis.txt | `a6ec7fe6d818e9b2a115484d7b809ef7a2df721f968b4608bed38c3306d981dc` |
+| `rehearsal-10-refresh/review/context.json` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, context.json | `ac54ae8c07323f49f8b521e623279c1234d3b37df5dfd24cd71dc04e5540bb79` |
+| `rehearsal-10-refresh/review/refresh_check.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, refresh_check.txt | `52623637854c6460c9e2e22694d3807dac0cdd83de4b4bcd3dbdcd12a430b1df` |
+| `rehearsal-10-refresh/review/review.md` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, review.md | `77e3965804e890c67168a29888024ccffdc6955c9f6c533375d4b7aeb0bfe79f` |
+| `rehearsal-10-refresh/review/trace_correlate.err` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, trace_correlate.err | `4919b7dac74f6bf24f947b9ccc42bc446e6d53f1f5575a6e70a705505de15f41` |
+| `rehearsal-10-refresh/review/trace_correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 10; failed as a complete rehearsal), the reviewer's decision and evidence, trace_correlate.txt | `980e212275960e1d918cc446b266cbfbc678dffe9375d7eb96e7d1890b64857c` |
+| `rehearsal-11-refresh/README.md` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), verdict and provenance note | `b2a6bbe8d9531ee91cf4524f1ac6f58a4759b6c031720fad37616790367d508b` |
+| `rehearsal-11-refresh/operator-terminal.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the operator's terminal output, verbatim | `a449193b40b9a7a7697d530fd7fb74eb9178641595f1c7836aecf3f3fa8dcd98` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), per-cycle log | `481a4c687fe276fd98001d65d304dda6a0e0834980bc6507808a493baa1c159c` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.correlate.time.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), resource use of that analysis (/usr/bin/time -v) | `0e6396ae936fa3625b9285c4fecc54cf554e06adad4b693578b81d7b00fdfa70` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), trace_correlate.py output, unmodified, run by the developer at `25eb359` after the session | `3ac4857a106d976e83c968f949390ced44a5cb19cb08f11f53261a608af2fb38` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.procs.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), process listing at the run's start | `a5c4c33bd18a34aa11678aa25b7d06f69aa5eeb4858bf0b5170e24d236c0489a` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.refresh-check.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), tools/refresh_check.py output, run by the developer at `25eb359` after the session | `c17378ec8a49348ad82aa97c8cb8a20a518781ac47c94e7d9fdb6792e65cd84b` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.run.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), session record | `b0808de84addaa3d370a72c54c5d96ea51f6271c59b22f61ed07da06fba43bed` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.smi.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), CPU 3 SMI counts (perf stat -I 10) | `e5766f3ef58db7ca94455ee88009ab02f681ce0b697d3ff43379af891a4b3fff` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.staging.inventory.json` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), staging inventory (each staged file's SHA-256, taken before any copy) | `c020ddd76cc00eb2759337f5c603e1bba2466883297f35cea183792c5d3838e8` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.staging.sha256` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), staging ledger (sha256sum format; the published staged files) | `1da35b061fbadf4add4d62a32de644136fd728959d18fee90852497a4f552ae6` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.summary.toml` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), probe summary | `780cad4b474b83064f999ad9415ae1df02a58873bccea7507d29ae1a8f3ab989` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.tasks.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), task snapshot halfway through the run, with its task lineage and completeness line | `b11d984a444481a8c23dda60f19b461f73cb8b548e1b36c75763621d17a308d9` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.trace.dat` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), timer-mode trace with the fair server's probe events (trace-cmd, mono clock) | `4b80ed686e8bb86baa9eea61b428cb8046801033ba69d4050ad2ce1c6ec84342` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.tsc-pairs.csv` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `aaf626f9b910b48d42090ab48005b0ec59a44710b8c37ca061e8cab7db5b5321` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.tsc.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), TSC-clock trace instance (CPU 3 local timer entries) | `fa39a52c70a7a1381ac5ca11f528ad9a591b516c87a67a63d74ac49562ee6ba3` |
+| `rehearsal-11-refresh/rate-trace-current-1000hz-rt-idle-bounded-fast-motion-obs-open-timer-20261110-11.csv.usbmon.pcap` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), usbmon capture (empty: no USB adapter behind the emulator's pty) | `36452096fe9b26fbaecfb2b9e0b46509ea0cfe9b36789586b5023dbd4f286a6c` |
+| `rehearsal-11-refresh/review/SHA256SUMS` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, SHA256SUMS | `8794700f63924b7f63c711b8af9e802abaf1e2d0bbbc014223895fb3bcd70d63` |
+| `rehearsal-11-refresh/review/context.json` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, context.json | `0065da5719c244bf486075f8d17fe446413d14b5f6269a41e461b4b395dc4c5c` |
+| `rehearsal-11-refresh/review/operator-terminal.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, operator-terminal.txt | `a449193b40b9a7a7697d530fd7fb74eb9178641595f1c7836aecf3f3fa8dcd98` |
+| `rehearsal-11-refresh/review/refresh_check.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, refresh_check.txt | `c17378ec8a49348ad82aa97c8cb8a20a518781ac47c94e7d9fdb6792e65cd84b` |
+| `rehearsal-11-refresh/review/review.md` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, review.md | `c03844d09e373372166102fa365d55a5b80873a16b0ba9496f90dae38d8091ac` |
+| `rehearsal-11-refresh/review/trace_correlate.err` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, trace_correlate.err | `0e6396ae936fa3625b9285c4fecc54cf554e06adad4b693578b81d7b00fdfa70` |
+| `rehearsal-11-refresh/review/trace_correlate.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, trace_correlate.txt | `3ac4857a106d976e83c968f949390ced44a5cb19cb08f11f53261a608af2fb38` |
+| `rehearsal-11-refresh/review/verification.txt` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, verification.txt | `112a5bcdf28c1c069d4f3556915060e8c4cac3f82ce37e76508b886b6007bd63` |
+| `rehearsal-11-refresh/review/verify.py` | Stage 1 emulator rehearsal (timer run, open placement, attempt 11; accepted within its stated limits), the reviewer's decision and evidence, verify.py | `f50ddd545a52b0b82a473e6d54a756e16b49ef94bdeed573de345a58f2a99fa5` |
