@@ -642,7 +642,13 @@ if [ "$any_profiled" -eq 1 ]; then
   command -v "$PERF" >/dev/null || problems+=("$PERF is not installed (linux-tools)")
 fi
 if [ "$any_traced" -eq 1 ]; then
-  command -v "$TRACE_CMD" >/dev/null || problems+=("$TRACE_CMD is not installed")
+  # One file for every use: sudo's secure path and the identity read
+  # (tools/tk_record.py tool) then name the same trace-cmd.
+  if tc_path=$(command -v "$TRACE_CMD") && [[ $tc_path == /* ]]; then
+    TRACE_CMD=$tc_path
+  else
+    problems+=("$TRACE_CMD is not installed")
+  fi
   if [ "$usbmon" -eq 1 ]; then
     command -v "$TCPDUMP" >/dev/null || problems+=("$TCPDUMP is not installed")
     if [ -z "$usb_device" ] || [ ! -f "$usb_device/busnum" ] || [ ! -f "$usb_device/devnum" ]; then
@@ -859,6 +865,8 @@ if [ "$dry_run" -eq 1 ]; then
         "$PERF" "$rt_cpu" "$([ "$exerciser" -eq 1 ] && echo "; the exerciser on CPU $rt_cpu")"
       printf '                   %s start %s %s %s (timekeeping probes, private instance, armed before the TSC instance), read back, state reads around the capture on CPUs %s, %s extract -B %s, %s -k\n' \
         "$TK_RECORDER_TOOL" "$TRACEFS" "$TK_INSTANCE" "$tk_buffer_kb" "$tracer_cpus" "$TRACE_CMD" "$TK_INSTANCE" "$JOURNALCTL"
+      printf '                   %s tool --trace-cmd %s (its identity, before the trace starts and after the recorder'"'"'s report)\n' \
+        "$TK_RECORD_TOOL" "$TRACE_CMD"
     fi
     if [ -n "$fs_controls_cpu" ]; then
       printf 'before the runs: the fair server'"'"'s probe controls on CPU %s (supervisor CPU %s, tracers on CPUs %s): python3 %s run --cpu %s --supervisor-cpu %s --output fs-controls-%s-%s.controls.txt\n' \
@@ -1115,6 +1123,24 @@ tk_owed=0; tk_base=; tk_note=; tk_problem=; tk_armed_t=
 tk_run() { taskset -c "$tracer_cpus" "$@"; }
 tk_priv() { taskset -c "$tracer_cpus" "${sudo_cmd[@]}" "$TK_RECORDER_TOOL" "$1" "$TRACEFS" "$TK_INSTANCE"; }
 tk_mono() { tk_run python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC))'; }
+# trace-cmd's identity (tools/tk_record.py tool): the certificate requires
+# the audited build for every use of it, so it is read before the run's
+# first use (the main trace) and after its last (the recorder's report).
+tk_tool() {  # file, note, when -> 0 when it was read; the identity, or why not, in the record
+  local f=$1 note=$2 when=$3 st
+  tk_run python3 "$TK_RECORD_TOOL" tool --trace-cmd "$TRACE_CMD" --out "$f" 2>"$tmp/tk-tool.err"; st=$?
+  echo "trace-cmd identity, $when: $(python3 - "$f" <<'EOF' 2>&1
+import json, sys
+try:
+    v = json.load(open(sys.argv[1]))
+except (OSError, ValueError) as e:
+    sys.exit(print(f"not written ({e})"))
+ok = v.get("read_status") == "ok"
+print(f"{v['package']} {v['version']} {v['architecture']}, sha256 {v['sha256']}, {v['path']}" if ok else f"not read ({v.get('read_status')})")
+EOF
+)$( [ -s "$tmp/tk-tool.err" ] && printf '; %s' "$(head -c 300 "$tmp/tk-tool.err" | tr '\n' ' ')")" >>"$note"
+  [ "$st" -eq 0 ]
+}
 # Registers and arms it, reads every probe back, waits for the settling updates
 # and takes the first state read; then records the main event's enable state.
 tk_arm() {  # stage base, note -> 0 once all of that held
@@ -1136,7 +1162,8 @@ tk_arm() {  # stage base, note -> 0 once all of that held
   tk_note=$note
   mkdir "$b.tk-tmp"
   run_outputs+=("$b.tk-before.json" "$b.tk-after.json" "$b.tk-log.json" "$b.tk-times.txt" "$b.tk-enable-before.txt"
-                "$b.tk-enable-after.txt" "$b.tk-profile.txt" "$b.tk-stats.txt" "$b.tk.dat" "$b.tk.txt" "$b.tk-journal.txt")
+                "$b.tk-enable-after.txt" "$b.tk-profile.txt" "$b.tk-stats.txt" "$b.tk.dat" "$b.tk.txt" "$b.tk-journal.txt"
+                "$b.tk-tool-after.json")
   tk_base=$b
   if ! tk_priv states >"$b.tk-enable-before.txt" 2>"$tmp/tk.err" || grep -qv ' 1$' "$b.tk-enable-before.txt"; then
     { echo "--- the timekeeping recorder's probes did not read back enabled ---"
@@ -1180,6 +1207,8 @@ tk_collect() {
   elif ! tk_run "${sudo_cmd[@]}" "$TRACE_CMD" report -t -i "$b.tk.dat" >"$b.tk.txt" 2>"$err"; then
     tk_problem+="${tk_problem:+, }the record was not reported ($(tail -n 1 "$err"))"
   fi
+  tk_tool "$b.tk-tool-after.json" "$note" "after the recorder's report" ||
+    tk_problem+="${tk_problem:+, }trace-cmd's identity was not read after the recorder's report"
   priv rm -rf "$b.tk-tmp"
   if tk_run "${sudo_cmd[@]}" "$JOURNALCTL" -k -b -o short-monotonic --no-pager >"$b.tk-journal.txt" 2>"$err"; then
     tk_run python3 "$TK_RECORD_TOOL" log --journal "$b.tk-journal.txt" --from-t "$tk_armed_t" \
@@ -2060,6 +2089,15 @@ run_one() {
     run_outputs=("$dat")
     if [ "$usbmon" -eq 1 ]; then run_outputs+=("$pcap"); fi
     if [ "$profiled" -eq 1 ]; then run_outputs+=("$perfdat"); fi
+    if [ "$timered" -eq 1 ]; then
+      run_outputs+=("$sb.tk-tool-before.json")
+      if ! tk_tool "$sb.tk-tool-before.json" "$note" "before the main trace"; then
+        echo "trace_session: trace-cmd's identity was not read ($(tail -n 1 "$note")): session stopped" | tee -a "$note"
+        echo "verdict: not run (trace-cmd identity)" >>"$note"
+        outcome=stop
+        return
+      fi
+    fi
     # On a pipe, the C library would hold trace-cmd's "Hit Ctrl^C to stop
     # recording" until it exits; stdbuf (which execs it, keeping the PID)
     # makes its output line-buffered. tcpdump reports on stderr, which is

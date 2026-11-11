@@ -400,6 +400,33 @@ if [ -n "$f" ] && [ "$n" -ge "${f%-*}" ] && { [ "$f" = "${f%-*}" ] || [ "$n" -le
 fi
 if [ -e "$mark" ]; then echo present; else echo absent; fi
 EOF
+# A stand-in for dpkg-query, answering as dpkg does: the stand-in trace-cmd
+# is the package trace-cmd at FAKE_TRACE_CMD_VERSION (the audited version by
+# default), with its libraries; any other file is no package's. Its calls
+# are counted (FAKE_LOG.dpkg_calls), and from call FAKE_DPKG_FAIL_FROM on it
+# answers for trace-cmd too as for a file no package installed.
+cat >"$FAKE/dpkg-query" <<'EOF'
+#!/usr/bin/env bash
+n=$(( $(cat "$FAKE_LOG.dpkg_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$FAKE_LOG.dpkg_calls"
+case "$1" in
+  -S) if { [ -n "${FAKE_DPKG_FAIL_FROM:-}" ] && [ "$n" -ge "$FAKE_DPKG_FAIL_FROM" ]; } ||
+         [ "$2" != "$(realpath "$(dirname "$0")/trace-cmd")" ]; then
+        echo "dpkg-query: no path found matching pattern $2" >&2; exit 1
+      fi
+      echo "trace-cmd: $2" ;;
+  -W) shift 3; rc=0
+      for p in "$@"; do
+        case "$p" in
+          trace-cmd) printf 'trace-cmd\t%s\tamd64\tii \n' "${FAKE_TRACE_CMD_VERSION:-3.3.3-1ubuntu2}" ;;
+          libtraceevent1|libtraceevent1-plugin) printf '%s\t1:1.8.7-1\tii \n' "$p" ;;
+          libtracefs1) printf '%s\t1.8.2-1ubuntu1\tii \n' "$p" ;;
+          *) echo "dpkg-query: no packages found matching $p" >&2; rc=1 ;;
+        esac
+      done
+      exit $rc ;;
+  *) exit 2 ;;
+esac
+EOF
 cat >"$FAKE/journalctl" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.journalctl"
@@ -576,7 +603,7 @@ export TRACE_SESSION_SUDO=none TRACEFS="$ROOT/tracefs" FAKE_LOG="$ROOT/fake"
 export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
-export TK_RECORDER_TOOL="$FAKE/tk_recorder" JOURNALCTL="$FAKE/journalctl" TK_SETTLE_S=0.01
+export TK_RECORDER_TOOL="$FAKE/tk_recorder" JOURNALCTL="$FAKE/journalctl" TK_SETTLE_S=0.01 DPKG_QUERY="$FAKE/dpkg-query"
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
 export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" RMDIR="$FAKE/rmdir" FAKE_MOUNTS="$ROOT/mounts"
@@ -1384,9 +1411,23 @@ if [ -n "$SAMPLER" ]; then
   awk '{ print $1 "_" $2 }' "$ROOT/fake.order" | tr '\n' ' ' | grep -q 'tk_start tk_states tsc_start .*tsc_stop .*tk_states tk_disable tk_profile tk_stats tk_remove' ||
     fail "the timekeeping recorder's order around the TSC instance" "$ROOT/fake.order"
   [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "the timekeeping recorder remains"
-  for f in tk-before.json tk-after.json tk-log.json tk-times.txt tk-enable-before.txt tk-enable-after.txt tk-profile.txt tk-stats.txt tk.dat tk.txt tk-journal.txt; do
+  for f in tk-before.json tk-after.json tk-log.json tk-times.txt tk-enable-before.txt tk-enable-after.txt tk-profile.txt tk-stats.txt tk.dat tk.txt tk-journal.txt \
+           tk-tool-before.json tk-tool-after.json; do
     [ -s "$b.$f" ] && grep -q "$f" "$b.staging.sha256" || fail "the recorder's $f is not published and in the ledger" "$b.staging.sha256"
   done
+  # trace-cmd's identity, read through the stand-in dpkg-query as the real one would be: before the main trace and
+  # after the recorder's report, the file the session runs, its SHA-256 and its package.
+  tc_real=$(realpath "$FAKE/trace-cmd") tc_sha=$(sha256sum "$FAKE/trace-cmd" | cut -d' ' -f1)
+  for when in "before the main trace" "after the recorder's report"; do
+    grep -qxF "trace-cmd identity, $when: trace-cmd 3.3.3-1ubuntu2 amd64, sha256 $tc_sha, $tc_real" "$b.run.txt" ||
+      fail "the record lacks trace-cmd's identity $when" "$b.run.txt"
+  done
+  python3 - "$b.tk-tool-before.json" "$tc_real" "$tc_sha" <<'EOF' || fail "the identity file" "$b.tk-tool-before.json"
+import json, sys
+v = json.load(open(sys.argv[1]))
+sys.exit(not (v["read_status"] == "ok" and v["path"] == sys.argv[2] and v["sha256"] == sys.argv[3] and v["package"] == "trace-cmd"
+              and v["libraries"] == {"libtraceevent1": "1:1.8.7-1", "libtraceevent1-plugin": "1:1.8.7-1", "libtracefs1": "1.8.2-1ubuntu1"}))
+EOF
   [ ! -e "$b.tk-tmp" ] || fail "the recorder's temporary directory remains" "$b.run.txt"
   grep -Eq '^armed_t [0-9]+$' "$b.tk-times.txt" && grep -Eq '^confirmed_t [0-9]+$' "$b.tk-times.txt" || fail "the recorder's times" "$b.tk-times.txt"
   grep -q '^timekeeping recorder overruns: 0 ' "$b.run.txt" && grep -q '^main timer event enable before the TSC instance: 1$' "$b.run.txt" &&
@@ -1627,9 +1668,10 @@ if [ -n "$SAMPLER" ]; then
            "66 FAKE_TK_EXTRACT=fail the record was not extracted" \
            "67 FAKE_TK_STATS=fail the recorder's buffer stats were not read" \
            "68 FAKE_TK_OVERRUN=3 the timekeeping recorder lost 3 events: the capture is invalid" \
-           "69 FAKE_JOURNAL=fail the kernel log was not read"; do
+           "69 FAKE_JOURNAL=fail the kernel log was not read" \
+           "79 FAKE_DPKG_FAIL_FROM=4 trace-cmd's identity was not read after the recorder's report"; do
     read -r att envv why <<<"$c"
-    rm -f "$ROOT/fake.tk_states"
+    rm -f "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
     set +e
     env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" \
       --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-fail-$att.log" 2>&1
@@ -1642,7 +1684,22 @@ if [ -n "$SAMPLER" ]; then
     [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "$envv: the recorder remains" "$b.run.txt"
     [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "$envv: the TSC instance remains" "$b.run.txt"
   done
-  rm -f "$ROOT/fake.tk_states"
+  rm -f "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
+  grep -qF "trace-cmd identity, after the recorder's report: not read (the package that installed $(realpath "$FAKE/trace-cmd") is not known (dpkg-query: no path found matching pattern" \
+    "$(base current-100hz-rt-idle-bounded-fast-motion-timer 79).run.txt" || fail "the unread identity is not in the record" "$(base current-100hz-rt-idle-bounded-fast-motion-timer 79).run.txt"
+  # trace-cmd's identity unread before the run: nothing is started, neither the trace nor the recorder.
+  n_rec=$(grep -c '^record ' "$ROOT/fake.trace-cmd" || true) n_tk=$(grep -c '^start ' "$ROOT/fake.tk_recorder" || true)
+  set +e
+  FAKE_DPKG_FAIL_FROM=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 80 --duration 2 \
+    --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-tool.log" 2>&1
+  st=$?
+  set -e
+  rm -f "$ROOT/fake.dpkg_calls"
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 80)
+  [ "$st" -eq 1 ] && grep -q '^verdict: not run (trace-cmd identity)$' "$b.run.txt" &&
+    grep -q '^trace-cmd identity, before the main trace: not read (the package that installed ' "$b.run.txt" &&
+    [ "$(grep -c '^record ' "$ROOT/fake.trace-cmd" || true)" -eq "$n_rec" ] && [ "$(grep -c '^start ' "$ROOT/fake.tk_recorder" || true)" -eq "$n_tk" ] ||
+    fail "an unread identity before the run: status $st, or something was started" "$b.run.txt"
   # The end's read-back failed: no confirmation is written.
   b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 65)
   if grep -q '^confirmed_t' "$b.tk-times.txt"; then fail "a recorder that read back off was confirmed" "$b.tk-times.txt"; fi
@@ -1671,7 +1728,8 @@ if [ -n "$SAMPLER" ]; then
   wait "$pid" || st=$?
   [ "$st" -eq 130 ] || fail "the interrupted recorder session exited $st" "$ROOT/tk-int.log"
   [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "the recorder remains after the interruption" "$ROOT/tk-int.log"
-  for f in tk-before.json tk-after.json tk-enable-before.txt tk-enable-after.txt tk-profile.txt tk-stats.txt tk.dat tk.txt; do
+  for f in tk-before.json tk-after.json tk-enable-before.txt tk-enable-after.txt tk-profile.txt tk-stats.txt tk.dat tk.txt \
+           tk-tool-before.json tk-tool-after.json; do
     [ -s "$b.$f" ] || fail "the interrupted run lost the recorder's $f" "$b.run.txt"
   done
   (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") || fail "the interrupted recorder run's ledger" "$b.run.txt"
