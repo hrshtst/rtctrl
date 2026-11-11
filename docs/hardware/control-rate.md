@@ -2262,96 +2262,108 @@ reviewed plan. A pass supports the diagnosis and supplies a fresh end-to-end
 emulator pass under this declared host policy; it does not pass attempt 12
 or qualify a control rate. A failure shows that this intervention is
 insufficient, without erasing what the three traces established. No idle
-pass is required besides it. Three tools serve it:
+pass is required besides it.
 
-- `tools/wq_mask.sh clear 3 | check | restore | status` changes and
-  restores the mask. Its persistent, append-only record
-  (`~/.local/state/rtctrl-wq-mask.record`) holds the original masks, the
-  target (the original with only CPU 3 cleared) and every step with its
-  time, and it is written before any change. `clear` refuses with nothing
-  changed when a record is open or a value is unreadable. It verifies both
-  masks and that no unbound kernel worker or rescuer stays allowed on CPU 3.
-  A failed write, a failed check or an interruption restores at once.
-  `restore` closes the record only once the originals verify; a failed or
-  unverified restoration keeps the record open.
+The first version of the procedure (`d9e774e`) was not ready: its first
+session command was refused (the controls need the timer mode), nothing
+owned the restoration across a hangup, and the new checks had false passes.
+The corrected procedure is one supervised command, and these tools serve it:
+
+- `tools/option_a.sh` is the supervisor. Before any host change it refuses
+  with nothing changed unless the kernel is 7.0.0-42, the emulator's pty
+  exists, the real-time limit allows the probe's priority, no mask or
+  quiet-host record is open, and the three directories do not exist. It
+  then creates them, fresh, and requires both session commands to pass the
+  session's dry run, the operator's confirmation, sudo and a ready keeper.
+  Then, recording each step's start, end and status, and each obligation
+  before the change that creates it, it runs: the quieting, the mask's
+  clear, the untraced session (attempt 14), the mask check and the gate,
+  then the controls with the timer session (attempt 15), the mask check and
+  the gate. Any nonzero status or a signal stops it with no further step.
+  Its cleanup always waits for the group's other processes, restores and
+  verifies the mask and the quieted services, then ends the keeper.
+- `tools/root_keeper.sh` is the privileged half, started through sudo while
+  the terminal is alive (sudo-rs ties the cached credentials to the
+  terminal, so sudo may refuse after a hangup). It writes only the original
+  mask or the target, and stops or starts only `unattended-upgrades`; it
+  refuses anything else. If the supervisor ends without a finish, the keeper
+  waits for the experiment's process group to end, then writes the original
+  mask back and verifies it.
+- `tools/wq_mask.sh` changes and restores the mask with its append-only
+  record. Its census of the unbound workers and rescuers counts an entry
+  that still exists but cannot be read, or has no well-formed affinity list,
+  as unknown; an unknown entry fails the verification and the restoration.
 - `tools/validation_gate.py` checks one finished run. Completeness and T3
-  are decided by `tools/timing_summary.py` and must agree with the session's
-  record. The bounded read's and the run's failure counters must all be
-  zero. The session's verdict may fail only T1, T2 and T6a. The run must be
-  on the emulator's pty, and its recorded mask must be the target, verified
-  before the run and observed after it. With `--controls`, it also checks
-  that the controls passed.
-- `tools/unbound_work.py` checks the timer capture: no unbound work and no
-  `flush_to_ldisc` on CPU 3 inside the probe's window, and every flush the
-  worker queued seen to run, none on CPU 3. On attempt 12 it fails: 282 of
-  35,940 instruction flushes ran on CPU 3.
+  come from `tools/timing_summary.py` and must agree with the session's
+  record, the failure counters must be zero, and the verdict may fail only
+  T1, T2 and T6a, on the emulator's pty. It reads the mask record as a checked
+  sequence: the fixed values once each, CPU 3 cleared from equal originals,
+  then the actual masks and counts of every step in order. It bounds the run
+  by the supervisor's start and end of its session (the session's own note
+  is written before the load and recorders start). It runs with the record
+  open between the runs, and closed after the experiment.
+- `tools/unbound_work.py` checks the timer capture. CPU 3's occupants come
+  from its switches, from the one running when the window began; no unbound
+  worker or rescuer may run there inside the window, and no unbound work or
+  tty flush may execute there, including work begun before the window. Every
+  instruction flush must be seen to run, and none on CPU 3. A malformed
+  event, a line that is no event, broken switches, a short report or a
+  decoder that fails, even after its last useful line, make the evidence
+  unreadable.
 
-The procedure, as the operator, at the workstation, on the emulator only:
-every step is a bare command followed by `echo "exit $?"`, and every probe
-command names `--port /tmp/rtctrl-rehearsal-tty`. `<date>` is the session's
-date tag.
+The operator, at the workstation, from the repository root, on the emulator
+only, with the arm powered off (or torque-off and supported) and nothing sent
+to it:
 
-0. Preconditions, as for attempts 12 and 13: the arm stays powered off or
-   torque-off and supported, and nothing is sent to it; `uname -r` reads
-   `7.0.0-42-generic`; `dxl_emu` serves `/tmp/rtctrl-rehearsal-tty`; each
-   servo's return delay is 0 (`./build/apps/dxl_inspect --port
-   /tmp/rtctrl-rehearsal-tty write <id> return_delay_time 0` for ids 2 to 9);
-   `sudo prlimit --pid $$ --rtprio=90:90`; `tools/wq_mask.sh status` shows
-   no open record and the mask `ffffffff`; `~/rtctrl-hw/clock-validation-14`
-   and `-15` do not exist.
-1. `tools/quiet_host.sh stop`.
-2. `tools/wq_mask.sh clear 3`: exit 0 required.
-3. `mkdir ~/rtctrl-hw/clock-validation-14`, then the controls and the
-   untraced run (exit 0 required):
-
-    ```sh
-    tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
-      --fs-controls 5 --modes untraced --placements open \
-      --runs current:1000:rt-loaded-excl:fast-motion --duration 20 --attempt 14 \
-      --outdir ~/rtctrl-hw/clock-validation-14
-    ```
-
-4. `tools/wq_mask.sh check`: exit 0 required.
-5. The gate before the timer run (exit 0 required):
+0. Preconditions, as for attempts 12 and 13: `dxl_emu` serves
+   `/tmp/rtctrl-rehearsal-tty`; each emulated servo's return delay is 0
+   (`./build/apps/dxl_inspect --port /tmp/rtctrl-rehearsal-tty write <id>
+   return_delay_time 0` for ids 2 to 9); `sudo prlimit --pid $$
+   --rtprio=90:90` in the shell that runs the supervisor. Running it inside
+   `tmux` keeps a closed terminal window from hanging it up.
+1. `tools/option_a.sh --dry-run`, then `echo "exit $?"`: exit 0 shows both
+   session commands accepted, with nothing changed.
+2. `tools/option_a.sh`, then `echo "exit $?"`. It asks for the confirmation
+   and for sudo once. The sessions run with `--yes`; their commands are fixed
+   in the script:
 
     ```sh
-    uv run --project tools tools/validation_gate.py --mode untraced \
-      --controls ~/rtctrl-hw/clock-validation-14/fs-controls-<date>-14.run.txt \
-      ~/rtctrl-hw/clock-validation-14/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-<date>-14.csv
+    tools/trace_session.sh --yes --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
+      --placements open --runs current:1000:rt-loaded-excl:fast-motion --duration 20 \
+      --modes untraced --attempt 14 --outdir ~/rtctrl-hw/clock-validation-14
+    tools/trace_session.sh --yes --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
+      --placements open --runs current:1000:rt-loaded-excl:fast-motion --duration 20 \
+      --fs-controls 5 --modes timer --attempt 15 --outdir ~/rtctrl-hw/clock-validation-15
     ```
 
-6. `mkdir ~/rtctrl-hw/clock-validation-15`, then the timer run: the command
-   of step 3 with `--modes timer --attempt 15 --outdir
-   ~/rtctrl-hw/clock-validation-15` and without `--fs-controls 5` (exit 0
-   required).
-7. `tools/wq_mask.sh check`: exit 0 required.
-8. The same gate on the timer run (`--mode timer`, the timer run's `.csv`,
-   no `--controls`).
-9. `tools/wq_mask.sh restore`: exit 0 required (the record is closed).
-10. `tools/quiet_host.sh restore`.
+Its exit status:
 
-Stop without retry, and change no budget, guard, rule or load:
+- 0: both runs were acquired, both gates passed, and every restoration was
+  verified. The acceptance is then judged as below.
+- 1: it stopped after a failed step, a failed gate (the untraced run's T3
+  above all: no timer run) or a signal, with every restoration verified.
+- 2: it refused, and nothing changed.
+- 3: an owed restoration was not verified: stop, keep the records, and
+  restore (`tools/wq_mask.sh restore`, `tools/quiet_host.sh restore`) before
+  anything else; neither tool starts beside an open record. A reboot resets
+  the kernel's mask, after which `restore` verifies and closes the record.
 
-- At step 2, stop either way and start no run. Exit 2 means refused with
-  nothing changed. Exit 1 means the tool has already tried to restore:
-  `tools/wq_mask.sh status` shows whether a record is still open; if so, go
-  to step 9.
-- On any other unexpected exit, or a gate that does not pass, go to steps 9
-  and 10, and start no further run. A failed gate at step 5, a read timeout
-  above all, ends the experiment before the timer run.
-- An interrupted session (Ctrl-C, a closed terminal) runs its own cleanup
-  and exits 130; steps 9 and 10 follow it.
-- If step 9 fails, the cleanup is unresolved: stop, keep the record and
-  repeat `restore` until it verifies. No session starts while a record is
-  open, and `clear` refuses beside it. A reboot resets the kernel's mask,
-  and `restore` then verifies and closes the record.
+Nothing is retried, and no budget, guard, rule or load changes. A signal sent
+to the supervisor alone lets the running session finish before it stops; a
+Ctrl-C or a hangup reaches the session too, which runs its own cleanup first.
+The limits: if the supervisor is killed (SIGKILL) or crashes, only the keeper
+acts, restoring the mask once the group's processes have ended, and the
+quieted services and both records stay for the operator; if the keeper is
+killed too, or the power fails, nothing is restored until the operator does
+(a reboot resets the mask). After a hangup the sessions' own privileged
+cleanup still depends on their sudo, as before.
 
 The validation passes only if all of these hold, judged on the published
-captures:
+captures and records:
 
-- every step exited 0, and both gates passed;
-- the closed record shows the target verified before the first run,
-  observed in effect after each, and the originals restored after the last;
+- the supervisor exited 0;
+- the gate passes on both runs against the closed mask record
+  (`--record-state closed`), with the experiment record's session bounds;
 - zero read failures and timeouts in both runs;
 - the controls passed under their preconditions;
 - the timer run's capture is valid, with zero main-trace, instance and

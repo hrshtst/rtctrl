@@ -2323,10 +2323,12 @@ Attempt 12's T3 read failures still prevent an overall validation pass.
 The T3 diagnosis (`t3-diagnosis/`, the developer's) was accepted by the reviewer's review (`review-t3/`, at `6db9b3b`), with
 a wording correction recorded in README.md: a missing `first_reply_ns` means no completed parsed reply section, not
 necessarily no byte. The reviewer chose Option A; `option-a-prep/` holds its new checks' outputs on attempts 12 and 13.
+The Option A review (`review-option-a/`, at `d9e774e`) requested changes; `option-a-prep2/` holds the corrected tools'
+outputs on the same captures, the corrected commands' dry runs and the reproducers' outcomes.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the T3 diagnosis, and its wording correction | `191f5793b415579f2552854b342fafa4b5cdd0468e1fae0ae491cdb1288122b0` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the Option A review, and the T3 wording correction | `1ed9c9253336e8df3c63f6200ae8e7e5d443bb919748f082cf00ca444c4b8309` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2355,6 +2357,13 @@ necessarily no byte. The reviewer chose Option A; `option-a-prep/` holds its new
 | `option-a-prep/gate-demo.record` | synthetic stand-in mask record for the gate's outputs | `c9b6cbf32db62327ea938b11a327c860062e7a6fcf93b2fbb649430cbe75d205` |
 | `option-a-prep/unbound-12.txt` | Option A check output on the existing captures (unbound-12.txt) | `f886ba9f799ca7061889f6e3d330b501f368c67f661659e493f4b0d00ff1327e` |
 | `option-a-prep/unbound-13.txt` | Option A check output on the existing captures (unbound-13.txt) | `c900d0cfd12d60b11d5c3d7d37d4a226e91d26aca506524f8faf679540d0aa8b` |
+| `option-a-prep2/PROVENANCE.txt` | provenance of the corrected Option A tools' outputs | `e3d5fcc9eb10d069bc5e4f07394f1aa6a19fba847ebdec5a4afd83e5878a3339` |
+| `option-a-prep2/SHA256SUMS` | folder ledger | `507b0e6501993407ddefcee68d1350f4914af4ebdc4b9ed30cecb14660452eeb` |
+| `option-a-prep2/dry-run-timer-15.txt` | corrected Option A tools on the existing captures (dry-run-timer-15.txt) | `75f0f748c314770c0b825e82a239e9450aeaf36e2f4bf2ca54b374ce845a2cfd` |
+| `option-a-prep2/dry-run-untraced-14.txt` | corrected Option A tools on the existing captures (dry-run-untraced-14.txt) | `9b8bc4d9063c9c9b25301fbb63a153294641386d9134622a6af7a09316cedd6c` |
+| `option-a-prep2/reviewer-reproducers.txt` | corrected Option A tools on the existing captures (reviewer-reproducers.txt) | `2fdbf2225edbd30d095298c00bb1b6f384cf08a2b67e0ed9eca2d7b3b03dd426` |
+| `option-a-prep2/unbound2-12.txt` | corrected Option A tools on the existing captures (unbound2-12.txt) | `c40382183a0a8388cc2fc5d1218c6203ebb9ef9aa49de39c97c8250926b5c8a1` |
+| `option-a-prep2/unbound2-13.txt` | corrected Option A tools on the existing captures (unbound2-13.txt) | `740fe3a14df5f16d6e5439d9f1330eeb8cecdac20fc00eafacfcb996f3e70bfe` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2449,6 +2458,17 @@ necessarily no byte. The reviewer chose Option A; `option-a-prep/` holds its new
 | `review-accounting/review.md` | the reviewer's accounting review of 2026-11-11 (at 134da46) | `6c32a430a569baa3ad5961de093f70649411d0506b35d913dccde0d47fb39b2e` |
 | `review-accounting/reviewed-analysis.diff` | accounting review evidence (the reviewer's) | `fdf03480f389e7204b16bbe49f251712bedda2b92bd4254ca31af84f7c8b774b` |
 | `review-accounting/tests.txt` | accounting review evidence (the reviewer's) | `f9f1d4c184f22aee57fb3cb1fadb0a38d84df4885ed16a611586f5fc08088713` |
+| `review-option-a/SHA256SUMS` | Option A review evidence (the reviewer's) | `b518544e3285922855a7ada9cdc7a56ab580995f4f66c7d527dd0f8a2a26dd3e` |
+| `review-option-a/check_gate.py` | Option A review evidence (the reviewer's) | `a58363e2ca2cb4d625851acd6d6a4539fb612a19b701fe4ea50f9a3e1816ecc5` |
+| `review-option-a/check_mask.py` | Option A review evidence (the reviewer's) | `bcfa8e139eccaced3190bd7d09f6d8828509b7da8254a73b76a2e0666c51a2c5` |
+| `review-option-a/check_residency.py` | Option A review evidence (the reviewer's) | `dc50968c42ac8dc76bb5ff0e37b9efe1095c7c70d24684d785fb1d5c06e40146` |
+| `review-option-a/command-and-dry-run.txt` | Option A review evidence (the reviewer's) | `9058bd30238e188f8cb67829f48c66429faab9787459d34b2ba7751059f0e9ef` |
+| `review-option-a/gate-counterexamples.txt` | Option A review evidence (the reviewer's) | `59d5e7b08825bae94d718b54bb658f977b4b678ec609fdcc50fd8e23382aff54` |
+| `review-option-a/mask-counterexamples.txt` | Option A review evidence (the reviewer's) | `966500d0c78a17ab1d68d1c066daf5ad5318fc8b406d670ccd11cd7e6abe1f3e` |
+| `review-option-a/residency-counterexamples.txt` | Option A review evidence (the reviewer's) | `72e01229b7cc333cf5f1aababc197f43eaac9d2ea191c0fdb2b9b34e5a69f094` |
+| `review-option-a/review.md` | the reviewer's Option A review (at d9e774e): changes requested | `f25fbb5771713ee812c55754133773d339d1ba8393a2291d00d520dd25d83e11` |
+| `review-option-a/reviewed.diff` | Option A review evidence (the reviewer's) | `630e13e3df05a6e7733cf270abc12cd8cc95286b33825626fae63d3197fdff26` |
+| `review-option-a/tests.txt` | Option A review evidence (the reviewer's) | `83f175bb9f3f2b5eb5424d72301e0235683a8e25e44fafb18978307493a077c7` |
 | `review-rereview/SHA256SUMS` | re-review evidence (the reviewer's) | `34d751992f69626467dcd7daeb01807bf338615e6908eee11520d356bd0e3600` |
 | `review-rereview/check-fixes.txt` | re-review evidence (the reviewer's) | `6281025ee2928d4d47086095205bd51589ae0b140fe48a683156014e03a9674a` |
 | `review-rereview/check_fixes.py` | re-review evidence (the reviewer's) | `a95ca4593ed98a531b78a4ad16498d134bf6b2808b9cc79a17896eef3e36bdf4` |
