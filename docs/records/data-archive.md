@@ -2316,11 +2316,13 @@ The accounting review (2026-11-11, at `134da46`; `review-accounting/`) accepted 
 counts, supported attempt 12's 105 wakes as guard sleeps by its own replay, and found two corrections: the generic
 guard rule (revision 2) did not establish that the write call owned a sleep, and the cost tool's slept cycles were
 inferred from deadlines. It approved printing a failed conversion's U as a candidate. `analysis-20261111-rev3/` holds the
-corrected analyses (tools at `5d677db`), pending review.
+corrected analyses (tools at `5d677db`). The re-review (2026-11-11, at `177faee`; `review-rereview/`) accepted them and closed
+both findings; its PROVENANCE.txt's "every other figure" excludes the sleep statistics the corrected population moves.
+Attempt 12's T3 read failures still prevent an overall validation pass.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewer's split verdicts and the accounting review's | `3d703c249b02fa1b5976c79221bfd53d6e51fe356ac2395b8e57fa57d2c9dd47` |
+| `README.md` | the section's README: contents, the reviewer's split verdicts, the accounting review's and the re-review's | `d2d6f6909a119ace10881c10aea69711222a96cc2737384eedb55dfebdb8b76a` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2436,3 +2438,9 @@ corrected analyses (tools at `5d677db`), pending review.
 | `review-accounting/review.md` | the reviewer's accounting review of 2026-11-11 (at 134da46) | `6c32a430a569baa3ad5961de093f70649411d0506b35d913dccde0d47fb39b2e` |
 | `review-accounting/reviewed-analysis.diff` | accounting review evidence (the reviewer's) | `fdf03480f389e7204b16bbe49f251712bedda2b92bd4254ca31af84f7c8b774b` |
 | `review-accounting/tests.txt` | accounting review evidence (the reviewer's) | `f9f1d4c184f22aee57fb3cb1fadb0a38d84df4885ed16a611586f5fc08088713` |
+| `review-rereview/SHA256SUMS` | re-review evidence (the reviewer's) | `34d751992f69626467dcd7daeb01807bf338615e6908eee11520d356bd0e3600` |
+| `review-rereview/check-fixes.txt` | re-review evidence (the reviewer's) | `6281025ee2928d4d47086095205bd51589ae0b140fe48a683156014e03a9674a` |
+| `review-rereview/check_fixes.py` | re-review evidence (the reviewer's) | `a95ca4593ed98a531b78a4ad16498d134bf6b2808b9cc79a17896eef3e36bdf4` |
+| `review-rereview/review.md` | the reviewer's re-review of the accounting fixes (at 177faee) | `b049df6692dbb739d7ccd19682f4fcaf0b4592ba54ff08758c88cab6a5e40073` |
+| `review-rereview/reviewed.diff` | re-review evidence (the reviewer's) | `54efb368629d98fdfb095e24f16e91b1281a5840051d68ebefd5c09af1b9b536` |
+| `review-rereview/tests.txt` | re-review evidence (the reviewer's) | `69d5159eba4e1c308976b2c8b53ee3e72340cc35f89c50a50ac772b941d7191d` |

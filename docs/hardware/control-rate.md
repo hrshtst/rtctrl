@@ -2200,10 +2200,29 @@ These are observations, not cost limits. A U whose clock rule failed is now
 printed as a candidate, "candidate U; conversion not accepted", never as
 validated; the certificate's verdict stays separate. This is a reporting
 change only, approved by the accounting review, with the numerical rule
-unchanged. Attempt 13 prints its 524 ns that way. The corrected analyses are
-pending review, and no new acquisition was needed for them. Hardware and H2
-stay paused, T3's read failures still prevent an overall validation pass, and
-no failed historical slot is promoted. This qualifies no control rate.
+unchanged. Attempt 13 prints its 524 ns that way. No new acquisition was
+needed for these corrections.
+
+The re-review (2026-11-11, at `177faee`) accepted the three fixes and closed
+both accounting findings. Revision 3 refuses the counterexamples and still
+accounts attempt 12's 105 guard wakes, and the cost tool's sleeps are the
+trace's. What stands:
+
+- Attempt 12's fresh controls and its recorder-to-conversion component
+  demonstration remain accepted under their recorded conditions.
+- Attempt 12's T3 still fails (14 untraced and 3 timer read failures, cause
+  not established). Accounting for the guard sleeps neither waives those
+  failures nor shows whether the recorder caused them, so the overall
+  validation has not passed.
+- Attempt 13's certificate is valid and its conversion rejected; 524 ns is a
+  candidate, not an accepted bound.
+- The cost observations stay descriptive.
+
+The next step is an offline diagnosis of the read timeouts from the existing
+records and a proposal for any remaining emulator validation; no acquisition
+is authorized. Hardware and H2 stay paused until the validation is decided
+and a separately reviewed execution plan is accepted, and no failed
+historical slot is promoted. This qualifies no control rate.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
