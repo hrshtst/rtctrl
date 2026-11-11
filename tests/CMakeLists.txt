@@ -345,6 +345,17 @@ set_tests_properties(tk_cost_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timekeeping cost regressions OK"
   LABELS unit)
 
+# The loaded emulator validation's gate between and after its runs (tools/validation_gate.py)
+# on synthetic probe logs, summaries, run records and workqueue-mask records.
+add_test(NAME validation_gate_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_validation_gate.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(validation_gate_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "validation gate regressions OK"
+  LABELS unit)
+
 # The read-only idle-state counter snapshots of every traced session run
 # (tools/idle_counters.py) on a fake cpuidle tree.
 add_test(NAME idle_counters_regressions
