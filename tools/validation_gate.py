@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""The loaded emulator validation's gate on one finished run (docs/hardware/control-rate.md, Option A): checked between
-the untraced and the timer invocations, so that a failed T3 stops the experiment before the timer run (the session
-itself treats a failed criterion as data and goes on), and on the timer run before the acceptance analysis. Read-only.
+"""The loaded emulator validation's gate on one finished run (docs/hardware/control-rate.md, Option A), run by its
+supervisor (tools/option_a.sh): between the untraced and the timer invocations, so that a failed T3 stops the experiment
+before the timer run (the session itself treats a failed criterion as data and goes on), and on the timer run; and again
+after the experiment, on the closed records. Read-only.
 
-    validation_gate.py <run>.csv [--controls fs-controls-<date>-<attempt>.run.txt] [--wq-record FILE]
-                       [--allow T1,T2,T6a] [--mode untraced|timer]
+    validation_gate.py <run>.csv --wq-record FILE --experiment FILE --session A|B --record-state open|closed
+                       [--controls fs-controls-<date>-<attempt>.run.txt] [--allow T1,T2,T6a] [--mode untraced|timer]
+                       [--cpu 3]
 
 It passes only if every check passes:
 
@@ -15,9 +17,20 @@ It passes only if every check passes:
 - the bounded read's counters all zero: timeouts, malformed replies, servo errors, recoveries, guard waits and
   inhibited sends; and the run's read failures, write failures and ring drops;
 - the emulator: the probe was given a --port under /tmp and its device line names no USB serial adapter;
-- the declared host condition (tools/wq_mask.sh's record, open or closed): set and verified once, never failed, before
-  the run started; the run record's unbound-workqueue mask equals the record's target; an observation that the target
-  was in effect after the run ended, and none that it was not; a restoration, if recorded, after the run ended;
+- the run's bounds: the supervisor's experiment record holds the session's start and end once each, the end after the
+  start, with status 0; the probe ran inside them (the session started before it and returned after it), so a time
+  before the start is before the run and a time after the end is after it;
+- the declared host condition, tools/wq_mask.sh's record read as a checked sequence:
+  - its fixed values, each once and in order (started, cpu, the original effective, requested and isolated masks, the
+    original census, the target): the CPU is --cpu, the effective and requested originals are equal and hold it, the
+    target is exactly the original less that CPU, the census is complete with at least one worker;
+  - its first steps: the restoration owed, the write (status 0), the verification (both masks the target, at least one
+    worker, none allowed on the CPU, none unknown), no failed set anywhere, the verification before the session started;
+  - then only observations, each of both masks equal to the target, at least one after the session ended;
+  - open (between the runs): nothing after them; closed (after the experiment): exactly one restoration write (status
+    0), after the last session recorded ended, and the restoration (both masks their originals, a complete census, no
+    more workers barred from the CPU than at the start), with no failed restoration; times never going back;
+  - the run record's unbound-workqueue mask equal to the target;
 - with --controls, the fair-server controls' record holds one verdict, and it is "controls pass".
 
 Exit: 0 every check passed; 1 a check failed (stop); 2 the evidence could not be read (stop).
@@ -68,33 +81,123 @@ def wq_time(v: str) -> float:
     return dt.datetime.strptime(m[1] + m[3], "%Y-%m-%dT%H:%M:%S%z").timestamp() + int(m[2]) / 1e9
 
 
+FIXED = ("started", "cpu", "original_cpumask", "original_requested", "original_isolated", "original_census", "target")
+STEPS = ("restore_owed", "set_write", "set_verified", "set_failed", "observed", "restore_write", "restore_failed", "restored")
+
+
+def fields(v: str) -> tuple[float, dict]:
+    """A step's time and its key=value fields (a reason= field takes the rest of the line)."""
+    t = wq_time(v)
+    rest = v.split(None, 1)[1] if " " in v else ""
+    out: dict = {}
+    while rest:
+        k, sep, tail = rest.partition("=")
+        if not sep or not re.fullmatch(r"[a-z_]+", k):
+            raise Unreadable(f"not a key=value field: {rest!r}")
+        if k == "reason":
+            out[k], rest = tail, ""
+        else:
+            val, _, rest = tail.partition(" ")
+            out[k] = val
+    return t, out
+
+
 def read_wq(path: pathlib.Path) -> dict:
-    """tools/wq_mask.sh's record: its fixed values and its steps in order."""
+    """tools/wq_mask.sh's record: its fixed values (each once, in order, at the top) and its steps in order."""
     try:
         lines = path.read_text().splitlines()
     except OSError as e:
         raise Unreadable(f"the workqueue mask record {path}: {e}") from None
-    fixed: dict = {}
-    steps: list = []
+    keys = [ln.partition("=")[0] for ln in lines]
+    if any("=" not in ln for ln in lines):
+        raise Unreadable(f"{path}: a line that is not key=value")
+    if tuple(keys[:len(FIXED)]) != FIXED or any(k in FIXED for k in keys[len(FIXED):]):
+        raise Unreadable(f"{path}: the fixed values are not each once, in order, at the top")
+    if any(k not in STEPS for k in keys[len(FIXED):]):
+        raise Unreadable(f"{path}: an unknown record line")
+    fixed = {k: ln.partition("=")[2] for k, ln in zip(FIXED, lines)}
+    steps = [(ln.partition("=")[0], *fields(ln.partition("=")[2])) for ln in lines[len(FIXED):]]
+    return {"fixed": fixed, "started": wq_time(fixed["started"]), "steps": steps}
+
+
+def read_experiment(path: pathlib.Path) -> dict:
+    """The supervisor's experiment record: each NAME_start and NAME_end (with its status)."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as e:
+        raise Unreadable(f"the experiment record {path}: {e}") from None
+    out: dict = {}
     for ln in lines:
         k, sep, v = ln.partition("=")
-        if not sep:
-            raise Unreadable(f"{path}: not a record line: {ln!r}")
-        if k in ("cpu", "original_cpumask", "original_requested", "original_isolated", "original_census", "target"):
-            if k in fixed:
-                raise Unreadable(f"{path}: {k} twice")
-            fixed[k] = v
-        elif k in ("started", "restore_owed", "set_write", "set_verified", "set_failed", "observed", "restore_write",
-                   "restore_failed", "restored"):
-            steps.append((k, v))
-        else:
-            raise Unreadable(f"{path}: unknown record line {k}")
-    if "target" not in fixed or "cpu" not in fixed:
-        raise Unreadable(f"{path}: no target")
-    return {"fixed": fixed, "steps": steps}
+        m = re.fullmatch(r"(session_[AB])_(start|end)", k)
+        if not sep or not m:
+            continue
+        if k in out:
+            raise Unreadable(f"{path}: {k} twice")
+        t, f = fields(v)
+        out[k] = (t, f.get("status"))
+    return out
 
 
-def gate(csv_path: pathlib.Path, controls: pathlib.Path | None, wq: pathlib.Path, allow: set, mode: str | None) -> list:
+def mask_checks(rec: dict, cpu: int, bounds: tuple, last_end: float, state: str) -> list:
+    """The checked sequence of tools/wq_mask.sh's record against the run's bounds; (check, ok, detail) each."""
+    out: list = []
+    fx = rec["fixed"]
+    try:
+        orig, req, target = mask_value(fx["original_cpumask"]), mask_value(fx["original_requested"]), mask_value(fx["target"])
+        mask_value(fx["original_isolated"])
+        census = re.fullmatch(r"workers=(\d+) allowed=(\d+) unknown=0", fx["original_census"])
+        rcpu = int(fx["cpu"]) if fx["cpu"].isdigit() else -1
+    except Unreadable as e:
+        out.append(("the mask record's fixed values", False, str(e)))
+        return out
+    n0, a0 = (int(census[1]), int(census[2])) if census else (0, 0)
+    ok = (rcpu == cpu and orig == req and orig >> cpu & 1 == 1 and target == orig & ~(1 << cpu) and census is not None
+          and n0 >= 1 and a0 <= n0)
+    out.append(("the mask record's fixed values", ok, f"cpu {fx['cpu']} (expected {cpu}), original {fx['original_cpumask']} "
+                f"(requested {fx['original_requested']}), target {fx['target']}, census {fx['original_census']}"))
+    steps = rec["steps"]
+    times = [rec["started"]] + [s[1] for s in steps]
+    out.append(("the mask record's times never go back", all(a <= b for a, b in zip(times, times[1:])), f"{len(steps)} steps"))
+    start, end = bounds
+    head = [s[0] for s in steps[:3]]
+    ok = head == ["restore_owed", "set_write", "set_verified"] and not any(s[0] == "set_failed" for s in steps)
+    if ok:
+        w, v = steps[1][2], steps[2][2]
+        ok = (w.get("status") == "0" and v.get("cpumask") is not None and v.get("requested") is not None
+              and mask_value(v["cpumask"]) == target and mask_value(v["requested"]) == target and v.get("workers", "0").isdigit()
+              and int(v["workers"]) >= 1 and v.get("allowed") == "0" and v.get("unknown") == "0" and steps[2][1] < start)
+    out.append(("the mask set and verified before the session started, never failed", ok,
+                " ".join(f"{k}{(' ' + ' '.join(f'{a}={b}' for a, b in f.items())) if f else ''}" for k, _, f in steps[:3])))
+    rest = steps[3:]
+    obs = []
+    while rest and rest[0][0] == "observed":
+        obs.append(rest.pop(0))
+
+    def matches(f: dict) -> bool:
+        return (f.get("result") == "matches" and "cpumask" in f and "requested" in f
+                and mask_value(f["cpumask"]) == target and mask_value(f["requested"]) == target)
+    out.append(("the target observed in effect after the session ended, never otherwise",
+                bool(obs) and all(matches(f) for _, _, f in obs) and any(t >= end for _, t, _ in obs),
+                f"{len(obs)} observations, {sum(not matches(f) for _, _, f in obs)} not of the target"))
+    if state == "open":
+        out.append(("the record open, no restoration begun", not rest, ", ".join(s[0] for s in rest) or "nothing after the observations"))
+    else:
+        ok = [s[0] for s in rest] == ["restore_write", "restored"]
+        if ok:
+            w, r = rest[0], rest[1]
+            barred0 = n0 - a0
+            ok = (w[2].get("status") == "0" and w[1] >= last_end and "cpumask" in r[2] and "requested" in r[2]
+                  and mask_value(r[2]["cpumask"]) == orig and mask_value(r[2]["requested"]) == req
+                  and r[2].get("unknown") == "0" and r[2].get("workers", "").isdigit() and r[2].get("allowed", "").isdigit()
+                  and int(r[2]["workers"]) >= 1 and int(r[2]["workers"]) - int(r[2]["allowed"]) <= barred0
+                  and r[2].get("context") == "restore")
+        out.append(("restored after the last session, verified", ok, ", ".join(s[0] for s in rest) or "no restoration"))
+    return out
+
+
+def gate(csv_path: pathlib.Path, controls: pathlib.Path | None, wq: pathlib.Path, allow: set, mode: str | None,
+         experiment: pathlib.Path, session: str, state: str, cpu: int = 3) -> list:
     """(check, ok, detail) for each check; raises Unreadable for evidence that cannot be read."""
     out: list = []
     note = pathlib.Path(str(csv_path) + ".run.txt")
@@ -159,28 +262,21 @@ def gate(csv_path: pathlib.Path, controls: pathlib.Path | None, wq: pathlib.Path
     out.append(("the emulator's pty", bool(port and port[1].startswith("/tmp/") and tty and not tty[1].startswith("ttyUSB")),
                 f"--port {port[1] if port else 'none'}, device {tty[1] if tty else 'none'}"))
 
+    # The run's bounds, from the supervisor's record: the probe ran inside its session.
+    exp = read_experiment(experiment)
+    s0, s1 = exp.get(f"session_{session}_start"), exp.get(f"session_{session}_end")
+    ok = s0 is not None and s1 is not None and s1[1] == "0" and s0[0] < s1[0]
+    out.append(("the session's bounds in the experiment record", ok,
+                f"start {'recorded' if s0 else 'none'}, end {'status ' + str(s1[1]) if s1 else 'none'}"))
+    bounds = (s0[0], s1[0]) if ok else (float("-inf"), float("inf"))  # without bounds, no time is before or after the run
+    last_end = max((v[0] for k, v in exp.items() if k.endswith("_end")), default=float("inf"))
+
     # The declared host condition.
     rec = read_wq(wq)
-    target = mask_value(rec["fixed"]["target"])
-    st = re.search(r"^started: (\S+)$", text, re.M)
-    if not st:
-        raise Unreadable(f"{note}: no start time")
-    t_start = dt.datetime.fromisoformat(st[1]).timestamp()
-    t_end = t_start + float(res.get("elapsed_s", 0))
-    steps = rec["steps"]
-    verified = [wq_time(v) for k, v in steps if k == "set_verified"]
-    out.append(("the mask set and verified once, before the run, never failed",
-                len(verified) == 1 and verified[0] < t_start and not any(k == "set_failed" for k, _ in steps),
-                f"{len(verified)} verifications, {sum(k == 'set_failed' for k, _ in steps)} failures"))
+    out += mask_checks(rec, cpu, bounds, last_end, state)
     line = re.search(r"^unbound workqueues: cpumask (\S+?),", text, re.M)
-    out.append(("the run's recorded mask is the target", bool(line) and mask_value(line[1]) == target,
+    out.append(("the run's recorded mask is the target", bool(line) and mask_value(line[1]) == mask_value(rec["fixed"]["target"]),
                 f"{line[1] if line else 'none'} (target {rec['fixed']['target']})"))
-    obs = [(wq_time(v), v.endswith(" matches")) for k, v in steps if k == "observed"]
-    out.append(("observed in effect after the run, never otherwise", any(ok_ and t >= t_end for t, ok_ in obs)
-                and all(ok_ for _, ok_ in obs), f"{len(obs)} observations, {sum(not o for _, o in obs)} not in effect"))
-    restored = [wq_time(v) for k, v in steps if k == "restored"]
-    if restored:
-        out.append(("restored after the run", all(t >= t_end for t in restored), f"{len(restored)} restorations"))
 
     if controls is not None:
         try:
@@ -197,13 +293,17 @@ def main() -> int:
     p.add_argument("csv", type=pathlib.Path, help="the run's probe log (<run>.csv)")
     p.add_argument("--controls", type=pathlib.Path, help="the fair-server controls' run record")
     p.add_argument("--wq-record", type=pathlib.Path, help="tools/wq_mask.sh's record (default: the open one)")
+    p.add_argument("--experiment", type=pathlib.Path, required=True, help="the supervisor's experiment record")
+    p.add_argument("--session", choices=("A", "B"), required=True, help="the run's session in the experiment record")
+    p.add_argument("--record-state", choices=("open", "closed"), required=True, help="open between the runs, closed after")
+    p.add_argument("--cpu", type=int, default=3, help="the CPU cleared from the mask (default: 3)")
     p.add_argument("--allow", default="T1,T2,T6a", help="criteria the session may fail (default: T1,T2,T6a)")
     p.add_argument("--mode", choices=("untraced", "timer"), help="the run's expected mode")
     a = p.parse_args()
     wq = a.wq_record or pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "rtctrl-wq-mask.record"
     allow = {x for x in a.allow.split(",") if x}
     try:
-        checks = gate(a.csv, a.controls, wq, allow, a.mode)
+        checks = gate(a.csv, a.controls, wq, allow, a.mode, a.experiment, a.session, a.record_state, a.cpu)
     except Unreadable as e:
         print(f"gate: UNREADABLE: {e}")
         return 2
