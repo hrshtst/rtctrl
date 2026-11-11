@@ -2368,7 +2368,8 @@ to it:
    session commands accepted, with nothing changed.
 2. `tools/option_a.sh`, then `echo "exit $?"`. It asks for the confirmation
    and for sudo once. The sessions run with `--yes`; their commands are fixed
-   in the script:
+   in the script (as they were for the first run, attempts 14 and 15; the
+   second run's differences are below):
 
     ```sh
     tools/trace_session.sh --yes --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
@@ -2420,9 +2421,80 @@ failed, and its gate passed 11 of 15 checks. The supervisor stopped (exit
 1), restored and verified the mask and the quieted services, and finished
 the keeper. On attempt 15's capture the residency check passes: no unbound
 worker or rescuer ran on CPU 3 in the window, and all 36204 instruction
-flushes ran, none on CPU 3. The timeout's cause is not yet diagnosed. The
-validation has not passed; the outcome goes to the acceptance review, and
-hardware and H2 stay paused.
+flushes ran, none on CPU 3. The validation has not passed: the acceptance
+review accepted attempt 14 as the untraced component result and found
+attempt 15 and the overall validation failed.
+
+**Attempt 15's timeout (offline diagnosis, accepted).** The trace establishes
+emulator starvation as the timeout's immediate mechanism. Between the
+worker's cycles, CPU 3's idle context migrated the runnable emulator
+(`dxl_emu`, an ordinary task allowed on every CPU) onto CPU 3; its poll
+timer, armed there, woke it onto CPU 3 0.80 ms after the instruction, whose
+flush had already run on CPU 2. It then waited 34.22 ms, runnable, behind the
+busy-polling `SCHED_FIFO` worker, with no switch on CPU 3 and no idle entry
+on CPU 2, and read the instruction and replied only after the read's budget
+had ended. The two longest successful reads (29.8 and 11.8 ms) show the same
+wait, ended by a migration back to CPU 2. The mask did what it governs; the
+emulator lies outside it. Why the scheduler chose those placements, the
+recorder's influence and the milder slow reads are not established. The
+certificate (U 1373 ns accepted) and the wake accounting (every extra wake a
+guard sleep of the failed read) stand as component results; T3 and the
+overall validation stay failed.
+
+**Option A, second run: the emulator kept off CPU 3 (procedure for review;
+not yet executed).** The emulator is launched with an affinity that excludes
+CPU 3, everything else as in the first run: the workqueue exclusion, the
+stress placement, the durations, the 35 ms budget and guard, the recorders,
+the gate and the acceptance rules, and the stop without retry. The changed
+experimental conditions are the unbound workqueue mask and the emulator's
+affinity, both recorded. Keeping the emulator off CPU 3 is a testable
+prevention of the co-location attempt 15 showed; it does not guarantee zero
+timeouts, and it qualifies neither the real USB path nor 1 kHz operation.
+
+- `tools/option_a.sh` runs attempts 16 (untraced) and 17 (timer), into
+  `clock-validation-16`, `clock-validation-17` and
+  `clock-validation-option-a2`. Before any host change it refuses unless
+  exactly one process holds the master of the emulator's pty (the
+  `/dev/ptmx` descriptor whose fdinfo names that pty) and every one of its
+  threads has an affinity without CPU 3 (the dry run checks this too). It
+  records the emulator's pid, start time, threads and every thread's
+  affinity before the first step (`emulator_start=`), and checks them again
+  after each session (`emulator_A=`, `emulator_B=`): another process holding
+  the pty, or a thread that may run on CPU 3, stops the experiment there, as
+  any failed step does.
+- `tools/emulator_residency.py <timer run>.csv --experiment
+  <experiment.record>` reads the recorded emulator and its threads (and any
+  thread it is seen to create) and checks the timer capture inside the
+  probe's window: no switch to an emulator thread on CPU 3, no wakeup of one
+  onto CPU 3 and no migration of one onto CPU 3, and the emulator seen to
+  run. On attempt 15's capture, with its emulator allowed on every CPU, it
+  finds 139 runs, 42 wakeups and 57 migrations there, and fails.
+
+The operator, as before, on the emulator only, with the arm powered off:
+
+0. Stop any running emulator (Ctrl-C), then launch a new one with CPU 3
+   excluded from the start, and give its servos their return delay:
+
+    ```sh
+    taskset -c 0-2,4-31 ./build/apps/dxl_emu --link /tmp/rtctrl-rehearsal-tty --firmware 47
+    for id in 2 3 4 5 6 7 8 9; do ./build/apps/dxl_inspect --port /tmp/rtctrl-rehearsal-tty write $id return_delay_time 0; done
+    for id in 2 3 4 5 6 7 8 9; do ./build/apps/dxl_inspect --port /tmp/rtctrl-rehearsal-tty read $id return_delay_time; done
+    grep Cpus_allowed_list /proc/$(pgrep -x dxl_emu)/task/*/status
+    ```
+
+   (the emulator in its own terminal; the last line must show `0-2,4-31` for
+   every thread); then `sudo prlimit --pid $$ --rtprio=90:90` in the shell
+   that runs the supervisor, inside `tmux`.
+1. `tools/option_a.sh --dry-run`, then `echo "exit $?"`: exit 0, with the
+   emulator's recorded state printed, and nothing changed.
+2. `tools/option_a.sh`, then `echo "exit $?"`: the sessions' commands are the
+   first run's with `--attempt 16 --outdir ~/rtctrl-hw/clock-validation-16`
+   and `--attempt 17 --outdir ~/rtctrl-hw/clock-validation-17`.
+
+The validation then passes only if, besides every criterion below, the
+experiment record holds the three emulator states (the same pid and start
+time, every thread without CPU 3) and `tools/emulator_residency.py` passes on
+the timer capture. Hardware and H2 stay paused.
 
 Nothing is retried, and no budget, guard, rule or load changes. A signal sent
 to the supervisor alone lets the running session finish before it stops; a

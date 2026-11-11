@@ -2340,11 +2340,12 @@ supervisor stopped and restored and verified everything (`clock-validation-optio
 operator's terminal verbatim). `analysis-20261112/` holds the read-only residency check (PASS) and closed-record gates.
 The acceptance review (`review-attempts14-15/`) accepted attempt 14 as the untraced component result and found attempt 15
 and the overall validation failed; `t3-diagnosis-15/` holds the developer's offline diagnosis of attempt 15's timeout
-(pending review).
+(accepted: `review-t3-diagnosis-15/`); `option-a2-prep/` holds the offline evidence of the second run's proposal (the
+emulator kept off CPU 3), whose procedure is for review.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the acceptance review of attempts 14 and 15, the T3 wording correction | `a9665e96cee7edc8e8d535de090c6555cbcf6559c842bb3e231210ac1fffc898` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis and the second run's proposal, the T3 wording correction | `248b46e42b6786060dcc949e4360910a03e741a0799082a34e24ffcdd75a1751` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2456,6 +2457,11 @@ and the overall validation failed; `t3-diagnosis-15/` holds the developer's offl
 | `option-a-host-20261112/keeper-run-dir/replies/501509.1794418197952476411` | Option A (attempts 14, 15), the keeper's directory after the run (keeper-run-dir/replies/501509.1794418197952476411) | `314e0113153523398978ea4ce792c1c0ebf5f7aaca6a619f0e392a660ac7408e` |
 | `option-a-host-20261112/operator-terminal-20261112.txt` | Option A (attempts 14, 15), the operator's terminal output, verbatim | `178d0781b21aacf4b7df479425e612c5273dbfdde39c137068e06dc7135da724` |
 | `option-a-host-20261112/rtctrl-wq-mask.record.restored-20261112T022957` | Option A (attempts 14, 15), tools/wq_mask.sh's closed record | `22a7255b971a900b15ae0174670d386856862a683ceb21a469a2638d2216e596` |
+| `option-a2-prep/PROVENANCE.txt` | Option A second run, the proposal's offline evidence: provenance | `5ec2dd7a62fddd828d37a807c901894535a431789ceadb33b4afa824fab1fa70` |
+| `option-a2-prep/SHA256SUMS` | folder ledger | `6c962bbbdba823a5c7a825d1e84c6208ba6ab58228725de4a81774707546c738` |
+| `option-a2-prep/broken-copies.txt` | the new tool's and the supervisor checks' broken copies, each failing | `364a80d79f13523ede244fd012f48af2f13748c283e61e9e45c7c7f14dd3a1ad` |
+| `option-a2-prep/residency-15.txt` | emulator_residency.py on attempt 15's capture (FAIL, as it must) | `8da02357ee114e71588205325fe25c2229d22c9321abfe3404ef509da07c755e` |
+| `option-a2-prep/synthetic-attempt15.record` | a synthetic record for that demonstration (NOT a supervisor record) | `25b52e208a04f31d21aad4d3c1dd8656882f478102f5294bfc72faa54eb06b7c` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2668,6 +2674,13 @@ and the overall validation failed; `t3-diagnosis-15/` holds the developer's offl
 | `review-t3/replay_t3.py` | T3 review evidence (the reviewer's) | `339e6f70c83bb4680137d13adb920b5b8a73e0b6102f5554ebbc747173c95b03` |
 | `review-t3/review.md` | the reviewer's T3 diagnosis review and Option A decision (at 6db9b3b) | `658abff88e2ca55afb2ee5ec797608a1467a9456b1312a7c4200004090679bd4` |
 | `review-t3/reviewed-commit.diff` | T3 review evidence (the reviewer's) | `0237b4d8cd98067bea24603ff2428ab53eba11cb794a8099711c5649cb4d3ac4` |
+| `review-t3-diagnosis-15/SHA256SUMS` | attempt 15 diagnosis review evidence (the reviewer's) | `842cadc516f6443ba6700c1c2cd246590cf03c7721f9ff1159cef9f12b8d6888` |
+| `review-t3-diagnosis-15/check_trace.py` | attempt 15 diagnosis review evidence (the reviewer's) | `f88a5a0e0e9d38d8c703f54a72074a4c47d536fa1b88dc5623518fa2cd1988f5` |
+| `review-t3-diagnosis-15/decoder.stderr` | attempt 15 diagnosis review evidence (the reviewer's) | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `review-t3-diagnosis-15/developer-ledger-check.txt` | attempt 15 diagnosis review evidence (the reviewer's) | `9e3de9c98ea76092660bdbbe1d8f595aa205b34f878fbe6932141ecc8b0b2a6b` |
+| `review-t3-diagnosis-15/review.md` | the reviewer's review of attempt 15's diagnosis (accepted) | `0253dcff1a3120f930dfefc6854e48403da639e42f268861268001d321b6adba` |
+| `review-t3-diagnosis-15/selected-events.txt` | attempt 15 diagnosis review evidence (the reviewer's) | `13d3c51103a3f98e4406cc9ecdd16f678f25ff3185b08f566a4165e01438166a` |
+| `review-t3-diagnosis-15/trace-facts.json` | attempt 15 diagnosis review evidence (the reviewer's) | `c1990e360ab0af224d9e0398ec67f906ba80044d2b51bd1eaa7913c91c80c667` |
 | `review-attempts14-15/SHA256SUMS` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `b2b702cd4a7cd501cfe1b9811e63209c631e0d727fa8caead4250ed264cddede` |
 | `review-attempts14-15/analysis-ledger-check.txt` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `44ba225d2854db2d04fa5d0e6fac17e01da7c0e24d8b10e496d482cb60408d47` |
 | `review-attempts14-15/gate-14.txt` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `8e0d76aa574eb9f3435cd7652acda5c6acb0101785dfd4cabe8b0272e0afa7d8` |
