@@ -213,7 +213,7 @@ PROBE=./build/apps/x7_bus_timing  # --probe overrides it (the tests do)
 SUMMARY_TOOL=tools/timing_summary.py
 CONFIG=config/crane_x7.toml       # the probe's default configuration
 TRACE_CMD=${TRACE_CMD:-trace-cmd}
-tc_launch=()  # the launch every use of trace-cmd runs under (tools/tk_record.py launch; set below)
+tc_launch=(); tc_launch_ok=0  # the launch every use of trace-cmd runs under (tools/tk_record.py launch; set and checked below)
 TCPDUMP=${TCPDUMP:-tcpdump}
 BPFTRACE=${BPFTRACE:-bpftrace}
 MODPROBE=${MODPROBE:-modprobe}
@@ -645,11 +645,30 @@ fi
 # Every use of trace-cmd runs under one launch: the dynamic loader's and
 # the plugins' search inputs (LD_ variables, HOME, TRACEEVENT_PLUGIN_DIR,
 # TRACECMD_PLUGIN_DIR) removed, so that it loads the libraries and plugins
-# its identity names (tools/tk_record.py).
-mapfile -t tc_launch < <(python3 "$TK_RECORD_TOOL" launch 2>/dev/null)
-if [ "${tc_launch[0]:-}" != env ]; then
+# its identity names (tools/tk_record.py). The producer's own status is
+# checked, and its words must be exactly the prefix this environment needs,
+# built here independently: env, then -u for each fixed input and for every
+# LD_ variable set now, in sorted order. Anything else (a failed producer,
+# a truncated, malformed or extended prefix) refuses the session before
+# anything is created, traced or not: no use of trace-cmd, the version
+# query included, ever runs without the launch.
+tc_launch_want=(env)
+for n in $( { printf '%s\n' HOME TRACEEVENT_PLUGIN_DIR TRACECMD_PLUGIN_DIR LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT; compgen -e | grep '^LD_'; } |
+            LC_ALL=C sort -u); do
+  tc_launch_want+=(-u "$n")
+done
+tc_launch_out=$(python3 "$TK_RECORD_TOOL" launch 2>/dev/null); tc_launch_status=$?
+mapfile -t tc_launch <<<"$tc_launch_out"
+tc_launch_ok=0
+if [ "$tc_launch_status" -eq 0 ] && [ "${#tc_launch[@]}" -eq "${#tc_launch_want[@]}" ]; then
+  tc_launch_ok=1
+  for i in "${!tc_launch_want[@]}"; do
+    [ "${tc_launch[$i]}" = "${tc_launch_want[$i]}" ] || tc_launch_ok=0
+  done
+fi
+if [ "$tc_launch_ok" -ne 1 ]; then
+  problems+=("the launch for trace-cmd was not read: $TK_RECORD_TOOL launch exited $tc_launch_status and printed '$(tr '\n' ' ' <<<"$tc_launch_out" | head -c 300 | sed 's/ *$//')', not '${tc_launch_want[*]}'")
   tc_launch=()
-  [ "$any_traced" -eq 1 ] && problems+=("the launch for trace-cmd was not read ($TK_RECORD_TOOL launch)")
 fi
 if [ "$any_traced" -eq 1 ]; then
   # One file for every use: sudo's secure path and the identity read
@@ -868,7 +887,11 @@ if [ "$dry_run" -eq 1 ]; then
   fi
   if [ "$any_traced" -eq 1 ]; then
     printf 'traced runs add: stdbuf -oL -eL %s %s --temp <stage>/<log>.csv.trace-tmp -o <stage>/<log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
-    printf 'trace-cmd runs as: %s %s (the libraries'"'"' and plugins'"'"' search inputs removed)\n' "${tc_launch[*]}" "$TRACE_CMD"
+    if [ "$tc_launch_ok" -eq 1 ]; then
+      printf 'trace-cmd runs as: %s %s (the libraries'"'"' and plugins'"'"' search inputs removed)\n' "${tc_launch[*]}" "$TRACE_CMD"
+    else
+      echo "trace-cmd runs as: NOT READ (the launch was refused; the session would not start)"
+    fi
     if [ "$any_timer" -eq 1 ]; then
       printf 'timer runs record: the traced events, plus (after the availability check) every timer arming and cancellation, CPU %s deadline writes, idle, NMIs, system calls and page faults, the worker'"'"'s sleep calls by name, and process lifecycle;\n' "$rt_cpu"
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
@@ -1824,7 +1847,7 @@ fi
   else
     echo "usbmon: not used"
   fi
-  echo "tracers: $("${tc_launch[@]}" "$TRACE_CMD" -h 2>&1 | grep -m 1 -i version); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
+  echo "tracers: $(if [ "$tc_launch_ok" -eq 1 ]; then "${tc_launch[@]}" "$TRACE_CMD" -h 2>&1 | grep -m 1 -i version; else echo "trace-cmd not run (no launch)"; fi); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
   echo "session pid: $$"
   echo "batch workloads: $batch_list (exempt: $BATCH_EXEMPT)"
   if [ -e "$QUIET_HOST_STATE" ]; then

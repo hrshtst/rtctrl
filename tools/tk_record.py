@@ -263,6 +263,8 @@ def runtime(exe: str, env: dict, ld_list: str | None = None, preload_file: str =
         preload = "none"
     except OSError as e:
         raise _Unread(f"{preload_file}: {e.strerror or e}") from None
+    # The search inputs left in the sanitized base launch (none). The main trace's record child adds stdbuf's own
+    # line-buffering preload after it, the one documented exception; this does not describe that child's environment.
     inputs = {k: env.get(k) for k in ("HOME", "TRACEEVENT_PLUGIN_DIR", "TRACECMD_PLUGIN_DIR")}
     inputs["LD"] = sorted(k for k in env if k.startswith("LD_"))
     return {"inputs": inputs, "preload": preload, "loaded": loaded, "libraries": libraries, "plugin_dirs": dirs, "plugins": plugins}

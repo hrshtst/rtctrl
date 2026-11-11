@@ -636,7 +636,7 @@ export TK_RECORDER_TOOL="$FAKE/tk_recorder" JOURNALCTL="$FAKE/journalctl" TK_SET
 # trace-cmd's runtime through the stand-ins; and search inputs in the
 # session's environment, which no use of trace-cmd may see.
 export TK_LD_LIST="$FAKE/ld-list" TRACEEVENT_PLUGIN_DIR="$ROOT/unreviewed-plugins" TRACECMD_PLUGIN_DIR="$ROOT/unreviewed-tc-plugins"
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROOT/no-such-lib"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROOT/no-such-lib" LD_RTCTRL_SMOKE=1
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
 export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" RMDIR="$FAKE/rmdir" FAKE_MOUNTS="$ROOT/mounts"
@@ -1787,6 +1787,44 @@ EOF
   (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") || fail "the interrupted recorder run's ledger" "$b.run.txt"
   # Its one reading of the fair server's counts would flip the parity that stand-in's misses go by.
   rm -f "$ROOT/fake.fs_profile_calls"
+  # The launch every use of trace-cmd runs under: a producer that fails
+  # after printing the right prefix, one that prints a truncated, a
+  # malformed or an extended prefix, refuses the session before anything is
+  # created (no stage, tracer, probe, instance or recorder), and an
+  # untraced session too; nothing falls back to an unsanitized launch. A
+  # python3 on PATH changes only tools/tk_record.py launch (FAKE_LAUNCH).
+  mkdir -p "$FAKE/pywrap"
+  cat >"$FAKE/pywrap/python3" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = tools/tk_record.py ] && [ "${2:-}" = launch ] && [ -n "${FAKE_LAUNCH:-}" ]; then
+  out=$("$FAKE_REAL_PYTHON" "$@")
+  case "$FAKE_LAUNCH" in
+    fail) printf '%s\n' "$out"; exit 7 ;;
+    truncated) echo env; exit 0 ;;
+    malformed) printf '%s\n' "$out" | sed '3s/^/x/'; exit 0 ;;
+    extra) printf '%s\n--\n' "$out"; exit 0 ;;
+  esac
+fi
+exec "$FAKE_REAL_PYTHON" "$@"
+EOF
+  chmod +x "$FAKE/pywrap/python3"
+  real_python=$(command -v python3)
+  counts() { local f n; for f in trace-cmd tk_recorder tsc_instance fs_probes mount; do n=$(grep -c '^record \|^start \|^define \|(mount point' "$ROOT/fake.$f" 2>/dev/null); echo -n "${n:-0} "; done; }
+  for c in "81 fail 7 timer current:100:rt-idle:fast-motion" "82 truncated 0 timer current:100:rt-idle:fast-motion" \
+           "83 malformed 0 timer current:100:rt-idle:fast-motion" "84 extra 0 timer current:100:rt-idle:fast-motion" \
+           "85 fail 7 untraced current:100:idle:full"; do
+    read -r att how want_exit mode run <<<"$c"
+    before=$(counts)
+    set +e
+    FAKE_LAUNCH=$how FAKE_REAL_PYTHON="$real_python" PATH="$FAKE/pywrap:$PATH" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" \
+      --yes --attempt "$att" --duration 2 --modes "$mode" --runs "$run" </dev/null >"$ROOT/launch-$how-$mode.log" 2>&1
+    st=$?
+    set -e
+    [ "$st" -eq 2 ] && grep -qF "the launch for trace-cmd was not read: tools/tk_record.py launch exited $want_exit and printed " "$ROOT/launch-$how-$mode.log" ||
+      fail "a $how launch ($mode): status $st, or no refusal" "$ROOT/launch-$how-$mode.log"
+    [ "$(counts)" = "$before" ] && ! ls "$OUT"/*-"$DATE-$att".csv* >/dev/null 2>&1 ||
+      fail "a $how launch ($mode): something was created ($before -> $(counts))" "$ROOT/launch-$how-$mode.log"
+  done
   # The fair server's probes: a group left by an earlier session, and a
   # definition the kernel refuses, refuse the session before anything is
   # sent; a partly made group is removed; one of unknown ownership (an

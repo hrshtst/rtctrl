@@ -1220,7 +1220,14 @@ beside each file:
 | libtracefs.so.1 | libtracefs1 | 1.8.2-1ubuntu1 | `/usr/lib/x86_64-linux-gnu/libtracefs.so.1.8.2` |
 | Plugins | libtraceevent1-plugin | 1:1.8.7-1 | the 13 plugins of `/usr/lib/x86_64-linux-gnu/traceevent/plugins`, the only directory searched |
 
-The launch must leave no search input and the host no `/etc/ld.so.preload`. The
+The sanitized base launch must leave no search input, and the host must have no
+`/etc/ld.so.preload`; the main trace's record child adds only `stdbuf`'s own
+line-buffering preload after it, the one documented exception, which the
+recorded inputs do not describe. The session checks the launch's producer by its
+own exit status and requires its words to be exactly the prefix the session
+builds for its environment (`env`, then `-u` for each fixed input and every `LD_`
+variable set); a failed producer or a truncated, malformed or extended prefix
+refuses the session, traced or not, before anything is created. The
 generic libraries the loader also resolves (libz, libzstd, libc) are recorded,
 not pinned. Any other file, version, plugin or search input makes the
 certificate UNSUPPORTED: changing the baseline (an upgrade of any of these
@@ -2119,8 +2126,9 @@ The implementation review of 2026-11-11 requested three corrections, which its
 re-review accepted: the cleanup's existence checks answer only from a listing
 read in full, the evidence files are read strictly, and the audited trace-cmd
 build is enforced for every use. The re-review then required the trace
-libraries and the plugin set to be pinned as well; that follow-up (the runtime
-above, and the launch) is pending its review. Changing `tools/timer_service.py`
+libraries and the plugin set to be pinned as well. Its review accepted the pins
+and required the launch's producer to be checked by its status and whole
+output; that correction is pending review. Changing `tools/timer_service.py`
 voids the controls accepted under the earlier analysis for new work; their
 recorded results stand. Nothing here has run on the real kernel inside a
 session: the extraction and report path, the recorder's cost under load on the
