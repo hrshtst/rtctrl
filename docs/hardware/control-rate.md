@@ -2397,6 +2397,18 @@ Its exit status:
   beside an open record. A reboot resets the kernel's mask, after which
   `restore` verifies and closes the record.
 
+Before the first acquisition, the keeper was checked on the real host, with
+no change: on 2026-11-12, at `03b6ba2` (after its final preflight passed),
+the operator started it as root through sudo-rs 0.2.13, read its status
+against the recorded masks and finished it (a finish sent only if every
+earlier check passed and the masks still read as recorded). Its 18 checks
+passed: the keeper ran as root; its directory and replies directory (0755)
+and its ready file, log and reply files (0644) were root's, its FIFO the
+user's (0600);
+the masks read `ffffffff` before, during and after; it ended, its FIFO
+removed, and its log records no write, mask request or service operation.
+This result is for review; Option A's acquisition waits for it.
+
 Nothing is retried, and no budget, guard, rule or load changes. A signal sent
 to the supervisor alone lets the running session finish before it stops; a
 Ctrl-C or a hangup reaches the session too, which runs its own cleanup first.

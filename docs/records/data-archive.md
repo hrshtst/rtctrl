@@ -2331,10 +2331,13 @@ and the same cases adapted to the revised interfaces, on the corrected tools (at
 umask); `option-a-prep4/` holds its reproducers and four broken copies' outcomes on the corrected tools (at `2088c43`).
 The review at `2111f92` (`review-option-a-2111f92/`) found a failed release falling through to the keeper's group-only
 fallback; `option-a-prep5/` holds its reproducer and the new regression on the corrected tools (at `fc938f3`).
+The review at `03b6ba2` (`review-option-a-03b6ba2/`) accepted the corrections; after the final preflight on `03b6ba2` and
+the guard the keeper-check review (`review-keeper-check/`) asked for, `keeper-check-20261112/` holds the operator's
+scoped no-change keeper check under sudo-rs (18 PASS, the masks unchanged) with its rehearsals.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the Option A review at 2111f92, and the T3 wording correction | `074d7b170ecfd63fe0a3d272741cdf89a496bea61228806220b217457c068bd8` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the no-change keeper check, and the T3 wording correction | `877365df042210866c96b2f51ee4ae6eef586ccaea5c992ad81e308ea0d028bd` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2390,6 +2393,45 @@ fallback; `option-a-prep5/` holds its reproducer and the new regression on the c
 | `option-a-prep5/release-regression.txt` | the review's release-failure case on the corrected Option A tools (release-regression.txt) | `665dfde588ff3f43433ac15599b09a9f97cd2d56d252ec0e0fb0497b9c79274a` |
 | `option-a-prep5/reviewer-reproducer.txt` | the review's release-failure case on the corrected Option A tools (reviewer-reproducer.txt) | `f7f8dfbd4718aa449ab2dcebdc44756bbed3fe135e0cb866528fb973114d195a` |
 | `option-a-prep5/smoke.txt` | the review's release-failure case on the corrected Option A tools (smoke.txt) | `e5f86309168e7d3a657d5fb95c4b2f9a07114dc9bf5bce278a51ad6786502eac` |
+| `keeper-check-20261112/PROVENANCE.txt` | provenance of the no-change keeper check and its rehearsals | `1a9f396a2c3ad105322a127fbafdb8fdcdaca24d12c39eb7e31650f4d2a8b255` |
+| `keeper-check-20261112/SHA256SUMS` | folder ledger | `8de446553b604869932d63f891669aa354878847e81dd051acac3813a86404f7` |
+| `keeper-check-20261112/keeper.log` | the keeper's log (start; finish with the original in effect) | `777ba0ddeb5e134d246fc91c9283b3508034876bf671740bc1edb3bfa04180f9` |
+| `keeper-check-20261112/keeper_check.sh` | the no-change keeper check script, as run (with the guard before the finish) | `5d75801556ebeac249cc3ab2bf357e41462a9ed1c5b42b5083c4dad3a2d81a34` |
+| `keeper-check-20261112/layout-ended.txt` | no-change keeper check record (layout-ended.txt) | `51e6082a2098dd2bb57886e754cee1223ae2f6f2b0c64ed34e95d956cde8cfcb` |
+| `keeper-check-20261112/layout-started.txt` | no-change keeper check record (layout-started.txt) | `bb195c1c1a9d3d1a4876b91023bdea7cf93cd2de0de6d083da815746cbf7dd91` |
+| `keeper-check-20261112/operator-terminal.txt` | the operator's terminal output, verbatim | `4de52beb95cd242bee28536c2e029f8fb93e47f5e25e1dc9cf7992ddefef0f13` |
+| `keeper-check-20261112/rehearsal-before-guard/early/keeper.log` | no-change keeper check: rehearsal record | `e42bcf87a02a6e3c2bb0d479a53d51d536ccdb2186dedaac49ba350900694d4b` |
+| `keeper-check-20261112/rehearsal-before-guard/early/keeper_check.rehearsal.sh` | no-change keeper check: rehearsal record | `4e9838e1c1aa4708e248bef62e59bc32ae6b8027e1ae5f16010e1efe459d76d4` |
+| `keeper-check-20261112/rehearsal-before-guard/early/transcript.txt` | no-change keeper check: rehearsal record | `3c266d476c088ec64eb737806f53f40c9a5729a4e2a042015658ada80762db87` |
+| `keeper-check-20261112/rehearsal-before-guard/normal/keeper.log` | no-change keeper check: rehearsal record | `44cbec07c52df90386bb2a0131d2f05f21fd57f4ba17c669cbbcc8e3aa1d9dd8` |
+| `keeper-check-20261112/rehearsal-before-guard/normal/keeper_check.rehearsal.sh` | no-change keeper check: rehearsal record | `f6a1210c82bad77eccbd8f70b8e0c71fb0414a7900c3c67c6bf8f0964f2135f5` |
+| `keeper-check-20261112/rehearsal-before-guard/normal/transcript.txt` | no-change keeper check: rehearsal record | `9ce519cdfde5538c8b5c708eba6ccc06d6176c1f044b1cc28c2537ed4504f55c` |
+| `keeper-check-20261112/rehearsal-guard/check-failed/cpumask-at-end` | no-change keeper check: rehearsal record | `6ff294c7bd600cfc56e4fe806facf4337f4cd360dc3bb56f873552e340eafb7a` |
+| `keeper-check-20261112/rehearsal-guard/check-failed/keeper.log` | no-change keeper check: rehearsal record | `43fa75cee1d5dee48a37334d0c146e038721eadf520c485c7b296d3c713b6a64` |
+| `keeper-check-20261112/rehearsal-guard/check-failed/keeper_check.rehearsal.sh` | no-change keeper check: rehearsal record | `92238b5f4660c1fdda8bde83c1fc46ef50deacaeaa228e527a82bc5800690a56` |
+| `keeper-check-20261112/rehearsal-guard/check-failed/transcript.txt` | no-change keeper check: rehearsal record | `dead7059856c0b392414544cc85cf259c544ba66eab598031275859a58be5f0a` |
+| `keeper-check-20261112/rehearsal-guard/check-failed/write` | no-change keeper check: rehearsal record | `739017c33699c28328a7618aa5adf77924b95638c7ffe93a7aca34230a647dfe` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed-unguarded/cpumask-at-end` | no-change keeper check: rehearsal record | `6ff294c7bd600cfc56e4fe806facf4337f4cd360dc3bb56f873552e340eafb7a` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed-unguarded/keeper.log` | no-change keeper check: rehearsal record | `88e8af254d8084af09e0dc6813fe7906de879ce162b7ad3a86de1814c89fc654` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed-unguarded/keeper_check.rehearsal.sh` | no-change keeper check: rehearsal record | `977ecb4e73d5d3f071cdacacf7aa7fb2a4fb54cf680f592f938ca7b406487678` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed-unguarded/transcript.txt` | no-change keeper check: rehearsal record | `a923b078f7508a5922523eaf80915846bd576700110b8b2830888922964bcf17` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed-unguarded/write` | no-change keeper check: rehearsal record | `739017c33699c28328a7618aa5adf77924b95638c7ffe93a7aca34230a647dfe` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed-unguarded/writes.log` | no-change keeper check: rehearsal record | `6f610989cf83f9cdeee283a0d87986ef1b2f9d73d3bbd7b9046807a67a215f3e` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed/cpumask-at-end` | no-change keeper check: rehearsal record | `8f00de0df42b5a53ab636b35c56ca3a7d581249f77a22d82015d590c951dbc88` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed/keeper.log` | no-change keeper check: rehearsal record | `0d87e983f4919ac79c5f5e6741ab66525f0081273342f2bc97edf21cd0845bfd` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed/keeper_check.rehearsal.sh` | no-change keeper check: rehearsal record | `d4e67e6e4aff85d7dcadde6972891ee9f78df2bc3b1b0cc385164badd77fd5b8` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed/transcript.txt` | no-change keeper check: rehearsal record | `66b8eb6ec9ffffaaec9a30d40677a6c1229f2051cdfd43cf7c101cf3ca51f091` |
+| `keeper-check-20261112/rehearsal-guard/mask-changed/write` | no-change keeper check: rehearsal record | `739017c33699c28328a7618aa5adf77924b95638c7ffe93a7aca34230a647dfe` |
+| `keeper-check-20261112/rehearsal-guard/normal/cpumask-at-end` | no-change keeper check: rehearsal record | `6ff294c7bd600cfc56e4fe806facf4337f4cd360dc3bb56f873552e340eafb7a` |
+| `keeper-check-20261112/rehearsal-guard/normal/keeper.log` | no-change keeper check: rehearsal record | `6cbf822c83420156815c894b5ccb3abbcd51654588fc17cf0dfa999fb671523b` |
+| `keeper-check-20261112/rehearsal-guard/normal/keeper_check.rehearsal.sh` | no-change keeper check: rehearsal record | `c9b045db097278c613adfce7a45c01907630ee497e8adc5ee56d72270e3d6e19` |
+| `keeper-check-20261112/rehearsal-guard/normal/transcript.txt` | no-change keeper check: rehearsal record | `ce88096c9821623817b8124253176f41d7c0fc42c44ab05e4b33374c3f98e7b1` |
+| `keeper-check-20261112/rehearsal-guard/normal/write` | no-change keeper check: rehearsal record | `739017c33699c28328a7618aa5adf77924b95638c7ffe93a7aca34230a647dfe` |
+| `keeper-check-20261112/run-dir/keeper.log` | no-change keeper check record (run-dir/keeper.log) | `777ba0ddeb5e134d246fc91c9283b3508034876bf671740bc1edb3bfa04180f9` |
+| `keeper-check-20261112/run-dir/keeper.ready` | no-change keeper check record (run-dir/keeper.ready) | `9273f5c5ab3c627eb4bcd025e95a573e990cb93fa2f3f962159742512277708f` |
+| `keeper-check-20261112/run-dir/replies/491791.1794417192835231765` | no-change keeper check record (run-dir/replies/491791.1794417192835231765) | `dd44a11ed572e8a9c5e1c187743a6514617250dcff6178446bc956988718ae68` |
+| `keeper-check-20261112/run-dir/replies/491825.1794417192928855828` | no-change keeper check record (run-dir/replies/491825.1794417192928855828) | `314e0113153523398978ea4ce792c1c0ebf5f7aaca6a619f0e392a660ac7408e` |
+| `keeper-check-20261112/transcript.txt` | the check's own transcript (18 PASS, no FAIL) | `2e038be0ddfa942893d3b395aff69f8bd06dd9f9c58719855731a995c840b737` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2530,6 +2572,23 @@ fallback; `option-a-prep5/` holds its reproducer and the new regression on the c
 | `review-option-a-2111f92/repro-supervisor.txt` | Option A review evidence at 2111f92 (the reviewer's) | `ca4bf4ee1a4758723b6801eb5d915f50bc7b2bbc2ecfdd270185e94a7f6c3987` |
 | `review-option-a-2111f92/review.md` | the reviewer's Option A review (at 2111f92): changes requested, one blocker | `b5940112c957697d4c18b558a47bcdc097620c5cb06e1fb2e16c5be790209aa3` |
 | `review-option-a-2111f92/syntax-check.txt` | Option A review evidence at 2111f92 (the reviewer's) | `8914ec557bd88de4058c5645bb04eaa979a23d323032f38abcd8b477e33afea6` |
+| `review-option-a-03b6ba2/SHA256SUMS` | Option A review evidence at 03b6ba2 (the reviewer's) | `b9d6acc1ac38b71dd09f9bdcab8e3baf3574b2a9b0ffef993d19a22cbc243518` |
+| `review-option-a-03b6ba2/check_release_fix.bash` | Option A review evidence at 03b6ba2 (the reviewer's) | `168f8379bcec1939470d945ce0580eeb07b922f7aee8318b6cee3aee12406522` |
+| `review-option-a-03b6ba2/cleanup.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `1fec39b7970a808a2026e90d8e6df2e1be652564f25e3c15947e0c4f13238af1` |
+| `review-option-a-03b6ba2/developer-ledger-check.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `6d25a98169f95e291e17e218c6fc071b2e5adbf571af9c8d08f9ac69b345678b` |
+| `review-option-a-03b6ba2/fixture.bash` | Option A review evidence at 03b6ba2 (the reviewer's) | `379b5d493bf5e587a3b9eaaf9a31fde395b94aacfd8a989573b9695f96e1ecd2` |
+| `review-option-a-03b6ba2/lost.out` | Option A review evidence at 03b6ba2 (the reviewer's) | `808b73b34eb5f1b3eff7b254c19f0220c57ce90b2a806771be29bc8ec72bc84f` |
+| `review-option-a-03b6ba2/repro-lost-experiment.record` | Option A review evidence at 03b6ba2 (the reviewer's) | `bac069d1b3074623fd65a9b164db5d313ce5e2774753c0ee8da37c3d1aa349b9` |
+| `review-option-a-03b6ba2/repro-lost-keeper.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `6844f2746cb7582b1a2d8c63bfff3b5bb42bcbc0de876532697264cc9c368e3e` |
+| `review-option-a-03b6ba2/repro-lost-supervisor.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `8ea0e2ce73a73c6bcba85938ac1ae8d2a43323a66404959e5cb1aa316464b131` |
+| `review-option-a-03b6ba2/repro-undelivered-experiment.record` | Option A review evidence at 03b6ba2 (the reviewer's) | `1b0c0daeed9099eec676ac9d290da1ff841d143cf5005c6cd7b08bdb36467bdd` |
+| `review-option-a-03b6ba2/repro-undelivered-keeper.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `36af9f8a3be9af88835bbb4dac0ecc8d64113b9d1713dc6f706500b94d5c5194` |
+| `review-option-a-03b6ba2/repro-undelivered-supervisor.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `7b887ce2c742c9c377be5c10f236a05be2f8ebced1105b7fa7a4443e6a4586c5` |
+| `review-option-a-03b6ba2/review.md` | the reviewer's Option A review (at 03b6ba2): accepted for the next stage | `4f95006ffb07d8249e108d3efad7b41cee30d096ad6c84d40ae709622a073b68` |
+| `review-option-a-03b6ba2/undelivered.out` | Option A review evidence at 03b6ba2 (the reviewer's) | `6fe267ce0f07916ce59c11e42c44c70463320c199144f9c263a79ba8eba06605` |
+| `review-option-a-03b6ba2/verification.txt` | Option A review evidence at 03b6ba2 (the reviewer's) | `39de8d4afe2ff31528d8702b9a70b8d5310205755f79447d0ee793059a7a6e9f` |
+| `review-keeper-check/guard-acceptance.md` | the reviewer's review of the keeper-check script: a guard before the finish | `772ea7770aa5c8eb66387fa9cf5b816db040478fda5b846111c2ebd045460662` |
+| `review-keeper-check/review.md` | the reviewer's review of the keeper-check script: a guard before the finish | `2f7ab8961ac5f28d7f06d8f21abcb20d80a753fafa133d5c2d6b6cbe71904ee3` |
 | `review-rereview/SHA256SUMS` | re-review evidence (the reviewer's) | `34d751992f69626467dcd7daeb01807bf338615e6908eee11520d356bd0e3600` |
 | `review-rereview/check-fixes.txt` | re-review evidence (the reviewer's) | `6281025ee2928d4d47086095205bd51589ae0b140fe48a683156014e03a9674a` |
 | `review-rereview/check_fixes.py` | re-review evidence (the reviewer's) | `a95ca4593ed98a531b78a4ad16498d134bf6b2808b9cc79a17896eef3e36bdf4` |
