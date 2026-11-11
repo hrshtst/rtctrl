@@ -377,12 +377,132 @@ def expect(cond: bool, what: str, out: str) -> None:
         sys.exit(1)
 
 
+def guard_case(change=None) -> tuple[list, str]:
+    """check_timer_wakes on a stand-in capture of three cycles whose second read failed: the bounded read's guard (35 ms
+    after its 35 ms budget) is waited out inside that cycle's write call in 35 sleeps of 1 ms, each armed by the worker
+    right after its sleep call, besides the two periodic sleeps. change(run, tr) alters it first."""
+    import types
+    import trace_correlate
+    ms = 1_000_000
+    t0 = ORIGIN + ms + 50_000                     # cycle 2's instruction sent, its instr_return stamp
+    rows = [{"cycle": 1, "scheduled_wake_ns": 0, "wake_ns": 1_000, "cycle_end_ns": 600_000, "read_ok": 1, "instr_return_ns": 10_000,
+             "bus_write_start_ns": 500_000, "write_return_ns": 510_000},
+            {"cycle": 2, "scheduled_wake_ns": ms, "wake_ns": ms + 1_000, "cycle_end_ns": 71 * ms + 200_000, "read_ok": 0,
+             "instr_return_ns": t0 - ORIGIN, "bus_write_start_ns": 36 * ms + 100_000, "write_return_ns": 71 * ms + 100_000},
+            {"cycle": 3, "scheduled_wake_ns": 72 * ms, "wake_ns": 72 * ms + 1_000, "cycle_end_ns": 72 * ms + 600_000, "read_ok": 1,
+             "instr_return_ns": 72 * ms + 10_000, "bus_write_start_ns": 72 * ms + 500_000, "write_return_ns": 72 * ms + 510_000}]
+    run = types.SimpleNamespace(origin=ORIGIN, rows=[{k: str(v) for k, v in r.items()} for r in rows], tid=TID,
+                                summary={"result": {}, "bounded_read": {"budget_s": 0.035, "guard_s": 0.035, "guard_waits": 1}})
+    starts, calls, wakes, switch = [], [], [], []
+    for sched in (ms, 72 * ms):  # the periodic sleeps
+        e = ORIGIN + sched + 400
+        starts.append((ORIGIN + sched - 400_000, 3, TID, "x7_bus_timing", "0xP", "hrtimer_wakeup", ORIGIN + sched, ORIGIN + sched, "ABS"))
+        calls.append(ORIGIN + sched - 400_100)
+        wakes.append((e, e - 100, 3, e + 100, False, "0xP"))
+        switch.append((e + 400, 0, "in"))
+    a = t0 + 35 * ms + 100_000                    # the read failed at t0 + budget; the write call waits out the guard
+    exits = []
+    while a < t0 + 70 * ms:
+        # The kernel adds the relative sleep to its own clock, after user space read its: the last slice expires 500 ns
+        # after the guard's end, within the 2,000 ns from the previous sleep's return to its arming.
+        x = min(t0 + 70 * ms, a + ms) + (500 if a + ms >= t0 + 70 * ms else 0)
+        calls.append(a - 100)
+        starts.append((a, 3, TID, "x7_bus_timing", "0xG", "hrtimer_wakeup", x, x, "REL"))
+        wakes.append((x + 300, x + 200, 3, x + 400, False, "0xG"))
+        exits.append(x + 1_000)
+        a = x + 3_000
+    tr = types.SimpleNamespace(timer_wakes=sorted(wakes, key=lambda w: w[3]), worker_switch=sorted(switch), sleep_calls=calls,
+                               sleep_exits=exits, timer=types.SimpleNamespace(starts=starts))
+    if change:
+        change(run, tr)
+        tr.timer_wakes.sort(key=lambda w: w[3])
+    failures: list = []
+    import io
+    out = io.StringIO()
+    trace_correlate.check_timer_wakes(run, tr, failures, out)
+    return failures, out.getvalue()
+
+
+def guard_wakes() -> None:
+    """The bounded read's guard sleeps are accounted by their own evidence; anything less, or anything else, still fails
+    (the validation review of 2026-11-11: neither subtract a count nor pass every wake after a timeout)."""
+    ms = 1_000_000
+    f, out = guard_case()
+    expect(not f and "2 paired" in out and "35 extra" in out and "of the 35 extra, 35 are guard sleeps of 1 failed reads (cycles 2; "
+           "the probe counted 1 guard waits), 0 unexplained" in out and "wake accounting revision 2" in out, f"the guard sleeps accounted: {f}", out)
+
+    def guard_wake(tr, k=10):
+        return [w for w in tr.timer_wakes if w[5] == "0xG"][k]
+
+    def arming(tr, w):
+        return next(i for i, s in enumerate(tr.timer.starts) if s[4] == w[5] and s[6] == w[1] - 200)
+
+    def alter_arming(tr, k, **kw):
+        w = guard_wake(tr, k)
+        i = arming(tr, w)
+        s = list(tr.timer.starts[i])
+        for key, v in kw.items():
+            s[{"ts": 0, "pid": 2, "function": 5, "expires": 6}[key]] = v
+        tr.timer.starts[i] = tuple(s)
+
+    def no_call(tr):
+        w = guard_wake(tr)
+        a = tr.timer.starts[arming(tr, w)][0]
+        tr.sleep_calls.remove(a - 100)
+
+    def stray(tr):  # a wake inside cycle 3's work, after its read succeeded
+        t = ORIGIN + 72 * ms + 300_000
+        tr.timer.starts.append((t - 500_000, 3, TID, "x7_bus_timing", "0xS", "hrtimer_wakeup", t - 200, t - 200, "REL"))
+        tr.sleep_calls.append(t - 500_100)
+        tr.timer_wakes.append((t - 100, t - 200, 3, t, False, "0xS"))
+
+    def late_expiry(tr):  # the last sleep expires later than its conversion lag allows, still inside the write call
+        w = guard_wake(tr, -1)
+        i = arming(tr, w)
+        s = list(tr.timer.starts[i])
+        s[6] += 2_500  # 3,000 ns past the guard's end, against 2,000 ns from the previous return to the arming
+        tr.timer.starts[i] = tuple(s)
+
+    def no_return(tr):  # the same 500 ns past the end, with no recorded return before its sleep call: no lag allowed
+        w = guard_wake(tr, -1)
+        a = tr.timer.starts[arming(tr, w)][0]
+        tr.sleep_exits[:] = [x for x in tr.sleep_exits if x > a]
+
+    def early_arming(tr):  # 1 us before t0 + budget, otherwise a proper slice with its sleep call
+        w = guard_wake(tr, 0)
+        i = arming(tr, w)
+        a = ORIGIN + ms + 50_000 + 35 * ms - 1_000
+        s = list(tr.timer.starts[i])
+        s[0], s[6] = a, a + 500_000
+        tr.timer.starts[i] = tuple(s)
+        tr.sleep_calls.append(a - 100)
+
+    cases = [("a wake in no write call of a failed read", lambda run, tr: stray(tr), 1),
+             ("a sleep of 2 ms", lambda run, tr: alter_arming(tr, 10, expires=tr.timer.starts[arming(tr, guard_wake(tr))][0] + 2 * ms), 1),
+             ("an arming before the read's budget ran out", lambda run, tr: early_arming(tr), 1),
+             ("an expiry after the guard's end beyond the sleep's conversion lag", lambda run, tr: late_expiry(tr), 1),
+             ("an expiry after the guard's end with no recorded return to bound the lag", lambda run, tr: no_return(tr), 1),
+             ("a timer armed by another task", lambda run, tr: alter_arming(tr, 10, pid=TID + 1), 1),
+             ("a timer that wakes no sleeper", lambda run, tr: alter_arming(tr, 10, function="tick_nohz_handler"), 1),
+             ("an arming with no sleep call before it", lambda run, tr: no_call(tr), 1),
+             ("the cycle's read succeeded", lambda run, tr: run.rows[1].update(read_ok="1"), 35),
+             ("no bounded-read settings", lambda run, tr: run.summary.pop("bounded_read"), 35),
+             ("no timer armings (not the timer mode)", lambda run, tr: setattr(tr, "timer", None), 35)]
+    for what, change, n in cases:
+        f, out = guard_case(change)
+        expect(f"timer wakes: {n} wakes outside every sleep and every guard wait" in f, f"guard sleeps, {what}: {f}", out)
+    f, out = guard_case(lambda run, tr: run.summary["bounded_read"].update(guard_waits=0))
+    expect("timer wakes: guard sleeps in 1 failed-read cycles, more than the 0 guard waits the probe counted" in f,
+           f"guard sleeps the probe did not count: {f}", out)
+
+
 def main() -> int:
     if sys.argv[1:] == ["--timer-events"]:
         # The event names a timer-mode run's fixture uses, for the session's
         # smoke test: each must be one the timer mode records.
         print(" ".join(sorted(Run(timer=True).names)))
         return 0
+    guard_wakes()
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
 
