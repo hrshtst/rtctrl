@@ -814,6 +814,16 @@ set_tests_properties(quiet_host_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "quiet host smoke OK"
   LABELS integration)
 
+# The operator's reversible removal of a CPU from the unbound workqueues'
+# mask (tools/wq_mask.sh) with a stand-in sysfs, /proc and sudo: refusals,
+# verification, failure and interruption paths, restoration and its failure.
+add_test(NAME wq_mask_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/wq_mask_smoke.sh ${CMAKE_BINARY_DIR}/wq_mask_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(wq_mask_smoke PROPERTIES
+  PASS_REGULAR_EXPRESSION "wq_mask smoke OK"
+  LABELS integration)
+
 # The traced session's sudo refresh (tools/sudo_refresh.sh) with a stand-in
 # sudo: its pin, its confirmed stop at any moment, and its failure cases.
 add_test(NAME sudo_refresh_test
