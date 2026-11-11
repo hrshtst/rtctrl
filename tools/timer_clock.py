@@ -12,7 +12,9 @@ rule() is the calculation, given a clock model. analyze() is the only path
 that can call a U validated: it takes the model from the certificate before
 calculating, refuses a smaller supplied model, checks that everything the
 calculation depended on lies inside the certificate's interval, and accepts
-only if the analysis and the certificate both hold. Missing, unreadable or
+only if the analysis and the certificate both hold; a certified U whose
+analysis failed is labelled a candidate, the conversion not accepted (a
+label only: nothing in the calculation changes). Missing, unreadable or
 malformed evidence is UNSUPPORTED; it is never read as an empty record. The
 certificate holds only for the audited kernel and the audited trace-cmd build
 with its audited runtime (trace libraries and plugin set, by file hash),
@@ -750,6 +752,11 @@ def analyze(main_parse, inst_parse, samp_pairs, window=None, evidence=None, mode
     elif certified:
         certified = False
         reasons.append("the calculation produced no dependency extent")
-    r.update(cert="CERTIFIED" if certified else "UNSUPPORTED", cert_reasons=reasons, U_label="validated" if certified and r.get("U") is not None else "exploratory",
-             model=dict(ds=use.ds, W_ns=use.W, R_ns=use.R, source=source), provenance=cert.get("provenance"), accepted=bool(certified and r["status"] == "PASS"))
+    # The label only presents the result (the accounting review of 2026-11-11 approved it as a reporting change): U is
+    # validated only when the certificate and the rule both hold. A certified U whose rule failed (the deadline-slot
+    # accounting, say) is a candidate, printed with the conversion not accepted; the certificate stays visible apart.
+    accepted = bool(certified and r["status"] == "PASS")
+    label = "validated" if accepted and r.get("U") is not None else "candidate U; conversion not accepted" if certified else "exploratory"
+    r.update(cert="CERTIFIED" if certified else "UNSUPPORTED", cert_reasons=reasons, U_label=label,
+             model=dict(ds=use.ds, W_ns=use.W, R_ns=use.R, source=source), provenance=cert.get("provenance"), accepted=accepted)
     return r

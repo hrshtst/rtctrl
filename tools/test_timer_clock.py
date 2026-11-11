@@ -462,6 +462,13 @@ r = R.analyze((EE, ["line 9: malformed row"], {}), IP, samp, window=WIN, evidenc
 claim("a parse problem fails the analysis and is not merely kept", r["status"] == "FAIL" and r["accepted"] is False and r["why"][0].startswith("line 9"), r["why"][0])
 r = R.analyze(MP, (tau, ["the instance lost 1 entries"]), samp, window=WIN, evidence=GOOD)
 claim("an instance parse problem fails the analysis", r["status"] == "FAIL" and r["accepted"] is False, r["why"][0])
+# A certified analysis whose deadline-slot accounting fails (attempt 13's case): its U is printed as a candidate with
+# the conversion not accepted, never as validated, and the certificate stays CERTIFIED apart; the numbers are the rule's.
+r = run(ip=(sorted(tau + [tau[K] + 200]), []))
+r0 = R.rule(EE, sorted(tau + [tau[K] + 200]), samp, R.Model(c["ds"], c["W_ns"], label="certified"), window=WIN)
+claim("a certified U whose slot accounting failed is a candidate, not accepted", r["status"] == "FAIL" and r["cert"] == "CERTIFIED"
+      and r["accepted"] is False and r["U"] is not None and r["U"] == r0["U"] and r["U_label"] == "candidate U; conversion not accepted"
+      and any("two instance anchors" in w for w in r["why"]), f"{r['status']}, {r['U_label']}, U {r['U']}")
 
 
 def drop(ev, path):
