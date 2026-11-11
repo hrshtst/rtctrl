@@ -2,12 +2,18 @@
 # The supervisor of the loaded emulator validation's Option A
 # (docs/hardware/control-rate.md): one process that owns the experiment from
 # its first host change to the last verified restoration, run by the
-# operator from the repository root.
+# operator from the repository root. This is its second run (attempts 16 and
+# 17, after attempt 15's emulator starvation on CPU 3): the emulator is
+# launched with an affinity that excludes CPU 3, and the supervisor verifies
+# it for every emulator thread before the experiment and after each session.
 #
 # usage: tools/option_a.sh [--dry-run]
 #
 # Before any host change it refuses (exit 2) unless: the kernel is the
-# audited one; the emulator's pty exists and is no serial device; the
+# audited one; the emulator's pty exists and is no serial device; exactly
+# one process (the emulator) holds that pty's master (a /dev/ptmx
+# descriptor whose fdinfo names its tty-index), and every one of its threads
+# has an affinity (Cpus_allowed_list, a well-formed list) without CPU 3; the
 # real-time priority limit allows the probe's 80; tools/wq_mask.sh and
 # tools/quiet_host.sh have no open record; the experiment's three
 # directories do not exist (it then creates them, fresh); both session
@@ -19,12 +25,18 @@
 # Then the experiment's steps, in order:
 #   1. tools/quiet_host.sh stop;
 #   2. tools/wq_mask.sh clear 3;
-#   3. the untraced session (attempt 14), without the controls;
-#   4. tools/wq_mask.sh check, then tools/validation_gate.py on the untraced
-#      run (its T3 above all): the timer session starts only if it passes;
-#   5. the controls and the timer session (attempt 15);
-#   6. tools/wq_mask.sh check, then the gate on the timer run, with the
-#      controls.
+#   3. the untraced session (attempt 16), without the controls;
+#   4. tools/wq_mask.sh check; the emulator check (the same process, by its
+#      pid and start time, every thread still without CPU 3); then
+#      tools/validation_gate.py on the untraced run (its T3 above all): the
+#      timer session starts only if all pass;
+#   5. the controls and the timer session (attempt 17);
+#   6. tools/wq_mask.sh check, the emulator check, then the gate on the timer
+#      run, with the controls.
+# The emulator's identity and every thread's affinity are recorded before
+# the first step and by each emulator check (emulator_start=, emulator_A=,
+# emulator_B=), for tools/emulator_residency.py to check its residency in
+# the timer capture afterwards.
 # No step starts unless no stop is latched, the obligation it creates (steps
 # 1 and 2) is recorded, and its start is recorded; each step's end and status
 # are recorded once it returns. Any nonzero status, a failed record or a
@@ -121,13 +133,15 @@ KRUN=/run
 [ "${ROOT_KEEPER_TEST:-0}" = 1 ] && KRUN=${KEEPER_RUNDIR:-/run}
 GROUP_WAIT=${OPTION_A_GROUP_WAIT:-120}
 RT_CPU=3
-D14=$OUT/clock-validation-14
-D15=$OUT/clock-validation-15
-E=$OUT/clock-validation-option-a
+ATT_A=16
+ATT_B=17
+D_A=$OUT/clock-validation-$ATT_A
+D_B=$OUT/clock-validation-$ATT_B
+E=$OUT/clock-validation-option-a2
 COMMON=(--port "$PORT" --usb-device /sys/bus/usb/devices/1-9 --placements open
         --runs current:1000:rt-loaded-excl:fast-motion --duration 20)
-SESSION_A=(--modes untraced --attempt 14 --outdir "$D14")
-SESSION_B=(--fs-controls 5 --modes timer --attempt 15 --outdir "$D15")
+SESSION_A=(--modes untraced --attempt "$ATT_A" --outdir "$D_A")
+SESSION_B=(--fs-controls 5 --modes timer --attempt "$ATT_B" --outdir "$D_B")
 
 now() { date +%Y-%m-%dT%H:%M:%S.%N%z; }
 LOG=
@@ -140,6 +154,77 @@ log() {  # to the log (once it exists) and, while it can, the terminal
 refuse() { log "option_a: $*: nothing changed"; exit 2; }
 record_failed=0
 rec() { printf '%s\n' "$1" >>"$E/experiment.record" 2>/dev/null || { record_failed=1; log "cannot append to $E/experiment.record"; return 1; }; }
+# emulator_state: the process holding the master of PORT's pseudo-terminal, as one line "pid=P start=S comm=C
+# tids=T,... allowed=L;..." (each thread's Cpus_allowed_list, in tids' order). Status 0 if exactly one process holds it
+# and every thread's list is well formed, nonempty and without RT_CPU; 1 if a thread's list holds RT_CPU or nothing (the
+# line, then why); 2 if it cannot be established (why). Processes of other users are not looked into (their /proc fds
+# are unreadable): they cannot hold this user's pty master, and a root process is not looked for.
+emulator_state() {
+  python3 -I -c '
+import os, sys
+port, rt = sys.argv[1], int(sys.argv[2])
+def cpus(spec):
+    out = set()
+    for part in spec.split(","):
+        a, sep, b = part.partition("-")
+        if not a.isdigit() or (sep and not b.isdigit()):
+            raise ValueError(spec)
+        lo, hi = int(a), (int(b) if sep else int(a))
+        if hi < lo:
+            raise ValueError(spec)
+        out.update(range(lo, hi + 1))
+    return out
+tty = os.path.realpath(port)
+idx = tty[len("/dev/pts/"):] if tty.startswith("/dev/pts/") else ""
+if not idx.isdigit():
+    print(f"{port} is no pseudo-terminal ({tty})")
+    sys.exit(2)
+holders = []
+for p in os.listdir("/proc"):
+    if not p.isdigit():
+        continue
+    try:
+        fds = os.listdir(f"/proc/{p}/fd")
+    except OSError:
+        continue
+    for fd in fds:
+        try:
+            if os.readlink(f"/proc/{p}/fd/{fd}") not in ("/dev/ptmx", "/dev/pts/ptmx"):
+                continue
+            info = open(f"/proc/{p}/fdinfo/{fd}").read().split()
+        except OSError:
+            continue
+        if "tty-index:" in info and info[info.index("tty-index:") + 1] == idx:
+            holders.append(p)
+            break
+if len(holders) != 1:
+    named = ",".join(holders) or "none"
+    print(f"{len(holders)} processes hold the master of {tty} ({named})")
+    sys.exit(2)
+p = holders[0]
+try:
+    s = open(f"/proc/{p}/stat").read()
+    comm = s[s.index("(") + 1:s.rindex(")")].replace(" ", "_")
+    start = s[s.rindex(")") + 2:].split()[19]
+    tids = sorted(os.listdir(f"/proc/{p}/task"), key=int)
+    lists = []
+    for t in tids:
+        line = [x for x in open(f"/proc/{p}/task/{t}/status").read().splitlines() if x.startswith("Cpus_allowed_list:")]
+        lists.append(line[0].split(":", 1)[1].strip())
+    sets = [cpus(x) for x in lists]
+except (OSError, ValueError, IndexError) as e:
+    print(f"the emulator {p} cannot be read: {e}")
+    sys.exit(2)
+tl, al = ",".join(tids), ";".join(lists)
+print(f"pid={p} start={start} comm={comm} tids={tl} allowed={al}")
+bad = [t for t, c in zip(tids, sets) if rt in c or not c]
+if bad:
+    named = ",".join(bad)
+    print(f"thread(s) {named} may run on CPU {rt} (or on no CPU)")
+    sys.exit(1)
+' "$PORT" "$RT_CPU"
+}
+emu_id() { sed -E 's/^(pid=[0-9]+ start=[0-9]+) .*/\1/' <<<"$1"; }
 one() {  # DIR PATTERN: the one file matching, or status 1
   local f
   mapfile -t f < <(find "$1" -maxdepth 1 -type f -name "$2" 2>/dev/null)
@@ -156,27 +241,34 @@ case "${1:-}" in --dry-run) dry=1 ;; '') ;; *) echo "usage: $0 [--dry-run]" >&2;
 [ -e "$PORT" ] || refuse "the emulator's pty $PORT does not exist (is dxl_emu running?)"
 pty=$(basename "$(readlink -f "$PORT")")
 [ ! -e "/sys/class/tty/$pty/device" ] || refuse "$PORT is a serial device ($pty), not the emulator's pty"
+emu=$(emulator_state 2>&1)
+case $? in
+  0) ;;
+  1) refuse "the emulator may run on CPU $RT_CPU: ${emu//$'\n'/; } (launch it with taskset -c 0-2,4-31)" ;;
+  *) refuse "the emulator cannot be established: ${emu//$'\n'/; }" ;;
+esac
 rtl=${OPTION_A_RTLIMIT:-$(ulimit -r)}
 [ "$rtl" = unlimited ] || [ "$rtl" -ge 80 ] || refuse "the real-time priority limit is $rtl, below the probe's 80 (sudo prlimit --pid \$\$ --rtprio=90:90)"
 [ ! -e "$WREC" ] || refuse "a workqueue mask record is open ($WREC): tools/wq_mask.sh restore first"
 [ ! -e "$QSTATE" ] || refuse "a quiet_host record is open ($QSTATE): tools/quiet_host.sh restore first"
-for d in "$D14" "$D15" "$E"; do [ ! -e "$d" ] || refuse "$d exists: the experiment needs fresh directories"; done
+for d in "$D_A" "$D_B" "$E"; do [ ! -e "$d" ] || refuse "$d exists: the experiment needs fresh directories"; done
 if [ "$dry" -eq 1 ]; then
   s=$(mktemp -d) || refuse "no scratch directory"
-  mkdir "$s/14" "$s/15"
+  mkdir "$s/$ATT_A" "$s/$ATT_B"
   st=0
-  "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --modes untraced --attempt 14 --outdir "$s/14" || st=$?
-  [ "$st" -eq 0 ] && { "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --fs-controls 5 --modes timer --attempt 15 --outdir "$s/15" || st=$?; }
-  rm -rf "$s"
+  "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --modes untraced --attempt "$ATT_A" --outdir "$s/$ATT_A" || st=$?
+  [ "$st" -eq 0 ] && { "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --fs-controls 5 --modes timer --attempt "$ATT_B" --outdir "$s/$ATT_B" || st=$?; }
+  rm -rf -- "${s:?}"
   [ "$st" -eq 0 ] || refuse "a session's dry run failed (status $st)"
+  log "option_a: the emulator: $emu"
   log "option_a: dry run: both session commands are accepted; nothing changed"
   exit 0
 fi
 mkdir "$OUT" 2>/dev/null
-mkdir "$D14" && mkdir "$D15" && mkdir "$E" || { rmdir "$D14" "$D15" "$E" 2>/dev/null; refuse "cannot create the experiment's directories"; }
+mkdir "$D_A" && mkdir "$D_B" && mkdir "$E" || { rmdir "$D_A" "$D_B" "$E" 2>/dev/null; refuse "cannot create the experiment's directories"; }
 LOG=$E/supervisor.log
-undo_dirs() { rmdir "$D14" "$D15" 2>/dev/null; rm -f "$LOG" "$E/experiment.record"; rmdir "$E" 2>/dev/null; }
-for spec in "untraced 14 $D14" "timer 15 $D15"; do
+undo_dirs() { rmdir "$D_A" "$D_B" 2>/dev/null; rm -f "$LOG" "$E/experiment.record"; rmdir "$E" 2>/dev/null; }
+for spec in "untraced $ATT_A $D_A" "timer $ATT_B $D_B"; do
   read -r m a d <<<"$spec"
   extra=(); [ "$m" = timer ] && extra=(--fs-controls 5)
   if ! "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" "${extra[@]}" --modes "$m" --attempt "$a" --outdir "$d" >>"$LOG" 2>&1; then
@@ -185,7 +277,7 @@ for spec in "untraced 14 $D14" "timer 15 $D15"; do
 done
 if [ "${OPTION_A_YES:-0}" != 1 ]; then
   cat <<EOF
-The loaded emulator validation, Option A: an untraced and a timer run on $PORT (attempts 14 and 15),
+The loaded emulator validation, Option A: an untraced and a timer run on $PORT (attempts $ATT_A and $ATT_B),
 with CPU $RT_CPU removed from the kernel's mask for unbound workqueues (a changed host condition, restored at the end).
 Check that:
   - the arm is powered off, or torque-off and supported; nothing is sent to it;
@@ -211,7 +303,9 @@ KENV=(WQ_MASK_SUDO="$KEEPER" QUIET_HOST_SUDO="$KEEPER" ROOT_KEEPER_DIR="$K")
 # --- The experiment: owned from here on. ---
 rec "started=$(now) kernel=$(uname -r) supervisor=$$ group=$me_pgid keeper=$kpid keeper_start=$kstart keeper_dir=$K" ||
   { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
-rec "directories=$D14 $D15 $E" || { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
+rec "directories=$D_A $D_B $E" || { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
+s=$(emulator_state 2>&1) && [ "$(emu_id "$s")" = "$(emu_id "$emu")" ] && rec "emulator_start=$(now) $s" ||
+  { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "the emulator changed before the experiment, or its record failed: ${s//$'\n'/; }"; }
 quiet_owed=0; mask_owed=0; keeper_up=1; stopped=; finished=0
 on_signal() { rec "signal=$(now) $1"; [ -n "$stopped" ] || stopped="signal $1"; log "option_a: $1: no further step; the restoration follows once the running step returns"; }
 trap 'on_signal INT' INT
@@ -382,6 +476,22 @@ step() {  # NAME CMD...: an experiment step, started only once ready and its sta
   rec "${name}_end=$(now) status=$st"
   return "$st"
 }
+emulator_check() {  # A|B: the emulator recorded at the start, every thread still without RT_CPU; recorded as emulator_A|B
+  local s st
+  s=$(emulator_state 2>&1)
+  st=$?
+  if [ "$st" -eq 0 ] && [ "$(emu_id "$s")" != "$(emu_id "$emu")" ]; then
+    s="another process holds the pty: $s (at the start: $emu)"
+    st=3
+  fi
+  if [ "$st" -eq 0 ]; then
+    rec "emulator_$1=$(now) $s"
+  else
+    log "option_a: the emulator after session $1: ${s//$'\n'/; }"
+    rec "emulator_$1=$(now) status=$st reason=${s//$'\n'/; }"
+  fi
+  return "$st"
+}
 ok() {  # STATUS WHAT: halts unless the step succeeded, no signal came and the record holds
   [ "$1" -eq 0 ] || halt "$2 (status $1)"
   ready
@@ -393,13 +503,15 @@ owe mask; mask_owed=1
 step mask_clear env "${KENV[@]}" "$WQ" clear "$RT_CPU"; ok $? "tools/wq_mask.sh clear $RT_CPU failed"
 step session_A "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_A[@]}"; ok $? "the untraced session failed"
 step check_A "$WQ" check; ok $? "the mask was not in effect after the untraced session"
-csv_a=$(one "$D14" '*-untraced-*-14.csv') || halt "no single untraced probe log in $D14"
+step emu_A emulator_check A; ok $? "the emulator changed, or may run on CPU $RT_CPU, after the untraced session"
+csv_a=$(one "$D_A" "*-untraced-*-$ATT_A.csv") || halt "no single untraced probe log in $D_A"
 step gate_A "${GATE[@]}" "$csv_a" --mode untraced --wq-record "$WREC" --experiment "$E/experiment.record" --session A --record-state open
 ok $? "the gate on the untraced run failed: no timer run"
 step session_B "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_B[@]}"; ok $? "the controls or the timer session failed"
 step check_B "$WQ" check; ok $? "the mask was not in effect after the timer session"
-csv_b=$(one "$D15" '*-timer-*-15.csv') || halt "no single timer probe log in $D15"
-ctl=$(one "$D15" 'fs-controls-*-15.run.txt') || halt "no single controls record in $D15"
+step emu_B emulator_check B; ok $? "the emulator changed, or may run on CPU $RT_CPU, after the timer session"
+csv_b=$(one "$D_B" "*-timer-*-$ATT_B.csv") || halt "no single timer probe log in $D_B"
+ctl=$(one "$D_B" "fs-controls-*-$ATT_B.run.txt") || halt "no single controls record in $D_B"
 step gate_B "${GATE[@]}" "$csv_b" --mode timer --controls "$ctl" --wq-record "$WREC" --experiment "$E/experiment.record" --session B --record-state open
 ok $? "the gate on the timer run failed"
 finish

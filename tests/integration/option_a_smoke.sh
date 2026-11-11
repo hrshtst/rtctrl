@@ -8,8 +8,14 @@
 # untraced session (without the controls), the check and gate, the controls
 # with the timer session, the check and gate, then restores and verifies
 # everything and ends the keeper (exit 0); the real gate passes on its
-# records, open and closed. Refusals change nothing (fresh directories, a
-# failing dry run, an open record, a low real-time limit). A failed session,
+# records, open and closed; the emulator (a stand-in holding a real pty's
+# master, all CPUs but 3) is recorded at the start and after each session.
+# Refusals change nothing (fresh directories, a failing dry run, an open
+# record, a low real-time limit, an emulator that may run on CPU 3 or whose
+# second thread may, two processes holding the pty's master, a port that is
+# no pseudo-terminal; the last four in the dry run too). The emulator's
+# affinity widened to CPU 3, the emulator gone, or another process holding
+# the port, during a session, stop it after that session. A failed session,
 # a failed gate, a hangup or an interrupt reaching the process group during
 # a session, a TERM to the supervisor alone during a session, and a TERM
 # latched just before a session starts each stop it with no further step
@@ -57,7 +63,7 @@ export QUIET_HOST_STATE=$ROOT/state/quiet.state
 export KEEPER_RUNDIR=$ROOT/run OPTION_A_GROUP_WAIT=2
 REAL_DATE=$(command -v date)
 REAL_PY=$(command -v python3)
-E=$ROOT/out/clock-validation-option-a
+E=$ROOT/out/clock-validation-option-a2
 
 cat >"$ROOT/cpus" <<'EOF'
 import sys
@@ -127,6 +133,11 @@ if sys.argv[5] == "1":
 fi
 [ -e "$ROOT/session.linger.$attempt" ] && { sleep 30 & echo $! >"$ROOT/linger.pid"; }
 [ -e "$ROOT/session.escaped.$attempt" ] && { setsid sleep 30 & echo $! >"$ROOT/escaped.pid"; }
+case "$(cat "$ROOT/session.emu.$attempt" 2>/dev/null)" in
+  widen) python3 -c 'import os, sys; p = int(sys.argv[1]); os.sched_setaffinity(p, os.sched_getaffinity(p) | {3})' "$(cat "$ROOT/pty.pid")" ;;
+  gone) kill "$(cat "$ROOT/pty.pid")" ;;
+  swap) ln -sfn "$(readlink "$ROOT/pty.spare")" "$ROOT/pty" ;;
+esac
 case "$(cat "$ROOT/session.chain.$attempt" 2>/dev/null)" in
   group) "$ROOT/chain" & ;;
   setsid) setsid "$ROOT/chain" & ;;
@@ -153,6 +164,37 @@ sleep 0.02
 "$0" &
 exit 0
 EOF
+# The emulator's stand-in: a process holding a pseudo-terminal's master, its slave linked at LINK; its pid in LINK.pid.
+# MODE off3 (all CPUs but 3, as the emulator is launched), all (CPU 3 allowed), thread3 (a second thread allowed on
+# CPU 3), twice (a forked child holding the master too, its pid in LINK.pid2).
+cat >"$ROOT/emu.py" <<'EOF'
+import os, sys, threading, time
+link, mode = sys.argv[1], sys.argv[2]
+mine = os.sched_getaffinity(0)
+if 3 not in mine:
+    sys.exit("option_a_smoke: CPU 3 is not in this test's affinity")
+if mode != "all":
+    os.sched_setaffinity(0, mine - {3})
+m, s = os.openpty()
+if mode == "thread3":
+    ready = threading.Event()
+    def wide():
+        os.sched_setaffinity(0, mine)
+        ready.set()
+        time.sleep(3600)
+    threading.Thread(target=wide, daemon=True).start()
+    ready.wait()
+if mode == "twice":
+    child = os.fork()
+    if child == 0:
+        time.sleep(3600)
+        os._exit(0)
+    open(link + ".pid2", "w").write(str(child))
+os.symlink(os.ttyname(s), link + ".new")
+os.replace(link + ".new", link)
+open(link + ".pid", "w").write(str(os.getpid()))
+time.sleep(3600)
+EOF
 chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate" "$ROOT/chain"
 
 chain_stop() {  # stops a running fork-exit chain: status 0 once its latest generation has ended
@@ -164,7 +206,21 @@ chain_stop() {  # stops a running fork-exit chain: status 0 once its latest gene
   done
   return 1
 }
-reset() {  # the host as it starts
+emu_stop() {  # ends every stand-in emulator
+  local f p i
+  for f in "$ROOT/pty.pid" "$ROOT/pty.pid2" "$ROOT/pty.spare.pid"; do
+    [ -e "$f" ] || continue
+    p=$(cat "$f"); kill "$p" 2>/dev/null
+    for ((i = 0; i < 50; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+  done
+  scratch_rm "$ROOT/pty" "$ROOT/pty.pid" "$ROOT/pty.pid2" "$ROOT/pty.spare" "$ROOT/pty.spare.pid" "$ROOT/pty.new"
+}
+trap 'emu_stop >/dev/null 2>&1' EXIT  # a failing case leaves no stand-in emulator behind
+emu_start() {  # LINK MODE: a stand-in emulator, ready
+  python3 "$ROOT/emu.py" "$1" "$2" &
+  wait_file "$1.pid" || fail "the stand-in emulator ($2) did not start"
+}
+reset() {  # the host as it starts, with a fresh stand-in emulator (EMU_MODE, default off3)
   [ -e "$ROOT/linger.pid" ] && kill "$(cat "$ROOT/linger.pid")" 2>/dev/null
   [ -e "$ROOT/chain.pid" ] && chain_stop
   [ -e "$ROOT/escaped.pid" ] && kill "$(cat "$ROOT/escaped.pid")" 2>/dev/null
@@ -180,7 +236,8 @@ reset() {  # the host as it starts
     mkdir -p "$ROOT/proc/${p%%:*}"; printf '%s\n' "${p#*:}" >"$ROOT/proc/${p%%:*}/comm"
     printf 'Name:\tx\nCpus_allowed_list:\t0-31\n' >"$ROOT/proc/${p%%:*}/status"
   done
-  : >"$ROOT/pty"
+  emu_stop
+  emu_start "$ROOT/pty" "${EMU_MODE:-off3}"
 }
 masks() { echo "$(cat "$ROOT/sys/cpumask") $(cat "$ROOT/sys/cpumask_requested")"; }
 keeper_dir() { sed -n 's/^started=.* keeper_dir=//p' "$E/experiment.record" "$E/experiment.record.saved" 2>/dev/null | head -n 1; }
@@ -209,17 +266,20 @@ reset
 start; wait "$sup"; st=$?
 [ "$st" -eq 0 ] || fail "the normal experiment exited $st" "$ROOT/sup.out"
 grep -v '^dry ' "$ROOT/calls" >"$ROOT/calls.run"
-[ "$(sed -n 1p "$ROOT/calls.run")" = "session untraced 14 controls=0" ] && grep -q -- '--session A --record-state open' <(sed -n 2p "$ROOT/calls.run") &&
-  grep -q -- '--mode untraced' <(sed -n 2p "$ROOT/calls.run") && [ "$(sed -n 3p "$ROOT/calls.run")" = "session timer 15 controls=1" ] &&
-  grep -q -- '--mode timer --controls .*fs-controls-20261112-15.run.txt' <(sed -n 4p "$ROOT/calls.run") && [ "$(wc -l <"$ROOT/calls.run")" -eq 4 ] ||
+[ "$(sed -n 1p "$ROOT/calls.run")" = "session untraced 16 controls=0" ] && grep -q -- '--session A --record-state open' <(sed -n 2p "$ROOT/calls.run") &&
+  grep -q -- '--mode untraced' <(sed -n 2p "$ROOT/calls.run") && [ "$(sed -n 3p "$ROOT/calls.run")" = "session timer 17 controls=1" ] &&
+  grep -q -- '--mode timer --controls .*fs-controls-20261112-17.run.txt' <(sed -n 4p "$ROOT/calls.run") && [ "$(wc -l <"$ROOT/calls.run")" -eq 4 ] ||
   fail "the steps' order" "$ROOT/calls"
 [ "$(grep -c '^dry ' "$ROOT/calls")" -eq 2 ] && grep -q '^dry .*--modes untraced' "$ROOT/calls" && grep -q '^dry .*--fs-controls 5 --modes timer' "$ROOT/calls" ||
   fail "the dry runs" "$ROOT/calls"
-[ "$(cat "$ROOT/mask-during-14")" = "$TARGET" ] && [ "$(cat "$ROOT/mask-during-15")" = "$TARGET" ] || fail "the sessions did not run under the target"
+[ "$(cat "$ROOT/mask-during-16")" = "$TARGET" ] && [ "$(cat "$ROOT/mask-during-17")" = "$TARGET" ] || fail "the sessions did not run under the target"
 restored || fail "the normal experiment's restorations" "$ROOT/sup.out"
 keys=$(sed 's/=.*//' "$E/experiment.record" | tr '\n' ' ')
-want="started directories quiet_owed quiet_stop_start quiet_stop_end mask_owed mask_clear_start mask_clear_end session_A_start session_A_end check_A_start check_A_end gate_A_start gate_A_end session_B_start session_B_end check_B_start check_B_end gate_B_start gate_B_end mask_restore_start mask_restore_end quiet_restore_start quiet_restore_end keeper_finish_start keeper_finish_end finished "
+want="started directories emulator_start quiet_owed quiet_stop_start quiet_stop_end mask_owed mask_clear_start mask_clear_end session_A_start session_A_end check_A_start check_A_end emu_A_start emulator_A emu_A_end gate_A_start gate_A_end session_B_start session_B_end check_B_start check_B_end emu_B_start emulator_B emu_B_end gate_B_start gate_B_end mask_restore_start mask_restore_end quiet_restore_start quiet_restore_end keeper_finish_start keeper_finish_end finished "
 [ "$keys" = "$want" ] && grep -q '^finished=.* outcome=ACQUIRED reason=none$' "$E/experiment.record" || fail "the experiment record: $keys" "$E/experiment.record"
+emu_pid=$(cat "$ROOT/pty.pid")
+[ "$(grep -c -E "^emulator_(start|A|B)=\S+ pid=$emu_pid start=[0-9]+ comm=python3 tids=$emu_pid allowed=0-2,4-[0-9]+\$" "$E/experiment.record")" -eq 3 ] ||
+  fail "the emulator's records" "$E/experiment.record"
 grep -q 'request .*: mask fffffff7: status 0' "$E/keeper.log" && grep -q 'finish: the original is in effect' "$E/keeper.log" ||
   fail "the keeper's log (the supervisor's copy)" "$E/keeper.log"
 [ "$(stat -c %a "$(keeper_dir)")" = 755 ] && [ "$(stat -c %a "$(keeper_dir)/replies")" = 755 ] && [ ! -e "$(keeper_dir)/requests" ] ||
@@ -233,7 +293,7 @@ st=$(cat "$ROOT/real.st"); scratch_rm "$ROOT/real-gate"
 [ "$st" -eq 0 ] && restored && grep -q 'gate_A_end=.* status=0' "$E/experiment.record" && grep -q 'gate_B_end=.* status=0' "$E/experiment.record" ||
   fail "the experiment with the real gate ($st)" "$E/supervisor.log"
 closed=$(ls "$WQ_MASK_RECORD".restored-* | head -n 1)
-for s in A:untraced:14 B:timer:15; do
+for s in A:untraced:16 B:timer:17; do
   IFS=: read -r ses m a <<<"$s"
   csv=$(ls "$ROOT/out/clock-validation-$a"/*-"$m"-*-"$a".csv)
   extra=(); [ "$m" = timer ] && extra=(--controls "$ROOT/out/clock-validation-$a/fs-controls-20261112-$a.run.txt")
@@ -242,12 +302,12 @@ for s in A:untraced:14 B:timer:15; do
 done
 
 # Refusals: nothing changed.
-reset; mkdir -p "$ROOT/out/clock-validation-14"
+reset; mkdir -p "$ROOT/out/clock-validation-16"
 start; wait "$sup"; st=$?
 [ "$st" -eq 2 ] && [ ! -e "$ROOT/calls" ] && [ ! -e "$E" ] && [ "$(masks)" = "$ORIG $ORIG" ] || fail "an existing directory did not refuse ($st)" "$ROOT/sup.out"
 reset; echo 2 >"$ROOT/dry.exit"
 start; wait "$sup"; st=$?
-[ "$st" -eq 2 ] && [ ! -e "$E" ] && [ ! -e "$ROOT/out/clock-validation-14" ] && [ ! -e "$QUIET_HOST_STATE" ] && [ ! -e "$WQ_MASK_RECORD" ] ||
+[ "$st" -eq 2 ] && [ ! -e "$E" ] && [ ! -e "$ROOT/out/clock-validation-16" ] && [ ! -e "$QUIET_HOST_STATE" ] && [ ! -e "$WQ_MASK_RECORD" ] ||
   fail "a failing dry run did not refuse, or left directories ($st)" "$ROOT/sup.out"
 reset; echo "started=x" >"$WQ_MASK_RECORD"
 start; wait "$sup"; st=$?
@@ -255,10 +315,40 @@ start; wait "$sup"; st=$?
 reset; OPTION_A_RTLIMIT=0 tools/option_a.sh >"$ROOT/sup.out" 2>&1; st=$?
 [ "$st" -eq 2 ] && grep -q 'real-time priority limit is 0' "$ROOT/sup.out" || fail "a low real-time limit did not refuse ($st)" "$ROOT/sup.out"
 reset; tools/option_a.sh --dry-run >"$ROOT/sup.out" 2>&1; st=$?
-[ "$st" -eq 0 ] && [ ! -e "$E" ] && [ "$(grep -c '^dry ' "$ROOT/calls")" -eq 2 ] && [ "$(masks)" = "$ORIG $ORIG" ] || fail "the dry run ($st)" "$ROOT/sup.out"
+[ "$st" -eq 0 ] && [ ! -e "$E" ] && [ "$(grep -c '^dry ' "$ROOT/calls")" -eq 2 ] && [ "$(masks)" = "$ORIG $ORIG" ] &&
+  grep -q 'option_a: the emulator: pid=' "$ROOT/sup.out" || fail "the dry run ($st)" "$ROOT/sup.out"
+
+# The emulator: one that may run on CPU 3, one whose second thread may, two processes holding its pty's master, and a
+# port that is no pseudo-terminal are refused, in the dry run and in the run, with nothing changed.
+for mode in all thread3 twice file; do
+  if [ "$mode" = file ]; then reset; emu_stop; : >"$ROOT/pty"; else EMU_MODE=$mode reset; fi
+  tools/option_a.sh --dry-run >"$ROOT/sup.out" 2>&1; st1=$?
+  start; wait "$sup"; st2=$?
+  [ "$st1" -eq 2 ] && [ "$st2" -eq 2 ] && [ ! -e "$ROOT/calls" ] && [ ! -e "$E" ] && [ "$(masks)" = "$ORIG $ORIG" ] && [ ! -e "$QUIET_HOST_STATE" ] &&
+    grep -q -E 'the emulator (may run on CPU 3|cannot be established)' "$ROOT/sup.out" || fail "an emulator ($mode) not refused ($st1 $st2)" "$ROOT/sup.out"
+done
+# The emulator during a session: its affinity widened to CPU 3, the process gone, or another one holding the port: the
+# check after that session stops the experiment (no further step), and everything is restored.
+reset; echo widen >"$ROOT/session.emu.16"
+start; wait "$sup"; st=$?
+[ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && ! grep -q '^gate' "$ROOT/calls" && restored &&
+  grep -q '^emulator_A=.* status=1 reason=pid=.*may run on CPU 3' "$E/experiment.record" &&
+  grep -q 'outcome=STOPPED reason=the emulator changed, or may run on CPU 3, after the untraced session' "$E/experiment.record" ||
+  fail "an emulator widened during the untraced session ($st)" "$ROOT/sup.out"
+reset; echo gone >"$ROOT/session.emu.17"
+start; wait "$sup"; st=$?
+[ "$st" -eq 1 ] && grep -q '^session timer' "$ROOT/calls" && [ "$(grep -c '^gate' "$ROOT/calls")" -eq 1 ] && restored &&
+  grep -q '^emulator_B=.* status=2 reason=0 processes hold the master' "$E/experiment.record" &&
+  grep -q 'outcome=STOPPED reason=the emulator changed, or may run on CPU 3, after the timer session' "$E/experiment.record" ||
+  fail "an emulator gone during the timer session ($st)" "$ROOT/sup.out"
+reset; emu_start "$ROOT/pty.spare" off3; echo swap >"$ROOT/session.emu.16"
+start; wait "$sup"; st=$?
+[ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && restored &&
+  grep -q "^emulator_A=.* status=3 reason=another process holds the pty: pid=$(cat "$ROOT/pty.spare.pid") " "$E/experiment.record" ||
+  fail "another emulator holding the port after the untraced session ($st)" "$ROOT/sup.out"
 
 # A failed session, a failed gate: no further step, everything restored.
-reset; echo 1 >"$ROOT/session.exit.14"
+reset; echo 1 >"$ROOT/session.exit.16"
 start; wait "$sup"; st=$?
 [ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && ! grep -q '^gate' "$ROOT/calls" && restored &&
   grep -q '^finished=.* outcome=STOPPED reason=the untraced session failed (status 1)$' "$E/experiment.record" || fail "a failed session ($st)" "$ROOT/sup.out"
@@ -269,7 +359,7 @@ start; wait "$sup"; st=$?
 
 # A hangup, and an interrupt, reaching the process group during a session: the session cleans up, then the supervisor
 # restores everything.
-for case in HUP:14 INT:15; do
+for case in HUP:16 INT:17; do
   sig=${case%%:*}; at=${case#*:}
   reset; echo 3 >"$ROOT/session.secs"
   start
@@ -277,14 +367,14 @@ for case in HUP:14 INT:15; do
   kill -"$sig" -- -"$sup"; wait "$sup"; st=$?
   [ "$st" -eq 1 ] && [ -e "$ROOT/cleaned-$at" ] && restored && grep -q "^signal=.* $sig$" "$E/experiment.record" &&
     grep -q "outcome=STOPPED reason=signal $sig" "$E/experiment.record" || fail "$sig during session $at ($st)" "$ROOT/sup.out"
-  [ "$at" = 15 ] || ! grep -q '^session timer' "$ROOT/calls" || fail "a session after the hangup" "$ROOT/calls"
+  [ "$at" = 17 ] || ! grep -q '^session timer' "$ROOT/calls" || fail "a session after the hangup" "$ROOT/calls"
 done
 # A TERM to the supervisor alone: the running session finishes, then nothing else runs.
 reset; echo 1.5 >"$ROOT/session.secs"
 start
-wait_file "$ROOT/running-14" || fail "session 14 did not start" "$ROOT/sup.out"
+wait_file "$ROOT/running-16" || fail "session 16 did not start" "$ROOT/sup.out"
 kill -TERM "$sup"; wait "$sup"; st=$?
-[ "$st" -eq 1 ] && [ ! -e "$ROOT/cleaned-14" ] && ! grep -q '^gate' "$ROOT/calls" && ! grep -q '^session timer' "$ROOT/calls" && restored &&
+[ "$st" -eq 1 ] && [ ! -e "$ROOT/cleaned-16" ] && ! grep -q '^gate' "$ROOT/calls" && ! grep -q '^session timer' "$ROOT/calls" && restored &&
   grep -q 'session_A_end=.* status=0' "$E/experiment.record" || fail "a TERM to the supervisor alone ($st)" "$ROOT/sup.out"
 
 # A restoration that fails: unresolved, the record open.
@@ -299,7 +389,7 @@ keeper_gone || fail "the keeper stayed after a failed restoration"
 # records stay for the operator.
 reset; echo 2 >"$ROOT/session.secs"
 start
-wait_file "$ROOT/running-14" || fail "session 14 did not start" "$ROOT/sup.out"
+wait_file "$ROOT/running-16" || fail "session 16 did not start" "$ROOT/sup.out"
 kill -KILL "$sup"; wait "$sup" 2>/dev/null
 keeper_log=$(keeper_dir)/keeper.log
 keeper_gone; sleep 2.5  # the session ends too
@@ -352,7 +442,7 @@ st=$(cat "$ROOT/rec.st")
 
 # A process the session left running when the experiment ends (here the session's own background sleep): nothing is
 # restored (exit 3), and the released keeper ends without restoring, even once that process has ended.
-reset; : >"$ROOT/session.linger.14"
+reset; : >"$ROOT/session.linger.16"
 start; wait "$sup"; st=$?
 [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && [ -e "$WQ_MASK_RECORD" ] && [ -e "$QUIET_HOST_STATE" ] &&
   ! grep -q '^mask_restore_start=' "$E/experiment.record" && grep -q '^descendants=.* children=1 unknown=0$' "$E/experiment.record" &&
@@ -364,7 +454,7 @@ kill "$(cat "$ROOT/linger.pid")"; sleep 1
 # A fork-exit chain, in the group and in a session of its own (outside the group): the supervisor, their subreaper,
 # always has a generation among its children.
 for how in group setsid; do
-  reset; echo "$how" >"$ROOT/session.chain.14"
+  reset; echo "$how" >"$ROOT/session.chain.16"
   start; wait "$sup"; st=$?
   [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&
     grep -Eq '^descendants=.* children=[1-9][0-9]* unknown=0$' "$E/experiment.record" && grep -q '^keeper_release=.* status=0 keeper=released$' "$E/experiment.record" &&
@@ -389,7 +479,7 @@ EOF
 chmod +x "$ROOT/keeper-shim"
 for mode in undelivered:98:running lost:97:released; do
   IFS=: read -r m code kst <<<"$mode"
-  reset; echo "$m" >"$ROOT/shim.mode"; : >"$ROOT/session.escaped.14"
+  reset; echo "$m" >"$ROOT/shim.mode"; : >"$ROOT/session.escaped.16"
   (export OPTION_A_KEEPER=$ROOT/keeper-shim; start; wait "$sup"; echo $? >"$ROOT/rel.st")
   st=$(cat "$ROOT/rel.st")
   [ "$st" -eq 3 ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&
@@ -601,5 +691,6 @@ while True:
 print("chain stopped:", s)
 EOF
 cat "$ROOT/group-race.txt"
+emu_stop
 scratch_release
 echo "option_a smoke OK"
