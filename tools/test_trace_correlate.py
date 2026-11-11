@@ -326,6 +326,8 @@ class Run:
             marks = sorted(e[0] for e in self.events if ": local_timer_entry:" in e[2])
             if self.opt.get("short_instance"):  # an instance that stopped halfway through the run
                 marks = [m for m in marks if m < ORIGIN + ns(len(REPLIES) * PERIOD_US / 2)]
+            if self.opt.get("dup_instance"):  # a second instance anchor 200 ns after one: its deadline slot holds two
+                marks = sorted(marks + [marks[len(marks) // 2] + 200])
             lines = [f"# entries-in-buffer/entries-written: {len(marks)}/{len(marks)}   #P:32"]
             lines += [f"          <idle>-0       [003] d.h1. {tsc_of(m)}: local_timer_entry: vector=236"
                       for m in marks]
@@ -429,7 +431,7 @@ def guard_wakes() -> None:
     ms = 1_000_000
     f, out = guard_case()
     expect(not f and "2 paired" in out and "35 extra" in out and "of the 35 extra, 35 are guard sleeps of 1 failed reads (cycles 2; "
-           "the probe counted 1 guard waits), 0 unexplained" in out and "wake accounting revision 2" in out, f"the guard sleeps accounted: {f}", out)
+           "the probe counted 1 guard waits), 0 unexplained" in out and "wake accounting revision 3" in out, f"the guard sleeps accounted: {f}", out)
 
     def guard_wake(tr, k=10):
         return [w for w in tr.timer_wakes if w[5] == "0xG"][k]
@@ -463,10 +465,23 @@ def guard_wakes() -> None:
         s[6] += 2_500  # 3,000 ns past the guard's end, against 2,000 ns from the previous return to the arming
         tr.timer.starts[i] = tuple(s)
 
-    def no_return(tr):  # the same 500 ns past the end, with no recorded return before its sleep call: no lag allowed
-        w = guard_wake(tr, -1)
-        a = tr.timer.starts[arming(tr, w)][0]
-        tr.sleep_exits[:] = [x for x in tr.sleep_exits if x > a]
+    def no_return(tr):  # the next-to-last sleep's return is missing: it and the last (whose lag it bounded) are unestablished
+        w = guard_wake(tr, -2)
+        tr.sleep_exits.remove(tr.timer.starts[arming(tr, w)][6] + 1_000)
+
+    def call_before_write(run, tr):  # the accounting review's counterexample 1: the first sleep's call 20 us before the write call
+        a = tr.timer.starts[arming(tr, guard_wake(tr, 0))][0]
+        tr.sleep_calls.remove(a - 100)
+        tr.sleep_calls.append(ORIGIN + int(run.rows[1]["bus_write_start_ns"]) - 20_000)
+
+    def return_after_write(run, tr):  # the last sleep returns after the write call did
+        x = tr.timer.starts[arming(tr, guard_wake(tr, -1))][6] + 1_000
+        tr.sleep_exits.remove(x)
+        tr.sleep_exits.append(ORIGIN + int(run.rows[1]["write_return_ns"]) + 1_000)
+
+    def two_wakes(tr):  # a second wake of one sleep's timer, before that sleep returned
+        w = guard_wake(tr)
+        tr.timer_wakes.append((w[0] + 100, w[1], w[2], w[3] + 100, w[4], w[5]))
 
     def early_arming(tr):  # 1 us before t0 + budget, otherwise a proper slice with its sleep call
         w = guard_wake(tr, 0)
@@ -481,10 +496,14 @@ def guard_wakes() -> None:
              ("a sleep of 2 ms", lambda run, tr: alter_arming(tr, 10, expires=tr.timer.starts[arming(tr, guard_wake(tr))][0] + 2 * ms), 1),
              ("an arming before the read's budget ran out", lambda run, tr: early_arming(tr), 1),
              ("an expiry after the guard's end beyond the sleep's conversion lag", lambda run, tr: late_expiry(tr), 1),
-             ("an expiry after the guard's end with no recorded return to bound the lag", lambda run, tr: no_return(tr), 1),
+             ("a sleep with no recorded return, and the one whose lag it bounded", lambda run, tr: no_return(tr), 2),
+             ("a sleep call before the write call (the sequence's records contradict its ownership)", call_before_write, 35),
+             ("a sleep that returned after the write call", return_after_write, 1),
+             ("two wakes of one sleep", lambda run, tr: two_wakes(tr), 1),
              ("a timer armed by another task", lambda run, tr: alter_arming(tr, 10, pid=TID + 1), 1),
              ("a timer that wakes no sleeper", lambda run, tr: alter_arming(tr, 10, function="tick_nohz_handler"), 1),
-             ("an arming with no sleep call before it", lambda run, tr: no_call(tr), 1),
+             # Two returns between two sleep calls: the sequence is not established from the sleep before the gap on.
+             ("an arming with no sleep call before it", lambda run, tr: no_call(tr), 26),
              ("the cycle's read succeeded", lambda run, tr: run.rows[1].update(read_ok="1"), 35),
              ("no bounded-read settings", lambda run, tr: run.summary.pop("bounded_read"), 35),
              ("no timer armings (not the timer mode)", lambda run, tr: setattr(tr, "timer", None), 35)]
@@ -494,6 +513,35 @@ def guard_wakes() -> None:
     f, out = guard_case(lambda run, tr: run.summary["bounded_read"].update(guard_waits=0))
     expect("timer wakes: guard sleeps in 1 failed-read cycles, more than the 0 guard waits the probe counted" in f,
            f"guard sleeps the probe did not count: {f}", out)
+
+    # The classifier alone, on one failed read (t0 at the origin: the guard from 35 to 70 ms) and one sleep with its
+    # complete records (call, arming 100 ns later, wake, return): only where the write call begins, the sleep's expiry
+    # and an earlier return differ.
+    import types
+    import trace_correlate
+
+    def classify(ws: int, arm: int, expiry: int, earlier_return: int) -> tuple[int, int]:
+        o = ORIGIN
+        run = types.SimpleNamespace(origin=o, tid=TID, summary={"bounded_read": {"budget_s": 0.035, "guard_s": 0.035}},
+                                    rows=[{"cycle": "1", "read_ok": "0", "instr_return_ns": "0", "bus_write_start_ns": str(ws),
+                                           "write_return_ns": str(100 * ms)}])
+        tr = types.SimpleNamespace(timer=types.SimpleNamespace(starts=[(o + arm, 3, TID, "x7_bus_timing", "0xG", "hrtimer_wakeup",
+                                                                         o + expiry, o + expiry, "REL")]),
+                                   sleep_calls=[o + arm - 100], sleep_exits=[o + earlier_return, o + expiry + 1_000])
+        wake = (o + expiry + 300, o + expiry + 200, 3, o + expiry + 400, False, "0xG")
+        accounted, unexplained, _ = trace_correlate.guard_sleeps(run, tr, [wake])
+        return len(accounted), len(unexplained)
+
+    # The accounting review's counterexample 2: a write call that begins 10 ms after the whole guard ended cannot wait
+    # it out, and a return 69.9 ms after t0, before that call, bounds no lag for its sleep.
+    got = classify(80 * ms, 81 * ms, 81 * ms + 50_000, 69_900_000)
+    expect(got == (0, 1), f"a sleep in a write call that began after the guard ended: {got}", "")
+    # A write call that begins 300 us before the guard's end: its one sleep, armed 2 us after the call began, may
+    # expire up to those 2 us after the guard's end, not by the 34 ms back to a return before the write call.
+    got = classify(70 * ms - 300_000, 70 * ms - 298_000, 70 * ms + 1_500, 35 * ms + 500_000)
+    expect(got == (1, 0), f"the last sleep within the lag its own write call bounds: {got}", "")
+    got = classify(70 * ms - 300_000, 70 * ms - 298_000, 70 * ms + 50_000, 35 * ms + 500_000)
+    expect(got == (0, 1), f"a stale return before the write call supplies no lag: {got}", "")
 
 
 def main() -> int:
@@ -614,6 +662,13 @@ def main() -> int:
                "the timer-mode run's waits", out)
         expect("certificate provenance: 7.0.0-42.42, trace-cmd 3.3.3-1ubuntu2 (libtraceevent1 1:1.8.7-1, libtracefs1 1.8.2-1ubuntu1, 13 plugins), " in out,
                "the audited trace-cmd and runtime in the provenance", out)
+        # The same run with one deadline slot holding two instance anchors: the certificate holds, the slot accounting
+        # fails, and its U is printed as a candidate with the conversion not accepted, never as validated (a reporting
+        # change only, approved by the accounting review of 2026-11-11).
+        code, out, _ = correlate(root, "timer_dup", timer=True, dup_instance=True)
+        expect(code == 1 and "conversion certificate: CERTIFIED" in out and "deadline slots hold two instance anchors" in out
+               and ", candidate U; conversion not accepted; longest conversion" in out and ", validated;" not in out,
+               "a certified conversion whose slot accounting failed", out)
         # The trace-cmd that reported the main trace is part of the certificate (the implementation review's finding 3):
         # a saved report with no identity, or one written by another version, is not certified.
         for name, tool, words in (("timer_notool", None, "a saved report (--report) names no reporting tool (--report-tool)"),

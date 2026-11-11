@@ -32,9 +32,11 @@ Association and alignment checks (exit 1 if any fails):
   neither the scheduled wake nor the switch-in that B and C test. A sleep
   with two wakes fails, and so does a wake in no sleep, unless its own
   evidence shows it is one of the bounded read's guard sleeps after a
-  failed read (guard_sleeps: inside that cycle's write call, its timer
-  armed by the worker right after a sleep call, for at most 1 ms, within
-  the read's guard interval; wake accounting revision 2). A sleep with no
+  failed read (guard_sleeps: its call, the worker's arming of its timer
+  right after it, its wake and its return, in order inside that cycle's
+  write call; for at most 1 ms, while the guard was pending, ending by the
+  guard's end plus a lag bounded by that write call's own sequence of
+  sleeps; wake accounting revision 3). A sleep with no
   wake fails unless the cycle began without sleeping: its scheduled wake
   had passed when the probe was to sleep, so it set no timer, the worker
   never left the CPU in that interval, and the cycle began at or after its
@@ -420,44 +422,78 @@ class Run:
         return 8 + (self.instr_bytes - 14) * (read_len + 4)
 
 
-# The timer-wake accounting's revision, printed with its result (revision 1 matched the periodic sleeps alone).
-WAKE_ACCOUNTING = "wake accounting revision 2 (periodic sleeps, and bounded-read guard sleeps by their own evidence)"
+# The timer-wake accounting's revision, printed with its result (revision 1 matched the periodic sleeps alone; revision
+# 2 also accounted guard sleeps, but did not establish that the write call owned a sleep's call or which return bounded
+# its lag: the accounting review of 2026-11-11).
+WAKE_ACCOUNTING = ("wake accounting revision 3 (periodic sleeps, and bounded-read guard sleeps by their own evidence: "
+                   "each one's call, arming, wake and return in order inside its write call)")
 GUARD_SLICE_NS = 1_000_000  # Port::clearToTransmit waits out a pending guard in sleeps of at most 1 ms (src/dxl/port.cpp)
 SLEEP_CALL_NS = 100_000     # a sleep's call by the worker precedes the arming of its timer by at most this
+
+
+def guard_sequence(ws: int, wr: int, calls: list, exits: list) -> list:
+    """The worker's sleeps inside one write call [ws, wr], in order, as (call, return, floor): each call's own return,
+    the only one before the next call (or, for the last, before the write call returned), and the floor below which
+    that sleep's clock read cannot lie (the write call's start for the first, the previous sleep's return after it).
+    A sleep return inside the call before its first sleep call, or a call without exactly one return of its own, ends
+    the sequence there: nothing from that point on is established."""
+    c0, c1 = bisect.bisect_left(calls, ws), bisect.bisect_right(calls, wr)
+    if bisect.bisect_left(exits, ws) != bisect.bisect_left(exits, calls[c0] if c0 < c1 else wr):
+        return []
+    seq, floor = [], ws
+    for i in range(c0, c1):
+        nxt = calls[i + 1] if i + 1 < c1 else None
+        x0 = bisect.bisect_right(exits, calls[i])
+        x1 = bisect.bisect_left(exits, nxt) if nxt is not None else bisect.bisect_right(exits, wr)
+        if x1 - x0 != 1:
+            break
+        seq.append((calls[i], exits[x0], floor))
+        floor = exits[x0]
+    return seq
 
 
 def guard_sleeps(run: Run, tr: Trace, wakes: list) -> tuple[list, list, set]:
     """Which wakes outside the periodic sleeps are the bounded read's guard waits. After a failed read, the port waits
     out its guard (from t0 + budget to t0 + budget + guard, t0 the instruction's send, the probe's instr_return stamp)
-    before the cycle's write is sent, in sleeps of at most 1 ms. A wake is such a sleep only if all of this holds: it falls
-    inside the write call of a cycle whose read failed; its timer was armed by the worker (hrtimer_wakeup) right after a
-    sleep call of the worker; the arming is at or after that read's t0 + budget, its expiry at most 1 ms after the arming
-    and at or before t0 + budget + guard plus the sleep's conversion lag. Each slice's target is an absolute time, but the
-    sleep is relative: the kernel adds it to its own clock, read before the arming and after user space read its clock,
-    which follows the worker's previous sleep's return; so the lag is at most the time from that return to the arming,
-    and nothing is allowed for it without a recorded return. Anything else stays unexplained, as does every wake of a
-    capture without the bounded read's settings or the timer armings (a capture outside the timer mode). Returns
-    (accounted, unexplained, the failed-read cycles that hold accounted wakes)."""
+    inside the cycle's write call, before the write is sent, in sleeps of at most 1 ms: each reads the clock, then makes
+    one relative sleep to the earlier of the guard's end and 1 ms on. A wake is such a sleep only if all of this holds:
+
+    - it falls inside the write call of a cycle whose read failed, and the write call owns its sleep: the latest arming
+      of the wake's timer, by any task, is the worker's (hrtimer_wakeup), made at most 100 us after a sleep call of the
+      worker that lies inside that write call, in that call's complete sequence of sleeps (guard_sequence), and the wake
+      lies between the arming and that sleep's own return; one wake per sleep;
+    - the guard was still pending when the sleep read its clock: the sleep's floor (the write call's start for its first
+      sleep, else the previous sleep's return) is before t0 + budget + guard, so no write call that began after the
+      guard ended can account a wake;
+    - the arming is at or after t0 + budget, and the expiry at most 1 ms after the arming and at or before
+      t0 + budget + guard plus the sleep's conversion lag. The kernel adds the relative sleep to its own clock, read
+      before the arming and after user space read its clock, which follows the sleep's floor; so the lag is at most the
+      time from the floor to the arming. A return before the write call never bounds it.
+
+    Anything else stays unexplained, as does every wake of a capture without the bounded read's settings or the timer
+    armings (a capture outside the timer mode). Returns (accounted, unexplained, the failed-read cycles that hold
+    accounted wakes)."""
     br = run.summary.get("bounded_read")
     timer = getattr(tr, "timer", None)
     if not wakes or not isinstance(br, dict) or "budget_s" not in br or "guard_s" not in br or timer is None:
         return [], list(wakes), set()
     budget, guard = round(float(br["budget_s"]) * 1e9), round(float(br["guard_s"]) * 1e9)
     o = run.origin
-    failed = []
+    calls, exits = sorted(tr.sleep_calls), sorted(getattr(tr, "sleep_exits", []))
+    failed = []  # (write start, write return, t0 + budget, t0 + budget + guard, cycle, {call: (return, floor)})
     for r in run.rows:
         stamps = [int(r[k]) for k in ("instr_return_ns", "bus_write_start_ns", "write_return_ns")]
         if int(r["read_ok"]) == 0 and min(stamps) >= 0:
-            t0 = o + stamps[0]
-            failed.append((o + stamps[1], o + stamps[2], t0 + budget, t0 + budget + guard, int(r["cycle"])))
+            t0, ws, wr = o + stamps[0], o + stamps[1], o + stamps[2]
+            seq = {c: (ret, floor) for c, ret, floor in guard_sequence(ws, wr, calls, exits)}
+            failed.append((ws, wr, t0 + budget, t0 + budget + guard, int(r["cycle"]), seq))
     # Every arming of each timer, by any task: an expiry belongs to the latest arming before it.
     arms: dict = {}
     for s in timer.starts:  # (ts, cpu, pid, comm, addr, function, expires, soft, mode)
         arms.setdefault(s[4], []).append((s[0], s[6], s[2], s[5]))
     for v in arms.values():
         v.sort()
-    calls, exits = sorted(tr.sleep_calls), sorted(getattr(tr, "sleep_exits", []))
-    accounted, unexplained, cycles = [], [], set()
+    accounted, unexplained, cycles, used = [], [], set(), set()
     for w in wakes:
         entry, now, _, waking, _, addr = w
         cyc = next((f for f in failed if f[0] <= waking <= f[1]), None)
@@ -467,18 +503,28 @@ def guard_sleeps(run: Run, tr: Trace, wakes: list) -> tuple[list, list, set]:
         if cyc is not None and k >= 0:
             arm_ts, expires, pid, function = mine[k]
             c = bisect.bisect_right(calls, arm_ts) - 1
-            e = bisect.bisect_right(exits, calls[c]) - 1 if c >= 0 else -1
-            lag = arm_ts - exits[e] if e >= 0 else 0
-            ok = (pid == run.tid and function == "hrtimer_wakeup" and c >= 0 and arm_ts - calls[c] <= SLEEP_CALL_NS
-                  and expires - arm_ts <= GUARD_SLICE_NS and cyc[2] <= arm_ts and expires <= cyc[3] + lag
-                  and (now is None or expires <= now))
+            call = calls[c] if c >= 0 else None
+            if call is not None and call in cyc[5] and call not in used:
+                ret, floor = cyc[5][call]
+                ok = (pid == run.tid and function == "hrtimer_wakeup" and arm_ts - call <= SLEEP_CALL_NS
+                      and arm_ts <= waking <= ret and floor < cyc[3] and cyc[2] <= arm_ts
+                      and expires - arm_ts <= GUARD_SLICE_NS and expires <= cyc[3] + (arm_ts - floor)
+                      and (now is None or expires <= now))
             if ok:
+                used.add(call)
                 cycles.add(cyc[4])
         (accounted if ok else unexplained).append(w)
     return accounted, unexplained, cycles
 
 
-def check_timer_wakes(run: Run, tr: Trace, failures: list, out) -> dict:
+def periodic_sleeps(run, tr) -> dict:
+    """The probe's periodic sleeps as the trace establishes them: the transitions from each cycle's end stamp to the
+    next cycle's wake stamp (and to the late wake that ended the run, if one did), each holding exactly one timer wake of
+    the worker (its sched_waking inside an hrtimer_wakeup expiry), by the waking's time: a causal, one-to-one association
+    that uses neither the scheduled wake nor the switch-in. A transition with no wake began awake if the worker never
+    left the CPU in it and its wake stamp is at or after its scheduled wake (the deadline had passed when it was to
+    sleep, during the cycle's bookkeeping after its end stamp included); else it is missing its wake. run needs origin,
+    rows and summary; tr, timer_wakes and worker_switch."""
     o, rows = run.origin, run.rows
     res = run.summary["result"]
     lo = o + int(rows[0]["wake_ns"])
@@ -498,9 +544,7 @@ def check_timer_wakes(run: Run, tr: Trace, failures: list, out) -> dict:
         lw = round(float(res["late_wake_s"]) * 1e9)
         lat = round(float(res["late_wake_lateness_s"]) * 1e9)
         sleeps.append((None, o + int(rows[-1]["cycle_end_ns"]), o + lw - lat, o + lw))
-    # Each wake belongs to the sleep that contains its waking: a causal,
-    # one-to-one association that uses neither the scheduled wake (B) nor
-    # the switch-in (C).
+    # Each wake belongs to the sleep that contains its waking.
     waking_ts = [w[3] for w in wakes]
     outs = [s[0] for s in tr.worker_switch if s[2] == "out"]
     pairs, used, used_idx = [], 0, set()
@@ -525,6 +569,14 @@ def check_timer_wakes(run: Run, tr: Trace, failures: list, out) -> dict:
                 began_awake += 1
             else:
                 missing += 1
+    return dict(wakes=wakes, sleeps=sleeps, late=late, pairs=pairs, used=used, used_idx=used_idx, duplicate=duplicate,
+                missing=missing, began_awake=began_awake, outs=outs)
+
+
+def check_timer_wakes(run: Run, tr: Trace, failures: list, out) -> dict:
+    p = periodic_sleeps(run, tr)
+    wakes, sleeps, late, pairs, outs = p["wakes"], p["sleeps"], p["late"], p["pairs"], p["outs"]
+    used, used_idx, duplicate, missing, began_awake = p["used"], p["used_idx"], p["duplicate"], p["missing"], p["began_awake"]
     extra = len(wakes) - used
     guard, unexplained, guard_cycles = guard_sleeps(run, tr, [w for k, w in enumerate(wakes) if k not in used_idx])
     guard_waits = int((run.summary.get("bounded_read") or {}).get("guard_waits", 0))
