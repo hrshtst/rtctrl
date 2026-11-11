@@ -1,25 +1,41 @@
 #!/usr/bin/env python3
-"""The timekeeping recorder's cost on the CPUs that perform the updates: a read-only analysis of one timer capture
-(docs/hardware/control-rate.md, the clock alignment's validation). It changes nothing and judges nothing.
+"""Observations of the timekeeping recorder's surroundings on the CPUs that perform the updates: a read-only, descriptive
+analysis of one timer capture (docs/hardware/control-rate.md, the clock alignment's validation). It changes nothing,
+judges nothing and bounds nothing.
 
     tk_cost.py <run>.csv [--report FILE] [--baseline <run>.csv [--baseline-report FILE]] [--rt-cpu N]
 
 The recorder (tools/tk_recorder.sh) puts a probe on the entry and the return of update_wall_time, which run on whichever
 CPU performs the timekeeping update. Its records (<run>.csv.tk.txt) give each update's CPU and its entry and return
 stamps; the main trace (<run>.csv.trace.dat, through trace-cmd report -t under tools/tk_record.py's launch, or a saved
---report) gives every CPU's interrupts on the same clock. For each CPU that performed updates:
+--report) gives every CPU's interrupts and the worker's wakings and switches on the same clock.
 
-- the updates, their rate and durations (return stamp minus entry stamp, which already holds part of the probes' work);
-- the interrupt that encloses each update (the innermost of the recorded local timer, device, reschedule and
-  function-call interrupts), and the updates no recorded interrupt encloses;
-- the local timer interrupts that hold an update against those that hold none: their durations' quantiles, and the
-  difference of the medians. That difference is an upper bound on what the recorder adds to an update's interrupt,
-  since it also holds the update's own work, which runs without the recorder too.
+Everything is restricted to one recorded analysis window: the probe's first wake stamp to its last cycle-end stamp (the
+condition's measured run). An update, interrupt or wait counts only if it lies entirely inside the window; updates
+before, after or across its ends are counted apart, and rates use the window's elapsed time. The recorder's longer
+dependency interval, which its certificate uses, is not trimmed by this; only this analysis is.
 
-On the real-time CPU, each sleep whose wake came 50 us or more after its scheduled time (the probe's log) is checked for
-an update on that CPU overlapping it, beside the share of all sleeps an update overlaps. With --baseline, a capture
-without the recorder at the same condition, the real-time CPU's local timer interrupt durations and the wake lateness are
-set side by side; the difference between two sessions also holds anything else that differed between them.
+For each CPU that performed updates inside the window:
+
+- the updates, their rate and their durations (the return stamp minus the entry stamp: the probes' own work is partly
+  inside that interval and partly outside it, so it is not a complete measure of the instrumentation either);
+- the innermost recorded interrupt enclosing each update (local timer, device, reschedule, function call), and the
+  updates no recorded interrupt encloses;
+- the local timer interrupts holding an update, and those holding none: the two distributions, and the difference of
+  their medians. That difference is descriptive. The two groups are different interrupts doing different work, so it
+  can understate or overstate what the recorder adds, and it can be negative; it is neither a bound on the recorder's
+  cost nor an estimate of it.
+
+On the real-time CPU, two separate populations: the probe's cycle wakes (a cycle that slept, its scheduled wake after
+the previous cycle's end, from its scheduled wake to its wake stamp), and the worker's waits in the trace (a
+sched_waking of the worker while it was off the CPU, to its next switch-in). Those 50 us or longer are checked for an
+update on that CPU overlapping them. An overlap count of zero describes the recorded update bodies only; it is not
+proof that the instrumentation had no effect.
+
+With --baseline, a capture without the recorder at nominally the same condition: the real-time CPU's local timer
+interrupts, the cycle-wake lateness and the worker's waits, each cropped to its own capture's window, side by side. It
+is a comparison between sessions, not a controlled recorder-on and recorder-off experiment: any difference also holds
+whatever else differed between them, and it bounds nothing.
 """
 
 from __future__ import annotations
@@ -50,6 +66,8 @@ IRQ_EVENTS = {"local_timer_entry": ("local timer", 1), "local_timer_exit": ("loc
               "call_function_single_entry": ("function call", 1), "call_function_single_exit": ("function call", -1)}
 EVENT = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s+)?.*?-\d+\s+\[(\d+)\]\s+(?:\S+\s+)?(\d+)\.(\d{9}):\s+(\w+):\s*(.*)$")
 IRQ_NUMBER = re.compile(r"\birq=(\d+)")
+WAKING_PID = re.compile(r"\bpid=(\d+)")
+SWITCH = re.compile(r":(\d+) \[-?\d+\] \S+ ==> .*:(\d+) \[-?\d+\]\s*$")
 LATE_NS = 50_000  # the timer service classification's threshold for a late wake
 
 
@@ -60,32 +78,52 @@ def quantile(xs: list, p: float):
     return xs[max(0, min(len(xs) - 1, math.ceil(p * len(xs)) - 1))]
 
 
-def interrupts(lines) -> tuple[dict, int]:
-    """Every CPU's interrupts as (entry, exit, kind), sorted by entry, from report lines; and the count of entries or
-    exits that found no partner (at the trace's ends, or interleaved). Device interrupts pair by their number: one
-    handler can run another's inside it (Intel VMD's demultiplexes its NVMe queues' interrupts)."""
+def scan(lines, tid: int | None = None, rt: int = 3) -> dict:
+    """From report lines: every CPU's interrupts as (entry, exit, kind), sorted by entry, and the count of entries or
+    exits with no partner; and, given the worker's tid, its waits on the real-time CPU as (waking, switch-in). Device
+    interrupts pair by their number: one handler can run another's inside it (Intel VMD's runs its NVMe queues')."""
     open_: dict = {}
-    out: dict = collections.defaultdict(list)
+    irqs: dict = collections.defaultdict(list)
     unpaired = 0
+    waits: list = []
+    off, waking = True, None
     for ln in lines:
         m = EVENT.match(ln)
-        if not m or m[4] not in IRQ_EVENTS:
+        if not m:
             continue
-        cpu, t = int(m[1]), int(m[2]) * 1_000_000_000 + int(m[3])
-        kind, way = IRQ_EVENTS[m[4]]
-        n = IRQ_NUMBER.search(m[5]) if kind == "device" else None
-        key = (cpu, kind, n[1] if n else None)
-        if way == 1:
-            unpaired += key in open_
-            open_[key] = t
-        elif key in open_:
-            out[cpu].append((open_.pop(key), t, kind))
-        else:
-            unpaired += 1
+        cpu, t, ev, rest = int(m[1]), int(m[2]) * 1_000_000_000 + int(m[3]), m[4], m[5]
+        if ev in IRQ_EVENTS:
+            kind, way = IRQ_EVENTS[ev]
+            n = IRQ_NUMBER.search(rest) if kind == "device" else None
+            key = (cpu, kind, n[1] if n else None)
+            if way == 1:
+                unpaired += key in open_
+                open_[key] = t
+            elif key in open_:
+                irqs[cpu].append((open_.pop(key), t, kind))
+            else:
+                unpaired += 1
+        elif tid is not None and ev == "sched_waking":
+            p = WAKING_PID.search(rest)
+            if p and int(p[1]) == tid and off and waking is None:
+                waking = t
+        elif tid is not None and ev == "sched_switch" and cpu == rt:
+            s = SWITCH.search(rest)
+            if s and int(s[1]) == tid:
+                off = True
+            if s and int(s[2]) == tid:
+                if waking is not None:
+                    waits.append((waking, t))
+                off, waking = False, None
     unpaired += len(open_)
-    for v in out.values():
+    for v in irqs.values():
         v.sort()
-    return out, unpaired
+    return {"irqs": irqs, "unpaired": unpaired, "waits": waits}
+
+
+def interrupts(lines) -> tuple[dict, int]:
+    r = scan(lines)
+    return r["irqs"], r["unpaired"]
 
 
 def enclosing(irqs: list, starts: list, entry: int, ret: int):
@@ -98,13 +136,28 @@ def enclosing(irqs: list, starts: list, entry: int, ret: int):
     return None
 
 
-def sleeps(csv_path: pathlib.Path) -> list:
-    """The probe's sleeps as (scheduled wake, wake) on CLOCK_MONOTONIC, from its log and summary."""
-    if tomllib is None:
-        raise SystemExit("tk_cost: needs Python 3.11 or later (tomllib)")
-    origin = int(tomllib.loads(pathlib.Path(str(csv_path) + ".summary.toml").read_text())["result"]["monotonic_origin_ns"])
-    with open(csv_path, newline="") as f:
-        return [(origin + int(r["scheduled_wake_ns"]), origin + int(r["wake_ns"])) for r in csv.DictReader(f) if int(r["wake_ns"]) >= 0]
+class Capture:
+    """A capture's probe log and summary: its analysis window, the worker, and the cycles that slept."""
+
+    def __init__(self, csv_path: pathlib.Path) -> None:
+        if tomllib is None:
+            raise SystemExit("tk_cost: needs Python 3.11 or later (tomllib)")
+        res = tomllib.loads(pathlib.Path(str(csv_path) + ".summary.toml").read_text())["result"]
+        self.origin = int(res["monotonic_origin_ns"])
+        self.tid = int(res["worker_tid"]) if "worker_tid" in res else None
+        with open(csv_path, newline="") as f:
+            rows = [r for r in csv.DictReader(f)]
+        if not rows:
+            raise SystemExit(f"tk_cost: {csv_path}: no cycles")
+        o = self.origin
+        self.window = (o + int(rows[0]["wake_ns"]), o + int(rows[-1]["cycle_end_ns"]))
+        # A cycle slept when its scheduled wake was still ahead at the previous cycle's end; the first begins at once.
+        self.wakes = [(o + int(b["scheduled_wake_ns"]), o + int(b["wake_ns"])) for a, b in zip(rows, rows[1:])
+                      if int(b["scheduled_wake_ns"]) > int(a["cycle_end_ns"]) and int(b["wake_ns"]) >= 0]
+        self.cycles = len(rows)
+
+    def inside(self, a: int, b: int) -> bool:
+        return self.window[0] <= a and b <= self.window[1]
 
 
 def rt_cpu_of(csv_path: pathlib.Path, default: int = 3) -> int:
@@ -139,55 +192,82 @@ def dist(xs: list) -> str:
     return f"n {len(xs)}, p50 {us(quantile(xs, .5))} p99 {us(quantile(xs, .99))} p99.9 {us(quantile(xs, .999))} max {us(xs[-1] if xs else None)} us"
 
 
-def analyse(updates: list, irqs: dict, sleeps_: list, rt: int, out) -> dict:
-    """The per-CPU cost summary of a capture's updates (tk_record.parse_record's) against its interrupts."""
+def analyse(updates: list, scanned: dict, cap: Capture, rt: int, out) -> dict:
+    """The per-CPU observations of a capture's updates (tk_record.parse_record's) and the real-time CPU's wakes and
+    waits, inside the capture's window."""
+    lo, hi = cap.window
+    span = (hi - lo) / 1e9
+    irqs = {c: [x for x in v if cap.inside(x[0], x[1])] for c, v in scanned["irqs"].items()}
     per: dict = collections.defaultdict(list)
+    outside: dict = collections.defaultdict(lambda: [0, 0, 0])  # before, after, across an end
     for u in updates:
-        per[u["cpu"]].append(u)
-    span = (max(u["ret"] for u in updates) - min(u["entry"] for u in updates)) / 1e9 if updates else 0.0
-    result: dict = {"cpus": {}}
-    print(f"timekeeping updates: {len(updates)} over {span:.1f} s on {len(per)} CPUs (the real-time CPU is {rt})", file=out)
-    for cpu in sorted(per, key=lambda c: (c != rt, -len(per[c]))):
-        ups = per[cpu]
+        if cap.inside(u["entry"], u["ret"]):
+            per[u["cpu"]].append(u)
+        else:
+            outside[u["cpu"]][0 if u["ret"] < lo else 1 if u["entry"] > hi else 2] += 1
+    result: dict = {"window": cap.window, "span": span, "cpus": {}, "outside": dict(outside)}
+    print(f"analysis window: {lo} to {hi} ns ({span:.6f} s, the probe's first wake to its last cycle end); an update, "
+          "interrupt or wait counts only if it lies entirely inside", file=out)
+    print(f"timekeeping updates inside the window: {sum(len(v) for v in per.values())} on {len(per)} CPUs; outside it "
+          "(before, after, across an end): " + (", ".join(f"CPU {c} {v[0]}/{v[1]}/{v[2]}" for c, v in sorted(outside.items())) or "none"), file=out)
+    cpus = sorted(set(per) | {rt}, key=lambda c: (c != rt, -len(per.get(c, []))))
+    for cpu in cpus:
+        ups = per.get(cpu, [])
         irq = irqs.get(cpu, [])
         starts = [x[0] for x in irq]
-        held: dict = {}
-        outside = 0
+        held: set = set()
+        none_recorded = 0
         kinds: collections.Counter = collections.Counter()
         for u in ups:
             e = enclosing(irq, starts, u["entry"], u["ret"])
             if e is None:
-                outside += 1
+                none_recorded += 1
             else:
-                held[e] = True
+                held.add(e)
                 kinds[e[2]] += 1
         timers = [x for x in irq if x[2] == "local timer"]
         with_ = sorted(b - a for (a, b, k) in timers if (a, b, k) in held)
         without = sorted(b - a for (a, b, k) in timers if (a, b, k) not in held)
         mw, mo = quantile(with_, .5), quantile(without, .5)
-        bound = mw - mo if mw is not None and mo is not None else None
+        diff = mw - mo if mw is not None and mo is not None else None
         dur = sorted(u["ret"] - u["entry"] for u in ups)
-        result["cpus"][cpu] = dict(updates=len(ups), outside=outside, kinds=dict(kinds), with_=with_, without=without, bound=bound, durations=dur)
-        print(f"  CPU {cpu}{' (real-time)' if cpu == rt else ''}: {len(ups)} updates ({len(ups) / span if span else 0:.0f}/s); durations {dist(dur)}", file=out)
-        print("    enclosing interrupt: " + ", ".join(f"{k} {n}" for k, n in kinds.most_common()) + f", none recorded {outside}", file=out)
+        result["cpus"][cpu] = dict(updates=len(ups), none_recorded=none_recorded, kinds=dict(kinds), with_=with_, without=without,
+                                   median_difference=diff, durations=dur)
+        print(f"  CPU {cpu}{' (real-time)' if cpu == rt else ''}: {len(ups)} updates ({len(ups) / span if span else 0:.1f}/s); "
+              f"durations {dist(dur)}", file=out)
+        if not ups:
+            continue
+        print("    enclosing interrupt: " + ", ".join(f"{k} {n}" for k, n in kinds.most_common()) + f", none recorded {none_recorded}", file=out)
         print(f"    local timer interrupts holding an update: {dist(with_)}", file=out)
         print(f"    local timer interrupts holding none:      {dist(without)}", file=out)
-        print(f"    difference of the medians (an upper bound on the recorder's addition per update): {us(bound)} us", file=out)
+        print(f"    difference of the medians, holding an update minus holding none: {us(diff)} us (descriptive: different "
+              "interrupts, neither a bound on nor an estimate of the recorder's cost)", file=out)
     rt_ups = sorted((u["entry"], u["ret"]) for u in per.get(rt, []))
-    starts = [a for a, _ in rt_ups]
+    ustarts = [a for a, _ in rt_ups]
 
-    def overlapped(lo: int, hi: int) -> bool:
-        i = bisect.bisect_right(starts, hi) - 1
-        return any(rt_ups[j][1] >= lo for j in range(i, max(-1, i - 4), -1))
+    def overlapped(a: int, b: int) -> bool:
+        i = bisect.bisect_right(ustarts, b) - 1
+        return any(rt_ups[j][1] >= a for j in range(i, max(-1, i - 4), -1))
 
-    late = [(s, w) for s, w in sleeps_ if w - s >= LATE_NS]
-    late_hit = sum(overlapped(s, w) for s, w in late)
-    all_hit = sum(overlapped(s, w) for s, w in sleeps_)
-    lateness = sorted(w - s for s, w in sleeps_)
-    result.update(late=len(late), late_overlapped=late_hit, sleeps=len(sleeps_), sleeps_overlapped=all_hit, lateness=lateness)
-    print(f"  the worker's wakes on CPU {rt}: lateness {dist(lateness)}", file=out)
-    print(f"    {len(late)} sleeps woke {LATE_NS // 1000} us or more late, {late_hit} of them overlapped by an update on CPU {rt}; "
-          f"of all {len(sleeps_)} sleeps, {all_hit} overlapped by one", file=out)
+    wakes = [(s, w) for s, w in cap.wakes if cap.inside(s, w)]
+    late = [(s, w) for s, w in wakes if w - s >= LATE_NS]
+    waits = [(a, b) for a, b in scanned["waits"] if cap.inside(a, b)]
+    long_ = [(a, b) for a, b in waits if b - a >= LATE_NS]
+    result.update(wakes=len(wakes), late=len(late), late_overlapped=sum(overlapped(s, w) for s, w in late),
+                  wakes_overlapped=sum(overlapped(s, w) for s, w in wakes), lateness=sorted(w - s for s, w in wakes),
+                  waits=len(waits), long_waits=len(long_), long_overlapped=sum(overlapped(a, b) for a, b in long_),
+                  wait_durations=sorted(b - a for a, b in waits))
+    print(f"  cycle wakes on CPU {rt} ({len(wakes)} of {cap.cycles} cycles slept, the scheduled wake after the previous "
+          f"cycle's end): lateness {dist(result['lateness'])}", file=out)
+    print(f"    {len(late)} woke {LATE_NS // 1000} us or more late, {result['late_overlapped']} of them overlapped by an update on "
+          f"CPU {rt}; of all {len(wakes)}, {result['wakes_overlapped']} overlapped by one", file=out)
+    if cap.tid is None:
+        print("  the worker's waits: no worker_tid in the summary", file=out)
+    else:
+        print(f"  the worker's waits on CPU {rt} (sched_waking while off the CPU, to its switch-in): {dist(result['wait_durations'])}", file=out)
+        print(f"    {len(long_)} of {LATE_NS // 1000} us or more, {result['long_overlapped']} of them overlapped by an update on CPU {rt}", file=out)
+    print(f"  an overlap count describes the recorded update bodies on CPU {rt}; it is not proof that the instrumentation had "
+          "no effect", file=out)
     return result
 
 
@@ -195,30 +275,45 @@ def main() -> int:
     p = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     p.add_argument("csv", type=pathlib.Path, help="the timer capture's probe log (<run>.csv)")
     p.add_argument("--report", type=pathlib.Path, help="a saved trace-cmd report -t of the capture (default: run trace-cmd)")
-    p.add_argument("--baseline", type=pathlib.Path, help="a capture without the recorder at the same condition (<run>.csv)")
+    p.add_argument("--baseline", type=pathlib.Path, help="a capture without the recorder at nominally the same condition (<run>.csv)")
     p.add_argument("--baseline-report", type=pathlib.Path, help="a saved report of the baseline")
     p.add_argument("--rt-cpu", type=int, help="the real-time CPU (default: the run record's, else 3)")
     a = p.parse_args()
     if a.baseline_report and not a.baseline:
         p.error("--baseline-report needs --baseline")
     rt = a.rt_cpu if a.rt_cpu is not None else rt_cpu_of(a.csv)
-    rec = tk_record.parse_record(pathlib.Path(str(a.csv) + ".tk.txt").read_text(errors="replace")) if pathlib.Path(str(a.csv) + ".tk.txt").exists() else None
+    tk_txt = pathlib.Path(str(a.csv) + ".tk.txt")
+    rec = tk_record.parse_record(tk_txt.read_text(errors="replace")) if tk_txt.exists() else None
     if rec is None or rec["read_status"] != "ok":
         print(f"tk_cost: {a.csv}: no readable timekeeping record ({rec['read_status'] if rec else 'none'})", file=sys.stderr)
         return 2
-    irqs, unpaired = interrupts(report_lines(a.csv, a.report))
-    print(f"{a.csv.name}: tools/tk_cost.py (diagnostic, judges nothing); {unpaired} interrupt entries or exits unpaired", file=sys.stdout)
-    analyse(rec["updates"], irqs, sleeps(a.csv), rt, sys.stdout)
+    cap = Capture(a.csv)
+    scanned = scan(report_lines(a.csv, a.report), cap.tid, rt)
+    print(f"{a.csv.name}: tools/tk_cost.py (descriptive; it judges and bounds nothing); {scanned['unpaired']} interrupt entries "
+          "or exits unpaired")
+    analyse(rec["updates"], scanned, cap, rt, sys.stdout)
     if a.baseline:
-        b_irqs, b_unpaired = interrupts(report_lines(a.baseline, a.baseline_report))
-        here = sorted(b - a_ for a_, b, k in irqs.get(rt, []) if k == "local timer")
-        there = sorted(b - a_ for a_, b, k in b_irqs.get(rt, []) if k == "local timer")
-        mine, theirs = sleeps(a.csv), sleeps(a.baseline)
-        print(f"against {a.baseline.name} (no recorder; {b_unpaired} unpaired): CPU {rt}'s local timer interrupts", file=sys.stdout)
-        print(f"  this capture: {dist(here)}", file=sys.stdout)
-        print(f"  baseline:     {dist(there)}", file=sys.stdout)
-        print(f"  the worker's wake lateness, this capture: {dist(sorted(w - s for s, w in mine))}", file=sys.stdout)
-        print(f"  the worker's wake lateness, baseline:     {dist(sorted(w - s for s, w in theirs))}", file=sys.stdout)
+        bcap = Capture(a.baseline)
+        bscan = scan(report_lines(a.baseline, a.baseline_report), bcap.tid, rt)
+
+        def timers(s: dict, c: Capture) -> list:
+            return sorted(y - x for x, y, k in s["irqs"].get(rt, []) if k == "local timer" and c.inside(x, y))
+
+        def lateness(c: Capture) -> list:
+            return sorted(w - s for s, w in c.wakes if c.inside(s, w))
+
+        def waits(s: dict, c: Capture) -> list:
+            return sorted(y - x for x, y in s["waits"] if c.inside(x, y))
+
+        print(f"against {a.baseline.name} (no recorder; {bscan['unpaired']} unpaired; its window {(bcap.window[1] - bcap.window[0]) / 1e9:.6f} s): "
+              "a comparison between sessions at nominally the same condition, not a controlled experiment; a difference also "
+              "holds whatever else differed, and bounds nothing")
+        print(f"  CPU {rt}'s local timer interrupts, this capture: {dist(timers(scanned, cap))}")
+        print(f"  CPU {rt}'s local timer interrupts, baseline:     {dist(timers(bscan, bcap))}")
+        print(f"  cycle-wake lateness, this capture: {dist(lateness(cap))}")
+        print(f"  cycle-wake lateness, baseline:     {dist(lateness(bcap))}")
+        print(f"  the worker's waits, this capture: {dist(waits(scanned, cap))}")
+        print(f"  the worker's waits, baseline:     {dist(waits(bscan, bcap))}")
     return 0
 
 
