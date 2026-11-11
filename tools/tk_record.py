@@ -12,7 +12,8 @@ the adjtime remainder), neither of which changes anything; the two monotonic
 stamps bracket the reads. load() returns None when a capture has no record at
 all. A record with a missing, unreadable or malformed part names that part's
 read_status: the certificate treats it as UNSUPPORTED, and never as an empty
-successful record.
+successful record. A row that repeats, contradicts another or is not
+understood makes its file malformed.
 
 The files of a capture <run>.csv, written by tools/trace_session.sh:
     .tk-before.json .tk-after.json   the state reads around the capture
@@ -126,66 +127,112 @@ def scan_log(text: str, from_t: int, to_t: int) -> dict:
     return {"read_status": "ok", "covers": [first, to_t], "clock_events": events, "tsc_khz": khz}
 
 
+def _unique_keys(pairs: list) -> dict:
+    keys = [k for k, _ in pairs]
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    if dup:
+        raise ValueError(f"the key {dup[0]!r} appears more than once")
+    return dict(pairs)
+
+
+def _no_constant(name: str):
+    raise ValueError(f"{name} is not a number")
+
+
 def read_json(path: str) -> tuple[dict | None, str]:
+    """JSON read strictly: a key given twice, or NaN or Infinity, is malformed rather than a value chosen silently."""
     text, why = read_text(path)
     if why:
         return None, why
     try:
-        v = json.loads(text)
+        v = json.loads(text, object_pairs_hook=_unique_keys, parse_constant=_no_constant)
     except ValueError as e:
         return None, f"{path}: not JSON ({e})"
     return v, "ok"
 
 
-def parse_states(text: str) -> tuple[dict, str]:
-    out = {}
+# Every evidence file is read whole: each expected key exactly once, nothing else, and every value in its exact form. A row
+# that repeats, contradicts or is not understood makes the file unreadable; it is never overwritten, skipped or normalised.
+STATE_ROW = re.compile(r"([a-z_]+) ([01])")
+PROFILE_ROW = re.compile(r"([a-z_]+) (\d+) (\d+)")
+TIME_ROW = re.compile(r"(armed_t|confirmed_t) (\d+)")
+# The kernel's per-CPU buffer stats (kernel/trace/trace.c tracing_stats_read): these keys, each once per CPU.
+STATS_KEYS = ("entries", "overrun", "commit overrun", "bytes", "oldest event ts", "now ts", "dropped events", "read events")
+STATS_COUNTS = ("overrun", "commit overrun", "dropped events")
+STATS_ROW = re.compile(r"(" + "|".join(STATS_KEYS) + r"):\s*(\S+)\s*")
+
+
+def _rows(text: str, row: re.Pattern, keys: tuple, what: str) -> tuple[dict, str]:
+    """Rows of `row`, one per key of `keys`, every key present; the matches by key, or the first reason it fails."""
+    out: dict = {}
     for ln in text.splitlines():
-        f = ln.split()
-        if len(f) != 2 or f[0] not in PROBES:
-            return {}, f"an unreadable enable state: {ln!r}"
-        out[f[0]] = f[1] == "1"
+        m = row.fullmatch(ln)
+        if not m or m[1] not in keys:
+            return {}, f"an unreadable {what} row: {ln!r}"
+        if m[1] in out:
+            return {}, f"the {what} row for {m[1]} appears more than once"
+        out[m[1]] = m
+    missing = [k for k in keys if k not in out]
+    if missing:
+        return {}, f"no {what} row for {', '.join(missing)}"
     return out, "ok"
+
+
+def parse_states(text: str) -> tuple[dict, str]:
+    """Each probe's enable state, exactly "0" or "1" (the kernel's soft-mode "1*" is neither)."""
+    rows, st = _rows(text, STATE_ROW, PROBES, "enable state")
+    return ({k: m[2] == "1" for k, m in rows.items()}, st) if st == "ok" else ({}, st)
 
 
 def parse_profile(text: str) -> tuple[dict, str]:
-    out = {}
-    for ln in text.splitlines():
-        f = ln.split()
-        if len(f) != 3 or f[0] not in PROBES or not f[1].isdigit() or not f[2].isdigit():
-            return {}, f"an unreadable profile row: {ln!r}"
-        out[f[0]] = (int(f[1]), int(f[2]))
-    return out, "ok"
+    rows, st = _rows(text, PROFILE_ROW, PROBES, "profile")
+    return ({k: (int(m[2]), int(m[3])) for k, m in rows.items()}, st) if st == "ok" else ({}, st)
+
+
+def parse_times(text: str) -> tuple[dict, str]:
+    """armed_t, then confirmed_t (written only once the end's read-back confirmed every probe)."""
+    rows, st = _rows(text, TIME_ROW, ("armed_t", "confirmed_t"), "recorder time")
+    if st != "ok":
+        return {}, st
+    if list(rows) != ["armed_t", "confirmed_t"]:
+        return {}, "confirmed_t comes before armed_t"
+    return {k: int(m[2]) for k, m in rows.items()}, "ok"
 
 
 def parse_stats(text: str) -> tuple[dict, str]:
-    """The sums of the CPUs' overruns and drops. Every CPU the recorder listed must be here with all three counts."""
-    keys = ("overrun", "commit overrun", "dropped events")
+    """The sums of the CPUs' overruns and drops. Every CPU the recorder listed must be here, each key at most once, with
+    all three counts; the CPU count comes last and once."""
     blocks: dict[int, dict] = {}
     declared, cpu = None, None
     for ln in text.splitlines():
-        m = re.fullmatch(r"\s*CPU:\s*(\d+)\s*", ln)
+        if declared is not None:
+            return {}, f"a stats row after the CPU count: {ln!r}"
+        m = re.fullmatch(r"CPU: (\d+)", ln)
         if m:
             cpu = int(m[1])
             if cpu in blocks:
                 return {}, f"CPU {cpu}'s stats appear twice"
             blocks[cpu] = {}
             continue
-        m = re.fullmatch(r"\s*cpus:\s*(\d+)\s*", ln)
+        m = re.fullmatch(r"cpus: (\d+)", ln)
         if m:
             declared, cpu = int(m[1]), None
             continue
-        m = re.fullmatch(r"\s*(overrun|commit overrun|dropped events):\s*(\S+)\s*", ln)
-        if m and cpu is not None:
-            if not m[2].isdigit():
-                return {}, f"CPU {cpu}'s {m[1]} is {m[2]!r}"
-            blocks[cpu][m[1]] = int(m[2])
+        m = STATS_ROW.fullmatch(ln)
+        if not m or cpu is None:
+            return {}, f"an unreadable stats row: {ln!r}"
+        if m[1] in blocks[cpu]:
+            return {}, f"CPU {cpu}'s {m[1]} appears twice"
+        if m[1] in STATS_COUNTS and not m[2].isdigit():
+            return {}, f"CPU {cpu}'s {m[1]} is {m[2]!r}"
+        blocks[cpu][m[1]] = m[2]
     if declared is None or declared != len(blocks) or not blocks:
         return {}, f"the stats cover {len(blocks)} CPUs, and the recorder listed {declared}"
     for c, b in sorted(blocks.items()):
-        if any(k not in b for k in keys):
+        if any(k not in b for k in STATS_COUNTS):
             return {}, f"CPU {c}'s stats lack a count"
-    return {"read_status": "ok", "overrun": sum(b["overrun"] + b["commit overrun"] for b in blocks.values()),
-            "dropped": sum(b["dropped events"] for b in blocks.values())}, "ok"
+    return {"read_status": "ok", "overrun": sum(int(b["overrun"]) + int(b["commit overrun"]) for b in blocks.values()),
+            "dropped": sum(int(b["dropped events"]) for b in blocks.values())}, "ok"
 
 
 def parse_record(text: str, name: str = INSTANCE) -> dict:
@@ -278,11 +325,10 @@ def load(csv_path) -> dict | None:
     if why:
         fail(why)
     else:
-        m_a, m_c = re.search(r"^armed_t (\d+)$", times, re.M), re.search(r"^confirmed_t (\d+)$", times, re.M)
-        if m_a:
-            rec["armed_t"] = int(m_a[1])
-        if m_c:
-            rec["confirmed_t"] = int(m_c[1])
+        got_t, st = parse_times(times)
+        if st != "ok":
+            fail(st)
+        rec.update(got_t)
     states = {}
     for side, suffix in (("enabled_before", ".tk-enable-before.txt"), ("enabled_after", ".tk-enable-after.txt")):
         text, why = need(suffix)

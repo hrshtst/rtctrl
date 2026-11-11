@@ -131,10 +131,31 @@ def parsers() -> None:
     r = tk.parse_record("\n".join([*update_rows(1000, cpu=1), *update_rows(1500, cpu=2), *update_rows(9000, cpu=3, took=0)]))
     expect(len(r["updates"]) == 3 and not r["unmatched"]["entries"] and not r["unmatched"]["returns"], f"interleaved CPUs: {r}")
 
-    expect(tk.parse_states("ntp_clear 1\nupdate_entry 0\n") == ({"ntp_clear": True, "update_entry": False}, "ok"), "states")
-    expect(tk.parse_states("nope 1\n")[1] != "ok" and tk.parse_states("ntp_clear\n")[1] != "ok", "bad states")
-    expect(tk.parse_profile("ntp_clear 3 0\n") == ({"ntp_clear": (3, 0)}, "ok"), "profile")
-    expect(tk.parse_profile("ntp_clear x 0\n")[1] != "ok" and tk.parse_profile("nope 1 0\n")[1] != "ok", "bad profile")
+    states = "ntp_adjtimex 1\nntp_clear 1\nupdate_return 1\nupdate_entry 0\n"
+    expect(tk.parse_states(states) == ({"ntp_adjtimex": True, "ntp_clear": True, "update_return": True, "update_entry": False}, "ok"), "states")
+    for what, text in (("an unknown probe", states + "nope 1\n"), ("no state", states.replace("ntp_clear 1", "ntp_clear")),
+                       ("a probe missing", states.replace("ntp_clear 1\n", "")), ("nothing", ""), ("soft mode", states.replace("ntp_clear 1", "ntp_clear 1*")),
+                       ("a value other than 0 or 1", states.replace("ntp_clear 1", "ntp_clear 2")), ("extra spacing", states.replace("ntp_clear 1", "ntp_clear  1")),
+                       ("a blank row", states + "\n"), ("a repeated row", states + "ntp_clear 1\n"), ("a contrary row after", states + "ntp_clear 0\n"),
+                       ("a contrary row before", "ntp_clear 0\n" + states)):
+        got, st = tk.parse_states(text)
+        expect(st != "ok" and got == {}, f"states with {what}: {got} {st}")
+    prof = "ntp_adjtimex 4 0\nntp_clear 3 0\nupdate_return 9 0\nupdate_entry 9 0\n"
+    expect(tk.parse_profile(prof)[0]["ntp_clear"] == (3, 0), "profile")
+    for what, text in (("a count that is not a number", prof.replace("ntp_clear 3 0", "ntp_clear x 0")), ("an unknown probe", prof + "nope 1 0\n"),
+                       ("a probe missing", prof.replace("ntp_clear 3 0\n", "")), ("a missing probe's row from the helper", prof.replace("ntp_clear 3 0", "ntp_clear missing")),
+                       ("a negative count", prof.replace("ntp_clear 3 0", "ntp_clear -3 0")), ("a repeated row", prof + "ntp_clear 3 0\n"),
+                       ("a contrary row after", prof + "ntp_clear 3 1\n"), ("a contrary row before", "ntp_clear 3 1\n" + prof)):
+        got, st = tk.parse_profile(text)
+        expect(st != "ok" and got == {}, f"profile with {what}: {got} {st}")
+    times = "armed_t 5\nconfirmed_t 9\n"
+    expect(tk.parse_times(times) == ({"armed_t": 5, "confirmed_t": 9}, "ok"), "times")
+    for what, text in (("no confirmation", "armed_t 5\n"), ("no arming", "confirmed_t 9\n"), ("the wrong order", "confirmed_t 9\narmed_t 5\n"),
+                       ("an unreadable arming before", "armed_t unreadable\n" + times), ("an unreadable arming after", times + "armed_t unreadable\n"),
+                       ("a repeated arming", "armed_t 5\n" + times), ("a contrary arming", times + "armed_t 6\n"), ("a repeated confirmation", times + "confirmed_t 9\n"),
+                       ("another key", times + "started_t 1\n"), ("a blank row", times + "\n"), ("nothing", "")):
+        got, st = tk.parse_times(text)
+        expect(st != "ok" and got == {}, f"times with {what}: {got} {st}")
 
     got, st = tk.parse_stats(stats_text(3, overrun=4))
     expect(st == "ok" and got == {"read_status": "ok", "overrun": 4, "dropped": 0}, f"stats: {got} {st}")
@@ -142,9 +163,25 @@ def parsers() -> None:
                        ("a count that disagrees", stats_text(2).replace("cpus: 2", "cpus: 3")),
                        ("a CPU cut short", "CPU: 0\noverrun: 0\ncpus: 1\n"),
                        ("a counter that is not a number", stats_text(1).replace("overrun: 0\ncommit", "overrun: n/a\ncommit", 1)),
-                       ("a CPU twice", stats_text(1).replace("cpus: 1", "") + stats_text(1)),
-                       ("nothing", "")):
+                       ("a CPU twice", stats_text(1).replace("cpus: 1\n", "") + stats_text(1)),
+                       ("a contrary overrun after", stats_text(1).replace("bytes: 1", "bytes: 1\noverrun: 5")),
+                       ("a contrary overrun before", stats_text(1).replace("entries: 1", "entries: 1\noverrun: 5")),
+                       ("a repeated count", stats_text(1).replace("bytes: 1", "bytes: 1\ndropped events: 0")),
+                       ("a count before any CPU", "overrun: 5\n" + stats_text(1)), ("a row after the CPU count", stats_text(1) + "overrun: 5\n"),
+                       ("a second CPU count", stats_text(1) + "cpus: 1\n"), ("an unknown row", stats_text(1).replace("bytes: 1", "bytes: 1\nlost: 3")),
+                       ("a blank row", stats_text(1).replace("bytes: 1", "bytes: 1\n")), ("nothing", "")):
         expect(tk.parse_stats(text)[1] != "ok", f"stats with {what}")
+    # The kernel's own rows, as the capability run's idle host printed them under the mono clock.
+    kernel = ("CPU: 0\nentries: 98\noverrun: 0\ncommit overrun: 0\nbytes: 2400\noldest event ts: 24583.510045\nnow ts: 24586.922114\n"
+              "dropped events: 0\nread events: 0\ncpus: 1\n")
+    expect(tk.parse_stats(kernel) == ({"read_status": "ok", "overrun": 0, "dropped": 0}, "ok"), f"the kernel's stats: {tk.parse_stats(kernel)}")
+    with tempfile.TemporaryDirectory() as d:
+        for what, text in (("a key twice, the second winning", '{"freq": 1, "freq": 0}'), ("a key twice, equal", '{"freq": 0, "freq": 0}'),
+                           ("NaN", '{"freq": NaN}'), ("Infinity", '{"freq": -Infinity}')):
+            f = pathlib.Path(d, "x.json")
+            f.write_text(text)
+            v, st = tk.read_json(str(f))
+            expect(v is None and "not JSON" in st, f"JSON with {what}: {v} {st}")
 
     log = ("[    1.000000] host kernel: tsc: Detected 3187.200 MHz TSC\n"
            "[   10.000000] host kernel: clocksource: Switched to clocksource tsc\n"
@@ -216,6 +253,45 @@ def evidence() -> None:
             f.write_text(f.read_text()[: f.stat().st_size // 2])
             st, why = certified(base)
             expect(st != "CERTIFIED" and bool(why), f"{suffix} cut off: {st} {why}")
+
+        # Contrary, repeated or malformed rows, before or after the good ones (the implementation review's counterexamples
+        # among them): each makes its file unreadable and the record UNSUPPORTED; none is overwritten, skipped or normalised.
+        def mangled(suffix: str, fn) -> tuple[str, list[str]]:
+            write_record(base)
+            f = pathlib.Path(str(base) + suffix)
+            f.write_text(fn(f.read_text()))
+            return certified(base)
+
+        times = pathlib.Path(str(base) + ".tk-times.txt")
+        write_record(base)
+        armed_row = times.read_text().splitlines()[0]
+        confirmed_row = times.read_text().splitlines()[1]
+        for suffix, what, fn in (
+                (".tk-enable-before.txt", "a disabled state before the enabled one", lambda t: "ntp_clear 0\n" + t),
+                (".tk-enable-before.txt", "a disabled state after the enabled one", lambda t: t + "ntp_clear 0\n"),
+                (".tk-enable-before.txt", "a repeated enabled state", lambda t: t + "ntp_clear 1\n"),
+                (".tk-enable-before.txt", "a soft-mode state", lambda t: t.replace("ntp_clear 1", "ntp_clear 1*")),
+                (".tk-enable-after.txt", "a disabled state before the enabled one", lambda t: "update_entry 0\n" + t),
+                (".tk-enable-after.txt", "a disabled state after the enabled one", lambda t: t + "update_entry 0\n"),
+                (".tk-enable-after.txt", "an extra malformed row", lambda t: t + "garbage\n"),
+                (".tk-profile.txt", "a miss before the zero count", lambda t: "ntp_clear 0 1\n" + t),
+                (".tk-profile.txt", "a miss after the zero count", lambda t: t + "ntp_clear 0 1\n"),
+                (".tk-profile.txt", "a repeated count", lambda t: t + t.splitlines()[0] + "\n"),
+                (".tk-profile.txt", "an extra malformed row", lambda t: t + "update_entry 1\n"),
+                (".tk-times.txt", "an unreadable arming before", lambda t: "armed_t unreadable\n" + t),
+                (".tk-times.txt", "an unreadable arming after", lambda t: t + "armed_t unreadable\n"),
+                (".tk-times.txt", "a repeated arming", lambda t: armed_row + "\n" + t),
+                (".tk-times.txt", "a contrary confirmation", lambda t: t + "confirmed_t 1\n"),
+                (".tk-times.txt", "a repeated confirmation", lambda t: t + confirmed_row + "\n"),
+                (".tk-times.txt", "the boundaries swapped", lambda _: confirmed_row + "\n" + armed_row + "\n"),
+                (".tk-stats.txt", "an overrun after the zero one", lambda t: t.replace("bytes: 1\n", "bytes: 1\noverrun: 3\n", 1)),
+                (".tk-stats.txt", "an overrun before the zero one", lambda t: t.replace("entries: 1\n", "entries: 1\noverrun: 3\n", 1)),
+                (".tk-stats.txt", "a row after the CPU count", lambda t: t + "dropped events: 4\n"),
+                (".tk-before.json", "a key given twice", lambda t: t.replace('{"read_status": "ok"', '{"read_status": "ok", "freq": 0', 1)),
+                (".tk-after.json", "a key given twice", lambda t: t.replace('"tick": 10000', '"tick": 10000, "tick": 9000', 1)),
+                (".tk-log.json", "a key given twice", lambda t: t.replace('"clock_events": []', '"clock_events": ["clocksource: unstable"], "clock_events": []', 1))):
+            st, why = mangled(suffix, fn)
+            expect(st != "CERTIFIED" and bool(why), f"{suffix}, {what}: {st} {why}")
 
         # The record's boundaries, from the probes' order: return on first, entry off first.
         case("a return before any complete update", True, rows_before=(update_rows(ARMED + 100_000)[1],))
