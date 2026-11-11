@@ -846,6 +846,19 @@ set_tests_properties(wq_mask_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "wq_mask smoke OK"
   LABELS integration)
 
+# The loaded emulator validation's supervisor and its root keeper
+# (tools/option_a.sh, tools/root_keeper.sh in its unprivileged test mode)
+# with the real mask tool and gate and stand-in sessions, kernel and
+# systemctl: the order, refusals, stops, signals, a failed restoration, a
+# killed supervisor and the keeper's list.
+add_test(NAME option_a_smoke
+  COMMAND ${CMAKE_COMMAND} -E env UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/option_a_smoke.sh ${CMAKE_BINARY_DIR}/option_a_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(option_a_smoke PROPERTIES
+  PASS_REGULAR_EXPRESSION "option_a smoke OK"
+  LABELS integration)
+
 # The traced session's sudo refresh (tools/sudo_refresh.sh) with a stand-in
 # sudo: its pin, its confirmed stop at any moment, and its failure cases.
 add_test(NAME sudo_refresh_test
