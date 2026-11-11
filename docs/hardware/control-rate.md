@@ -2409,6 +2409,21 @@ the masks read `ffffffff` before, during and after; it ended, its FIFO
 removed, and its log records no write, mask request or service operation.
 This result is for review; Option A's acquisition waits for it.
 
+**Attempts 14 and 15 (2026-11-12, at `87d39d8`, after that check was
+accepted): stopped by the timer run's gate.** The supervisor cleared CPU 3
+from the mask (45 workers, none allowed on CPU 3). The untraced run
+(attempt 14) had no bounded-read timeout: T3 passed, and its gate passed 14
+of 14 checks. The fair-server controls passed. The timer run (attempt 15)
+had one timeout (cycle 17621, 19.25 s into the run, no completed parsed
+reply section within the 35 ms budget, the next reads recovered): T3
+failed, and its gate passed 11 of 15 checks. The supervisor stopped (exit
+1), restored and verified the mask and the quieted services, and finished
+the keeper. On attempt 15's capture the residency check passes: no unbound
+worker or rescuer ran on CPU 3 in the window, and all 36204 instruction
+flushes ran, none on CPU 3. The timeout's cause is not yet diagnosed. The
+validation has not passed; the outcome goes to the acceptance review, and
+hardware and H2 stay paused.
+
 Nothing is retried, and no budget, guard, rule or load changes. A signal sent
 to the supervisor alone lets the running session finish before it stops; a
 Ctrl-C or a hangup reaches the session too, which runs its own cleanup first.
