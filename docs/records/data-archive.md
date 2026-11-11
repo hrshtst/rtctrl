@@ -2320,9 +2320,13 @@ corrected analyses (tools at `5d677db`). The re-review (2026-11-11, at `177faee`
 both findings; its PROVENANCE.txt's "every other figure" excludes the sleep statistics the corrected population moves.
 Attempt 12's T3 read failures still prevent an overall validation pass.
 
+The T3 diagnosis (`t3-diagnosis/`, the developer's) was accepted by the reviewer's review (`review-t3/`, at `6db9b3b`), with
+a wording correction recorded in README.md: a missing `first_reply_ns` means no completed parsed reply section, not
+necessarily no byte. The reviewer chose Option A; `option-a-prep/` holds its new checks' outputs on attempts 12 and 13.
+
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewer's split verdicts, the accounting review's and the re-review's | `d2d6f6909a119ace10881c10aea69711222a96cc2737384eedb55dfebdb8b76a` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the T3 diagnosis, and its wording correction | `191f5793b415579f2552854b342fafa4b5cdd0468e1fae0ae491cdb1288122b0` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2344,6 +2348,13 @@ Attempt 12's T3 read failures still prevent an overall validation pass.
 | `analysis-20261111-rev3/correlate-13-wake3.txt` | derived analysis: trace_correlate.py with wake accounting revision 3 and the candidate U label, attempt 13 (corrected analysis pending review) | `c3e9c260cd298f4eb0e90d2547376dffe7176a5fde932e8511dd22fca3784a50` |
 | `analysis-20261111-rev3/cost-12-rev3.txt` | derived analysis: tk_cost.py with the trace-established sleeps, attempt 12 (corrected analysis pending review) | `840de865143ca3feafa5c7d0fdd294ccb9df36794ad5a4ccbefcdff9cce63563` |
 | `analysis-20261111-rev3/cost-13-rev3.txt` | derived analysis: tk_cost.py with the trace-established sleeps, attempt 13 with attempt 11 as baseline (corrected analysis pending review) | `aea87a0af3092860a483e2b776f5ada0c102ee4e76ca10e37f41955f2e602b57` |
+| `option-a-prep/PROVENANCE.txt` | provenance of the new checks' outputs on attempts 12 and 13 | `ab5138715670421572df84979fd881874d5f6950c95d8bb4a43e00abb3aa2878` |
+| `option-a-prep/SHA256SUMS` | folder ledger | `6e8887849ec01b55b2745f9a3a994a50b6830e7d664d77f4d26d5f5db5c47f52` |
+| `option-a-prep/gate-12-untraced.txt` | Option A check output on the existing captures (gate-12-untraced.txt) | `88619523a47c760b8b2db6489bbe3ae7aef1a103396bbb4f1147036ffe90d03b` |
+| `option-a-prep/gate-13-untraced.txt` | Option A check output on the existing captures (gate-13-untraced.txt) | `724083cb3f884d85e51458e95ca434cef23d48dfae6ef8d36e0f6a274256c549` |
+| `option-a-prep/gate-demo.record` | synthetic stand-in mask record for the gate's outputs | `c9b6cbf32db62327ea938b11a327c860062e7a6fcf93b2fbb649430cbe75d205` |
+| `option-a-prep/unbound-12.txt` | Option A check output on the existing captures (unbound-12.txt) | `f886ba9f799ca7061889f6e3d330b501f368c67f661659e493f4b0d00ff1327e` |
+| `option-a-prep/unbound-13.txt` | Option A check output on the existing captures (unbound-13.txt) | `c900d0cfd12d60b11d5c3d7d37d4a226e91d26aca506524f8faf679540d0aa8b` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2444,3 +2455,25 @@ Attempt 12's T3 read failures still prevent an overall validation pass.
 | `review-rereview/review.md` | the reviewer's re-review of the accounting fixes (at 177faee) | `b049df6692dbb739d7ccd19682f4fcaf0b4592ba54ff08758c88cab6a5e40073` |
 | `review-rereview/reviewed.diff` | re-review evidence (the reviewer's) | `54efb368629d98fdfb095e24f16e91b1281a5840051d68ebefd5c09af1b9b536` |
 | `review-rereview/tests.txt` | re-review evidence (the reviewer's) | `69d5159eba4e1c308976b2c8b53ee3e72340cc35f89c50a50ac772b941d7191d` |
+| `review-t3/SHA256SUMS` | T3 review evidence (the reviewer's) | `15a73186765fd49d925b713a03cf60919f3028c294a275f3cc85d8008e5e0908` |
+| `review-t3/check_evidence.py` | T3 review evidence (the reviewer's) | `e0e1dd114aacdc55dc1e38cae5c9f838706f130703509d87f982d2dbb9e59a3f` |
+| `review-t3/evidence-checks.txt` | T3 review evidence (the reviewer's) | `eae2181412b4fbaf4a06ab81755ab7a299fa35fac5df2b2cfff968d1b90f442c` |
+| `review-t3/replay-t3.txt` | T3 review evidence (the reviewer's) | `495d647570f823bb0ab70e0e0334eb4ceb89f4ab67e79f25d3f39ec1f335a44c` |
+| `review-t3/replay_t3.py` | T3 review evidence (the reviewer's) | `339e6f70c83bb4680137d13adb920b5b8a73e0b6102f5554ebbc747173c95b03` |
+| `review-t3/review.md` | the reviewer's T3 diagnosis review and Option A decision (at 6db9b3b) | `658abff88e2ca55afb2ee5ec797608a1467a9456b1312a7c4200004090679bd4` |
+| `review-t3/reviewed-commit.diff` | T3 review evidence (the reviewer's) | `0237b4d8cd98067bea24603ff2428ab53eba11cb794a8099711c5649cb4d3ac4` |
+| `t3-diagnosis/PROVENANCE.txt` | the T3 diagnosis's provenance (scripts, inputs, outputs) | `b88f14ef407ca1ff0267abcd6d48bbd07011c573dd6e8446163c2ee07cca5bf1` |
+| `t3-diagnosis/SHA256SUMS` | folder ledger | `f62351e0f998c5783f0ed56312427dc7231a421481e5e8d2e4c46d924d44f93b` |
+| `t3-diagnosis/cpu2-12.txt` | T3 diagnosis output (cpu2-12.txt) | `d0064539cdde55ab40adfd4a86e6129b58ef01a361a2fa9804b139831600bf4f` |
+| `t3-diagnosis/cpu2.py` | T3 diagnosis script (cpu2.py) | `614c1b224a68bc367950f559e5422f0ca902ab9adfc02da74eeefc9fbb04e900` |
+| `t3-diagnosis/replies-12.txt` | T3 diagnosis output (replies-12.txt; its byte wording corrected in README.md) | `71343debee2c5e17956c7af6a9980c459ca3ba11dbb7fe3d879e7eb35276f9c9` |
+| `t3-diagnosis/replies.py` | T3 diagnosis script (replies.py) | `297eb4feecd3cdce02977f4e9cac26ca720f53da9f234043d18809b3e58e3435` |
+| `t3-diagnosis/sequence-12.txt` | T3 diagnosis output (sequence-12.txt) | `1a8c1fff98af08a32c5e1eb184ea9c31b62a15e9351e3b22f5347f2f619859d9` |
+| `t3-diagnosis/sequence.py` | T3 diagnosis script (sequence.py) | `2eab32321731ee320c5519e5048b623bc0bffff1653e3dfc38a4263d0989a5bb` |
+| `t3-diagnosis/slow-12.txt` | T3 diagnosis output (slow-12.txt) | `295226531e91e97ffbd12205e523cd50b405570be0babb58c014373c39e2ff53` |
+| `t3-diagnosis/slow.py` | T3 diagnosis script (slow.py) | `864873447204d3cd00c2a1cfa0858c6e3f94a579af2ee5f6c80bc8b4a6f6c22e` |
+| `t3-diagnosis/tally.py` | T3 diagnosis script (tally.py) | `04707c49bf01a0396dff9bfaf3556214ccd49da4b124f600ffae6c05615d75c7` |
+| `t3-diagnosis/tally.txt` | T3 diagnosis output (tally.txt) | `a228b084a2c70e2b3d40d3ba91bf7b974d94a2a4befdb95c22028518a53be09f` |
+| `t3-diagnosis/timeline-14704.txt` | T3 diagnosis output (timeline-14704.txt) | `d535a34bd2661cfb9d507853d700427e57f3fad2693b6363e7bcae1aaa84b748` |
+| `t3-diagnosis/timeline.py` | T3 diagnosis script (timeline.py) | `06c0f14d0e371977129804997b0cd515cc79f01d9ccb97f65914a79bcbda6213` |
+| `t3-diagnosis/window.py` | T3 diagnosis script (window.py) | `fa33534a531224054de5b8920fcd761f4c8304a7eecdf0a45c2b63199496b1f7` |

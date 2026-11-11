@@ -2218,10 +2218,157 @@ trace's. What stands:
   candidate, not an accepted bound.
 - The cost observations stay descriptive.
 
-The next step is an offline diagnosis of the read timeouts from the existing
-records and a proposal for any remaining emulator validation; no acquisition
-is authorized. Hardware and H2 stay paused until the validation is decided
-and a separately reviewed execution plan is accepted, and no failed
+**T3 diagnosis (2026-11-11; accepted by the reviewer, with an independent
+replay).** In attempt 12's timer run, all three failed reads follow one
+chain, and the eight successful reads slower than 10 ms the same one:
+
+1. The worker's instruction write on CPU 3 queues the pty's tty flush work
+   (`flush_to_ldisc`, on an unbound workqueue) and wakes its kernel worker,
+   a normal-priority thread, onto CPU 3.
+2. The worker then busy-polls `read()` at SCHED_FIFO 80 for the whole 35 ms
+   budget: tens of thousands of zero-byte reads and no switch on CPU 3, so
+   the kernel worker cannot run. The emulator's read blocks in the tty
+   layer waiting for that flush (seen in the first failure).
+3. CPU 2, the only other unloaded CPU, was running a non-idle task at each
+   budget's start and entered idle at no point inside the budget, so
+   nothing moved the kernel worker away.
+4. When the read times out and the worker sleeps in the guard (+35.02 ms),
+   the flush runs at once on CPU 3, and the emulator's reply follows too
+   late.
+
+In the slow successful reads the flush ran on CPU 2, 10 to 29 ms after the
+instruction, after CPU 2's idle context moved the kernel worker there from
+CPU 3. In the probe logs, a failed read without `first_reply_ns` means that
+no reply section was completed and parsed, not necessarily that no byte
+arrived. The trace establishes zero-byte reads for the three traced failures
+only; the 14 untraced failures share the timeout signature but have no
+trace. The recorder is not needed for this failure family (the untraced run
+failed without it), which does not show that it had no influence. In the
+archive, attempt 12 is the first emulator run on the bounded read path under
+load; the 22 earlier emulator runs (all idle) had no timeout, and neither did
+the 21 hardware runs under the same load. On hardware the instruction is
+sent as a USB transfer without a send-side flush, but the receive side also
+depends on that normal-priority work, so the same starvation remains a
+design concern there; a finite timeout-free sample shows no immunity.
+
+**Option A: the loaded validation with CPU 3 out of the unbound workqueue
+mask (procedure for review; not yet executed).** The reviewer chose a fresh
+loaded emulator validation with CPU 3 cleared from the kernel's global mask
+for unbound workqueues (`/sys/devices/virtual/workqueue/cpumask`, `ffffffff`
+on this host), every budget unchanged. The mask governs every unbound
+workqueue, not only the tty flush, so it is a changed host condition,
+recorded as such, and never carried into hardware without a separately
+reviewed plan. A pass supports the diagnosis and supplies a fresh end-to-end
+emulator pass under this declared host policy; it does not pass attempt 12
+or qualify a control rate. A failure shows that this intervention is
+insufficient, without erasing what the three traces established. No idle
+pass is required besides it. Three tools serve it:
+
+- `tools/wq_mask.sh clear 3 | check | restore | status` changes and
+  restores the mask. Its persistent, append-only record
+  (`~/.local/state/rtctrl-wq-mask.record`) holds the original masks, the
+  target (the original with only CPU 3 cleared) and every step with its
+  time, and it is written before any change. `clear` refuses with nothing
+  changed when a record is open or a value is unreadable. It verifies both
+  masks and that no unbound kernel worker or rescuer stays allowed on CPU 3.
+  A failed write, a failed check or an interruption restores at once.
+  `restore` closes the record only once the originals verify; a failed or
+  unverified restoration keeps the record open.
+- `tools/validation_gate.py` checks one finished run. Completeness and T3
+  are decided by `tools/timing_summary.py` and must agree with the session's
+  record. The bounded read's and the run's failure counters must all be
+  zero. The session's verdict may fail only T1, T2 and T6a. The run must be
+  on the emulator's pty, and its recorded mask must be the target, verified
+  before the run and observed after it. With `--controls`, it also checks
+  that the controls passed.
+- `tools/unbound_work.py` checks the timer capture: no unbound work and no
+  `flush_to_ldisc` on CPU 3 inside the probe's window, and every flush the
+  worker queued seen to run, none on CPU 3. On attempt 12 it fails: 282 of
+  35,940 instruction flushes ran on CPU 3.
+
+The procedure, as the operator, at the workstation, on the emulator only:
+every step is a bare command followed by `echo "exit $?"`, and every probe
+command names `--port /tmp/rtctrl-rehearsal-tty`. `<date>` is the session's
+date tag.
+
+0. Preconditions, as for attempts 12 and 13: the arm stays powered off or
+   torque-off and supported, and nothing is sent to it; `uname -r` reads
+   `7.0.0-42-generic`; `dxl_emu` serves `/tmp/rtctrl-rehearsal-tty`; each
+   servo's return delay is 0 (`./build/apps/dxl_inspect --port
+   /tmp/rtctrl-rehearsal-tty write <id> return_delay_time 0` for ids 2 to 9);
+   `sudo prlimit --pid $$ --rtprio=90:90`; `tools/wq_mask.sh status` shows
+   no open record and the mask `ffffffff`; `~/rtctrl-hw/clock-validation-14`
+   and `-15` do not exist.
+1. `tools/quiet_host.sh stop`.
+2. `tools/wq_mask.sh clear 3`: exit 0 required.
+3. `mkdir ~/rtctrl-hw/clock-validation-14`, then the controls and the
+   untraced run (exit 0 required):
+
+    ```sh
+    tools/trace_session.sh --port /tmp/rtctrl-rehearsal-tty --usb-device /sys/bus/usb/devices/1-9 \
+      --fs-controls 5 --modes untraced --placements open \
+      --runs current:1000:rt-loaded-excl:fast-motion --duration 20 --attempt 14 \
+      --outdir ~/rtctrl-hw/clock-validation-14
+    ```
+
+4. `tools/wq_mask.sh check`: exit 0 required.
+5. The gate before the timer run (exit 0 required):
+
+    ```sh
+    uv run --project tools tools/validation_gate.py --mode untraced \
+      --controls ~/rtctrl-hw/clock-validation-14/fs-controls-<date>-14.run.txt \
+      ~/rtctrl-hw/clock-validation-14/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-<date>-14.csv
+    ```
+
+6. `mkdir ~/rtctrl-hw/clock-validation-15`, then the timer run: the command
+   of step 3 with `--modes timer --attempt 15 --outdir
+   ~/rtctrl-hw/clock-validation-15` and without `--fs-controls 5` (exit 0
+   required).
+7. `tools/wq_mask.sh check`: exit 0 required.
+8. The same gate on the timer run (`--mode timer`, the timer run's `.csv`,
+   no `--controls`).
+9. `tools/wq_mask.sh restore`: exit 0 required (the record is closed).
+10. `tools/quiet_host.sh restore`.
+
+Stop without retry, and change no budget, guard, rule or load:
+
+- At step 2, stop either way and start no run. Exit 2 means refused with
+  nothing changed. Exit 1 means the tool has already tried to restore:
+  `tools/wq_mask.sh status` shows whether a record is still open; if so, go
+  to step 9.
+- On any other unexpected exit, or a gate that does not pass, go to steps 9
+  and 10, and start no further run. A failed gate at step 5, a read timeout
+  above all, ends the experiment before the timer run.
+- An interrupted session (Ctrl-C, a closed terminal) runs its own cleanup
+  and exits 130; steps 9 and 10 follow it.
+- If step 9 fails, the cleanup is unresolved: stop, keep the record and
+  repeat `restore` until it verifies. No session starts while a record is
+  open, and `clear` refuses beside it. A reboot resets the kernel's mask,
+  and `restore` then verifies and closes the record.
+
+The validation passes only if all of these hold, judged on the published
+captures:
+
+- every step exited 0, and both gates passed;
+- the closed record shows the target verified before the first run,
+  observed in effect after each, and the originals restored after the last;
+- zero read failures and timeouts in both runs;
+- the controls passed under their preconditions;
+- the timer run's capture is valid, with zero main-trace, instance and
+  recorder losses;
+- the timekeeping certificate is CERTIFIED with the audited trace-cmd and
+  runtime;
+- the full-window conversion is accepted: the deadline-slot accounting
+  passes and U is at most 5 us;
+- no timer wake is unexplained;
+- `tools/unbound_work.py` passes on the timer capture;
+- every stage is published, verified and released.
+
+The allowed exceptions are the probe criteria T1, T2 and T6a and the
+analysis's PTY USB association; nothing else. The untraced run's placement
+evidence is the mask's read-back and the kernel's documented policy; the
+residency is observed in the timer run. Hardware and H2 stay paused until
+the outcome is reviewed and their revised plan accepted, and no failed
 historical slot is promoted. This qualifies no control rate.
 
 ## Later steps (after the bounded transaction and Phases B and C)
