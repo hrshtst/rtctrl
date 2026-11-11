@@ -2,10 +2,11 @@
 # The privileged half of the loaded emulator validation's supervisor
 # (tools/option_a.sh): a root process, started through sudo while the
 # operator's terminal is alive, that performs the experiment's few
-# privileged steps on request and owns the mask's restoration if the
-# supervisor ends without finishing. With sudo-rs the operator's cached
+# privileged steps on request. With sudo-rs the operator's cached
 # credentials are tied to the terminal session, so after a hangup the
-# supervisor may no longer run sudo; the keeper does not need it.
+# supervisor may no longer run sudo; the keeper does not need it. It never
+# restores anything on its own: the restorations are the supervisor's, made
+# through it, or the operator's.
 #
 # usage: sudo tools/root_keeper.sh serve OWNER_PID OWNER_START PGID CPU
 #        ROOT_KEEPER_DIR=DIR tools/root_keeper.sh REQUEST...   (the client)
@@ -43,23 +44,18 @@
 # The owner (OWNER_PID with its /proc start time OWNER_START) has ended only
 # when its /proc entry no longer exists or holds another start time; one that
 # exists but cannot be read is unknown, and the keeper goes on serving. If the
-# owner ends without a finish or a release (it was killed, or crashed), the
-# keeper waits for a confirmed end of the
-# experiment's process group PGID: the kernel finds no process in it
-# (kill(-PGID, 0) fails with ESRCH). The kernel makes that test atomically: a
-# member that forks and then exits cannot hide its child from it, and a
-# zombie counts until it is reaped. (A /proc scan of the group, which a fork
-# during the scan can escape, only names what remained, for the log.) The
-# group is the supervisor's: a descendant that has left it (a session of its
-# own) is beyond this test, and the supervisor's own cleanup covers those
-# (tools/option_a.sh). Only then does it write the original back (unless it
-# is in effect), verify it and end. If that end is not confirmed within 30
-# minutes it ends WITHOUT restoring, the mask unresolved, its log naming what
-# remained. It restores nothing else
-# (tools/quiet_host.sh's and tools/wq_mask.sh's records stay open). A keeper
-# killed with SIGKILL, or a crash or power loss, restores nothing; a reboot
-# resets the kernel's mask.
-#
+# owner ends without a finish or a release (it was killed, or crashed, or a
+# release it asked for never arrived), the keeper ends WITHOUT restoring
+# anything: the mask, tools/wq_mask.sh's and tools/quiet_host.sh's records
+# stay as they are, for the operator to restore by hand (a reboot resets the
+# kernel's mask). Its log then names the state of the experiment's process
+# group PGID: "ended" only if the kernel finds no process in it (kill(-PGID,
+# 0) fails with ESRCH, a test the kernel makes atomically, a zombie counting
+# until it is reaped), else "present" with what a /proc scan finds (a scan
+# that a fork can escape: for the operator's information only). No automatic
+# restoration rests on that test: it reaches only the group, and a
+# descendant that has left the group is beyond it.
+
 # The client maps exactly these invocations, so that the supervisor can pass
 # this script as the tools' sudo (WQ_MASK_SUDO, QUIET_HOST_SUDO):
 #   tee <the keeper's mask file>, the value on its input  -> mask VALUE
@@ -73,18 +69,16 @@
 # For tests only, with ROOT_KEEPER_TEST=1 and never as root: the keeper runs
 # unprivileged, KEEPER_RUNDIR replaces /run, KEEPER_SYSFS
 # /sys/devices/virtual/workqueue, KEEPER_WRITE a program that receives each
-# value written (in place of the write to the mask file), KEEPER_SYSTEMCTL
-# systemctl and KEEPER_GROUP_WAIT the 30 minutes' wait in seconds.
+# value written (in place of the write to the mask file) and KEEPER_SYSTEMCTL
+# systemctl.
 set -u
 RUNDIR=/run
 SYSFS=/sys/devices/virtual/workqueue
 WRITE=
 SYSTEMCTL=systemctl
-GROUP_POLLS=3600  # 30 minutes of 0.5 s polls
 if [ "${ROOT_KEEPER_TEST:-0}" = 1 ]; then
   [ "$(id -u)" -ne 0 ] || { echo "root_keeper: the test mode never runs as root" >&2; exit 2; }
   RUNDIR=${KEEPER_RUNDIR:-$RUNDIR}; SYSFS=${KEEPER_SYSFS:-$SYSFS}; WRITE=${KEEPER_WRITE:-}; SYSTEMCTL=${KEEPER_SYSTEMCTL:-systemctl}
-  GROUP_POLLS=$(( ${KEEPER_GROUP_WAIT:-1800} * 2 ))
 fi
 UU=unattended-upgrades.service
 now() { date +%Y-%m-%dT%H:%M:%S.%N%z; }
@@ -242,7 +236,7 @@ run() {
   exec 3<>"$dir/requests" || { log "cannot open the request FIFO"; exit 1; }
   put "$dir" keeper.ready "$(printf 'pid=%s\noriginal=%s\ntarget=%s\n' "$$" "$orig" "$target")" || { log "cannot write keeper.ready"; ending; exit 1; }
   log "keeper $$ for owner $owner (group $pgid): original $orig, target $target"
-  local id verb value st told_unknown=0 i g=''
+  local id verb value st told_unknown=0 g=''
   while :; do
     if IFS=' ' read -r -t 0.5 id verb value <&3; then
       if ! [[ $id =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then log "refused a request with a bad id"; continue; fi
@@ -267,18 +261,12 @@ run() {
       alive) told_unknown=0; continue ;;
       unknown) [ "$told_unknown" -eq 1 ] || log "the owner $owner cannot be read: not taken as ended; serving on"; told_unknown=1; continue ;;
     esac
-    log "the owner $owner ended without a finish: waiting for a confirmed end of its process group $pgid"
-    for ((i = 0; i < GROUP_POLLS; i++)); do
-      g=$(group_state "$pgid") && [ "$(head -n 1 <<<"$g")" = ended ] && break
-      sleep 0.5
-    done
-    if [ "$i" -ge "$GROUP_POLLS" ]; then
-      log "UNRESOLVED: the end of process group $pgid is not confirmed after 30 minutes; the mask is NOT restored:"
-      printf '%s\n' "${g:-the group could not be read}"
-      ending; exit 1
-    fi
-    if restore_original; then log "the group has ended; the original $orig is in effect; ending"; ending; exit 0; fi
-    log "the group has ended; the original $orig is NOT in effect; ending (unresolved)"; ending; exit 1
+    log "the owner $owner ended without a finish or a release: ending WITHOUT restoring; the mask stays" \
+        "$(read_mask cpumask || echo unreadable) for the operator (tools/wq_mask.sh restore; a reboot resets it)"
+    g=$(group_state "$pgid") || g="its state cannot be read"
+    log "its process group $pgid: $(head -n 1 <<<"$g") (the kernel's test of the group alone: a descendant outside it is not seen)"
+    tail -n +2 <<<"$g"
+    ending; exit 1
   done
 }
 

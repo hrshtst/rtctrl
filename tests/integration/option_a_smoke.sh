@@ -22,15 +22,16 @@
 # a /proc scan can miss, in the group or in a session of its own) leaves
 # everything unrestored (exit 3): the supervisor, the child subreaper of all
 # it starts, finds it among its children and releases the keeper, which ends
-# without restoring. A supervisor killed with SIGKILL leaves the keeper to
-# restore the mask once the kernel finds no process left in the group, a
-# fork-exit chain in it included. The keeper: its list; its modes under
+# without restoring; a release never delivered, or one whose answer is lost
+# after the keeper acted on it, restores nothing either (the record tells
+# them apart). A supervisor killed with SIGKILL restores nothing: the keeper
+# ends without restoring and logs the group's state. The keeper: its list; its modes under
 # umask 077 (the files the client reads stay 0644); a directory of its own,
 # created exclusively; links planted in its replies (temporary or final
 # names, or in place of the directory) redirect nothing; an owner that
-# cannot be read is not taken as ended; a group member that a /proc scan
-# cannot read is still found (the keeper ends without restoring once its
-# wait is over), and one seen to end lets it restore. Its group test, on the
+# cannot be read is not taken as ended; its owner killed, it ends at once
+# without restoring, logging the group "present" (a member that a /proc scan
+# cannot read named as unknown) or "ended". Its group test, on the
 # re-review's race (a member forking and exiting just as a scan reaches it)
 # and on a free-running fork-exit chain, reports "present", and "ended" once
 # the chain has stopped.
@@ -125,6 +126,7 @@ if sys.argv[5] == "1":
     "$(cat "$ROOT/sys/cpumask")" "$mode" "$ctl" "$attempt" || exit 9
 fi
 [ -e "$ROOT/session.linger.$attempt" ] && { sleep 30 & echo $! >"$ROOT/linger.pid"; }
+[ -e "$ROOT/session.escaped.$attempt" ] && { setsid sleep 30 & echo $! >"$ROOT/escaped.pid"; }
 case "$(cat "$ROOT/session.chain.$attempt" 2>/dev/null)" in
   group) "$ROOT/chain" & ;;
   setsid) setsid "$ROOT/chain" & ;;
@@ -165,10 +167,11 @@ chain_stop() {  # stops a running fork-exit chain: status 0 once its latest gene
 reset() {  # the host as it starts
   [ -e "$ROOT/linger.pid" ] && kill "$(cat "$ROOT/linger.pid")" 2>/dev/null
   [ -e "$ROOT/chain.pid" ] && chain_stop
+  [ -e "$ROOT/escaped.pid" ] && kill "$(cat "$ROOT/escaped.pid")" 2>/dev/null
   scratch_rm "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT/run" "$ROOT/bin" "$ROOT"/calls \
          "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* "$ROOT"/session.* "$ROOT"/gate.exit.* \
          "$ROOT/dry.exit" "$ROOT/kernel.mode" "$ROOT/uu.log" "$ROOT/sup.out" "$ROOT"/trigger.* "$ROOT/linger.pid" \
-         "$ROOT/hook.bash" "$ROOT"/hide.* "$ROOT"/chain.*
+         "$ROOT/hook.bash" "$ROOT"/hide.* "$ROOT"/chain.* "$ROOT/escaped.pid" "$ROOT/shim.mode" "$ROOT/rel.st"
   mkdir -p "$ROOT/sys" "$ROOT/state" "$ROOT/proc" "$ROOT/run"
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"; printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"
   printf '00000000\n' >"$ROOT/sys/cpumask_isolated"
@@ -291,33 +294,18 @@ start; wait "$sup"; st=$?
   grep -q '^finished=.* outcome=UNRESOLVED reason=none; unresolved: mask keeper$' "$E/experiment.record" || fail "a failed restoration ($st)" "$ROOT/sup.out"
 keeper_gone || fail "the keeper stayed after a failed restoration"
 
-# The supervisor killed (SIGKILL) during the untraced session: the keeper waits for the group to end, then restores the mask.
+# The supervisor killed (SIGKILL) during the untraced session: nothing restores anything automatically. The keeper, its
+# owner gone, ends WITHOUT restoring and logs its process group (the session still in it) as present; the mask and both
+# records stay for the operator.
 reset; echo 2 >"$ROOT/session.secs"
 start
 wait_file "$ROOT/running-14" || fail "session 14 did not start" "$ROOT/sup.out"
 kill -KILL "$sup"; wait "$sup" 2>/dev/null
 keeper_log=$(keeper_dir)/keeper.log
-for ((i = 0; i < 100; i++)); do grep -q 'is in effect; ending' "$keeper_log" 2>/dev/null && break; sleep 0.1; done
-grep -q 'ended without a finish' "$keeper_log" && grep -q 'is in effect; ending' "$keeper_log" && [ "$(masks)" = "$ORIG $ORIG" ] &&
-  [ -e "$WQ_MASK_RECORD" ] && keeper_gone || fail "the keeper after a killed supervisor" "$keeper_log"
-# The session (still in the group) had ended before the keeper wrote the original back.
-[ "$(stat -c %Y "$ROOT/sys/cpumask")" -ge "$(stat -c %Y "$ROOT/mask-during-14")" ] || fail "the keeper restored before the session ended"
-WQ_MASK_SUDO=none tools/wq_mask.sh restore >/dev/null 2>&1 || :
-# The same with a fork-exit chain left in the group by the untraced session: the keeper's kernel test finds the group
-# populated after the session has ended (where a /proc scan could miss a generation), and it restores only once the
-# chain has stopped.
-reset; echo group >"$ROOT/session.chain.14"
-start
-wait_file "$ROOT/running-14" && wait_file "$ROOT/chain.pid" || fail "session 14 or its chain did not start" "$ROOT/sup.out"
-kill -KILL "$sup"; wait "$sup" 2>/dev/null
-keeper_log=$(keeper_dir)/keeper.log
-for ((i = 0; i < 50; i++)); do grep -q 'ended without a finish' "$keeper_log" 2>/dev/null && break; sleep 0.1; done
-sleep 2
-[ "$(masks)" = "$TARGET $TARGET" ] && grep -q 'ended without a finish' "$keeper_log" && ! grep -q 'is in effect; ending' "$keeper_log" ||
-  fail "the keeper restored while a chain ran in the group" "$keeper_log"
-chain_stop || fail "the chain (supervisor killed) did not stop"
-for ((i = 0; i < 100; i++)); do grep -q 'is in effect; ending' "$keeper_log" && break; sleep 0.1; done
-[ "$(masks)" = "$ORIG $ORIG" ] && keeper_gone || fail "the keeper after the chain stopped" "$keeper_log"
+keeper_gone; sleep 2.5  # the session ends too
+grep -q 'ended without a finish or a release: ending WITHOUT restoring' "$keeper_log" && grep -q 'its process group [0-9]*: present' "$keeper_log" &&
+  ! grep -q 'wrote the original' "$keeper_log" && [ "$(masks)" = "$TARGET $TARGET" ] && [ -e "$WQ_MASK_RECORD" ] && [ -e "$QUIET_HOST_STATE" ] &&
+  keeper_gone || fail "the keeper after a killed supervisor" "$keeper_log"
 WQ_MASK_SUDO=none tools/wq_mask.sh restore >/dev/null 2>&1 || :
 
 # A TERM latched just before the untraced session starts (a debug hook sends it as that step is about to run): that
@@ -368,7 +356,7 @@ reset; : >"$ROOT/session.linger.14"
 start; wait "$sup"; st=$?
 [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && [ -e "$WQ_MASK_RECORD" ] && [ -e "$QUIET_HOST_STATE" ] &&
   ! grep -q '^mask_restore_start=' "$E/experiment.record" && grep -q '^descendants=.* children=1 unknown=0$' "$E/experiment.record" &&
-  grep -q '^keeper_release=.* status=0$' "$E/experiment.record" &&
+  grep -q '^keeper_release=.* status=0 keeper=released$' "$E/experiment.record" &&
   grep -q 'outcome=UNRESOLVED reason=none; unresolved: descendants' "$E/experiment.record" &&
   keeper_gone && grep -q 'release: ending WITHOUT restoring' "$(keeper_dir)/keeper.log" || fail "a lingering process ($st)" "$E/supervisor.log"
 kill "$(cat "$ROOT/linger.pid")"; sleep 1
@@ -379,10 +367,39 @@ for how in group setsid; do
   reset; echo "$how" >"$ROOT/session.chain.14"
   start; wait "$sup"; st=$?
   [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&
-    grep -Eq '^descendants=.* children=[1-9][0-9]* unknown=0$' "$E/experiment.record" && grep -q '^keeper_release=.* status=0$' "$E/experiment.record" &&
+    grep -Eq '^descendants=.* children=[1-9][0-9]* unknown=0$' "$E/experiment.record" && grep -q '^keeper_release=.* status=0 keeper=released$' "$E/experiment.record" &&
     keeper_gone || fail "a fork-exit chain ($how, $st)" "$E/supervisor.log"
   chain_stop || fail "the chain ($how) did not stop"
   [ "$(masks)" = "$TARGET $TARGET" ] || fail "the mask was restored after the release (chain, $how)"
+done
+# A release that fails while a descendant in a session of its own still runs (the review of 2111f92): one never
+# delivered (a client stand-in answers 98 without asking the keeper) and one whose answer is lost after the keeper has
+# acted on it (the stand-in passes it on, then answers 97). Either way nothing is restored while the descendant runs,
+# before or after the supervisor has ended, and the record tells them apart (the keeper still running, or released).
+cat >"$ROOT/keeper-shim" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = release ]; then
+  case "\$(cat "$ROOT/shim.mode")" in
+    undelivered) echo "shim: the release was not delivered" >&2; exit 98 ;;
+    lost) "$PWD/tools/root_keeper.sh" release >/dev/null 2>&1; echo "shim: the release's answer was lost" >&2; exit 97 ;;
+  esac
+fi
+exec "$PWD/tools/root_keeper.sh" "\$@"
+EOF
+chmod +x "$ROOT/keeper-shim"
+for mode in undelivered:98:running lost:97:released; do
+  IFS=: read -r m code kst <<<"$mode"
+  reset; echo "$m" >"$ROOT/shim.mode"; : >"$ROOT/session.escaped.14"
+  (export OPTION_A_KEEPER=$ROOT/keeper-shim; start; wait "$sup"; echo $? >"$ROOT/rel.st")
+  st=$(cat "$ROOT/rel.st")
+  [ "$st" -eq 3 ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&
+    grep -q "^keeper_release=.* status=$code keeper=$kst$" "$E/experiment.record" || fail "a release $m: the supervisor ($st)" "$E/supervisor.log"
+  # The unresolved interval, 3 s: the descendant runs, the keeper (released, or its owner gone) ends without restoring.
+  for ((i = 0; i < 30; i++)); do [ "$(masks)" = "$TARGET $TARGET" ] || break; sleep 0.1; done
+  [ "$(masks)" = "$TARGET $TARGET" ] && kill -0 "$(cat "$ROOT/escaped.pid")" && keeper_gone &&
+    grep -q 'ending WITHOUT restoring' "$(keeper_dir)/keeper.log" && ! grep -q 'wrote the original' "$(keeper_dir)/keeper.log" ||
+    fail "the mask after a release $m" "$(keeper_dir)/keeper.log"
+  kill "$(cat "$ROOT/escaped.pid")"
 done
 
 # The keeper alone: its list, its own directory, links planted in it, an owner or a group member that cannot be read.
@@ -472,8 +489,8 @@ out=$(c status); st=$?
 [ "$st" -eq 0 ] && grep -q 'cannot be read: not taken as ended' "$K/keeper.log" && ! grep -q 'ended without a finish' "$K/keeper.log" ||
   fail "an owner that cannot be read" "$K/keeper.log"
 scratch_rm "$ROOT/hide.owner"; c finish >/dev/null; kill "$owner"
-# A member of the group that cannot be read is not taken as ended: once the owner has ended, the keeper waits, and when
-# its wait is over it ends WITHOUT restoring.
+# Its owner killed while a member of its group runs, one that a /proc scan cannot read: the keeper ends at once WITHOUT
+# restoring, and logs the group as present (the kernel's test), naming the member as unknown.
 group_owner() {  # an owner, in a group of its own, with one child: their pids in owner and child
   python3 -c 'import os, sys
 os.setsid(); os.execvp("bash", ["bash", "-c", "sleep 60 & echo $! >\"$1\"; wait", "owner", sys.argv[1]])' "$ROOT/child.pid" &
@@ -481,28 +498,31 @@ os.setsid(); os.execvp("bash", ["bash", "-c", "sleep 60 & echo $! >\"$1\"; wait"
   wait_file "$ROOT/child.pid" || fail "no child"
   child=$(cat "$ROOT/child.pid"); scratch_rm "$ROOT/child.pid"
 }
+k_gone() {  # waits up to 5 s for the keeper in K to end
+  local pid i
+  pid=$(sed -n 's/^pid=//p' "$K/keeper.ready" 2>/dev/null)
+  for ((i = 0; i < 50; i++)); do [ -e "/proc/$pid" ] || return 0; sleep 0.1; done
+  return 1
+}
 reset
 group_owner
-keeper "$owner" "$owner" PATH="$ROOT/hidebin:$PATH" KEEPER_GROUP_WAIT=2 || fail "the keeper (a member hidden) did not start"
+keeper "$owner" "$owner" PATH="$ROOT/hidebin:$PATH" || fail "the keeper (a member hidden) did not start"
 echo "$TARGET" | c tee "$ROOT/sys/cpumask" || fail "the target write (a member hidden)"
 echo "$child" >"$ROOT/hide.member"
 kill -KILL "$owner"; wait "$owner" 2>/dev/null
-for ((i = 0; i < 80; i++)); do grep -q 'UNRESOLVED' "$K/keeper.log" && break; sleep 0.1; done
-[ "$(masks)" = "$TARGET $TARGET" ] && grep -q 'UNRESOLVED: the end of process group .* is not confirmed .*; the mask is NOT restored' "$K/keeper.log" &&
-  grep -q "unknown $child" "$K/keeper.log" && [ -e "/proc/$child" ] || fail "a hidden member of the group" "$K/keeper.log"
+k_gone && [ "$(masks)" = "$TARGET $TARGET" ] && grep -q 'ended without a finish or a release: ending WITHOUT restoring' "$K/keeper.log" &&
+  grep -q "its process group $owner: present" "$K/keeper.log" && grep -q "unknown $child" "$K/keeper.log" && [ -e "/proc/$child" ] ||
+  fail "the keeper, its owner killed with a member running" "$K/keeper.log"
 scratch_rm "$ROOT/hide.member"; kill "$child"
-# The same member seen to end while the keeper waits: the keeper restores.
+# Its owner killed alone in its group: the group has ended, and still nothing is restored.
 reset
-group_owner
-keeper "$owner" "$owner" KEEPER_GROUP_WAIT=20 || fail "the keeper (a member running) did not start"
-echo "$TARGET" | c tee "$ROOT/sys/cpumask" || fail "the target write (a member running)"
+python3 -c 'import os; os.setsid(); os.execvp("sleep", ["sleep", "60"])' &
+owner=$!
+keeper "$owner" "$owner" || fail "the keeper (an owner alone) did not start"
+echo "$TARGET" | c tee "$ROOT/sys/cpumask" || fail "the target write (an owner alone)"
 kill -KILL "$owner"; wait "$owner" 2>/dev/null
-for ((i = 0; i < 30; i++)); do grep -q 'waiting for a confirmed end' "$K/keeper.log" && break; sleep 0.1; done
-sleep 1
-[ "$(masks)" = "$TARGET $TARGET" ] || fail "the keeper restored while a member of the group ran" "$K/keeper.log"
-kill "$child"
-for ((i = 0; i < 50; i++)); do [ "$(masks)" = "$ORIG $ORIG" ] && break; sleep 0.1; done
-[ "$(masks)" = "$ORIG $ORIG" ] && grep -q 'the group has ended; the original ffffffff is in effect' "$K/keeper.log" || fail "the keeper after the member ended" "$K/keeper.log"
+k_gone && [ "$(masks)" = "$TARGET $TARGET" ] && grep -q "its process group $owner: ended" "$K/keeper.log" &&
+  ! grep -q 'wrote the original' "$K/keeper.log" || fail "the keeper, its owner killed alone" "$K/keeper.log"
 # The keeper's exact group test (its embedded body), on the re-review's race: a member forks and exits just as a /proc
 # scan reaches it (a hook times it), so the scan sees only its zombie and misses the child born after the listing; and
 # on a free-running fork-exit chain in a group of its own, sampled 200 times. The kernel's test reports "present"

@@ -55,21 +55,21 @@
 # start processes), so a fork during the check cannot escape it, as it can
 # escape a /proc scan. A list that cannot be read is no end. It waits up to
 # 120 s for that; without it, it changes nothing on the host: it names what
-# remained, releases the keeper (which then ends without restoring: its own
-# test reaches only the process group), and ends unresolved (exit 3), for
-# the operator to restore by hand once those processes have ended. With it,
+# remained, releases the keeper (which ends without restoring; so does a
+# keeper whose release never arrived, once this script has ended), and ends
+# unresolved (exit 3), for the operator to restore by hand once those
+# processes have ended. With it,
 # it restores and verifies: tools/wq_mask.sh restore, tools/quiet_host.sh
 # restore, then the keeper's finish (which verifies the original mask), and
 # copies the keeper's log. An owed restoration that is not verified, or a
 # record that could not be written, the final one included, leaves it
 # unresolved (exit 3): the records stay open, and no session may start until
 # they are restored. If the supervisor itself is killed (SIGKILL) or crashes,
-# only the keeper acts: it restores the mask once the kernel finds no process
-# left in the supervisor's process group (the limit of this crash path: a
-# descendant that has left the group is beyond that test, and after the
-# supervisor's death nothing tracks it); nothing restores the quieted services then,
-# and a crash of the keeper too, or a power loss, restores nothing (a reboot
-# resets the kernel's mask). Its messages go to the experiment's log and,
+# nothing restores anything automatically: the keeper, its owner gone, ends
+# without restoring and logs the state of the process group; the mask, the
+# quieted services and both records stay for the operator, as after a power
+# loss (a reboot resets the kernel's mask). Its messages go to the
+# experiment's log and,
 # while it can, to the terminal.
 #
 # The experiment record (<dir>/experiment.record): started=TIME, then
@@ -78,7 +78,7 @@
 # mask_restore, quiet_restore, keeper_finish), quiet_owed=TIME and
 # mask_owed=TIME before those changes, signal=TIME NAME,
 # descendants=TIME children=N unknown=0|1 and keeper_release=TIME status=N
-# for an unconfirmed end, and last
+# keeper=released|ended|running|unknown for an unconfirmed end, and last
 # finished=TIME outcome=ACQUIRED|STOPPED|UNRESOLVED reason=TEXT.
 #
 # Exit: 0 both runs acquired and both gates passed, every restoration
@@ -218,6 +218,19 @@ trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 
+# keeper_state: the keeper's state, from its pid and start time and its log: "running" (or "unknown" if its /proc entry
+# exists but cannot be read), else "released" (its log records a release) or "ended". A zombie has ended.
+keeper_state() {
+  local s
+  if ! s=$(cat "/proc/$kpid/stat" 2>/dev/null); then
+    [ -e "/proc/$kpid" ] && { echo unknown; return; }
+  else
+    s=${s##*) }
+    read -r -a s <<<"$s"
+    if [ "${s[19]:-}" = "$kstart" ] && [ "${s[0]}" != Z ] && [ "${s[0]}" != X ]; then echo running; return; fi
+  fi
+  if grep -q '^\[[^]]*\] request [^ ]*: release: ending WITHOUT restoring' "$K/keeper.log" 2>/dev/null; then echo released; else echo ended; fi
+}
 # descendants: status 0 and "ended" only if the kernel's list of this script's children holds nothing but the keeper
 # (its pid with its start time) and this check's own processes (see the cleanup above); otherwise status 1, with
 # "present N" and the other children, or "unknown" and why the list cannot be read.
@@ -276,17 +289,25 @@ finish() {
     esac
     log "option_a: UNRESOLVED: the end of the processes it started is not confirmed after $GROUP_WAIT s; nothing is restored:"
     log "${g:-the list of its children could not be read}"
-    # The keeper's own test reaches only the process group, not a descendant that has left it: released, it restores
-    # nothing either.
-    local rst
+    # The keeper restores nothing on its own: released, or once this script has ended, it ends without restoring. The
+    # release only ends it now; which of these happened is recorded.
+    local rst kst
     env ROOT_KEEPER_DIR="$K" "$KEEPER" release >>"$LOG" 2>&1
     rst=$?
-    rec "keeper_release=$(now) status=$rst"
-    if [ "$rst" -eq 0 ]; then
-      log "  the keeper has ended WITHOUT restoring: only the operator (or a reboot) restores the mask now"
-    else
-      log "  the keeper did not confirm its release (status $rst): it may restore the mask once the kernel finds the group empty"
+    kst=$(keeper_state)
+    if [ "$kst" = running ] &&
+      grep -q '^\[[^]]*\] request [^ ]*: release: ending WITHOUT restoring' "$K/keeper.log" 2>/dev/null; then
+      for ((i = 0; i < 50; i++)); do kst=$(keeper_state); [ "$kst" = running ] || break; sleep 0.1; done  # it is ending
     fi
+    rec "keeper_release=$(now) status=$rst keeper=$kst"
+    case "$rst:$kst" in
+      0:*) log "  the keeper confirmed its release and ended WITHOUT restoring" ;;
+      *:released) log "  the release's answer was lost (status $rst), but the keeper had already ended: its log records the release" ;;
+      *:ended) log "  the release was not confirmed (status $rst); the keeper has ended (its log records no release); it restored nothing" ;;
+      98:running) log "  the release was not delivered (status 98); the keeper still runs, and ends WITHOUT restoring once this script has ended" ;;
+      *) log "  the release was not confirmed (status $rst; the keeper: $kst); it ends WITHOUT restoring once this script has ended" ;;
+    esac
+    log "  only the operator (or a reboot) restores the mask now"
     log "  once the processes above have ended, restore by hand: tools/wq_mask.sh restore, tools/quiet_host.sh restore"
     log "  (the keeper's log: $K/keeper.log)"
     cp "$K/keeper.log" "$E/keeper.log" 2>/dev/null
