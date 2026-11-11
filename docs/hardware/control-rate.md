@@ -2128,14 +2128,58 @@ read in full, the evidence files are read strictly, and the audited trace-cmd
 build is enforced for every use. The re-review then required the trace
 libraries and the plugin set to be pinned as well. Its review accepted the pins
 and required the launch's producer to be checked by its status and whole
-output; that correction is pending review. Changing `tools/timer_service.py`
+output; that correction was approved (`2470255`), and the implementation was
+cleared for the emulator validation. Changing `tools/timer_service.py`
 voids the controls accepted under the earlier analysis for new work; their
-recorded results stand. Nothing here has run on the real kernel inside a
-session: the extraction and report path, the recorder's cost under load on the
-update CPUs including CPU 3, and the guarded 10 ms maximum are for the fresh
-emulator controls and end-to-end validation on 7.0.0-42 that follow the review.
-Hardware stays paused until those and the revised H2 plan are accepted, and no
-failed historical slot is promoted. This qualifies no control rate.
+recorded results stand.
+
+**Emulator validation (2026-11-11; partly accepted).** Two sessions over
+`dxl_emu` at `2470255` on 7.0.0-42, archived in `clock_validation/`: attempt
+12, fresh fair-server controls on CPU 5 and an untraced control and a timer
+run at current, 1000 Hz, `rt-loaded-excl`, 20 s; attempt 13, an untraced
+control and a timer run at `rt-idle`, 50 s, attempt 11's condition. The
+reviewer split the verdicts:
+
+| Evidence | Verdict |
+| --- | --- |
+| Attempt 12's controls | Accepted as fresh controls under the recorded kernel, probe definitions, event set and tool conditions |
+| Attempt 12's recorder, extraction, report, certificate and conversion under load | Accepted as a component demonstration: CERTIFIED, the clock rule passes, U about 1,098 ns |
+| Attempt 12 as a complete validation | Not passed: the analysis fails on 105 worker timer wakes outside every sleep, beyond the PTY USB exception, and both probe runs fail T3 (14 and 3 read failures) |
+| Attempt 13's certificate | Valid, and separate from the anchor accounting |
+| Attempt 13's conversion | Rejected: one local timer entry with no deadline of its own fails the deadline-slot accounting; the frozen rule and the failure stand, and 524 ns is not an accepted bound |
+
+The 105 wakes lie inside the three failed-read write calls, 35 each: the
+port waits out its guard after a read timeout in sleeps of at most 1 ms. The
+generic check could not account for those sleeps. Wake accounting revision 2
+(`tools/trace_correlate.py`) accounts a wake as a guard sleep only by its own
+evidence: inside a failed-read cycle's write call, its timer armed by the
+worker right after a sleep call, for at most 1 ms, at or after the read's
+t0 + budget, and expiring by t0 + budget + guard plus the relative sleep's
+conversion lag. That lag is bounded by the time from the worker's previous
+sleep return to the arming; the last slice of each guard expired 617 to
+973 ns after the guard's end. Every other wake stays a failure. Under it,
+attempt 12's 105 wakes are all accounted and none is unexplained; its T3
+failures stand, and their cause is not established. The read timeouts also
+occur in the untraced run.
+
+The first cost figures were not bounds. A difference of conditional medians
+can understate the recorder's contribution or be negative, and those runs
+mixed updates from outside the measured window: attempt 12's two CPU 3
+updates came before its run. `tools/tk_cost.py` now restricts everything to
+one recorded window, the probe's first wake to its last cycle end, and reports
+those differences as descriptive. Inside the windows:
+
+- Attempt 12: CPU 3 performed no update; CPU 5 performed 19,617, at a median
+  of 0.49 us each.
+- Attempt 13: CPU 3 performed 47,597, at a median of 0.32 us each.
+- No late cycle wake and no worker wait of 50 us or more overlapped an
+  update on CPU 3.
+
+These are observations, not cost limits. The corrected analyses, revision 2
+and the corrected cost tool, are pending review, and no new acquisition was
+needed for them. Hardware and H2 stay paused until the validation is decided
+and a revised H2 plan is accepted, and no failed historical slot is promoted.
+This qualifies no control rate.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
