@@ -2267,7 +2267,11 @@ pass is required besides it.
 The first version of the procedure (`d9e774e`) was not ready: its first
 session command was refused (the controls need the timer mode), nothing
 owned the restoration across a hangup, and the new checks had false passes.
-The corrected procedure is one supervised command, and these tools serve it:
+The second (`04e8822`) still restored while a process of the experiment might
+be running, let the keeper's replies follow a link the invoking user planted,
+could start a step after a latched stop or a record that failed, and read a
+field given twice by its last value. The corrected procedure is one
+supervised command, and these tools serve it:
 
 - `tools/option_a.sh` is the supervisor. Before any host change it refuses
   with nothing changed unless the kernel is 7.0.0-42, the emulator's pty
@@ -2279,26 +2283,42 @@ The corrected procedure is one supervised command, and these tools serve it:
   before the change that creates it, it runs: the quieting, the mask's
   clear, the untraced session (attempt 14), the mask check and the gate,
   then the controls with the timer session (attempt 15), the mask check and
-  the gate. Any nonzero status or a signal stops it with no further step.
-  Its cleanup always waits for the group's other processes, restores and
-  verifies the mask and the quieted services, then ends the keeper.
+  the gate. Before each step it checks for a latched stop and records the
+  step's start; a stop, or a record that cannot be written, ends it before
+  the step begins. Any nonzero status or a signal stops it with no further
+  step. Its cleanup first needs a confirmed end of the group's other
+  processes: none left (a zombie has ended) and no `/proc` entry that exists
+  but cannot be read. It waits up to 120 s for that; without it, it changes
+  nothing on the host and ends unresolved. With it, it restores and verifies
+  the mask and the quieted services, then ends the keeper.
 - `tools/root_keeper.sh` is the privileged half, started through sudo while
   the terminal is alive (sudo-rs ties the cached credentials to the
   terminal, so sudo may refuse after a hangup). It writes only the original
   mask or the target, and stops or starts only `unattended-upgrades`; it
-  refuses anything else. If the supervisor ends without a finish, the keeper
-  waits for the experiment's process group to end, then writes the original
-  mask back and verifies it.
+  refuses anything else. Its directory, `/run/rtctrl-keeper-<pid>-<start>`,
+  is created by root exclusively (mode 0755), so the invoking user writes
+  only the request FIFO in it; every file the keeper writes there is created
+  exclusively, without following a link, relative to that directory, then
+  renamed into place, and nothing but the FIFO changes owner. If the
+  supervisor ends without a finish, the keeper waits for the same confirmed
+  end of the experiment's process group, then writes the original mask back
+  and verifies it; without that end within 30 minutes it ends without
+  restoring, the mask unresolved. An owner that cannot be read is not taken
+  as ended.
 - `tools/wq_mask.sh` changes and restores the mask with its append-only
   record. Its census of the unbound workers and rescuers counts an entry
-  that still exists but cannot be read, or has no well-formed affinity list,
-  as unknown; an unknown entry fails the verification and the restoration.
+  that still exists but cannot be read, or has no well-formed affinity list
+  (a descending range such as `3-1` included), as unknown; an unknown entry
+  fails the verification and the restoration.
 - `tools/validation_gate.py` checks one finished run. Completeness and T3
   come from `tools/timing_summary.py` and must agree with the session's
   record, the failure counters must be zero, and the verdict may fail only
   T1, T2 and T6a, on the emulator's pty. It reads the mask record as a checked
   sequence: the fixed values once each, CPU 3 cleared from equal originals,
-  then the actual masks and counts of every step in order. It bounds the run
+  then the actual masks and counts of every step in order. Each step holds
+  its own fields once each: a field given twice, or an empty, missing or
+  extra field, makes the record unreadable (exit 2), as it does in the
+  experiment record's session markers; a reason is free text. It bounds the run
   by the supervisor's start and end of its session (the session's own note
   is written before the load and recorders start). It runs with the record
   open between the runs, and closed after the experiment.
@@ -2343,17 +2363,23 @@ Its exit status:
 - 1: it stopped after a failed step, a failed gate (the untraced run's T3
   above all: no timer run) or a signal, with every restoration verified.
 - 2: it refused, and nothing changed.
-- 3: an owed restoration was not verified: stop, keep the records, and
-  restore (`tools/wq_mask.sh restore`, `tools/quiet_host.sh restore`) before
-  anything else; neither tool starts beside an open record. A reboot resets
-  the kernel's mask, after which `restore` verifies and closes the record.
+- 3: unresolved. The end of the experiment's processes was not confirmed
+  (nothing was restored; the keeper restores the mask once it confirms that
+  end), an owed restoration was not verified, or a record could not be
+  written (the final one included: the outcome is then never 0). The
+  supervisor names each unresolved item and its remedy. Stop, keep the
+  records, and restore (`tools/wq_mask.sh restore`,
+  `tools/quiet_host.sh restore`) before anything else; neither tool starts
+  beside an open record. A reboot resets the kernel's mask, after which
+  `restore` verifies and closes the record.
 
 Nothing is retried, and no budget, guard, rule or load changes. A signal sent
 to the supervisor alone lets the running session finish before it stops; a
 Ctrl-C or a hangup reaches the session too, which runs its own cleanup first.
 The limits: if the supervisor is killed (SIGKILL) or crashes, only the keeper
-acts, restoring the mask once the group's processes have ended, and the
-quieted services and both records stay for the operator; if the keeper is
+acts, restoring the mask once it confirms that the group's processes have
+ended (not at all if it cannot within 30 minutes), and the quieted services
+and both records stay for the operator; if the keeper is
 killed too, or the power fails, nothing is restored until the operator does
 (a reboot resets the mask). After a hangup the sessions' own privileged
 cleanup still depends on their sudo, as before.

@@ -2324,11 +2324,13 @@ The T3 diagnosis (`t3-diagnosis/`, the developer's) was accepted by the reviewer
 a wording correction recorded in README.md: a missing `first_reply_ns` means no completed parsed reply section, not
 necessarily no byte. The reviewer chose Option A; `option-a-prep/` holds its new checks' outputs on attempts 12 and 13.
 The Option A review (`review-option-a/`, at `d9e774e`) requested changes; `option-a-prep2/` holds the corrected tools'
-outputs on the same captures, the corrected commands' dry runs and the reproducers' outcomes.
+outputs on the same captures, the corrected commands' dry runs and the reproducers' outcomes. The Option A re-review
+(`review-option-a-rereview/`, at `04e8822`) requested changes again; `option-a-prep3/` holds the reviewer's reproducers
+and the same cases adapted to the revised interfaces, on the corrected tools (at `6f00c03`).
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the Option A review, and the T3 wording correction | `1ed9c9253336e8df3c63f6200ae8e7e5d443bb919748f082cf00ca444c4b8309` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the Option A re-review, and the T3 wording correction | `3f6bc5821490cb0e2a0ce7d0e81f9023f57533bbf26e940dee9f31dc130e6887` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2364,6 +2366,15 @@ outputs on the same captures, the corrected commands' dry runs and the reproduce
 | `option-a-prep2/reviewer-reproducers.txt` | corrected Option A tools on the existing captures (reviewer-reproducers.txt) | `2fdbf2225edbd30d095298c00bb1b6f384cf08a2b67e0ed9eca2d7b3b03dd426` |
 | `option-a-prep2/unbound2-12.txt` | corrected Option A tools on the existing captures (unbound2-12.txt) | `c40382183a0a8388cc2fc5d1218c6203ebb9ef9aa49de39c97c8250926b5c8a1` |
 | `option-a-prep2/unbound2-13.txt` | corrected Option A tools on the existing captures (unbound2-13.txt) | `740fe3a14df5f16d6e5439d9f1330eeb8cecdac20fc00eafacfcb996f3e70bfe` |
+| `option-a-prep3/PROVENANCE.txt` | provenance of the re-review reproducers' outcomes on the corrected tools (at 6f00c03) | `3734e8a3f8981d0c68803c1edf069b6ff9e03087429ba5ea61603a0373723559` |
+| `option-a-prep3/SHA256SUMS` | folder ledger | `ad78f3d35f2b7a406531d3ba817bad363592c21a72e2a5bff5f0aacce19c1863` |
+| `option-a-prep3/adapted_keeper.out` | the re-review's reproducers on the corrected Option A tools (adapted_keeper.out) | `517523ed455b7c52973d790bca862ff13154a6f99896b7d6bdc5ad37a3f9d927` |
+| `option-a-prep3/adapted_keeper.py` | the re-review's reproducers on the corrected Option A tools (adapted_keeper.py) | `f900e8c97dd16ea090be89b8e03c8a8ef5a17ef0dc5dd28aa0189ea8a676bbce` |
+| `option-a-prep3/adapted_parsers.out` | the re-review's reproducers on the corrected Option A tools (adapted_parsers.out) | `65fa3f0e2d3bd630db4bf0df1db2698bc4696b6caaf5eb56f245aab10bba8526` |
+| `option-a-prep3/adapted_parsers.py` | the re-review's reproducers on the corrected Option A tools (adapted_parsers.py) | `f71e1f91e18744f560f67074c0352027ad055aad8ba222cbf92491d68eafb86a` |
+| `option-a-prep3/adapted_supervisor.out` | the re-review's reproducers on the corrected Option A tools (adapted_supervisor.out) | `e783087d701171c6c107b4aa24cccba7464b865b6ffc9d87c08fda5b6942b9f5` |
+| `option-a-prep3/adapted_supervisor.py` | the re-review's reproducers on the corrected Option A tools (adapted_supervisor.py) | `49c0ca0ca679b945d75fa87c286ce132f7d52c8e852508f9bee779fba642dd60` |
+| `option-a-prep3/reviewer-reproducers.txt` | the re-review's reproducers on the corrected Option A tools (reviewer-reproducers.txt) | `f05b07388ce154a68f903b2f3ad7548e3f99a6d982a2956bacb248cf876b1f67` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2469,6 +2480,18 @@ outputs on the same captures, the corrected commands' dry runs and the reproduce
 | `review-option-a/review.md` | the reviewer's Option A review (at d9e774e): changes requested | `f25fbb5771713ee812c55754133773d339d1ba8393a2291d00d520dd25d83e11` |
 | `review-option-a/reviewed.diff` | Option A review evidence (the reviewer's) | `630e13e3df05a6e7733cf270abc12cd8cc95286b33825626fae63d3197fdff26` |
 | `review-option-a/tests.txt` | Option A review evidence (the reviewer's) | `83f175bb9f3f2b5eb5424d72301e0235683a8e25e44fafb18978307493a077c7` |
+| `review-option-a-rereview/SHA256SUMS` | Option A re-review evidence (the reviewer's) | `e365ef8ab9fa4a788993693a1b7ef3fd8087f531af61e215f82d385d99fa8882` |
+| `review-option-a-rereview/check_closed_cases.py` | Option A re-review evidence (the reviewer's) | `ddce1ea4c65fc19672893c690ad42a4c43d6959bd70180521f7f4a79743b6e95` |
+| `review-option-a-rereview/check_keeper.py` | Option A re-review evidence (the reviewer's) | `95cf8ce6c1aaae4e8a0b15b2422ada2c90084ab7c56fe83d8e90310d28c4018f` |
+| `review-option-a-rereview/check_parsers.py` | Option A re-review evidence (the reviewer's) | `9762fec2ffca474606ce8fc0c8c7b7c632a70002990df17b98b39a370bbcf7f5` |
+| `review-option-a-rereview/check_supervisor.py` | Option A re-review evidence (the reviewer's) | `f750eb344edd585a8f10b81c4f78f2bada4fb252129a40f5636107911d854f01` |
+| `review-option-a-rereview/closed-cases.txt` | Option A re-review evidence (the reviewer's) | `0ad1262d7f94b7b04bd219e1bf93a154178d388e5df429911c30c839b686890a` |
+| `review-option-a-rereview/keeper-counterexamples.txt` | Option A re-review evidence (the reviewer's) | `0544de9a2f04be75b7f46ccb5eede2856769a371b64655d5b42f792d25d27be6` |
+| `review-option-a-rereview/parser-counterexamples.txt` | Option A re-review evidence (the reviewer's) | `b658cb72d801d4edfb3ca9436534290f8b6659cb27598bf1d91b09ecbe96a61f` |
+| `review-option-a-rereview/review.md` | the reviewer's Option A re-review (at 04e8822): changes requested | `91575446f60a00d11967ca17ae84d7fdc28477984e1796bea87ac2b640eb5b13` |
+| `review-option-a-rereview/reviewed.diff` | Option A re-review evidence (the reviewer's) | `7c17460418a70a65b397169198f70bd111e797f881729834d347f75ea2854505` |
+| `review-option-a-rereview/supervisor-counterexamples.txt` | Option A re-review evidence (the reviewer's) | `76f7c4c8a9cad7a094966af63bf3e2717410c2a6b609de16b76cbe7f7e1752fa` |
+| `review-option-a-rereview/tests.txt` | Option A re-review evidence (the reviewer's) | `300a663618712f5442f882a16422fd4c72f9bd0e8055ab2caf068129b62c552d` |
 | `review-rereview/SHA256SUMS` | re-review evidence (the reviewer's) | `34d751992f69626467dcd7daeb01807bf338615e6908eee11520d356bd0e3600` |
 | `review-rereview/check-fixes.txt` | re-review evidence (the reviewer's) | `6281025ee2928d4d47086095205bd51589ae0b140fe48a683156014e03a9674a` |
 | `review-rereview/check_fixes.py` | re-review evidence (the reviewer's) | `a95ca4593ed98a531b78a4ad16498d134bf6b2808b9cc79a17896eef3e36bdf4` |
