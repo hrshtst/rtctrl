@@ -8,10 +8,11 @@
 # effective masks that differ, a CPU not in the mask, an empty target, no
 # readable workers, an unwritable record, and an incomplete census (an entry
 # that exists but cannot be read, an unreadable comm, a malformed or missing
-# affinity list); a worker that is gone does not count. clear, check and restore succeed
+# affinity list, a descending range such as 3-1 included); a worker that is gone does not count. clear, check and restore succeed
 # and leave a closed record with every step; check fails on a changed mask.
 # A failed write, a write that applied but failed, a mask read back wrong,
-# workers that stay on the CPU and an interruption each restore at once and
+# workers that stay on the CPU, a worker whose affinity list turns malformed
+# (3-1) after the write, and an interruption each restore at once and
 # close the record (exit 1). A restoration that fails keeps the record open
 # (exit 1) until a later restore verifies; an interrupted clear whose
 # restoration fails likewise. A corrupt record is refused by check and
@@ -87,6 +88,7 @@ case "$(cat "$ROOT/mode")" in
   restore_fail) [ "$value" = ffffffff ] && exit 1; both "$value"; follow "$value" ;;
   stuck_restore_fail) [ "$value" = ffffffff ] && exit 1; both "$value" ;;
   hide_worker) both "$value"; follow "$value"; [ "$value" = ffffffff ] || chmod 000 "$WQ_MASK_PROC/103/status" ;;
+  descend_worker) both "$value"; follow "$value"; [ "$value" = ffffffff ] || printf 'Name:\tx\nCpus_allowed_list:\t3-1\n' >"$WQ_MASK_PROC/103/status" ;;
 esac
 EOF
 chmod +x "$ROOT/sudo"
@@ -133,7 +135,7 @@ reset; chmod 000 "$ROOT/proc/105/comm"
 run clear 3; st=$?
 chmod 600 "$ROOT/proc/105/comm"
 [ "$st" -eq 2 ] && [ ! -e "$ROOT/state/rec" ] || fail "an entry with an unreadable comm did not refuse ($st)" "$ROOT/out"
-for bad in 'Cpus_allowed_list:\t0-x' 'Name:\tno list'; do
+for bad in 'Cpus_allowed_list:\t0-x' 'Cpus_allowed_list:\t3-1' 'Name:\tno list'; do  # 3-1: the re-review's descending range (finding 4)
   reset; printf "Name:\tx\n$bad\n" >"$ROOT/proc/102/status"
   run clear 3; st=$?
   [ "$st" -eq 2 ] && [ ! -e "$ROOT/state/rec" ] || fail "a worker status '$bad' did not refuse ($st)" "$ROOT/out"
@@ -176,7 +178,8 @@ run restore && grep -q 'nothing to restore' "$ROOT/out" || fail "a second restor
 
 # Each failure of clear restores at once and closes the record.
 for case in fail:"the write of fffffff7 failed" fail_after_write:"the write of fffffff7 failed" \
-            wrong:"the masks read back as" stuck:"no complete census shows every unbound kernel worker off CPU 3"; do
+            wrong:"the masks read back as" stuck:"no complete census shows every unbound kernel worker off CPU 3" \
+            descend_worker:"no complete census shows every unbound kernel worker off CPU 3"; do
   reset; mode "${case%%:*}"
   run clear 3; st=$?
   c=$(closed)

@@ -35,8 +35,8 @@
 # The census: every /proc entry whose name is a number. One whose comm or
 # status cannot be read is gone only if its /proc entry no longer exists;
 # while it exists it is unknown, as is a worker whose Cpus_allowed_list is
-# missing or malformed. An unknown entry fails the census: it may be a
-# worker allowed on the CPU.
+# missing or malformed (a range must ascend: 3-1 is malformed, not empty).
+# An unknown entry fails the census: it may be a worker allowed on the CPU.
 #
 # The record, ${XDG_STATE_HOME:-~/.local/state}/rtctrl-wq-mask.record
 # (persistent: the kernel keeps the mask through a logout, until a reboot),
@@ -118,7 +118,10 @@ def cpus(spec):
         a, sep, b = part.partition("-")
         if not a.isdigit() or (sep and not b.isdigit()):
             raise ValueError(spec)
-        out.update(range(int(a), int(b or a) + 1))
+        lo, hi = int(a), int(b) if sep else int(a)
+        if hi < lo:  # a descending range is malformed, never empty
+            raise ValueError(spec)
+        out.update(range(lo, hi + 1))
     return out
 n = on = unknown = 0
 for pid in os.listdir(proc):
