@@ -334,6 +334,17 @@ set_tests_properties(tk_record_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timekeeping record regressions OK"
   LABELS unit)
 
+# The recorder's cost on the updating CPUs (tools/tk_cost.py, diagnostic)
+# on synthetic report lines and records.
+add_test(NAME tk_cost_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_tk_cost.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(tk_cost_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "timekeeping cost regressions OK"
+  LABELS unit)
+
 # The read-only idle-state counter snapshots of every traced session run
 # (tools/idle_counters.py) on a fake cpuidle tree.
 add_test(NAME idle_counters_regressions
