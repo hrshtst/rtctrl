@@ -40,19 +40,34 @@
 # arrives after a step's last check, before its command starts, is acted on
 # when that command returns).
 #
+# The supervisor is the child subreaper of everything it starts
+# (PR_SET_CHILD_SUBREAPER, set through perl, which leaves every signal's
+# disposition as it was, before it execs this script again): a descendant
+# whose parent ends is reparented to it, not to init, whatever its process
+# group or session. Nothing else about the steps changes.
+#
 # The cleanup ignores INT, TERM and HUP. It first needs a confirmed end of
-# every other process of its group: none left (a zombie has ended) and no
-# /proc entry that exists but cannot be read. It waits up to 120 s for that;
-# without it, it changes nothing on the host (no restoration, the keeper left
-# serving, whose own fallback restores the mask only after it confirms the
-# group's end), names what remained, and ends unresolved (exit 3). With it,
+# every other process it started: the kernel's list of its children holds
+# nothing but the keeper (and the check's own process). Every running
+# descendant has an ancestor among those children (a zombie counts until it
+# is reaped), the list is read from the kernel in one pass, and no new
+# descendant can appear once it is empty (only this script and the keeper
+# start processes), so a fork during the check cannot escape it, as it can
+# escape a /proc scan. A list that cannot be read is no end. It waits up to
+# 120 s for that; without it, it changes nothing on the host: it names what
+# remained, releases the keeper (which then ends without restoring: its own
+# test reaches only the process group), and ends unresolved (exit 3), for
+# the operator to restore by hand once those processes have ended. With it,
 # it restores and verifies: tools/wq_mask.sh restore, tools/quiet_host.sh
 # restore, then the keeper's finish (which verifies the original mask), and
 # copies the keeper's log. An owed restoration that is not verified, or a
 # record that could not be written, the final one included, leaves it
 # unresolved (exit 3): the records stay open, and no session may start until
 # they are restored. If the supervisor itself is killed (SIGKILL) or crashes,
-# only the keeper acts, as above; nothing restores the quieted services then,
+# only the keeper acts: it restores the mask once the kernel finds no process
+# left in the supervisor's process group (the limit of this crash path: a
+# descendant that has left the group is beyond that test, and after the
+# supervisor's death nothing tracks it); nothing restores the quieted services then,
 # and a crash of the keeper too, or a power loss, restores nothing (a reboot
 # resets the kernel's mask). Its messages go to the experiment's log and,
 # while it can, to the terminal.
@@ -62,7 +77,8 @@
 # mask_clear, session_A, check_A, gate_A, session_B, check_B, gate_B,
 # mask_restore, quiet_restore, keeper_finish), quiet_owed=TIME and
 # mask_owed=TIME before those changes, signal=TIME NAME,
-# group=TIME members=N unknown=N for an unconfirmed end, and last
+# descendants=TIME children=N unknown=0|1 and keeper_release=TIME status=N
+# for an unconfirmed end, and last
 # finished=TIME outcome=ACQUIRED|STOPPED|UNRESOLVED reason=TEXT.
 #
 # Exit: 0 both runs acquired and both gates passed, every restoration
@@ -79,6 +95,16 @@
 # group's wait in seconds, QUIET_HOST_STATE and WQ_MASK_RECORD the two
 # records, and with ROOT_KEEPER_TEST=1 KEEPER_RUNDIR the keeper's /run.
 set -u
+if [ "${OPTION_A_SUBREAPER:-}" != "$$" ]; then  # the same process, now a child subreaper (an exec keeps the pid)
+  shopt -s execfail
+  OPTION_A_SUBREAPER=$$ exec perl -e '
+    eval { require "syscall.ph"; 1 } or do { print STDERR "option_a: no syscall.ph for perl: nothing changed\n"; exit 2 };
+    syscall(&SYS_prctl, 36, 1, 0, 0, 0) == 0 or do { print STDERR "option_a: cannot become a child subreaper: $!: nothing changed\n"; exit 2 };
+    exec { $ARGV[0] } @ARGV or do { print STDERR "option_a: cannot run $ARGV[0]: $!: nothing changed\n"; exit 2 };' -- "$BASH" "$0" "$@"
+  echo "option_a: cannot run perl: nothing changed" >&2
+  exit 2
+fi
+unset OPTION_A_SUBREAPER
 [ -f tools/trace_session.sh ] || { echo "option_a: run from the repository root" >&2; exit 2; }
 OUT=${OPTION_A_OUT:-$HOME/rtctrl-hw}
 PORT=${OPTION_A_PORT:-/tmp/rtctrl-rehearsal-tty}
@@ -178,11 +204,12 @@ K=$KRUN/rtctrl-keeper-$$-$me_start
 "${SUDO[@]}" "$KEEPER" serve "$$" "$me_start" "$me_pgid" "$RT_CPU" || { undo_dirs; refuse "the root keeper did not start"; }
 for ((i = 0; i < 100; i++)); do [ -e "$K/keeper.ready" ] && break; sleep 0.1; done
 kpid=$(sed -n 's/^pid=//p' "$K/keeper.ready" 2>/dev/null)
-[ -n "$kpid" ] && [ -e "/proc/$kpid" ] || { undo_dirs; refuse "the root keeper is not ready (it ends by itself when this script does)"; }
+kstart=$(sed 's/.*) //' "/proc/$kpid/stat" 2>/dev/null | cut -d ' ' -f 20)
+[ -n "$kpid" ] && [[ $kstart =~ ^[0-9]+$ ]] || { undo_dirs; refuse "the root keeper is not ready (it ends by itself when this script does)"; }
 KENV=(WQ_MASK_SUDO="$KEEPER" QUIET_HOST_SUDO="$KEEPER" ROOT_KEEPER_DIR="$K")
 
 # --- The experiment: owned from here on. ---
-rec "started=$(now) kernel=$(uname -r) supervisor=$$ group=$me_pgid keeper=$kpid keeper_dir=$K" ||
+rec "started=$(now) kernel=$(uname -r) supervisor=$$ group=$me_pgid keeper=$kpid keeper_start=$kstart keeper_dir=$K" ||
   { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
 rec "directories=$D14 $D15 $E" || { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
 quiet_owed=0; mask_owed=0; keeper_up=1; stopped=; finished=0
@@ -191,52 +218,79 @@ trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 
+# descendants: status 0 and "ended" only if the kernel's list of this script's children holds nothing but the keeper
+# (its pid with its start time) and this check's own processes (see the cleanup above); otherwise status 1, with
+# "present N" and the other children, or "unknown" and why the list cannot be read.
+descendants() {
+  python3 -I -c '
+import os, sys
+sup, kpid, kstart = sys.argv[1], sys.argv[2], sys.argv[3]
+def stat(p):
+    s = open(f"/proc/{p}/stat").read()
+    return s[s.index("(") + 1:s.rindex(")")], s[s.rindex(")") + 2:].split()
+try:
+    own, p = set(), str(os.getpid())
+    while p != sup:  # this check, and any subshell between it and the supervisor
+        own.add(p)
+        p = stat(p)[1][1]
+        if int(p) <= 1:
+            raise ValueError("this check does not descend from the supervisor")
+    with open(f"/proc/{sup}/task/{sup}/children") as f:
+        kids = f.read().split()
+except (OSError, ValueError, IndexError) as e:
+    print("unknown")
+    print(f"  the list of its children cannot be read: {e}")
+    sys.exit(1)
+others = []
+for k in kids:
+    if k in own:
+        continue
+    try:
+        comm, f = stat(k)
+        if k == kpid and f[19] == kstart:
+            continue
+        others.append(f"  child {k} {comm} {f[0]}")
+    except (OSError, ValueError, IndexError):
+        others.append(f"  child {k} (cannot be read)")
+if others:
+    print("present", len(others))
+    print("\n".join(others))
+    sys.exit(1)
+print("ended")
+' "$$" "$kpid" "$kstart"
+}
 finish() {
   [ "$finished" -eq 1 ] && return
   finished=1
   trap '' INT TERM HUP
   local i g='' unresolved='' outcome code reason
-  # A confirmed end of every other process of the group comes first: nothing changes on the host before it.
+  # A confirmed end of every other process it started comes first: nothing changes on the host before it.
   for ((i = 0; i < GROUP_WAIT * 10; i++)); do
-    g=$(python3 -I -c '
-import os, sys
-g, me = sys.argv[1], {sys.argv[2], str(os.getpid())}
-members, unknown = [], []
-for p in os.listdir("/proc"):
-    if not p.isdigit() or p in me:
-        continue
-    try:
-        s = open(f"/proc/{p}/stat").read()
-    except OSError:
-        if os.path.exists(f"/proc/{p}"):
-            unknown.append(p)
-        continue
-    try:
-        comm = s[s.index("(") + 1:s.rindex(")")]
-        f = s[s.rindex(")") + 2:].split()
-        state, pgrp = f[0], f[2]
-    except (ValueError, IndexError):
-        unknown.append(p)
-        continue
-    if pgrp == g and state not in ("Z", "X"):
-        members.append(f"{p} {comm} {state}")
-print(len(members), len(unknown))
-for m in members:
-    print("  member", m)
-for u in unknown:
-    print("  unknown", u)
-' "$me_pgid" "$$") && [ "$(head -n 1 <<<"$g")" = "0 0" ] && break
+    g=$(descendants) && break
     sleep 0.1
   done
   if [ "$i" -ge $((GROUP_WAIT * 10)) ]; then
-    read -r gm gu <<<"$(head -n 1 <<<"${g:-? ?}")"
-    rec "group=$(now) members=$gm unknown=$gu"
-    log "option_a: UNRESOLVED: the end of the experiment's processes is not confirmed after $GROUP_WAIT s; nothing is restored:"
-    log "${g:-the group could not be read}"
-    log "  the keeper stays and restores the mask only once it confirms the group's end; restore by hand afterwards"
-    log "  (tools/wq_mask.sh restore, tools/quiet_host.sh restore); its log: $K/keeper.log"
+    case "$(head -n 1 <<<"${g:-unknown}")" in
+      present\ *) rec "descendants=$(now) children=$(head -n 1 <<<"$g" | cut -d ' ' -f 2) unknown=0" ;;
+      *) rec "descendants=$(now) children=? unknown=1" ;;
+    esac
+    log "option_a: UNRESOLVED: the end of the processes it started is not confirmed after $GROUP_WAIT s; nothing is restored:"
+    log "${g:-the list of its children could not be read}"
+    # The keeper's own test reaches only the process group, not a descendant that has left it: released, it restores
+    # nothing either.
+    local rst
+    env ROOT_KEEPER_DIR="$K" "$KEEPER" release >>"$LOG" 2>&1
+    rst=$?
+    rec "keeper_release=$(now) status=$rst"
+    if [ "$rst" -eq 0 ]; then
+      log "  the keeper has ended WITHOUT restoring: only the operator (or a reboot) restores the mask now"
+    else
+      log "  the keeper did not confirm its release (status $rst): it may restore the mask once the kernel finds the group empty"
+    fi
+    log "  once the processes above have ended, restore by hand: tools/wq_mask.sh restore, tools/quiet_host.sh restore"
+    log "  (the keeper's log: $K/keeper.log)"
     cp "$K/keeper.log" "$E/keeper.log" 2>/dev/null
-    rec "finished=$(now) outcome=UNRESOLVED reason=${stopped:-none}; unresolved: the group's end"
+    rec "finished=$(now) outcome=UNRESOLVED reason=${stopped:-none}; unresolved: descendants"
     exit 3
   fi
   cleanup_step() {  # NAME CMD...: a restoration runs whatever the record does

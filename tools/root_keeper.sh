@@ -20,8 +20,10 @@
 # "requests" (the invoking user's, mode 0600: the only thing the user
 # writes), the directory "replies", keeper.log and keeper.ready. Every file
 # the keeper writes there is created exclusively, without following a link,
-# relative to a descriptor of its directory, then renamed into place; it
-# changes the owner of nothing but the FIFO it has just created. It then
+# relative to a descriptor of its directory, given mode 0644 through that
+# descriptor (whatever the umask: sudo may pass on the user's), then renamed
+# into place; it changes the owner of nothing but the FIFO it has just
+# created, whose mode, like the directories', is set explicitly. It then
 # detaches (a new session, its input and output on keeper.log), ignores HUP,
 # INT, TERM and QUIT, writes keeper.ready and serves requests, one line each,
 # "ID VERB [VALUE]":
@@ -31,6 +33,8 @@
 #   status       the masks now
 #   finish       writes the original back unless it is in effect, verifies
 #                it and ends
+#   release      ends WITHOUT restoring anything (the supervisor could not
+#                confirm the end of its processes: the operator restores)
 # and answers each in replies/ID ("status=N", then any detail); any other
 # request is refused (99). Every action goes to keeper.log. When it ends it
 # removes the FIFO; the directory, with its replies, log and ready file,
@@ -39,13 +43,19 @@
 # The owner (OWNER_PID with its /proc start time OWNER_START) has ended only
 # when its /proc entry no longer exists or holds another start time; one that
 # exists but cannot be read is unknown, and the keeper goes on serving. If the
-# owner ends without a finish, the keeper waits for a confirmed end of the
-# experiment's process group PGID: no process of the group left, a zombie
-# counting as ended, and no /proc entry that exists but cannot be read (an
-# unknown entry is not an ended one). Only then does it write the original
-# back (unless it is in effect), verify it and end. If that end is not
-# confirmed within 30 minutes it ends WITHOUT restoring, the mask unresolved,
-# its log naming what remained. It restores nothing else
+# owner ends without a finish or a release (it was killed, or crashed), the
+# keeper waits for a confirmed end of the
+# experiment's process group PGID: the kernel finds no process in it
+# (kill(-PGID, 0) fails with ESRCH). The kernel makes that test atomically: a
+# member that forks and then exits cannot hide its child from it, and a
+# zombie counts until it is reaped. (A /proc scan of the group, which a fork
+# during the scan can escape, only names what remained, for the log.) The
+# group is the supervisor's: a descendant that has left it (a session of its
+# own) is beyond this test, and the supervisor's own cleanup covers those
+# (tools/option_a.sh). Only then does it write the original back (unless it
+# is in effect), verify it and end. If that end is not confirmed within 30
+# minutes it ends WITHOUT restoring, the mask unresolved, its log naming what
+# remained. It restores nothing else
 # (tools/quiet_host.sh's and tools/wq_mask.sh's records stay open). A keeper
 # killed with SIGKILL, or a crash or power loss, restores nothing; a reboot
 # resets the kernel's mask.
@@ -54,7 +64,7 @@
 # this script as the tools' sudo (WQ_MASK_SUDO, QUIET_HOST_SUDO):
 #   tee <the keeper's mask file>, the value on its input  -> mask VALUE
 #   systemctl stop|start unattended-upgrades.service      -> uu-stop|uu-start
-#   status | finish                                       -> status | finish
+#   status | finish | release                             -> the same
 # Anything else is refused (99); a keeper that is not running, 98; no
 # answer within ROOT_KEEPER_WAIT seconds (default 60), 97. The client
 # ignores HUP, so that a request made during the cleanup after a hangup is
@@ -112,12 +122,27 @@ owner_state() {
   else echo ended
   fi
 }
-# group_state PGID: "<members> <unknown>" of the process group (a zombie has ended; an entry that exists but cannot be
-# read or understood is unknown), then one line per member or unknown entry, for the log.
+# group_state PGID: "ended" only if the kernel finds no process in the group: kill(-PGID, 0) fails with ESRCH, a test
+# the kernel makes atomically (a member that forks and exits cannot hide its child from it; a zombie counts until it is
+# reaped). Otherwise "present", then, for the log only, what a /proc scan finds: the group's members and the entries
+# that exist but cannot be read. The scan decides nothing: a fork during it can escape it.
 group_state() {
   python3 -I -c '
 import os, sys
-g, me = sys.argv[1], str(os.getpid())
+g, me = int(sys.argv[1]), str(os.getpid())
+if g < 2:
+    print("present")
+    print("  not a process group:", g)
+    sys.exit(0)
+try:
+    os.kill(-g, 0)
+except ProcessLookupError:
+    print("ended")
+    sys.exit(0)
+except PermissionError:
+    pass
+print("present")
+g = str(g)
 members, unknown = [], []
 for p in os.listdir("/proc"):
     if not p.isdigit() or p == me:
@@ -135,9 +160,8 @@ for p in os.listdir("/proc"):
     except (ValueError, IndexError):
         unknown.append(p)
         continue
-    if pgrp == g and state not in ("Z", "X"):
+    if pgrp == g:
         members.append(f"{p} {comm} {state}")
-print(len(members), len(unknown))
 for m in members:
     print("  member", m)
 for u in unknown:
@@ -145,7 +169,9 @@ for u in unknown:
 ' "$1"
 }
 # put DIR NAME CONTENT: NAME in DIR, created exclusively without following a link (relative to a descriptor of DIR,
-# itself opened without following one), then renamed into place (a rename replaces a name, it follows nothing).
+# itself opened without following one), given mode 0644 through its own descriptor (the umask only narrows the mode
+# os.open asks for, and the client, not root, must read it), then renamed into place (a rename replaces a name, it
+# follows nothing).
 put() {
   python3 -I -c '
 import os, sys
@@ -155,6 +181,7 @@ try:
     tmp = "." + name + ".part"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
     try:
+        os.fchmod(fd, 0o644)
         os.write(fd, data.encode())
     finally:
         os.close(fd)
@@ -168,8 +195,8 @@ serve() {
   local owner=$1 owner_start=$2 pgid=$3 cpu=$4 uid dir orig rq target
   uid=${SUDO_UID:-$(id -u)}
   [ "${ROOT_KEEPER_TEST:-0}" = 1 ] || [ "$(id -u)" -eq 0 ] || { echo "root_keeper: serve runs as root (through sudo)" >&2; exit 2; }
-  [[ $owner =~ ^[0-9]+$ && $owner_start =~ ^[0-9]+$ && $pgid =~ ^[0-9]+$ && $cpu =~ ^[0-9]+$ && $uid =~ ^[0-9]+$ ]] ||
-    { echo "root_keeper: bad arguments" >&2; exit 2; }
+  [[ $owner =~ ^[0-9]+$ && $owner_start =~ ^[0-9]+$ && $pgid =~ ^[0-9]+$ && $cpu =~ ^[0-9]+$ && $uid =~ ^[0-9]+$ ]] &&
+    [ "$pgid" -gt 1 ] || { echo "root_keeper: bad arguments" >&2; exit 2; }  # kill(-1, 0) would mean every process
   [ "$(owner_state "$owner" "$owner_start")" = alive ] || { echo "root_keeper: the owner $owner is not running" >&2; exit 2; }
   orig=$(read_mask cpumask) && rq=$(read_mask cpumask_requested) && [ "$orig" = "$rq" ] ||
     { echo "root_keeper: the masks cannot be read, or the requested one differs" >&2; exit 2; }
@@ -229,6 +256,9 @@ run() {
           if restore_original; then st=0; else st=1; fi
           log "request $id: finish: the original is $([ "$st" -eq 0 ] && echo in effect || echo NOT in effect); ending"
           reply "$id" "$st"; ending; exit "$st" ;;
+        release)
+          log "request $id: release: ending WITHOUT restoring; the mask stays $(read_mask cpumask || echo unreadable) for the operator"
+          reply "$id" 0; ending; exit 0 ;;
         *) log "request $id: refused: $verb"; reply "$id" 99 ;;
       esac
       continue
@@ -239,7 +269,7 @@ run() {
     esac
     log "the owner $owner ended without a finish: waiting for a confirmed end of its process group $pgid"
     for ((i = 0; i < GROUP_POLLS; i++)); do
-      g=$(group_state "$pgid") && [ "$(head -n 1 <<<"$g")" = "0 0" ] && break
+      g=$(group_state "$pgid") && [ "$(head -n 1 <<<"$g")" = ended ] && break
       sleep 0.5
     done
     if [ "$i" -ge "$GROUP_POLLS" ]; then
@@ -260,7 +290,7 @@ client() {
     "tee $SYSFS/cpumask") verb=mask; IFS= read -r value || exit 99; [[ $value =~ ^[0-9a-f]+(,[0-9a-f]+)*$ ]] || exit 99 ;;
     "systemctl stop $UU") verb=uu-stop ;;
     "systemctl start $UU") verb=uu-start ;;
-    status | finish) verb=$1 ;;
+    status | finish | release) verb=$1 ;;
     *) echo "root_keeper: refused: $*" >&2; exit 99 ;;
   esac
   pid=$(sed -n 's/^pid=//p' "$dir/keeper.ready" 2>/dev/null)

@@ -17,16 +17,23 @@
 # (exit 1). A record that cannot be written before a session starts stops
 # it before that session, and a final record that cannot be written makes
 # the outcome unresolved, never exit 0 (exit 3). A restoration that fails is
-# unresolved (exit 3, its record open). A process of the group still running
-# when the experiment ends leaves everything unrestored (exit 3); the keeper
-# then restores the mask once that process has ended. A supervisor killed
-# with SIGKILL leaves the keeper to restore the mask once the group's
-# processes have ended. The keeper: its list; a directory of its own, created
-# exclusively; links planted in its replies (temporary or final names, or in
-# place of the directory) redirect nothing; an owner that cannot be read is
-# not taken as ended; a group member that cannot be read is not taken as
-# ended (the keeper ends without restoring once its wait is over), and one
-# seen to end lets it restore.
+# unresolved (exit 3, its record open). A process still running when the
+# experiment ends (a lingering one, or a fork-exit chain, whose generations
+# a /proc scan can miss, in the group or in a session of its own) leaves
+# everything unrestored (exit 3): the supervisor, the child subreaper of all
+# it starts, finds it among its children and releases the keeper, which ends
+# without restoring. A supervisor killed with SIGKILL leaves the keeper to
+# restore the mask once the kernel finds no process left in the group, a
+# fork-exit chain in it included. The keeper: its list; its modes under
+# umask 077 (the files the client reads stay 0644); a directory of its own,
+# created exclusively; links planted in its replies (temporary or final
+# names, or in place of the directory) redirect nothing; an owner that
+# cannot be read is not taken as ended; a group member that a /proc scan
+# cannot read is still found (the keeper ends without restoring once its
+# wait is over), and one seen to end lets it restore. Its group test, on the
+# re-review's race (a member forking and exiting just as a scan reaches it)
+# and on a free-running fork-exit chain, reports "present", and "ended" once
+# the chain has stopped.
 #
 # The scratch directory comes through tests/integration/scratch_dir.sh: never
 # empty, never a system or home directory; every removal is under ${ROOT:?}.
@@ -118,6 +125,10 @@ if sys.argv[5] == "1":
     "$(cat "$ROOT/sys/cpumask")" "$mode" "$ctl" "$attempt" || exit 9
 fi
 [ -e "$ROOT/session.linger.$attempt" ] && { sleep 30 & echo $! >"$ROOT/linger.pid"; }
+case "$(cat "$ROOT/session.chain.$attempt" 2>/dev/null)" in
+  group) "$ROOT/chain" & ;;
+  setsid) setsid "$ROOT/chain" & ;;
+esac
 : >"$ROOT/running-$attempt"
 end=$(( $(date +%s%N) + $(python3 -c "print(int(float('$(cat "$ROOT/session.secs" 2>/dev/null || echo 0.6)') * 1e9))") ))
 while [ "$(date +%s%N)" -lt "$end" ]; do sleep 0.05; done
@@ -129,14 +140,35 @@ s=; for a in "$@"; do [ "${prev:-}" = --session ] && s=$a; prev=$a; done
 echo "gate $*" >>"$ROOT/calls"
 exit "$(cat "$ROOT/gate.exit.$s" 2>/dev/null || echo 0)"
 EOF
-chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate"
+# A fork-exit chain: each generation starts the next and ends at once, until $ROOT/chain.stop exists; $ROOT/chain.pid
+# holds the latest generation, $ROOT/chain.first the first (started with setsid: its own session and group).
+cat >"$ROOT/chain" <<'EOF'
+#!/usr/bin/env bash
+[ -e "$ROOT/chain.first" ] || echo $$ >"$ROOT/chain.first"
+echo $$ >"$ROOT/chain.pid"
+[ -e "$ROOT/chain.stop" ] && exit 0
+sleep 0.02
+"$0" &
+exit 0
+EOF
+chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate" "$ROOT/chain"
 
+chain_stop() {  # stops a running fork-exit chain: status 0 once its latest generation has ended
+  local i p q
+  : >"$ROOT/chain.stop"
+  for ((i = 0; i < 100; i++)); do
+    p=$(cat "$ROOT/chain.pid" 2>/dev/null); sleep 0.05; q=$(cat "$ROOT/chain.pid" 2>/dev/null)
+    [ "$p" = "$q" ] && { [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; } && return 0
+  done
+  return 1
+}
 reset() {  # the host as it starts
   [ -e "$ROOT/linger.pid" ] && kill "$(cat "$ROOT/linger.pid")" 2>/dev/null
+  [ -e "$ROOT/chain.pid" ] && chain_stop
   scratch_rm "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT/run" "$ROOT/bin" "$ROOT"/calls \
          "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* "$ROOT"/session.* "$ROOT"/gate.exit.* \
          "$ROOT/dry.exit" "$ROOT/kernel.mode" "$ROOT/uu.log" "$ROOT/sup.out" "$ROOT"/trigger.* "$ROOT/linger.pid" \
-         "$ROOT/hook.bash" "$ROOT"/hide.*
+         "$ROOT/hook.bash" "$ROOT"/hide.* "$ROOT"/chain.*
   mkdir -p "$ROOT/sys" "$ROOT/state" "$ROOT/proc" "$ROOT/run"
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"; printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"
   printf '00000000\n' >"$ROOT/sys/cpumask_isolated"
@@ -271,6 +303,22 @@ grep -q 'ended without a finish' "$keeper_log" && grep -q 'is in effect; ending'
 # The session (still in the group) had ended before the keeper wrote the original back.
 [ "$(stat -c %Y "$ROOT/sys/cpumask")" -ge "$(stat -c %Y "$ROOT/mask-during-14")" ] || fail "the keeper restored before the session ended"
 WQ_MASK_SUDO=none tools/wq_mask.sh restore >/dev/null 2>&1 || :
+# The same with a fork-exit chain left in the group by the untraced session: the keeper's kernel test finds the group
+# populated after the session has ended (where a /proc scan could miss a generation), and it restores only once the
+# chain has stopped.
+reset; echo group >"$ROOT/session.chain.14"
+start
+wait_file "$ROOT/running-14" && wait_file "$ROOT/chain.pid" || fail "session 14 or its chain did not start" "$ROOT/sup.out"
+kill -KILL "$sup"; wait "$sup" 2>/dev/null
+keeper_log=$(keeper_dir)/keeper.log
+for ((i = 0; i < 50; i++)); do grep -q 'ended without a finish' "$keeper_log" 2>/dev/null && break; sleep 0.1; done
+sleep 2
+[ "$(masks)" = "$TARGET $TARGET" ] && grep -q 'ended without a finish' "$keeper_log" && ! grep -q 'is in effect; ending' "$keeper_log" ||
+  fail "the keeper restored while a chain ran in the group" "$keeper_log"
+chain_stop || fail "the chain (supervisor killed) did not stop"
+for ((i = 0; i < 100; i++)); do grep -q 'is in effect; ending' "$keeper_log" && break; sleep 0.1; done
+[ "$(masks)" = "$ORIG $ORIG" ] && keeper_gone || fail "the keeper after the chain stopped" "$keeper_log"
+WQ_MASK_SUDO=none tools/wq_mask.sh restore >/dev/null 2>&1 || :
 
 # A TERM latched just before the untraced session starts (a debug hook sends it as that step is about to run): that
 # session never starts.
@@ -314,17 +362,28 @@ st=$(cat "$ROOT/rec.st")
   grep -q 'UNRESOLVED (stop: none; unresolved: record)' "$E/supervisor.log" && ! grep -q 'both runs acquired' "$E/supervisor.log" ||
   fail "a final record that cannot be written ($st)" "$E/supervisor.log"
 
-# A process of the group still running when the experiment ends: nothing is restored (exit 3), the keeper stays, and it
-# restores the mask once that process has ended.
+# A process the session left running when the experiment ends (here the session's own background sleep): nothing is
+# restored (exit 3), and the released keeper ends without restoring, even once that process has ended.
 reset; : >"$ROOT/session.linger.14"
 start; wait "$sup"; st=$?
 [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && [ -e "$WQ_MASK_RECORD" ] && [ -e "$QUIET_HOST_STATE" ] &&
-  grep -q '^group=.* members=1 unknown=0$' "$E/experiment.record" && grep -q 'outcome=UNRESOLVED reason=none; unresolved: the group' "$E/experiment.record" &&
-  ! keeper_gone || fail "a lingering member of the group ($st)" "$E/supervisor.log"
-kill "$(cat "$ROOT/linger.pid")"
-for ((i = 0; i < 50; i++)); do [ "$(masks)" = "$ORIG $ORIG" ] && break; sleep 0.1; done
-[ "$(masks)" = "$ORIG $ORIG" ] && keeper_gone && grep -q 'the group has ended; the original ffffffff is in effect' "$(keeper_dir)/keeper.log" ||
-  fail "the keeper after the lingering member ended" "$(keeper_dir)/keeper.log"
+  ! grep -q '^mask_restore_start=' "$E/experiment.record" && grep -q '^descendants=.* children=1 unknown=0$' "$E/experiment.record" &&
+  grep -q '^keeper_release=.* status=0$' "$E/experiment.record" &&
+  grep -q 'outcome=UNRESOLVED reason=none; unresolved: descendants' "$E/experiment.record" &&
+  keeper_gone && grep -q 'release: ending WITHOUT restoring' "$(keeper_dir)/keeper.log" || fail "a lingering process ($st)" "$E/supervisor.log"
+kill "$(cat "$ROOT/linger.pid")"; sleep 1
+[ "$(masks)" = "$TARGET $TARGET" ] || fail "the mask was restored after the release"
+# A fork-exit chain, in the group and in a session of its own (outside the group): the supervisor, their subreaper,
+# always has a generation among its children.
+for how in group setsid; do
+  reset; echo "$how" >"$ROOT/session.chain.14"
+  start; wait "$sup"; st=$?
+  [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&
+    grep -Eq '^descendants=.* children=[1-9][0-9]* unknown=0$' "$E/experiment.record" && grep -q '^keeper_release=.* status=0$' "$E/experiment.record" &&
+    keeper_gone || fail "a fork-exit chain ($how, $st)" "$E/supervisor.log"
+  chain_stop || fail "the chain ($how) did not stop"
+  [ "$(masks)" = "$TARGET $TARGET" ] || fail "the mask was restored after the release (chain, $how)"
+done
 
 # The keeper alone: its list, its own directory, links planted in it, an owner or a group member that cannot be read.
 owner_start() { sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20; }
@@ -340,14 +399,18 @@ c() { ROOT_KEEPER_DIR=$K tools/root_keeper.sh "$@"; }
 reset
 sleep 60 &
 owner=$!
+old_umask=$(umask); umask 077  # the keeper's modes must not follow the caller's umask (sudo may pass it on)
 keeper "$owner" 999999 || fail "the keeper did not start"
-[ "$(stat -c %a "$K")" = 755 ] && [ "$(stat -c %a "$K/requests")" = 600 ] && [ -p "$K/requests" ] || fail "the keeper's directory and FIFO modes"
+umask "$old_umask"
+[ "$(stat -c %a "$K")" = 755 ] && [ "$(stat -c %a "$K/replies")" = 755 ] && [ "$(stat -c %a "$K/requests")" = 600 ] && [ -p "$K/requests" ] &&
+  [ "$(stat -c %a "$K/keeper.ready")" = 644 ] && [ "$(stat -c %a "$K/keeper.log")" = 644 ] || fail "the keeper's modes under umask 077"
 echo 0000ffff | c tee "$ROOT/sys/cpumask"; st1=$?
 echo "$TARGET" | c tee /etc/passwd; st2=$?
 c systemctl restart unattended-upgrades.service; st3=$?
 out=$(c status); st4=$?
 [ "$st1" -eq 99 ] && [ "$st2" -eq 99 ] && [ "$st3" -eq 99 ] && [ "$st4" -eq 0 ] && [ "$out" = "cpumask $ORIG requested $ORIG" ] && [ "$(masks)" = "$ORIG $ORIG" ] ||
   fail "the keeper's list ($st1 $st2 $st3 $st4: $out)" "$K/keeper.log"
+for f in "$K"/replies/*; do [ "$(stat -c %a "$f")" = 644 ] || fail "a reply's mode under umask 077: $(stat -c %a "$f") $f"; done
 # Links planted where the keeper writes its replies (possible only in the test mode: in /run the directory is root's)
 # redirect nothing: a temporary name taken, a final name that is a link, the replies directory itself a link.
 printf 'PRESERVE\n' >"$ROOT/victim"; mkdir -p "$ROOT/elsewhere"
@@ -440,5 +503,83 @@ sleep 1
 kill "$child"
 for ((i = 0; i < 50; i++)); do [ "$(masks)" = "$ORIG $ORIG" ] && break; sleep 0.1; done
 [ "$(masks)" = "$ORIG $ORIG" ] && grep -q 'the group has ended; the original ffffffff is in effect' "$K/keeper.log" || fail "the keeper after the member ended" "$K/keeper.log"
+# The keeper's exact group test (its embedded body), on the re-review's race: a member forks and exits just as a /proc
+# scan reaches it (a hook times it), so the scan sees only its zombie and misses the child born after the listing; and
+# on a free-running fork-exit chain in a group of its own, sampled 200 times. The kernel's test reports "present"
+# throughout, and the chain "ended" once it has stopped.
+reset
+python3 - "$ROOT" <<'EOF' >"$ROOT/group-race.txt" 2>&1 || fail "the keeper's group test against forks" "$ROOT/group-race.txt"
+import os, pathlib, signal, subprocess, sys, time
+root = pathlib.Path(sys.argv[1])
+src = pathlib.Path("tools/root_keeper.sh").read_text()
+body = src.split("group_state() {", 1)[1].split("python3 -I -c '\n", 1)[1].split("\n' \"$1\"", 1)[0]
+def wait_for(pred, s=10):
+    end = time.monotonic() + s
+    while not pred():
+        assert time.monotonic() < end, "timeout"
+        time.sleep(0.01)
+# 1. The race, timed by a hook on the scan's read of the member's stat.
+member = r"""import os, pathlib, signal, sys, time
+p = pathlib.Path(sys.argv[1])
+def fork_exit(s, f):
+    c = os.fork()
+    if c == 0:
+        time.sleep(30); os._exit(0)
+    (p / "race.child").write_text(str(c)); os._exit(0)
+signal.signal(signal.SIGUSR1, fork_exit)
+(p / "race.ready").write_text("ready")
+while True: time.sleep(0.1)
+"""
+m = subprocess.Popen([sys.executable, "-c", member, str(root)], start_new_session=True)
+child = None
+try:
+    wait_for((root / "race.ready").exists)
+    hook = r"""import builtins, os, pathlib, signal, sys, time
+original = builtins.open
+pid, root = int(sys.argv[1]), pathlib.Path(sys.argv[2]); target = f"/proc/{pid}/stat"; fired = False
+def guarded(path, *a, **kw):
+    global fired
+    if str(path) == target and not fired:
+        fired = True; os.kill(pid, signal.SIGUSR1)
+        end = time.monotonic() + 10
+        while not ((root / "race.child").exists() and original(target).read().rsplit(")", 1)[1].split()[0] == "Z"):
+            assert time.monotonic() < end; time.sleep(0.001)
+    return original(path, *a, **kw)
+builtins.open = guarded
+sys.argv = ["-c", str(pid)]
+exec(BODY)
+print("hook fired:", fired)
+""".replace("BODY", repr(body))
+    r = subprocess.run([sys.executable, "-I", "-c", hook, str(m.pid), str(root)], capture_output=True, text=True, timeout=20)
+    out = r.stdout.splitlines()
+    child = int((root / "race.child").read_text())
+    alive = pathlib.Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    print("race:", out[0], "| hook fired:", out[-1].endswith("True"), "| the new child:", alive)
+    assert r.returncode == 0 and out[0] == "present" and out[-1] == "hook fired: True" and alive in ("S", "R"), (r.stdout, r.stderr)
+finally:
+    if child is not None:
+        os.kill(child, signal.SIGKILL)
+    if m.poll() is None:
+        m.kill()
+    m.wait()
+# 2. A free-running fork-exit chain in a group of its own.
+first = subprocess.Popen([str(root / "chain")], start_new_session=True, env=os.environ | {"ROOT": str(root)})
+first.wait()  # the first generation (the group's id) is reaped at once: what remains is the chain itself
+pgid = first.pid
+states = [subprocess.run([sys.executable, "-I", "-c", body, str(pgid)], capture_output=True, text=True).stdout.split("\n", 1)[0]
+          for _ in range(200)]
+print("chain running:", {s: states.count(s) for s in set(states)})
+assert states == ["present"] * 200, states
+(root / "chain.stop").write_text("")
+end = time.monotonic() + 10
+while True:
+    s = subprocess.run([sys.executable, "-I", "-c", body, str(pgid)], capture_output=True, text=True).stdout.split("\n", 1)[0]
+    if s == "ended":
+        break
+    assert time.monotonic() < end, "the chain's group never ended"
+    time.sleep(0.05)
+print("chain stopped:", s)
+EOF
+cat "$ROOT/group-race.txt"
 scratch_release
 echo "option_a smoke OK"
