@@ -367,6 +367,17 @@ set_tests_properties(unbound_work_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "unbound work regressions OK"
   LABELS unit)
 
+# Whether the emulator stayed off the real-time CPU in a timer capture
+# (tools/emulator_residency.py), on synthetic report lines and records.
+add_test(NAME emulator_residency_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_emulator_residency.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(emulator_residency_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "emulator residency regressions OK"
+  LABELS unit)
+
 # The read-only idle-state counter snapshots of every traced session run
 # (tools/idle_counters.py) on a fake cpuidle tree.
 add_test(NAME idle_counters_regressions
