@@ -2338,11 +2338,13 @@ Option A's attempts 14 (untraced, `clock-validation-14/`) and 15 (timer, `clock-
 attempt 14 had no timeout and passed its gate; attempt 15 had one bounded-read timeout and failed its gate on T3, so the
 supervisor stopped and restored and verified everything (`clock-validation-option-a/`, `option-a-host-20261112/`, the
 operator's terminal verbatim). `analysis-20261112/` holds the read-only residency check (PASS) and closed-record gates.
-The validation has not passed; the acceptance review is pending.
+The acceptance review (`review-attempts14-15/`) accepted attempt 14 as the untraced component result and found attempt 15
+and the overall validation failed; `t3-diagnosis-15/` holds the developer's offline diagnosis of attempt 15's timeout
+(pending review).
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the no-change keeper check, Option A's attempts 14 and 15, and the T3 wording correction | `80e30126773023727be6a79fb60ed78780997cfcab10bc0cbd4b48321136b470` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the acceptance review of attempts 14 and 15, the T3 wording correction | `a9665e96cee7edc8e8d535de090c6555cbcf6559c842bb3e231210ac1fffc898` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2666,6 +2668,12 @@ The validation has not passed; the acceptance review is pending.
 | `review-t3/replay_t3.py` | T3 review evidence (the reviewer's) | `339e6f70c83bb4680137d13adb920b5b8a73e0b6102f5554ebbc747173c95b03` |
 | `review-t3/review.md` | the reviewer's T3 diagnosis review and Option A decision (at 6db9b3b) | `658abff88e2ca55afb2ee5ec797608a1467a9456b1312a7c4200004090679bd4` |
 | `review-t3/reviewed-commit.diff` | T3 review evidence (the reviewer's) | `0237b4d8cd98067bea24603ff2428ab53eba11cb794a8099711c5649cb4d3ac4` |
+| `review-attempts14-15/SHA256SUMS` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `b2b702cd4a7cd501cfe1b9811e63209c631e0d727fa8caead4250ed264cddede` |
+| `review-attempts14-15/analysis-ledger-check.txt` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `44ba225d2854db2d04fa5d0e6fac17e01da7c0e24d8b10e496d482cb60408d47` |
+| `review-attempts14-15/gate-14.txt` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `8e0d76aa574eb9f3435cd7652acda5c6acb0101785dfd4cabe8b0272e0afa7d8` |
+| `review-attempts14-15/gate-15.txt` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `856a48d3ffbf230f6b0ddec2140af0b943c7817dd46400c4f544c47067f3f3d6` |
+| `review-attempts14-15/probe-facts.json` | acceptance review evidence, attempts 14 and 15 (the reviewer's) | `170d3b88f6870a487de3184ef0ec603aae2dce02fb89053c75181c79ad814e92` |
+| `review-attempts14-15/review.md` | the reviewer's acceptance review of Option A's attempts 14 and 15 | `7f73286ca54b9aceb42c65955878c9b53e2763d574756bae3d5d68603644acc5` |
 | `t3-diagnosis/PROVENANCE.txt` | the T3 diagnosis's provenance (scripts, inputs, outputs) | `b88f14ef407ca1ff0267abcd6d48bbd07011c573dd6e8446163c2ee07cca5bf1` |
 | `t3-diagnosis/SHA256SUMS` | folder ledger | `f62351e0f998c5783f0ed56312427dc7231a421481e5e8d2e4c46d924d44f93b` |
 | `t3-diagnosis/cpu2-12.txt` | T3 diagnosis output (cpu2-12.txt) | `d0064539cdde55ab40adfd4a86e6129b58ef01a361a2fa9804b139831600bf4f` |
@@ -2681,3 +2689,17 @@ The validation has not passed; the acceptance review is pending.
 | `t3-diagnosis/timeline-14704.txt` | T3 diagnosis output (timeline-14704.txt) | `d535a34bd2661cfb9d507853d700427e57f3fad2693b6363e7bcae1aaa84b748` |
 | `t3-diagnosis/timeline.py` | T3 diagnosis script (timeline.py) | `06c0f14d0e371977129804997b0cd515cc79f01d9ccb97f65914a79bcbda6213` |
 | `t3-diagnosis/window.py` | T3 diagnosis script (window.py) | `fa33534a531224054de5b8920fcd761f4c8304a7eecdf0a45c2b63199496b1f7` |
+| `t3-diagnosis-15/DIAGNOSIS.txt` | attempt 15's timeout, offline diagnosis: the report (pending review) | `67d35056e7d0380accdf27888a36979a5bce5c2eec94a63991104ab96ebac873` |
+| `t3-diagnosis-15/PROVENANCE.txt` | attempt 15's timeout diagnosis: provenance | `0aab12f12dc5e0282b958f3ff3655bf3af4743f75ebc130107bf5a0e4960afb6` |
+| `t3-diagnosis-15/SHA256SUMS` | folder ledger | `02321d9f9c56c0d9b914b7d430a85b9555dee2095a1b090fa9eb83e6a44d8e40` |
+| `t3-diagnosis-15/correlate-15-wake3.status` | derived analysis: trace_correlate.py's exit and times | `9f8c69463ab40e03c61790b40ceb10efc16607bb3b117054120c3689c81b3ffa` |
+| `t3-diagnosis-15/correlate-15-wake3.txt` | derived analysis: trace_correlate.py on attempt 15 (certificate CERTIFIED, U validated; association FAIL, the emulator's allowed exception) | `9466e8c7b9f570e48dfa3b4bc8f21fd6db35d19ca47328733768d7d43f6c8ad6` |
+| `t3-diagnosis-15/cpu-wait.txt` | attempt 15's timeout diagnosis output (cpu-wait.txt) | `eed42b08e98d607aac011ec3b2bda0d279c33220232d304aab5db2594cf77dac` |
+| `t3-diagnosis-15/cpu15.py` | attempt 15's timeout diagnosis script (cpu15.py) | `94a612bef3d5368cb6c5dda137e4ffdaad9d9f238893032f950f619692a07201` |
+| `t3-diagnosis-15/episodes-15.txt` | attempt 15's timeout diagnosis output (episodes-15.txt) | `7aa919e391d84342006865cb4299c602ae5e55d4452cfd746a6beb471b0bf399` |
+| `t3-diagnosis-15/episodes15.py` | attempt 15's timeout diagnosis script (episodes15.py) | `578d94eb0ede04e2a105fa8db4ea019acf997e34196cd276c04d60f5df50ebbe` |
+| `t3-diagnosis-15/timeline-11922.txt` | attempt 15's timeout diagnosis output (timeline-11922.txt) | `e9d08676d8a9c7177364ba365b8cb0471ffbea9c9f6b0eb739e2912f69ce82a4` |
+| `t3-diagnosis-15/timeline-17621.txt` | attempt 15's timeout diagnosis output (timeline-17621.txt) | `0af22c0d686301a34f765e46a7e33815ad4e1f47f980ba9b245bb5ae15f77880` |
+| `t3-diagnosis-15/timeline-8749.txt` | attempt 15's timeout diagnosis output (timeline-8749.txt) | `9dd46744a77412ae7292825fca4cf5041ec3612be51b12ce30dc213028082fa7` |
+| `t3-diagnosis-15/timeline15.py` | attempt 15's timeout diagnosis script (timeline15.py) | `cecc768995b8e246058b78ab49ee34293645e6ede6214544f5117ab17f353a0c` |
+| `t3-diagnosis-15/window15.py` | attempt 15's timeout diagnosis script (window15.py) | `8a5919de262900466dd7e826ee1e93606f6c7ddc77c0220a838e51c940f59ced` |
