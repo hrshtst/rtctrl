@@ -1065,13 +1065,23 @@ paired with an untraced control of the same condition):
   before the others, the hit, miss and buffer counts, `trace-cmd extract -B`
   and `trace-cmd report -t` (nanosecond stamps, which the parser requires), the
   kernel log's scan, and the removal, with ownership and checked existence as
-  for the TSC instance; a recorder still owed stops further runs. trace-cmd's
+  for the TSC instance; a recorder still owed stops further runs. Every use
+  of trace-cmd runs under one launch (`tools/tk_record.py launch`): the dynamic
+  loader's and libtraceevent's search inputs (every `LD_` variable, `HOME`,
+  `TRACEEVENT_PLUGIN_DIR`, `TRACECMD_PLUGIN_DIR`) are removed, so that it loads
+  only the system's libraries and the plugins of libtraceevent's compiled-in
+  directory (with `HOME` unset, libtraceevent stops before the home directory
+  and trace-cmd's source-tree directory; the main trace's record alone runs
+  under `stdbuf`, whose preload only line-buffers its output). trace-cmd's
   identity (`tools/tk_record.py tool`: the file the session runs, resolved once
-  at its start so that sudo runs the same file, its SHA-256, and its package,
-  version and architecture from dpkg, with its libraries' versions recorded) is
-  read before the main trace starts and after the recorder's report; one not
-  read before the run stops the session before anything starts, and one not
-  read after it is a tracer failure. A
+  at its start so that sudo runs the same file, its SHA-256, its package,
+  version and architecture from dpkg, and its runtime under the launch: the
+  shared objects the dynamic loader resolves for it, the trace libraries among
+  them and every plugin libtraceevent would load, each by file, SHA-256 and
+  package, the directories searched and any `/etc/ld.so.preload`) is read
+  before the main trace starts and after the recorder's report; one not read
+  before the run stops the session before anything starts, and one not read
+  after it is a tracer failure. A
   failed step is a tracer failure and leaves that file absent or partial, never
   an empty record, and an interrupted run collects what it can before it
   removes the recorder. Its user-space helpers are pinned to the tracer CPUs;
@@ -1176,11 +1186,14 @@ difference; U is the largest over all intervals. The slope range and the
 10 ms clock-read maximum in it come from a certificate for that acquisition,
 from the timekeeping record: the audited kernel (7.0.0-42-generic, its config
 hash); the audited trace-cmd (3.3.3-1ubuntu2, amd64, the installed executable's
-SHA-256) for every use the certificate rests on, the acquisition, the recorder's
-extraction and report, and the main trace's report that the analysis read, a
-later replay's included (a saved `--report` needs `--report-tool`, the identity
-of the trace-cmd that wrote it; an identity missing, unread or of another build
-is UNSUPPORTED until a new audit); clocksource `tsc` before and after with a
+SHA-256) with its audited runtime, below, for every use the certificate rests
+on, the acquisition, the recorder's extraction and report, and the main trace's
+report that the analysis read, a later replay's included (a replay runs
+trace-cmd under the same launch; a saved `--report` needs `--report-tool`, the
+identity of the trace-cmd and runtime that wrote it, which `tools/tk_record.py
+report` writes beside the report; an identity missing, unread, of another build
+or with another runtime, or with a field the certificate does not know, is
+UNSUPPORTED until a new review); clocksource `tsc` before and after with a
 clean kernel log;
 a complete record (every probe enabled before and after, no misses, no losses,
 hits equal to records, each file read whole: a row that repeats, contradicts
@@ -1195,6 +1208,26 @@ the interval between the state reads. A hit with no record, as when a return
 probe's instance is still outstanding at its disable (the kernel counts it and
 writes nothing), makes the acquisition UNSUPPORTED rather than being explained
 away.
+
+The supported trace-cmd runtime (reviewer's decision, 2026-11-11) is pinned by
+file and SHA-256 in `tools/timer_clock.py`; package versions are recorded
+beside each file:
+
+| Part | Package | Version | Files |
+| --- | --- | --- | --- |
+| trace-cmd | trace-cmd | 3.3.3-1ubuntu2 | `/usr/bin/trace-cmd` |
+| libtraceevent.so.1 | libtraceevent1 | 1:1.8.7-1 | `/usr/lib/x86_64-linux-gnu/libtraceevent.so.1.8.7` |
+| libtracefs.so.1 | libtracefs1 | 1.8.2-1ubuntu1 | `/usr/lib/x86_64-linux-gnu/libtracefs.so.1.8.2` |
+| Plugins | libtraceevent1-plugin | 1:1.8.7-1 | the 13 plugins of `/usr/lib/x86_64-linux-gnu/traceevent/plugins`, the only directory searched |
+
+The launch must leave no search input and the host no `/etc/ld.so.preload`. The
+generic libraries the loader also resolves (libz, libzstd, libc) are recorded,
+not pinned. Any other file, version, plugin or search input makes the
+certificate UNSUPPORTED: changing the baseline (an upgrade of any of these
+packages, an added plugin) needs a review of the changed source, as the
+original audit did, and a revised baseline before its acquisitions can be
+certified. The libraries' and plugins' source packages match the archive's
+signed index for these versions.
 
 Without a certificate the run fails. `trace_correlate.py --exploratory-slope-ppm`
 computes a U labelled exploratory for archived captures, which stay failed and
@@ -2082,10 +2115,12 @@ are archived in `stage1_hardware/`, each with its own verdict.
 
 That design was frozen as revision 53 on 2026-11-11, and the session and the
 analysis now implement it (the conversion and the timekeeping record, above).
-The implementation review of 2026-11-11 requested three corrections, now made
-and pending its re-review: the cleanup's existence checks answer only from a
-listing read in full, the evidence files are read strictly, and the audited
-trace-cmd build is enforced for every use. Changing `tools/timer_service.py`
+The implementation review of 2026-11-11 requested three corrections, which its
+re-review accepted: the cleanup's existence checks answer only from a listing
+read in full, the evidence files are read strictly, and the audited trace-cmd
+build is enforced for every use. The re-review then required the trace
+libraries and the plugin set to be pinned as well; that follow-up (the runtime
+above, and the launch) is pending its review. Changing `tools/timer_service.py`
 voids the controls accepted under the earlier analysis for new work; their
 recorded results stand. Nothing here has run on the real kernel inside a
 session: the extraction and report path, the recorder's cost under load on the
