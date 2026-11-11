@@ -1047,7 +1047,7 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
                   f"R {m['R_ns']:.1f} ns", file=out)
             if r.get("provenance"):
                 prov = r["provenance"]
-                print(f"    certificate provenance: {prov['audit']}, {prov['trace_cmd']}, mult {prov['mult']} shift {prov['shift']}, tick "
+                print(f"    certificate provenance: {prov['audit']}, {prov['trace_cmd']} ({prov['trace_runtime']}), mult {prov['mult']} shift {prov['shift']}, tick "
                       f"{prov['tick_us']} us, deviation {prov['deviation_ppm']:.1f} ppm, longest update "
                       f"{prov['observed_max_update_ns']} ns over {prov['updates_in_interval']} updates", file=out)
             print(f"    conversion bound U: {r['U']:.0f} ns (limit {U_LIMIT_NS} ns), {r['U_label']}; longest conversion "

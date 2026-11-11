@@ -14,7 +14,8 @@ calculating, refuses a smaller supplied model, checks that everything the
 calculation depended on lies inside the certificate's interval, and accepts
 only if the analysis and the certificate both hold. Missing, unreadable or
 malformed evidence is UNSUPPORTED; it is never read as an empty record. The
-certificate holds only for the audited kernel and the audited trace-cmd build,
+certificate holds only for the audited kernel and the audited trace-cmd build
+with its audited runtime (trace libraries and plugin set, by file hash),
 identified for every use of trace-cmd it rests on (the acquisition, the
 recorder's extraction and report, and the main trace's report that the
 analysis read, a later replay's included).
@@ -377,6 +378,69 @@ AUDITED_TRACE_CMD = dict(package="trace-cmd", version="3.3.3-1ubuntu2", architec
                          sha256="dbcc6cafe1686b7af192868ac9daac719bafa8bdf225b66459c025dca44b0882")
 TRACE_CMD_USES = dict(before="that started the acquisition", after="that extracted and reported the recorder",
                       report="that reported the main trace for this analysis")
+# The runtime the audited trace-cmd runs with, under the launch (tools/tk_record.py: the loader's and libtraceevent's
+# search inputs removed): the trace libraries the dynamic loader resolves, and the plugin set libtraceevent loads, each
+# file by SHA-256 (the reviewer's decision of 2026-11-11; the source packages' files match the signed index). Another
+# library, plugin or search input needs a review before its acquisitions can be certified.
+_TE_PLUGINS = "/usr/lib/x86_64-linux-gnu/traceevent/plugins"
+_TE_PLUGIN_SHA256 = dict(
+    plugin_cfg80211="c96ccb32b3d66149da9780a05e7d35a4ad5dfcd6774a9e393c0b00e623272ae9",
+    plugin_function="d8f516bd5725499a14ecee3a246cb0f1153ebf3088e6a0bb552330b8b1bde88e",
+    plugin_futex="2afc9baf4e16df1cf52ed352fa5bd5608b968fea09769d4d9b3e7c24547adb7b",
+    plugin_hrtimer="7857fe346bc743a445bdb7b113d6ec7c0d17c8370d00ca0471dab507fa11408f",
+    plugin_jbd2="e07dc2e9d4245c4a56835dfd0430f6a4d028ecc9ac6746c5df7fd466ecf5a989",
+    plugin_kmem="339f76c483cc12aea44dd4ea77f748e7815adf23b02dc3d1394f8498ff4c6f13",
+    plugin_kvm="835bd1d9e9f57eef99d1fcb8923ec52a731b000bebaca6c5265a552c2dabd13c",
+    plugin_mac80211="93e6cf27caf51bd57142846a477606514faf31aadd44545335f2127448efb51e",
+    plugin_net="1076dc8c778f965a31009d8de4f9e5cd61b98f836f5fb1eecb74b2bd8e1c3799",
+    plugin_sched_switch="20835eef3908e171262953bbfc6c1d4ea7a16310f0f90aaca0b5945ab58df9fb",
+    plugin_scsi="03971e30b4f417f9d2b50ae5a3c36aa8b226052cf61304efc7848a2da33399d6",
+    plugin_tlb="e32d697de11eab1601a6d7f3dc1f6b853614910a16e2718f5beade2ce890189d",
+    plugin_xen="1ad4921c1cc847278bc48c01da7a81b6164390d9f7fdb114166f90e159f07237")
+AUDITED_TRACE_RUNTIME: dict = dict(
+    inputs=dict(HOME=None, TRACEEVENT_PLUGIN_DIR=None, TRACECMD_PLUGIN_DIR=None, LD=[]),
+    preload="none",
+    libraries={
+        "libtraceevent.so.1": dict(path="/usr/lib/x86_64-linux-gnu/libtraceevent.so.1.8.7", sha256="7e401c9eabc1718605fd8df406bc6c1bb9308e153b18b10cd14108aeb2621158",
+                                   package="libtraceevent1", version="1:1.8.7-1", architecture="amd64"),
+        "libtracefs.so.1": dict(path="/usr/lib/x86_64-linux-gnu/libtracefs.so.1.8.2", sha256="b3a61292bfe774fcce3b1bae762e1ff211ff35221a24078d2cf8375f4b7b8c95",
+                                package="libtracefs1", version="1.8.2-1ubuntu1", architecture="amd64")},
+    plugin_dirs=[_TE_PLUGINS],
+    plugins={f"{_TE_PLUGINS}/{n}.so": dict(path=f"{_TE_PLUGINS}/{n}.so", sha256=h, package="libtraceevent1-plugin", version="1:1.8.7-1", architecture="amd64")
+             for n, h in _TE_PLUGIN_SHA256.items()})
+
+
+IDENTITY_FIELDS = {"read_status", "path", "sha256", "package", "version", "architecture", "runtime"}
+RUNTIME_FIELDS = {"inputs", "preload", "loaded", "libraries", "plugin_dirs", "plugins"}
+
+
+def _described(e):
+    if not isinstance(e, dict):
+        return "absent"
+    return f"{e.get('package')} {e.get('version')}, {e.get('path')}, sha256 {str(e.get('sha256'))[:16]}"
+
+
+def runtime_differences(rt):
+    """Each way a recorded runtime differs from the audited one; none when it is the audited one."""
+    if not isinstance(rt, dict):
+        return ["the runtime is not a mapping"]
+    a, out = AUDITED_TRACE_RUNTIME, []
+    if rt.get("inputs") != a["inputs"]:
+        out.append(f"search inputs {rt.get('inputs')!r}")
+    if rt.get("preload") != a["preload"]:
+        out.append(f"a preload: {str(rt.get('preload'))[:80]!r}")
+    libs = rt.get("libraries") if isinstance(rt.get("libraries"), dict) else {}
+    for soname in sorted(set(libs) | set(a["libraries"])):
+        if libs.get(soname) != a["libraries"].get(soname):
+            out.append(f"{soname}: {_described(libs.get(soname))}" if soname in a["libraries"] else f"an unreviewed library {soname}")
+    if rt.get("plugin_dirs") != a["plugin_dirs"]:
+        out.append(f"plugin directories {rt.get('plugin_dirs')!r}")
+    plugins = rt.get("plugins") if isinstance(rt.get("plugins"), dict) else {}
+    for p in sorted(set(plugins) | set(a["plugins"])):
+        if plugins.get(p) != a["plugins"].get(p):
+            out.append(f"plugin {p} not loaded" if p not in plugins else f"an unreviewed plugin {p}" if p not in a["plugins"]
+                       else f"plugin {p}: {_described(plugins[p])}")
+    return out
 W_OP_NS = 10_000_000            # the operational maximum on an update's duration; every update in the interval must meet it
 SETTLE_NS = 2_000_000           # two NTP intervals at HZ=1000: a later update is then certain to accumulate and run timekeeping_adjust
 READ_ONLY_MODES = {0, 0xa001}   # adjtimex modes that change nothing: a read, and ADJ_OFFSET_SS_READ
@@ -517,6 +581,13 @@ def certify(ev):
             S.why.append(f"the trace-cmd {desc} was not identified ({st_})")
         elif st_ is not None:
             tools[use] = {k: S.get(f"trace_cmd.{use}.{k}", str) for k in AUDITED_TRACE_CMD}
+            tools[use]["runtime"] = S.get(f"trace_cmd.{use}.runtime", dict)
+            # Read whole, as the other evidence: a field the certificate does not know is not passed over.
+            extra = sorted(set(ev["trace_cmd"][use]) - IDENTITY_FIELDS)
+            if extra:
+                S.why.append(f"the trace-cmd {desc} has an identity field the certificate does not know: {extra[0]}")
+            if isinstance(tools[use]["runtime"], dict) and set(tools[use]["runtime"]) != RUNTIME_FIELDS:
+                S.why.append(f"the trace-cmd {desc} has a runtime with other fields than {sorted(RUNTIME_FIELDS)}")
     st = {}
     for side in ("before", "after"):
         st[side] = {k: S.get(f"state.{side}.{k}", int, *rng) for k, rng in (("t_start", T), ("t_end", T), ("tid", (1,)), ("ret", (0, 5)), ("offset", (-(2**40), 2**40)), ("freq", (-MAX_FREQ, MAX_FREQ)), ("status", (0, 0xffff)), ("constant", (0, 10)), ("tick", (1, 2**31)), ("time_adjust", (-(2**40), 2**40)))}
@@ -548,9 +619,12 @@ def certify(ev):
     if release != AUDITED["release"] or config != AUDITED["config_sha256"]:
         why.append("the kernel or its configuration is not the audited one")
     for use, t in tools.items():
-        if t != AUDITED_TRACE_CMD:
+        if {k: t[k] for k in AUDITED_TRACE_CMD} != AUDITED_TRACE_CMD:
             why.append(f"the trace-cmd {TRACE_CMD_USES[use]} is not the audited build ({AUDITED_TRACE_CMD['package']} {AUDITED_TRACE_CMD['version']}): "
                        f"{t['package']} {t['version']} {t['architecture']}, sha256 {t['sha256'][:16]}")
+        diffs = runtime_differences(t["runtime"])
+        if diffs:
+            why.append(f"the trace-cmd {TRACE_CMD_USES[use]} ran with an unaudited runtime ({len(diffs)} differences): " + "; ".join(diffs[:3]))
     # The baseline the multiplier unit rests on: the nominal tick, and no boot-time calibration. __setup matches dashes as underscores.
     if sets_ntp_tick_adj(cmdline):
         why.append("the boot command line sets ntp_tick_adj")
@@ -638,7 +712,9 @@ def certify(ev):
     chunk = (abs(a["offset"] - b["offset"]) / (2 ** sh - 1) + 2 / 2 ** sh) / 1e9
     ds = 2 * unit + chunk
     return dict(status="CERTIFIED", reasons=[], ds=ds, W_ns=W_OP_NS, D=D,
-                provenance=dict(audit=AUDITED["package"], trace_cmd=f"{AUDITED_TRACE_CMD['package']} {AUDITED_TRACE_CMD['version']}", mult=mult, shift=shift, unit_ppm=unit * 1e6, chunk_ppm=chunk * 1e6, observed_max_update_ns=max_age, updates_in_interval=len(inside), tick_us=a["tick"], ntp_tick_adj="not on the boot command line", deviation_ppm=deviation_ppm))
+                provenance=dict(audit=AUDITED["package"], trace_cmd=f"{AUDITED_TRACE_CMD['package']} {AUDITED_TRACE_CMD['version']}",
+                                trace_runtime=", ".join(f"{e['package']} {e['version']}" for e in AUDITED_TRACE_RUNTIME["libraries"].values())
+                                + f", {len(AUDITED_TRACE_RUNTIME['plugins'])} plugins", mult=mult, shift=shift, unit_ppm=unit * 1e6, chunk_ppm=chunk * 1e6, observed_max_update_ns=max_age, updates_in_interval=len(inside), tick_us=a["tick"], ntp_tick_adj="not on the boot command line", deviation_ppm=deviation_ppm))
 
 
 def analyze(main_parse, inst_parse, samp_pairs, window=None, evidence=None, model=None, cap=None):

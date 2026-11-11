@@ -213,6 +213,7 @@ PROBE=./build/apps/x7_bus_timing  # --probe overrides it (the tests do)
 SUMMARY_TOOL=tools/timing_summary.py
 CONFIG=config/crane_x7.toml       # the probe's default configuration
 TRACE_CMD=${TRACE_CMD:-trace-cmd}
+tc_launch=()  # the launch every use of trace-cmd runs under (tools/tk_record.py launch; set below)
 TCPDUMP=${TCPDUMP:-tcpdump}
 BPFTRACE=${BPFTRACE:-bpftrace}
 MODPROBE=${MODPROBE:-modprobe}
@@ -641,6 +642,15 @@ command -v "$BPFTRACE" >/dev/null ||
 if [ "$any_profiled" -eq 1 ]; then
   command -v "$PERF" >/dev/null || problems+=("$PERF is not installed (linux-tools)")
 fi
+# Every use of trace-cmd runs under one launch: the dynamic loader's and
+# the plugins' search inputs (LD_ variables, HOME, TRACEEVENT_PLUGIN_DIR,
+# TRACECMD_PLUGIN_DIR) removed, so that it loads the libraries and plugins
+# its identity names (tools/tk_record.py).
+mapfile -t tc_launch < <(python3 "$TK_RECORD_TOOL" launch 2>/dev/null)
+if [ "${tc_launch[0]:-}" != env ]; then
+  tc_launch=()
+  [ "$any_traced" -eq 1 ] && problems+=("the launch for trace-cmd was not read ($TK_RECORD_TOOL launch)")
+fi
 if [ "$any_traced" -eq 1 ]; then
   # One file for every use: sudo's secure path and the identity read
   # (tools/tk_record.py tool) then name the same trace-cmd.
@@ -858,6 +868,7 @@ if [ "$dry_run" -eq 1 ]; then
   fi
   if [ "$any_traced" -eq 1 ]; then
     printf 'traced runs add: stdbuf -oL -eL %s %s --temp <stage>/<log>.csv.trace-tmp -o <stage>/<log>.csv.trace.dat\n' "$TRACE_CMD" "${trace_args[*]}"
+    printf 'trace-cmd runs as: %s %s (the libraries'"'"' and plugins'"'"' search inputs removed)\n' "${tc_launch[*]}" "$TRACE_CMD"
     if [ "$any_timer" -eq 1 ]; then
       printf 'timer runs record: the traced events, plus (after the availability check) every timer arming and cancellation, CPU %s deadline writes, idle, NMIs, system calls and page faults, the worker'"'"'s sleep calls by name, and process lifecycle;\n' "$rt_cpu"
       printf '                   %s start %s %s %s %s (x86-tsc instance), %s on CPU %s and %s, %s stat -e msr/smi/ -C %s -I 10%s\n' \
@@ -1135,8 +1146,12 @@ try:
     v = json.load(open(sys.argv[1]))
 except (OSError, ValueError) as e:
     sys.exit(print(f"not written ({e})"))
-ok = v.get("read_status") == "ok"
-print(f"{v['package']} {v['version']} {v['architecture']}, sha256 {v['sha256']}, {v['path']}" if ok else f"not read ({v.get('read_status')})")
+if v.get("read_status") != "ok":
+    sys.exit(print(f"not read ({v.get('read_status')})"))
+rt = v["runtime"]
+libs = "; ".join(f"{k} {e['package']} {e['version']} sha256 {e['sha256'][:16]}" for k, e in rt["libraries"].items())
+print(f"{v['package']} {v['version']} {v['architecture']}, sha256 {v['sha256']}, {v['path']}; runtime: {libs}; "
+      f"{len(rt['plugins'])} plugins from {', '.join(rt['plugin_dirs'])}; preload {rt['preload']}")
 EOF
 )$( [ -s "$tmp/tk-tool.err" ] && printf '; %s' "$(head -c 300 "$tmp/tk-tool.err" | tr '\n' ' ')")" >>"$note"
   [ "$st" -eq 0 ]
@@ -1201,10 +1216,10 @@ tk_collect() {
   tk_priv disable >/dev/null 2>"$err" || tk_problem+="${tk_problem:+, }the probes were not disabled ($(cat "$err"))"
   tk_priv profile >"$b.tk-profile.txt" 2>"$err" || tk_problem+="${tk_problem:+, }the probes' counts were not read ($(cat "$err"))"
   tk_priv stats >"$b.tk-stats.txt" 2>"$err" || tk_problem+="${tk_problem:+, }the recorder's buffer stats were not read ($(cat "$err"))"
-  tk_run "${sudo_cmd[@]}" "$TRACE_CMD" extract -B "$TK_INSTANCE" --temp "$b.tk-tmp" -o "$b.tk.dat" >"$err" 2>&1; st=$?
+  tk_run "${sudo_cmd[@]}" "${tc_launch[@]}" "$TRACE_CMD" extract -B "$TK_INSTANCE" --temp "$b.tk-tmp" -o "$b.tk.dat" >"$err" 2>&1; st=$?
   if [ "$st" -ne 0 ] || [ ! -s "$b.tk.dat" ]; then
     tk_problem+="${tk_problem:+, }the record was not extracted (exit $st)"
-  elif ! tk_run "${sudo_cmd[@]}" "$TRACE_CMD" report -t -i "$b.tk.dat" >"$b.tk.txt" 2>"$err"; then
+  elif ! tk_run "${sudo_cmd[@]}" "${tc_launch[@]}" "$TRACE_CMD" report -t -i "$b.tk.dat" >"$b.tk.txt" 2>"$err"; then
     tk_problem+="${tk_problem:+, }the record was not reported ($(tail -n 1 "$err"))"
   fi
   tk_tool "$b.tk-tool-after.json" "$note" "after the recorder's report" ||
@@ -1686,7 +1701,7 @@ fi
 # offers (hrtimer_setup or hrtimer_init; cpu_idle_miss if present).
 timer_args=()
 if [ "$any_timer" -eq 1 ]; then
-  priv "$TRACE_CMD" list -e >"$tmp/events.txt" 2>&1 || { finish; die "trace-cmd list -e failed: nothing was sent"; }
+  priv "${tc_launch[@]}" "$TRACE_CMD" list -e >"$tmp/events.txt" 2>&1 || { finish; die "trace-cmd list -e failed: nothing was sent"; }
   missing=()
   for e in timer:hrtimer_start timer:hrtimer_cancel msr:write_msr power:cpu_idle nmi:nmi_handler \
            raw_syscalls:sys_enter raw_syscalls:sys_exit exceptions:page_fault_user exceptions:page_fault_kernel \
@@ -1721,7 +1736,7 @@ if [ "$any_timer" -eq 1 ]; then
     finish
     die "the fair server's probes were not defined (exit $fs_status): nothing was sent"
   fi
-  priv "$TRACE_CMD" list -e >"$tmp/events-fs.txt" 2>&1
+  priv "${tc_launch[@]}" "$TRACE_CMD" list -e >"$tmp/events-fs.txt" 2>&1
   fs_missing=()
   for e in $(sed -n 's#^[pr]:[A-Za-z0-9_]*/\([A-Za-z0-9_]*\) .*#\1#p' "$tmp/fs_defs.txt"); do
     grep -qx -- "$FS_GROUP:$e" "$tmp/events-fs.txt" || fs_missing+=("$FS_GROUP:$e")
@@ -1761,11 +1776,11 @@ EOF
     echo "$fs_layout"
     echo "$fs_out"
     sed 's/^/  /' "$tmp/fs_defs.txt"
-    priv "$TRACE_CMD" list -e "^$FS_GROUP:" -F 2>&1
+    priv "${tc_launch[@]}" "$TRACE_CMD" list -e "^$FS_GROUP:" -F 2>&1
     echo "--- timer mode events (trace-cmd list -e ... -F) ---"
     for e in msr:write_msr power:cpu_idle nmi:nmi_handler timer:hrtimer_start timer:hrtimer_cancel "$init_ev" \
              sched:sched_process_fork sched:sched_process_exec; do
-      priv "$TRACE_CMD" list -e "^$e\$" -F 2>&1
+      priv "${tc_launch[@]}" "$TRACE_CMD" list -e "^$e\$" -F 2>&1
     done
     echo "--- CPU $rt_cpu idle states (name, latency us, target residency us, disabled) ---"
     for s in /sys/devices/system/cpu/cpu"$rt_cpu"/cpuidle/state*; do
@@ -1809,7 +1824,7 @@ fi
   else
     echo "usbmon: not used"
   fi
-  echo "tracers: $("$TRACE_CMD" -h 2>&1 | grep -m 1 -i version); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
+  echo "tracers: $("${tc_launch[@]}" "$TRACE_CMD" -h 2>&1 | grep -m 1 -i version); $("$TCPDUMP" --version 2>&1 | head -n 1); $("$BPFTRACE" --version 2>&1 | head -n 1)"
   echo "session pid: $$"
   echo "batch workloads: $batch_list (exempt: $BATCH_EXEMPT)"
   if [ -e "$QUIET_HOST_STATE" ]; then
@@ -2009,7 +2024,7 @@ run_one() {
     echo "uptime:$(uptime)"
     printf 'command:'; printf ' %q' "${cmd[@]}"; echo
     if [ "$traced" -eq 1 ]; then
-      printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${targs[@]}"; printf ' --temp %q -o %q\n' "$sb.trace-tmp" "$dat"
+      printf 'trace: %s stdbuf -oL -eL %s' "${tc_launch[*]}" "$TRACE_CMD"; printf ' %q' "${targs[@]}"; printf ' --temp %q -o %q\n' "$sb.trace-tmp" "$dat"
       if [ "$profiled" -eq 1 ]; then
         printf 'perf: %s' "$PERF"; printf ' %q' "${perf_args[@]}"; printf ' -o %q\n' "$perfdat"
       fi
@@ -2102,7 +2117,7 @@ run_one() {
     # recording" until it exits; stdbuf (which execs it, keeping the PID)
     # makes its output line-buffered. tcpdump reports on stderr, which is
     # unbuffered.
-    start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${targs[@]}" --temp "$sb.trace-tmp" -o "$dat"
+    start_tracer trace "${tc_launch[@]}" stdbuf -oL -eL "$TRACE_CMD" "${targs[@]}" --temp "$sb.trace-tmp" -o "$dat"
     if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
       stop_all
       { echo "--- trace-cmd did not start ---"; cat "$tmp/trace.out"; } | tee -a "$note"
@@ -2477,7 +2492,7 @@ run_one() {
   if [ "$traced" -eq 1 ]; then
     local stat_out stat_status n_trace
     # The buffers' losses, as trace-cmd recorded them at the end.
-    stat_out=$(priv "$TRACE_CMD" report --stat -i "$pub.trace.dat" 2>&1); stat_status=$?
+    stat_out=$(priv "${tc_launch[@]}" "$TRACE_CMD" report --stat -i "$pub.trace.dat" 2>&1); stat_status=$?
     { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
     if [ "$stat_status" -ne 0 ]; then
       n_trace="unknown (trace-cmd report --stat exited $stat_status)"
@@ -2602,7 +2617,7 @@ EOF
     echo "control CPU: $fs_controls_cpu; supervisor CPU: $ctl_sup; tracers on CPUs $ctl_tracer_cpus"
     printf 'controls: python3 %s run --cpu %s --supervisor-cpu %s --phase-s %s --settle-s %s --output %q\n' \
       "$FS_CONTROL_TOOL" "$fs_controls_cpu" "$ctl_sup" "$FS_CONTROL_PHASE_S" "$FS_CONTROL_SETTLE_S" "$ctl"
-    printf 'trace: stdbuf -oL -eL %s' "$TRACE_CMD"; printf ' %q' "${ctl_args[@]}"; printf ' --temp %q -o %q\n' "$sbase.trace-tmp" "$dat"
+    printf 'trace: %s stdbuf -oL -eL %s' "${tc_launch[*]}" "$TRACE_CMD"; printf ' %q' "${ctl_args[@]}"; printf ' --temp %q -o %q\n' "$sbase.trace-tmp" "$dat"
     cat "$tmp/session.txt"
   } >"$note"
   last_note=$note
@@ -2614,7 +2629,7 @@ EOF
   mkdir "$sbase.trace-tmp"
   run_outputs=("$dat")
   tracer_cpus=$ctl_tracer_cpus
-  start_tracer trace stdbuf -oL -eL "$TRACE_CMD" "${ctl_args[@]}" --temp "$sbase.trace-tmp" -o "$dat"
+  start_tracer trace "${tc_launch[@]}" stdbuf -oL -eL "$TRACE_CMD" "${ctl_args[@]}" --temp "$sbase.trace-tmp" -o "$dat"
   tracer_cpus=$other_cpus
   if ! wait_line trace "$trace_job" "Hit Ctrl^C to stop recording" 60; then
     stop_all
@@ -2654,7 +2669,7 @@ EOF
   stage_close || :
   pubb=$base
   [ "$stage_published" -eq 1 ] || pubb=$sbase
-  stat_out=$(priv "$TRACE_CMD" report --stat -i "$pubb.trace.dat" 2>&1); stat_status=$?
+  stat_out=$(priv "${tc_launch[@]}" "$TRACE_CMD" report --stat -i "$pubb.trace.dat" 2>&1); stat_status=$?
   { echo "--- trace-cmd report --stat (exit $stat_status) ---"; echo "$stat_out"; } >>"$note"
   if [ "$stat_status" -ne 0 ]; then
     n_loss="unknown (trace-cmd report --stat exited $stat_status)"
@@ -2685,7 +2700,7 @@ EOF
     return 1
   fi
   { echo; echo "--- $FS_TOOL controls ---"; } >>"$note"
-  TRACE_CMD="$TRACE_CMD" python3 "$FS_TOOL" controls --controls "$pubb.controls.txt" --record "$note" --trace-dat "$pubb.trace.dat" 2>&1 |
+  TRACE_CMD="$TRACE_CMD" "${tc_launch[@]}" python3 "$FS_TOOL" controls --controls "$pubb.controls.txt" --record "$note" --trace-dat "$pubb.trace.dat" 2>&1 |
     tee -a "$note"
   an_status=${PIPESTATUS[0]}
   case "$an_status" in

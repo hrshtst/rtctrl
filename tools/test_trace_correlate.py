@@ -492,7 +492,8 @@ def main() -> int:
         expect("waits after waking (CPU 3: the worker's sched_waking to its switch-in" in out
                and "n=2 " in out and "fair-server probes: not in this capture" in out,
                "the timer-mode run's waits", out)
-        expect("certificate provenance: 7.0.0-42.42, trace-cmd 3.3.3-1ubuntu2, " in out, "the audited trace-cmd in the provenance", out)
+        expect("certificate provenance: 7.0.0-42.42, trace-cmd 3.3.3-1ubuntu2 (libtraceevent1 1:1.8.7-1, libtracefs1 1.8.2-1ubuntu1, 13 plugins), " in out,
+               "the audited trace-cmd and runtime in the provenance", out)
         # The trace-cmd that reported the main trace is part of the certificate (the implementation review's finding 3):
         # a saved report with no identity, or one written by another version, is not certified.
         for name, tool, words in (("timer_notool", None, "a saved report (--report) names no reporting tool (--report-tool)"),
@@ -501,26 +502,27 @@ def main() -> int:
             code, out, _ = correlate(root, name, report_tool=tool, timer=True)
             expect(code == 1 and "conversion certificate: UNSUPPORTED" in out and words in out
                    and "the conversion was not analysed" in out, f"a saved report: {name}", out)
-        # Without a saved report, the trace-cmd on PATH is identified, then run by the path identified: here a stand-in
-        # of another build (its own SHA-256) that dpkg says is the audited version. It reports the run; it cannot certify it.
+        # Without a saved report, the trace-cmd on PATH is identified with its runtime, then run by the path identified
+        # under the launch: here a stand-in installation of another build (its own SHA-256, libraries and plugins) that
+        # dpkg says is the audited version. The caller's search inputs do not reach it. It reports the run; it cannot
+        # certify it.
         path = Run(timer=True).write(root, "timer_live")
-        fake_bin = root / "fake_bin"
-        fake_bin.mkdir()
-        tc = fake_bin / "trace-cmd"
-        tc.write_text(f"#!/bin/sh\necho \"$@\" >{root}/timer_live.ran\ncat {root}/timer_live.report.txt\n")
-        tc.chmod(0o755)
-        dq = fake_bin / "dpkg-query"
-        dq.write_text(test_tk_record.DPKG_STANDIN)
-        dq.chmod(0o755)
-        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}", "DPKG_QUERY": str(dq), "TK_DPKG_OWNS": os.path.realpath(tc)}
+        s = test_tk_record.standin_runtime(root / "standin", exe_text=f'#!/bin/sh\necho "$@" >{root}/timer_live.ran\nenv >{root}/timer_live.env\n'
+                                                                       f'cat {root}/timer_live.report.txt\n')
+        selecting = {"HOME": str(root), "TRACEEVENT_PLUGIN_DIR": str(root / "plugins"), "TRACECMD_PLUGIN_DIR": str(root / "tc-plugins"),
+                     "LD_LIBRARY_PATH": str(root / "lib")}
+        env = {**os.environ, **s["env"], **selecting, "PATH": f"{s['bindir']}:{os.environ.get('PATH', '')}"}
         p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--adapter", "1-9"], capture_output=True, text=True, env=env)
         out = p.stdout + p.stderr
         ran = (root / "timer_live.ran").read_text() if (root / "timer_live.ran").exists() else ""
-        expect(p.returncode == 1 and ran == f"report -t -i {path}.trace.dat\n" and "conversion certificate: UNSUPPORTED" in out
+        seen = [x for x in ((root / "timer_live.env").read_text().splitlines() if (root / "timer_live.env").exists() else ["unread"])
+                if x.split("=", 1)[0] in selecting or x == "unread"]
+        expect(p.returncode == 1 and ran == f"report -t -i {path}.trace.dat\n" and not seen and "conversion certificate: UNSUPPORTED" in out
                and "the trace-cmd that reported the main trace for this analysis is not the audited build "
-                   "(trace-cmd 3.3.3-1ubuntu2): trace-cmd 3.3.3-1ubuntu2 amd64, sha256 " in out,
-               "a live report by another build of the audited version", out)
-        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--adapter", "1-9", "--report-tool", str(dq)],
+                   "(trace-cmd 3.3.3-1ubuntu2): trace-cmd 3.3.3-1ubuntu2 amd64, sha256 " in out
+               and "the trace-cmd that reported the main trace for this analysis ran with an unaudited runtime" in out,
+               f"a live report by another build and runtime, under the launch (inputs it saw: {seen})", out)
+        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--adapter", "1-9", "--report-tool", str(s["exe"])],
                            capture_output=True, text=True)
         expect(p.returncode == 2 and "--report-tool names the tool of a saved --report" in p.stderr, "--report-tool alone", p.stderr)
         # A confined run's placement: observer and probe helper threads kept

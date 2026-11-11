@@ -73,6 +73,8 @@ fail() { echo "$1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 cat >"$FAKE/trace-cmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.trace-cmd"
+# The search inputs it was started with: the session's launch removes them.
+echo "$1 HOME=${HOME-unset} TRACEEVENT_PLUGIN_DIR=${TRACEEVENT_PLUGIN_DIR-unset} TRACECMD_PLUGIN_DIR=${TRACECMD_PLUGIN_DIR-unset} LD_LIBRARY_PATH=${LD_LIBRARY_PATH-unset} LD_PRELOAD=${LD_PRELOAD-unset}" >>"$FAKE_LOG.trace-cmd-env"
 [ "$1" = -h ] && { echo "trace-cmd version 0.0 (stand-in)"; exit 1; }
 # report --stat: the buffers' losses on every online CPU
 # (FAKE_TRACE_OVERRUN on the first; FAKE_STATS=fail fails the read, nocpu
@@ -400,26 +402,53 @@ if [ -n "$f" ] && [ "$n" -ge "${f%-*}" ] && { [ "$f" = "${f%-*}" ] || [ "$n" -le
 fi
 if [ -e "$mark" ]; then echo present; else echo absent; fi
 EOF
+# A stand-in installation of trace-cmd's runtime, read as the host's is
+# (tools/tk_record.py): its two trace libraries, libtraceevent naming its
+# compiled-in plugin directory, two plugins and a file that is not one, and
+# a stand-in for the dynamic loader's list (TK_LD_LIST) that resolves them.
+mkdir -p "$FAKE/tclib/traceevent/plugins"
+printf 'stand-in libtraceevent\0%s\0' "$FAKE/tclib/traceevent/plugins" >"$FAKE/tclib/libtraceevent.so.1.8.7"
+printf 'stand-in libtracefs\0' >"$FAKE/tclib/libtracefs.so.1.8.2"
+ln -sf libtraceevent.so.1.8.7 "$FAKE/tclib/libtraceevent.so.1"
+ln -sf libtracefs.so.1.8.2 "$FAKE/tclib/libtracefs.so.1"
+for p in plugin_hrtimer plugin_sched_switch; do echo "stand-in $p" >"$FAKE/tclib/traceevent/plugins/$p.so"; done
+echo "not a plugin" >"$FAKE/tclib/traceevent/plugins/README"
+cat >"$FAKE/ld-list" <<'EOF'
+#!/usr/bin/env bash
+fake=$(realpath "$(dirname "$0")")
+printf '\tlinux-vdso.so.1 (0x00007ffc00000000)\n\tlibtraceevent.so.1 => %s/tclib/libtraceevent.so.1 (0x00007f0000001000)\n' "$fake"
+printf '\tlibtracefs.so.1 => %s/tclib/libtracefs.so.1 (0x00007f0000002000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f0000004000)\n' "$fake"
+EOF
 # A stand-in for dpkg-query, answering as dpkg does: the stand-in trace-cmd
 # is the package trace-cmd at FAKE_TRACE_CMD_VERSION (the audited version by
-# default), with its libraries; any other file is no package's. Its calls
-# are counted (FAKE_LOG.dpkg_calls), and from call FAKE_DPKG_FAIL_FROM on it
-# answers for trace-cmd too as for a file no package installed.
+# default), the stand-in libraries and plugins are their packages'; any
+# other file is no package's. Its calls are counted (FAKE_LOG.dpkg_calls),
+# and from call FAKE_DPKG_FAIL_FROM on it answers for every file as for one
+# no package installed.
 cat >"$FAKE/dpkg-query" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(cat "$FAKE_LOG.dpkg_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$FAKE_LOG.dpkg_calls"
+fake=$(realpath "$(dirname "$0")")
 case "$1" in
-  -S) if { [ -n "${FAKE_DPKG_FAIL_FROM:-}" ] && [ "$n" -ge "$FAKE_DPKG_FAIL_FROM" ]; } ||
-         [ "$2" != "$(realpath "$(dirname "$0")/trace-cmd")" ]; then
-        echo "dpkg-query: no path found matching pattern $2" >&2; exit 1
-      fi
-      echo "trace-cmd: $2" ;;
+  -S) shift; rc=0
+      for f in "$@"; do
+        case "$f" in
+          "$fake/trace-cmd") p=trace-cmd ;;
+          "$fake/tclib/libtraceevent.so.1.8.7") p=libtraceevent1 ;;
+          "$fake/tclib/libtracefs.so.1.8.2") p=libtracefs1 ;;
+          "$fake/tclib/traceevent/plugins/"*.so) p=libtraceevent1-plugin ;;
+          *) p= ;;
+        esac
+        { [ -n "${FAKE_DPKG_FAIL_FROM:-}" ] && [ "$n" -ge "$FAKE_DPKG_FAIL_FROM" ]; } && p=
+        if [ -n "$p" ]; then echo "$p: $f"; else echo "dpkg-query: no path found matching pattern $f" >&2; rc=1; fi
+      done
+      exit $rc ;;
   -W) shift 3; rc=0
       for p in "$@"; do
         case "$p" in
           trace-cmd) printf 'trace-cmd\t%s\tamd64\tii \n' "${FAKE_TRACE_CMD_VERSION:-3.3.3-1ubuntu2}" ;;
-          libtraceevent1|libtraceevent1-plugin) printf '%s\t1:1.8.7-1\tii \n' "$p" ;;
-          libtracefs1) printf '%s\t1.8.2-1ubuntu1\tii \n' "$p" ;;
+          libtraceevent1|libtraceevent1-plugin) printf '%s\t1:1.8.7-1\tamd64\tii \n' "$p" ;;
+          libtracefs1) printf '%s\t1.8.2-1ubuntu1\tamd64\tii \n' "$p" ;;
           *) echo "dpkg-query: no packages found matching $p" >&2; rc=1 ;;
         esac
       done
@@ -604,6 +633,10 @@ export TRACE_CMD="$FAKE/trace-cmd" TCPDUMP="$FAKE/tcpdump"
 export BPFTRACE="$FAKE/bpftrace" MODPROBE="$FAKE/modprobe" STRESS_NG="$FAKE/stress-ng"
 export LATENCY_TOOL="$FAKE/latency" PERF="$FAKE/perf" TSC_INSTANCE_TOOL="$FAKE/tsc_instance"
 export TK_RECORDER_TOOL="$FAKE/tk_recorder" JOURNALCTL="$FAKE/journalctl" TK_SETTLE_S=0.01 DPKG_QUERY="$FAKE/dpkg-query"
+# trace-cmd's runtime through the stand-ins; and search inputs in the
+# session's environment, which no use of trace-cmd may see.
+export TK_LD_LIST="$FAKE/ld-list" TRACEEVENT_PLUGIN_DIR="$ROOT/unreviewed-plugins" TRACECMD_PLUGIN_DIR="$ROOT/unreviewed-tc-plugins"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$ROOT/no-such-lib"
 export TRACE_SESSION_BATCH_LIST=rtctrl-nobatch QUIET_HOST_STATE="$ROOT/qh.state"
 export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
 export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" RMDIR="$FAKE/rmdir" FAKE_MOUNTS="$ROOT/mounts"
@@ -1418,16 +1451,35 @@ if [ -n "$SAMPLER" ]; then
   # trace-cmd's identity, read through the stand-in dpkg-query as the real one would be: before the main trace and
   # after the recorder's report, the file the session runs, its SHA-256 and its package.
   tc_real=$(realpath "$FAKE/trace-cmd") tc_sha=$(sha256sum "$FAKE/trace-cmd" | cut -d' ' -f1)
+  fake_real=$(realpath "$FAKE")
+  te_sha=$(sha256sum "$FAKE/tclib/libtraceevent.so.1.8.7" | cut -d' ' -f1) tf_sha=$(sha256sum "$FAKE/tclib/libtracefs.so.1.8.2" | cut -d' ' -f1)
   for when in "before the main trace" "after the recorder's report"; do
-    grep -qxF "trace-cmd identity, $when: trace-cmd 3.3.3-1ubuntu2 amd64, sha256 $tc_sha, $tc_real" "$b.run.txt" ||
-      fail "the record lacks trace-cmd's identity $when" "$b.run.txt"
+    grep -qF "trace-cmd identity, $when: trace-cmd 3.3.3-1ubuntu2 amd64, sha256 $tc_sha, $tc_real; runtime: libtraceevent.so.1 libtraceevent1 1:1.8.7-1 sha256 ${te_sha:0:16}; libtracefs.so.1 libtracefs1 1.8.2-1ubuntu1 sha256 ${tf_sha:0:16}; 2 plugins from $fake_real/tclib/traceevent/plugins; preload " "$b.run.txt" ||
+      fail "the record lacks trace-cmd's identity and runtime $when" "$b.run.txt"
   done
-  python3 - "$b.tk-tool-before.json" "$tc_real" "$tc_sha" <<'EOF' || fail "the identity file" "$b.tk-tool-before.json"
+  python3 - "$b.tk-tool-before.json" "$tc_real" "$tc_sha" "$fake_real/tclib" <<'EOF' || fail "the identity file" "$b.tk-tool-before.json"
 import json, sys
 v = json.load(open(sys.argv[1]))
+lib = sys.argv[4]
+rt = v.get("runtime", {})
 sys.exit(not (v["read_status"] == "ok" and v["path"] == sys.argv[2] and v["sha256"] == sys.argv[3] and v["package"] == "trace-cmd"
-              and v["libraries"] == {"libtraceevent1": "1:1.8.7-1", "libtraceevent1-plugin": "1:1.8.7-1", "libtracefs1": "1.8.2-1ubuntu1"}))
+              and rt["inputs"] == {"HOME": None, "TRACEEVENT_PLUGIN_DIR": None, "TRACECMD_PLUGIN_DIR": None, "LD": []}
+              and rt["libraries"]["libtraceevent.so.1"]["path"] == f"{lib}/libtraceevent.so.1.8.7" and rt["libraries"]["libtracefs.so.1"]["package"] == "libtracefs1"
+              and rt["plugin_dirs"] == [f"{lib}/traceevent/plugins"]
+              and sorted(rt["plugins"]) == [f"{lib}/traceevent/plugins/plugin_hrtimer.so", f"{lib}/traceevent/plugins/plugin_sched_switch.so"]
+              and all(e["package"] == "libtraceevent1-plugin" for e in rt["plugins"].values())))
 EOF
+  # Every use of trace-cmd so far, the main trace's record, the recorder's
+  # extraction and report, the loss counts and the event lists, ran under the
+  # launch: no search input reached it (the record alone runs under stdbuf,
+  # whose preload only line-buffers its output).
+  if grep -v ' HOME=unset TRACEEVENT_PLUGIN_DIR=unset TRACECMD_PLUGIN_DIR=unset LD_LIBRARY_PATH=unset LD_PRELOAD=' "$ROOT/fake.trace-cmd-env" | grep -q . ||
+     grep -v '^record ' "$ROOT/fake.trace-cmd-env" | grep -qv ' LD_PRELOAD=unset$' ||
+     grep '^record ' "$ROOT/fake.trace-cmd-env" | grep -qv ' LD_PRELOAD=[^ ]*libstdbuf[^ ]*$'; then
+    fail "a use of trace-cmd saw a search input" "$ROOT/fake.trace-cmd-env"
+  fi
+  grep -q '^record ' "$ROOT/fake.trace-cmd-env" && grep -q '^extract ' "$ROOT/fake.trace-cmd-env" && grep -q '^report ' "$ROOT/fake.trace-cmd-env" &&
+    grep -q '^list ' "$ROOT/fake.trace-cmd-env" || fail "the uses of trace-cmd were not all logged" "$ROOT/fake.trace-cmd-env"
   [ ! -e "$b.tk-tmp" ] || fail "the recorder's temporary directory remains" "$b.run.txt"
   grep -Eq '^armed_t [0-9]+$' "$b.tk-times.txt" && grep -Eq '^confirmed_t [0-9]+$' "$b.tk-times.txt" || fail "the recorder's times" "$b.tk-times.txt"
   grep -q '^timekeeping recorder overruns: 0 ' "$b.run.txt" && grep -q '^main timer event enable before the TSC instance: 1$' "$b.run.txt" &&
@@ -1669,7 +1721,7 @@ EOF
            "67 FAKE_TK_STATS=fail the recorder's buffer stats were not read" \
            "68 FAKE_TK_OVERRUN=3 the timekeeping recorder lost 3 events: the capture is invalid" \
            "69 FAKE_JOURNAL=fail the kernel log was not read" \
-           "79 FAKE_DPKG_FAIL_FROM=4 trace-cmd's identity was not read after the recorder's report"; do
+           "79 FAKE_DPKG_FAIL_FROM=3 trace-cmd's identity was not read after the recorder's report"; do
     read -r att envv why <<<"$c"
     rm -f "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
     set +e

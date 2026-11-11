@@ -10,10 +10,12 @@ transfer sizes) and the run's trace: <run>.csv.trace.dat through
 `trace-cmd report -t`, or a saved report given with --report. The trace
 must be recorded on the mono clock (tools/trace_session.sh checks it), so
 its timestamps and the probe's stamps (monotonic_origin_ns + *_ns) share
-CLOCK_MONOTONIC. The trace-cmd that reports the trace is identified (the
-one on PATH, read just before it runs; for a saved report, the identity
-given with --report-tool, as tools/tk_record.py tool writes it), and a
-timer capture's certificate requires the audited build there too.
+CLOCK_MONOTONIC. The trace-cmd that reports the trace is identified with its
+runtime (the one on PATH, read just before it runs under the launch of
+tools/tk_record.py; for a saved report, the identity given with
+--report-tool, which tools/tk_record.py report writes beside the report),
+and a timer capture's certificate requires the audited build and runtime
+there too.
 
 Association and alignment checks (exit 1 if any fails):
 
@@ -1255,8 +1257,8 @@ def main() -> int:
     parser.add_argument("--report", type=pathlib.Path,
                         help="a saved `trace-cmd report -t` of the run (default: run trace-cmd)")
     parser.add_argument("--report-tool", type=pathlib.Path,
-                        help="the identity of the trace-cmd that wrote --report (tools/tk_record.py tool --out); "
-                        "without it that tool is unidentified, and a timer capture is not certified")
+                        help="the identity of the trace-cmd that wrote --report, with its runtime (tools/tk_record.py "
+                        "report writes both); without it that tool is unidentified, and a timer capture is not certified")
     parser.add_argument("--adapter", help="the adapter's USB device path in xHCI events, e.g. 1-9 "
                         "(default: the run record's adapter line)")
     parser.add_argument("--top", type=int, default=10, help="slowest reads and latest wakes to list")
@@ -1312,10 +1314,11 @@ def main() -> int:
                 tr.feed(line)
     else:
         dat = str(args.csv) + ".trace.dat"
-        # Identified, then run by the path identified, so that what runs is what was read.
+        # Identified, then run by the path identified and under the launch the identity was read for, so that what runs,
+        # libraries and plugins included, is what was read.
         report_tool = tk_record.tool_identity("trace-cmd")
         proc = subprocess.Popen([report_tool.get("path") or "trace-cmd", "report", "-t", "-i", dat], stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, errors="replace")
+                                stderr=subprocess.DEVNULL, text=True, errors="replace", env=tk_record.launch_env())
         assert proc.stdout is not None
         for line in proc.stdout:
             tr.feed(line)

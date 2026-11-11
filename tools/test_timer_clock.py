@@ -51,7 +51,9 @@ def evidence_for(lo, hi, armed_before=3 * 10**9, pre=10**9, post=10**9, tc=7, o0
                 log=dict(read_status="ok", covers=[armed - 10**9, s1 + 3 * 10**9], clock_events=[]),
                 recorder=dict(read_status="ok", armed_t=armed, confirmed_t=s1 + 2 * 10**9, probes=probes, buffer=dict(read_status="ok", overrun=0, dropped=0), calls=calls, updates=updates, unmatched=dict(entries=[], returns=[])),
                 state=dict(before=state(s0, o0), after=state(s1, round(o))),
-                trace_cmd={use: dict(read_status="ok", path="/usr/bin/trace-cmd", **R.AUDITED_TRACE_CMD) for use in R.TRACE_CMD_USES})
+                trace_cmd={use: dict(read_status="ok", path="/usr/bin/trace-cmd", **R.AUDITED_TRACE_CMD,
+                                     runtime={**copy.deepcopy(R.AUDITED_TRACE_RUNTIME), "loaded": {"libtraceevent.so.1": "/usr/lib/x86_64-linux-gnu/libtraceevent.so.1"}})
+                           for use in R.TRACE_CMD_USES})
 
 
 def without(lst, k):
@@ -488,7 +490,7 @@ SF = ("read_status", "t_start", "t_end", "tid", "ret", "offset", "freq", "status
 missing = ["schema", "kernel", "kernel.read_status", "kernel.release", "kernel.config_sha256", "kernel.tsc_khz", "kernel.cmdline", "clocksource", "clocksource.read_status", "clocksource.before", "clocksource.after", "log", "log.read_status", "log.covers", "log.clock_events",
            "recorder", "recorder.read_status", "recorder.armed_t", "recorder.confirmed_t", "recorder.probes", "recorder.buffer", "recorder.buffer.read_status", "recorder.buffer.overrun", "recorder.buffer.dropped", "recorder.calls", "recorder.updates", "recorder.unmatched", "recorder.unmatched.entries", "recorder.unmatched.returns", "state", "state.before", "state.after"]
 missing += [f"recorder.probes.{n}" for n in R.PROBES] + [f"recorder.probes.{n}.{f}" for n in R.PROBES for f in PF] + [f"state.{side}.{f}" for side in ("before", "after") for f in SF]
-missing += ["trace_cmd"] + [f"trace_cmd.{u}" for u in R.TRACE_CMD_USES] + [f"trace_cmd.{u}.{f}" for u in R.TRACE_CMD_USES for f in ("read_status", *R.AUDITED_TRACE_CMD)]
+missing += ["trace_cmd"] + [f"trace_cmd.{u}" for u in R.TRACE_CMD_USES] + [f"trace_cmd.{u}.{f}" for u in R.TRACE_CMD_USES for f in ("read_status", "runtime", *R.AUDITED_TRACE_CMD)]
 bad = [k for k in missing if (lambda r: not (r["accepted"] is False and r["cert"] == "UNSUPPORTED" and r["U_label"] != "validated"))(run(drop(GOOD, k)))]
 claim(f"{len(missing)} nested fields each missing: never validated", not bad, "; ".join(bad)[:90])
 for name, path, value, word in (("a failed read", "log.read_status", "failed", "not read"), ("recorder calls unreadable", "recorder.read_status", "error", "not read"), ("calls is not a list", "recorder.calls", "none", "wrong type"), ("calls is null", "recorder.calls", None, "wrong type"),
@@ -525,6 +527,41 @@ r = run(put(GOOD, "trace_cmd", {"read_status": "ok", "version": "unaudited-new-v
 claim("unsupported: an identity in the implementation review's form, naming no use", r["accepted"] is False and r["cert"] == "UNSUPPORTED", "; ".join(r["cert_reasons"])[:80])
 r = run(put(GOOD, "trace_cmd.report", dict(GOOD["trace_cmd"]["report"], path="/opt/replay/bin/trace-cmd")))
 claim("the same build at another path is the audited build", r["accepted"] is True, str(r["cert_reasons"]))
+claim("the audited runtime is named in the provenance", R.certify(GOOD)["provenance"]["trace_runtime"] == "libtraceevent1 1:1.8.7-1, libtracefs1 1.8.2-1ubuntu1, 13 plugins",
+      str(R.certify(GOOD)["provenance"].get("trace_runtime")))
+TE, TF, HR = "libtraceevent.so.1", "libtracefs.so.1", f"{R._TE_PLUGINS}/plugin_hrtimer.so"
+EXTRA = dict(path="/opt/plugins/plugin_extra.so", sha256="1" * 64, package=None, version=None, architecture=None)
+
+
+def at(ev, keys, value=None, delete=False):
+    """A copy of EV with the field at KEYS (a list: sonames and paths contain dots) set to VALUE, or deleted."""
+    ev = copy.deepcopy(ev)
+    node = ev
+    for k in keys[:-1]:
+        node = node[k]
+    if delete:
+        del node[keys[-1]]
+    else:
+        node[keys[-1]] = value
+    return ev
+
+
+for use, desc in R.TRACE_CMD_USES.items():
+    rt = ["trace_cmd", use, "runtime"]
+    for name, keys, value, word in (("libtraceevent's file", [*rt, "libraries", TE, "sha256"], "0" * 64, f"{TE}:"), ("libtracefs's version", [*rt, "libraries", TF, "version"], "1.8.3-1", f"{TF}:"),
+                                    ("libtracefs resolved elsewhere", [*rt, "libraries", TF, "path"], "/usr/local/lib/libtracefs.so.1.8.2", f"{TF}:"),
+                                    ("an unreviewed library", [*rt, "libraries", "libextra.so.1"], dict(path="/x", sha256="2" * 64), "unreviewed library"),
+                                    ("a plugin's file", [*rt, "plugins", HR, "sha256"], "3" * 64, "plugin_hrtimer.so:"),
+                                    ("a plugin added", [*rt, "plugins", EXTRA["path"]], EXTRA, "unreviewed plugin"),
+                                    ("a plugin directory from the environment", [*rt, "plugin_dirs"], [R._TE_PLUGINS, "/opt/plugins"], "plugin directories"),
+                                    ("HOME in the launch", [*rt, "inputs", "HOME"], "/root", "search inputs"), ("an LD_ variable in the launch", [*rt, "inputs", "LD"], ["LD_PRELOAD"], "search inputs"),
+                                    ("a preload", [*rt, "preload"], "/usr/lib/libsomething.so", "a preload"), ("a runtime not a mapping", rt, "none", "wrong type"),
+                                    ("a runtime field not understood", [*rt, "extra"], 1, "other fields"), ("an identity field not understood", ["trace_cmd", use, "libraries"], {}, "does not know")):
+        r = run(at(GOOD, keys, value))
+        claim(f"unsupported: the trace-cmd {desc}, executable unchanged: {name}", r["accepted"] is False and r["cert"] == "UNSUPPORTED" and any(word in x for x in r["cert_reasons"]), "; ".join(r["cert_reasons"])[:80])
+    for name, keys, word in (("libtracefs absent", [*rt, "libraries", TF], f"{TF}: absent"), ("a plugin absent", [*rt, "plugins", HR], "not loaded")):
+        r = run(at(GOOD, keys, delete=True))
+        claim(f"unsupported: the trace-cmd {desc}, executable unchanged: {name}", r["accepted"] is False and any(word in x for x in r["cert_reasons"]), "; ".join(r["cert_reasons"])[:80])
 c = R.certify(put(GOOD, "state.after.tid", 5))
 claim("unsupported: the last state read is not this process's", c["status"] == "UNSUPPORTED" and any("after state read is not" in x for x in c["reasons"]), "; ".join(c["reasons"])[:90])
 

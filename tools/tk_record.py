@@ -7,6 +7,9 @@ that assembles the recorder's files into the certificate's evidence.
     tk_record.py log --journal FILE --from-t N --to-t N --out FILE
                                                        the kernel log's scan over the interval
     tk_record.py tool --trace-cmd NAME --out FILE      the identity of the trace-cmd that NAME runs (no privilege)
+    tk_record.py launch                                the launch every use of trace-cmd runs under, one word a line
+    tk_record.py report --trace-cmd NAME --dat FILE --out FILE --tool-out FILE
+                                                       a saved report, under the launch, with its tool's identity
 
 A state read is adjtimex(2) with modes 0, then with ADJ_OFFSET_SS_READ (for
 the adjtime remainder), neither of which changes anything; the two monotonic
@@ -18,8 +21,16 @@ understood makes its file malformed.
 
 A tool's identity is the file its name resolves to, that file's SHA-256, and
 the package that installed it with its version and architecture (dpkg-query,
-or $DPKG_QUERY). The certificate requires the audited build for every use of
-trace-cmd it rests on; the libraries it runs with are recorded, not judged.
+or $DPKG_QUERY), and its runtime as it runs under the launch: the shared
+objects the dynamic loader resolves for it (the executable's own interpreter
+with --list, or $TK_LD_LIST), the trace libraries among them by file and
+SHA-256, the plugin directories libtraceevent searches, and every plugin it
+loads from them, by file and SHA-256. The launch removes the loader's and the
+plugins' search inputs from the environment (every LD_ variable, HOME,
+TRACEEVENT_PLUGIN_DIR, TRACECMD_PLUGIN_DIR), so that the runtime read is the
+one that runs, privileged in the session or not in a replay. The certificate
+requires the audited build and the audited runtime for every use of
+trace-cmd it rests on.
 
 The files of a capture <run>.csv, written by tools/trace_session.sh:
     .tk-before.json .tk-after.json   the state reads around the capture
@@ -55,9 +66,18 @@ CLOCKSOURCE = "/sys/devices/system/clocksource/clocksource0/current_clocksource"
 SUFFIXES = (".tk-before.json", ".tk-after.json", ".tk-log.json", ".tk-times.txt", ".tk-enable-before.txt",
             ".tk-enable-after.txt", ".tk-profile.txt", ".tk-stats.txt", ".tk.txt", ".tk-tool-before.json",
             ".tk-tool-after.json")
-# The libraries trace-cmd runs with (libtracecmd is linked into it): recorded beside its identity, not part of the audit.
-TRACE_CMD_LIBRARIES = ("libtraceevent1", "libtraceevent1-plugin", "libtracefs1")
+# The trace libraries trace-cmd links (libtracecmd is built into it), by soname: the ones the certificate pins.
+TRACE_LIBRARIES = ("libtraceevent.so.1", "libtracefs.so.1")
+# What selects the shared objects and plugins a trace-cmd process loads, besides the system's own files: the dynamic
+# loader's LD_ variables, and libtraceevent's plugin search (src/event-plugin.c tep_load_plugins_hook: the compiled-in
+# directory, then $TRACEEVENT_PLUGIN_DIR, then $HOME/.local/lib/traceevent/plugins; with HOME unset it stops before the
+# home directory and before trace-cmd's source-tree directory). trace-cmd's own plugin loader (TRACECMD_PLUGIN_DIR) has
+# no caller in 3.3.3; it is removed too.
+LAUNCH_REMOVE = ("HOME", "TRACEEVENT_PLUGIN_DIR", "TRACECMD_PLUGIN_DIR", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT")
+LD_PRELOAD_FILE = "/etc/ld.so.preload"
 DPKG_OWNER = re.compile(r"([a-z0-9][a-z0-9+.-]*)(?::[a-z0-9-]+)?: (.+)")
+LOADER_ROW = re.compile(r"\s*(\S+) => (\S+) \(0x[0-9a-f]+\)|\s*(\S+) => not found|\s*(\S+) \(0x[0-9a-f]+\)")
+COMPILED_PLUGIN_DIR = re.compile(rb"\x00(/[\x21-\x7e]+/traceevent/plugins)\x00")
 # The kernel log's time is the printk clock, not CLOCK_MONOTONIC: a clock event this near the interval counts as in it.
 LOG_GUARD_NS = 5_000_000_000
 # What the interval must not contain: a clocksource change, TSC trouble, a suspend.
@@ -121,20 +141,145 @@ def state_read(cmdline_path: str = "/proc/cmdline", clocksource_path: str = CLOC
     return out
 
 
-def tool_identity(name: str, dpkg_query: str | None = None) -> dict:
-    """The identity of the executable NAME resolves to: its path, its SHA-256, and the package that installed it, with
-    its version and architecture. Only reads. A part that cannot be read names read_status, and nothing is assumed."""
+def launch_env(env: dict | None = None) -> dict:
+    """The environment a use of trace-cmd runs in: ENV (by default this process's) without the search inputs."""
+    env = dict(os.environ if env is None else env)
+    return {k: v for k, v in env.items() if k not in LAUNCH_REMOVE and not k.startswith("LD_")}
+
+
+def launch_argv(env: dict | None = None) -> list[str]:
+    """The launch as a command prefix for a shell (env -u ...): the fixed inputs, and every LD_ variable set now."""
+    names = sorted(set(LAUNCH_REMOVE) | {k for k in (os.environ if env is None else env) if k.startswith("LD_")})
+    return ["env", *[w for n in names for w in ("-u", n)]]
+
+
+class _Unread(Exception):
+    """A part of an identity that could not be read: the whole identity is then unread."""
+
+
+def _sha256(path: str) -> str:
+    try:
+        return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+    except OSError as e:
+        raise _Unread(f"{path}: {e.strerror or e}") from None
+
+
+def elf_interp(path: str) -> str | None:
+    """The dynamic loader a 64-bit little-endian ELF executable names (its PT_INTERP), or None."""
+    try:
+        with open(path, "rb") as f:
+            h = f.read(64)
+            if len(h) < 64 or h[:4] != b"\x7fELF" or h[4] != 2 or h[5] != 1:
+                return None
+            phoff, phentsize, phnum = int.from_bytes(h[32:40], "little"), int.from_bytes(h[54:56], "little"), int.from_bytes(h[56:58], "little")
+            for i in range(phnum):
+                f.seek(phoff + i * phentsize)
+                ph = f.read(phentsize)
+                if len(ph) >= 40 and int.from_bytes(ph[0:4], "little") == 3:  # PT_INTERP
+                    f.seek(int.from_bytes(ph[8:16], "little"))
+                    return f.read(int.from_bytes(ph[32:40], "little")).rstrip(b"\x00").decode("latin-1") or None
+    except OSError:
+        return None
+    return None
+
+
+def loader_list(exe: str, env: dict, ld_list: str | None = None) -> dict:
+    """The shared objects the dynamic loader resolves for EXE in ENV: soname -> path (None when not found), as its
+    --list prints them. $TK_LD_LIST (or ld_list), given EXE, stands in for the loader."""
+    cmd = ld_list or os.environ.get("TK_LD_LIST")
+    if cmd:
+        argv = [cmd, exe]
+    else:
+        interp = elf_interp(exe)
+        if interp is None:
+            raise _Unread(f"{exe} names no dynamic loader (not a dynamically linked 64-bit ELF executable)")
+        argv = [interp, "--list", exe]
+    try:
+        p = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise _Unread(f"the dynamic loader's list of {exe} was not read ({e})") from None
+    if p.returncode != 0:
+        raise _Unread(f"the dynamic loader's list of {exe} exited {p.returncode} ({p.stderr.strip()[:200]})")
+    loaded: dict = {}
+    for ln in p.stdout.splitlines():
+        m = LOADER_ROW.fullmatch(ln)
+        if not m:
+            raise _Unread(f"an unreadable row in the dynamic loader's list of {exe}: {ln!r}")
+        name, path = (m[1], m[2]) if m[1] else (m[3], None) if m[3] else (m[4], m[4] if m[4].startswith("/") else None)
+        if name in loaded:
+            raise _Unread(f"{name} appears twice in the dynamic loader's list of {exe}")
+        loaded[name] = path
+    return loaded
+
+
+def runtime(exe: str, env: dict, ld_list: str | None = None, preload_file: str = LD_PRELOAD_FILE) -> dict:
+    """What a trace-cmd process started from EXE in ENV loads: the trace libraries (by file and SHA-256), the plugin
+    directories libtraceevent searches, and each plugin it loads from them, as src/event-plugin.c load_plugins_dir
+    chooses them (every entry whose name ends in .so, in a directory that exists). Raises _Unread."""
+    loaded = loader_list(exe, env, ld_list)
+    libraries = {}
+    for soname in TRACE_LIBRARIES:
+        if loaded.get(soname) is None:
+            raise _Unread(f"the dynamic loader does not resolve {soname} for {exe}")
+        real = os.path.realpath(loaded[soname])
+        libraries[soname] = {"path": real, "sha256": _sha256(real)}
+    try:
+        data = pathlib.Path(libraries["libtraceevent.so.1"]["path"]).read_bytes()
+    except OSError as e:
+        raise _Unread(f"{libraries['libtraceevent.so.1']['path']}: {e.strerror or e}") from None
+    compiled = sorted({m.decode("latin-1") for m in COMPILED_PLUGIN_DIR.findall(data)})
+    if len(compiled) != 1:
+        raise _Unread(f"libtraceevent names {len(compiled)} compiled-in plugin directories, not one")
+    dirs = [compiled[0]]
+    if env.get("TRACEEVENT_PLUGIN_DIR"):
+        dirs.append(env["TRACEEVENT_PLUGIN_DIR"])
+    if env.get("HOME") is not None:
+        dirs.append(f"{env['HOME']}/.local/lib/traceevent/plugins/")
+    plugins = {}
+    for d in dirs:
+        try:
+            os.stat(d)
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # libtraceevent skips it, for anyone
+        except OSError as e:
+            raise _Unread(f"the plugin directory {d}: {e.strerror or e}") from None
+        if not os.path.isdir(d):
+            continue  # so does libtraceevent
+        try:
+            names = os.listdir(d)
+        except OSError as e:
+            raise _Unread(f"the plugin directory {d} cannot be listed: {e.strerror or e}") from None
+        for n in sorted(names):
+            if n.endswith(".so"):
+                p = f"{d}/{n}"
+                if not os.path.isfile(p):
+                    raise _Unread(f"the plugin {p} is not a file")
+                real = os.path.realpath(p)
+                plugins[p] = {"path": real, "sha256": _sha256(real)}
+    try:
+        text = pathlib.Path(preload_file).read_text(errors="replace").strip()
+        preload = text or "none"
+    except FileNotFoundError:
+        preload = "none"
+    except OSError as e:
+        raise _Unread(f"{preload_file}: {e.strerror or e}") from None
+    inputs = {k: env.get(k) for k in ("HOME", "TRACEEVENT_PLUGIN_DIR", "TRACECMD_PLUGIN_DIR")}
+    inputs["LD"] = sorted(k for k in env if k.startswith("LD_"))
+    return {"inputs": inputs, "preload": preload, "loaded": loaded, "libraries": libraries, "plugin_dirs": dirs, "plugins": plugins}
+
+
+def tool_identity(name: str, dpkg_query: str | None = None, ld_list: str | None = None,
+                  preload_file: str = LD_PRELOAD_FILE, env: dict | None = None) -> dict:
+    """The identity of the executable NAME resolves to: its path, its SHA-256, the package that installed it with its
+    version and architecture, and its runtime under the launch (ENV, by default this process's, without the search
+    inputs), each file with its package. Only reads. A part that cannot be read names read_status, and nothing is
+    assumed."""
     dq = dpkg_query or os.environ.get("DPKG_QUERY", "dpkg-query")
     found = shutil.which(name)
     if found is None:
         return {"read_status": f"{name} is not found"}
     path = os.path.realpath(found)
     out: dict = {"read_status": "ok", "path": path}
-    try:
-        out["sha256"] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-    except OSError as e:
-        out["read_status"] = f"{path}: {e.strerror or e}"
-        return out
 
     def query(*args: str) -> tuple[int, str, str]:
         try:
@@ -143,24 +288,63 @@ def tool_identity(name: str, dpkg_query: str | None = None) -> dict:
             return -1, "", f"{dq}: {e}"
         return p.returncode, p.stdout, p.stderr.strip()
 
-    rc, text, err = query("-S", path)
-    rows = text.splitlines()
-    m = DPKG_OWNER.fullmatch(rows[0]) if rc == 0 and len(rows) == 1 else None
-    if m is None or m[2] != path:
+    try:
+        out["sha256"] = _sha256(path)
+        rt = runtime(path, launch_env(env), ld_list, preload_file)
+    except _Unread as e:
+        out["read_status"] = str(e)
+        return out
+    files = [path, *(lib["path"] for lib in rt["libraries"].values()), *(p["path"] for p in rt["plugins"].values())]
+    # dpkg-query exits 1 when a file is no package's, and still answers for the others.
+    rc, text, err = query("-S", *files)
+    owner: dict = {f: None for f in files}
+    seen: dict = {}
+    for ln in text.splitlines() if rc in (0, 1) else []:
+        m = DPKG_OWNER.fullmatch(ln)
+        if m and m[2] in owner:
+            seen[m[2]] = seen.get(m[2], 0) + 1
+            owner[m[2]] = m[1] if seen[m[2]] == 1 else None  # a file two packages claim is neither's
+    if owner[path] is None:
         out["read_status"] = f"the package that installed {path} is not known ({(err or text.strip())[:200] or f'exit {rc}'})"
         return out
-    rc, text, err = query("-W", "-f", "${Package}\t${Version}\t${Architecture}\t${db:Status-Abbrev}\n", m[1])
-    rows = text.splitlines()
-    f = rows[0].split("\t") if rc == 0 and len(rows) == 1 else []
-    if len(f) != 4 or f[0] != m[1] or not f[3].startswith("ii"):
-        out["read_status"] = f"the package {m[1]} is not read as installed ({(err or text.strip())[:200] or f'exit {rc}'})"
+    pkgs = sorted({p for p in owner.values() if p})
+    rc, text, err = query("-W", "-f", "${Package}\t${Version}\t${Architecture}\t${db:Status-Abbrev}\n", *pkgs)
+    rows = [ln.split("\t") for ln in text.splitlines()] if rc in (0, 1) else []
+    names = [f[0] for f in rows if len(f) == 4]
+    installed = {f[0]: (f[1], f[2]) for f in rows if len(f) == 4 and f[3].startswith("ii") and names.count(f[0]) == 1}
+    if owner[path] not in installed:
+        out["read_status"] = f"the package {owner[path]} is not read as installed ({(err or text.strip())[:200] or f'exit {rc}'})"
         return out
-    out.update(package=f[0], version=f[1], architecture=f[2])
-    # dpkg-query exits 1 when one of them is not installed, and still lists the others.
-    rc, text, err = query("-W", "-f", "${Package}\t${Version}\t${db:Status-Abbrev}\n", *TRACE_CMD_LIBRARIES)
-    libs = {g[0]: g[1] for g in (ln.split("\t") for ln in text.splitlines()) if len(g) == 3 and g[2].startswith("ii")}
-    out["libraries"] = {lib: libs.get(lib) for lib in TRACE_CMD_LIBRARIES}
+    out.update(package=owner[path], version=installed[owner[path]][0], architecture=installed[owner[path]][1])
+
+    def packaged(entry: dict) -> dict:
+        pkg = owner.get(entry["path"])
+        ver, arch = installed.get(pkg, (None, None)) if pkg else (None, None)
+        return {**entry, "package": pkg if ver else None, "version": ver, "architecture": arch}
+
+    rt["libraries"] = {k: packaged(v) for k, v in rt["libraries"].items()}
+    rt["plugins"] = {k: packaged(v) for k, v in rt["plugins"].items()}
+    out["runtime"] = rt
     return out
+
+
+def saved_report(name: str, dat: str, out: str, tool_out: str) -> int:
+    """trace-cmd report -t of DAT into OUT, under the launch, and the identity of the trace-cmd and runtime that wrote it
+    into TOOL_OUT (read before and after; one that changed, or a report that failed, is not an identity)."""
+    before = tool_identity(name)
+    rc = -1
+    if before.get("path"):
+        try:
+            with open(out, "w") as f:
+                rc = subprocess.run([before["path"], "report", "-t", "-i", dat], stdout=f, env=launch_env()).returncode
+        except OSError as e:
+            print(f"tk_record: the report was not written: {e}", file=sys.stderr)
+    after = tool_identity(name)
+    ident = before if before == after else {"read_status": "trace-cmd's identity or runtime changed while it reported"}
+    if rc != 0:
+        ident = {"read_status": f"trace-cmd report exited {rc}"}
+    pathlib.Path(tool_out).write_text(json.dumps(ident) + "\n")
+    return 0 if ident.get("read_status") == "ok" else 1
 
 
 def read_tool(path) -> dict:
@@ -463,7 +647,18 @@ def main() -> int:
     tl = sub.add_parser("tool")
     tl.add_argument("--trace-cmd", required=True, help="the trace-cmd the session runs (a name on PATH, or a path)")
     tl.add_argument("--out", required=True)
+    sub.add_parser("launch")
+    rp = sub.add_parser("report")
+    rp.add_argument("--trace-cmd", default="trace-cmd")
+    rp.add_argument("--dat", required=True)
+    rp.add_argument("--out", required=True)
+    rp.add_argument("--tool-out", required=True)
     args = p.parse_args()
+    if args.cmd == "launch":
+        print("\n".join(launch_argv()))
+        return 0
+    if args.cmd == "report":
+        return saved_report(args.trace_cmd, args.dat, args.out, args.tool_out)
     if args.cmd == "state":
         out = state_read(args.cmdline, args.clocksource, args.config_dir)
     elif args.cmd == "tool":

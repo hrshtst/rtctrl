@@ -12,6 +12,7 @@ test asks for. So the script itself runs, in its real order, without tracefs.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -30,9 +31,13 @@ PROBES = ("ntp_adjtimex", "ntp_clear", "update_entry", "update_return")
 ARMED, S0, S1 = 1_000_000_000, 1_500_000_000, 3_500_000_000
 CONFIRMED = S1 + 500_000_000
 TID = 777
-# The audited trace-cmd as tools/tk_record.py tool records it.
+# The audited trace-cmd as tools/tk_record.py tool records it, with its audited runtime.
 AUDITED_TOOL = {"read_status": "ok", "path": "/usr/bin/trace-cmd", **timer_clock.AUDITED_TRACE_CMD,
-                "libraries": {"libtraceevent1": "1:1.8.7-1", "libtraceevent1-plugin": "1:1.8.7-1", "libtracefs1": "1.8.2-1ubuntu1"}}
+                "runtime": {**copy.deepcopy(timer_clock.AUDITED_TRACE_RUNTIME),
+                            "loaded": {"linux-vdso.so.1": None, "libtraceevent.so.1": "/usr/lib/x86_64-linux-gnu/libtraceevent.so.1",
+                                       "libtracefs.so.1": "/usr/lib/x86_64-linux-gnu/libtracefs.so.1", "libz.so.1": "/usr/lib/x86_64-linux-gnu/libz.so.1",
+                                       "libzstd.so.1": "/usr/lib/x86_64-linux-gnu/libzstd.so.1", "libc.so.6": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+                                       "/lib64/ld-linux-x86-64.so.2": "/lib64/ld-linux-x86-64.so.2"}}}
 
 
 def stamp(t: int) -> str:
@@ -224,72 +229,206 @@ def state_reads() -> None:
         expect(p.returncode == 1 and json.loads(out.read_text())["read_status"] != "ok", f"an unreadable journal: {p.stderr}")
 
 
-# A stand-in for dpkg-query, answering as dpkg does: TK_DPKG_OWNS is the one file trace-cmd installed, TK_DPKG_VERSION and
-# TK_DPKG_STATUS its version and status, TK_DPKG_LIBS the libraries installed ("name=version" words).
-DPKG_STANDIN = r'''#!/usr/bin/env bash
+# A stand-in for dpkg-query, answering as dpkg does: TK_DPKG_FILES names each installed file's package ("file=package"
+# words), TK_DPKG_PKGS each installed package's version ("package=version"), TK_DPKG_STATUS trace-cmd's status.
+DPKG_STANDIN = r"""#!/usr/bin/env bash
 case "$1" in
-  -S) [ "$2" = "${TK_DPKG_OWNS:-}" ] || { echo "dpkg-query: no path found matching pattern $2" >&2; exit 1; }
-      echo "trace-cmd: $2" ;;
+  -S) shift; rc=0
+      for f in "$@"; do
+        p=; for m in ${TK_DPKG_FILES:-}; do [ "${m%%=*}" = "$f" ] && p=${m#*=}; done
+        if [ -n "$p" ]; then echo "$p: $f"; else echo "dpkg-query: no path found matching pattern $f" >&2; rc=1; fi
+      done
+      exit $rc ;;
   -W) shift 3; rc=0
       for p in "$@"; do
-        if [ "$p" = trace-cmd ]; then printf 'trace-cmd\t%s\tamd64\t%s\n' "${TK_DPKG_VERSION:-3.3.3-1ubuntu2}" "${TK_DPKG_STATUS:-ii }"; continue; fi
-        v=; for l in ${TK_DPKG_LIBS:-}; do [ "${l%%=*}" = "$p" ] && v=${l#*=}; done
-        if [ -n "$v" ]; then printf '%s\t%s\tii \n' "$p" "$v"; else echo "dpkg-query: no packages found matching $p" >&2; rc=1; fi
+        v=; for m in ${TK_DPKG_PKGS:-}; do [ "${m%%=*}" = "$p" ] && v=${m#*=}; done
+        st="ii "; [ "$p" = trace-cmd ] && st=${TK_DPKG_STATUS:-ii }
+        if [ -n "$v" ]; then printf '%s\t%s\tamd64\t%s\n' "$p" "$v" "$st"; else echo "dpkg-query: no packages found matching $p" >&2; rc=1; fi
       done
       exit $rc ;;
   *) exit 2 ;;
 esac
-'''
+"""
+# A stand-in for the dynamic loader's --list: TK_LD_ROWS is the list it prints, TK_LD_STATUS its exit status.
+LD_STANDIN = '#!/bin/sh\ncat "$TK_LD_ROWS"\nexit "${TK_LD_STATUS:-0}"\n'
+
+
+def sha256(path) -> str:
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+
+def standin_runtime(d: pathlib.Path, exe_text: str = "#!/bin/sh\necho stand-in trace-cmd\n") -> dict:
+    """A stand-in trace-cmd installation under D: the executable (EXE_TEXT, linked from D/bin), its two trace libraries
+    (libtraceevent naming its compiled-in plugin directory, as the real one does), two plugins and a file that is not one,
+    and a loader list and a dpkg-query that answer for them. Returns the environment that selects the stand-ins (the
+    production code reads them as it reads the host), and the files."""
+    d = pathlib.Path(os.path.realpath(d))
+    bindir, pkg, lib = d / "bin", d / "pkg", d / "lib"
+    plug = lib / "traceevent" / "plugins"
+    for x in (bindir, pkg, plug):
+        x.mkdir(parents=True)
+    exe = pkg / "trace-cmd"
+    exe.write_text(exe_text)
+    exe.chmod(0o755)
+    (bindir / "trace-cmd").symlink_to(exe)
+    te, tf = lib / "libtraceevent.so.1.8.7", lib / "libtracefs.so.1.8.2"
+    te.write_bytes(b"stand-in libtraceevent\x00" + str(plug).encode() + b"\x00.local/lib/traceevent/plugins/\x00")
+    tf.write_bytes(b"stand-in libtracefs\x00")
+    (lib / "libtraceevent.so.1").symlink_to(te.name)
+    (lib / "libtracefs.so.1").symlink_to(tf.name)
+    plugins = [plug / "plugin_hrtimer.so", plug / "plugin_sched_switch.so"]
+    for x in plugins:
+        x.write_bytes(f"stand-in {x.name}".encode())
+    (plug / "README").write_text("not a plugin\n")
+    rows = d / "ld-rows.txt"
+    rows.write_text(f"\tlinux-vdso.so.1 (0x00007ffc00000000)\n\tlibtraceevent.so.1 => {lib}/libtraceevent.so.1 (0x00007f0000001000)\n"
+                    f"\tlibtracefs.so.1 => {lib}/libtracefs.so.1 (0x00007f0000002000)\n"
+                    "\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f0000003000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007f0000004000)\n")
+    ldl, dq = d / "ld-list", d / "dpkg-query"
+    ldl.write_text(LD_STANDIN)
+    dq.write_text(DPKG_STANDIN)
+    for x in (ldl, dq):
+        x.chmod(0o755)
+    owners = {exe: "trace-cmd", te: "libtraceevent1", tf: "libtracefs1", **{x: "libtraceevent1-plugin" for x in plugins}}
+    env = {"DPKG_QUERY": str(dq), "TK_LD_LIST": str(ldl), "TK_LD_ROWS": str(rows),
+           "TK_DPKG_FILES": " ".join(f"{f}={o}" for f, o in owners.items()),
+           "TK_DPKG_PKGS": "trace-cmd=3.3.3-1ubuntu2 libtraceevent1=1:1.8.7-1 libtracefs1=1.8.2-1ubuntu1 libtraceevent1-plugin=1:1.8.7-1"}
+    return dict(env=env, link=bindir / "trace-cmd", exe=exe, te=te, tf=tf, lib=lib, plugin_dir=plug, plugins=plugins, rows=rows, bindir=bindir)
 
 
 def identities() -> None:
     with tempfile.TemporaryDirectory() as d:
-        dq, bindir, real = pathlib.Path(d, "dpkg-query"), pathlib.Path(d, "bin"), pathlib.Path(d, "pkg", "trace-cmd")
-        dq.write_text(DPKG_STANDIN)
-        dq.chmod(0o755)
-        bindir.mkdir()
-        real.parent.mkdir()
-        real.write_text("#!/bin/sh\necho stand-in trace-cmd\n")
-        real.chmod(0o755)
-        (bindir / "trace-cmd").symlink_to(real)
-        sha = hashlib.sha256(real.read_bytes()).hexdigest()
+        s = standin_runtime(pathlib.Path(d, "s"))
+        no_preload = str(pathlib.Path(d, "no-ld.so.preload"))
         saved = dict(os.environ)
+        # Selection inputs in the caller's environment: the launch removes them, so the identity does not see them.
+        inputs = {"HOME": "/home/someone", "TRACEEVENT_PLUGIN_DIR": "/opt/unreviewed/plugins", "TRACECMD_PLUGIN_DIR": "/opt/x",
+                  "LD_LIBRARY_PATH": "/opt/unreviewed/lib", "LD_TK_STANDIN": "1"}
 
-        def ident(name: str = str(bindir / "trace-cmd"), **env: str) -> dict:
+        def ident(name: str = str(s["link"]), preload: str = no_preload, **env: str) -> dict:
             os.environ.clear()
-            os.environ.update({**saved, "TK_DPKG_OWNS": str(real), "TK_DPKG_LIBS": "libtraceevent1=1:1.8.7-1 libtracefs1=1.8.2-1ubuntu1", **env})
+            os.environ.update({**saved, **inputs, **s["env"], **env})
             try:
-                return tk.tool_identity(name, dpkg_query=str(dq))
+                return tk.tool_identity(name, preload_file=preload)
             finally:
                 os.environ.clear()
                 os.environ.update(saved)
 
+        def entry(f, pkg) -> dict:
+            return {"path": str(f), "sha256": sha256(f), "package": pkg, "version": "1:1.8.7-1" if pkg != "libtracefs1" else "1.8.2-1ubuntu1",
+                    "architecture": "amd64"}
+
+        lib = s["lib"]
+        want_rt = {"inputs": {"HOME": None, "TRACEEVENT_PLUGIN_DIR": None, "TRACECMD_PLUGIN_DIR": None, "LD": []}, "preload": "none",
+                   "loaded": {"linux-vdso.so.1": None, "libtraceevent.so.1": f"{lib}/libtraceevent.so.1", "libtracefs.so.1": f"{lib}/libtracefs.so.1",
+                              "libc.so.6": "/usr/lib/x86_64-linux-gnu/libc.so.6", "/lib64/ld-linux-x86-64.so.2": "/lib64/ld-linux-x86-64.so.2"},
+                   "libraries": {"libtraceevent.so.1": entry(s["te"], "libtraceevent1"), "libtracefs.so.1": entry(s["tf"], "libtracefs1")},
+                   "plugin_dirs": [str(s["plugin_dir"])],
+                   "plugins": {str(x): entry(x, "libtraceevent1-plugin") for x in s["plugins"]}}
         got = ident()
-        expect(got == {"read_status": "ok", "path": str(real), "sha256": sha, "package": "trace-cmd", "version": "3.3.3-1ubuntu2",
-                       "architecture": "amd64", "libraries": {"libtraceevent1": "1:1.8.7-1", "libtraceevent1-plugin": None, "libtracefs1": "1.8.2-1ubuntu1"}},
-               f"an identity, through the link to the file it runs: {got}")
-        got = ident("trace-cmd", PATH=f"{bindir}:{saved.get('PATH', '')}")
-        expect(got.get("path") == str(real) and got["read_status"] == "ok", f"a name on PATH: {got}")
-        got = ident(TK_DPKG_VERSION="3.3.4-1")
-        expect(got["read_status"] == "ok" and got["version"] == "3.3.4-1", f"another version is read as it is: {got}")
-        for what, kw, words in (("not found", {"name": str(bindir / "nope")}, "is not found"),
-                                ("not from a package", {"TK_DPKG_OWNS": "/usr/bin/other"}, "is not known"),
-                                ("a package not installed", {"TK_DPKG_STATUS": "rc "}, "not read as installed")):
-            got = ident(**kw)
-            expect(words in got["read_status"] and "version" not in got, f"an identity {what}: {got}")
-        got = tk.tool_identity(str(real), dpkg_query=str(pathlib.Path(d, "no-dpkg")))
-        expect("is not known" in got["read_status"] and "version" not in got, f"no dpkg-query: {got}")
-        if os.geteuid() != 0:
-            real.chmod(0o111)
-            got = ident()
-            real.chmod(0o755)
-            expect(got["read_status"] != "ok" and "sha256" not in got, f"an executable that cannot be read: {got}")
+        expect(got == {"read_status": "ok", "path": str(s["exe"]), "sha256": sha256(s["exe"]), "package": "trace-cmd", "version": "3.3.3-1ubuntu2",
+                       "architecture": "amd64", "runtime": want_rt},
+               f"an identity with its runtime, the caller's search inputs removed, the plugins as libtraceevent chooses them: {got}")
+        got = ident("trace-cmd", PATH=f"{s['bindir']}:{saved.get('PATH', '')}")
+        expect(got.get("path") == str(s["exe"]) and got["read_status"] == "ok", f"a name on PATH: {got}")
+        got = ident(TK_DPKG_PKGS=s["env"]["TK_DPKG_PKGS"].replace("libtracefs1=1.8.2-1ubuntu1", "libtracefs1=1.8.3-1"))
+        expect(got["read_status"] == "ok" and got["runtime"]["libraries"]["libtracefs.so.1"]["version"] == "1.8.3-1", f"another library version is read as it is: {got}")
+        extra = s["plugin_dir"] / "plugin_extra.so"
+        extra.write_bytes(b"an unreviewed plugin")
+        got = ident()
+        extra.unlink()
+        expect(got["read_status"] == "ok" and got["runtime"]["plugins"].get(str(extra)) == {"path": str(extra), "sha256": hashlib.sha256(b"an unreviewed plugin").hexdigest(),
+                                                                                         "package": None, "version": None, "architecture": None},
+               f"a plugin no package installed is read, with no package: {got.get('runtime', {}).get('plugins')}")
+        p = pathlib.Path(d, "ld.so.preload")
+        p.write_text("/usr/lib/libsomething.so\n")
+        got = ident(preload=str(p))
+        expect(got["read_status"] == "ok" and got["runtime"]["preload"] == "/usr/lib/libsomething.so", f"a preload file is read: {got.get('runtime', {}).get('preload')}")
+        moved = s["plugin_dir"].with_name("plugins.moved")
+        s["plugin_dir"].rename(moved)
+        got = ident()
+        moved.rename(s["plugin_dir"])
+        expect(got["read_status"] == "ok" and got["runtime"]["plugins"] == {} and got["runtime"]["plugin_dirs"] == [str(s["plugin_dir"])],
+               f"a plugin directory that does not exist loads nothing, as libtraceevent skips it: {got.get('runtime')}")
+
+        rows = s["rows"].read_text()
+        te_bytes = s["te"].read_bytes()
+        failures = [("not found", {"name": str(s["bindir"] / "nope")}, "is not found", None),
+                    ("an executable no package installed", {"TK_DPKG_FILES": s["env"]["TK_DPKG_FILES"].replace(f"{s['exe']}=trace-cmd", "")}, "is not known", None),
+                    ("a package not installed", {"TK_DPKG_STATUS": "rc "}, "not read as installed", None),
+                    ("no dpkg-query", {"DPKG_QUERY": str(pathlib.Path(d, "no-dpkg"))}, "is not known", None),
+                    ("a loader list that fails", {"TK_LD_STATUS": "1"}, "exited 1", None),
+                    ("the default loader on a script", {"TK_LD_LIST": ""}, "names no dynamic loader", None),
+                    ("libtracefs not found", {}, "does not resolve libtracefs.so.1",
+                     lambda: s["rows"].write_text(rows.replace(f"libtracefs.so.1 => {lib}/libtracefs.so.1 (0x00007f0000002000)", "libtracefs.so.1 => not found"))),
+                    ("an unreadable loader row", {}, "an unreadable row", lambda: s["rows"].write_text(rows + "\tsomething else\n")),
+                    ("a library listed twice", {}, "appears twice", lambda: s["rows"].write_text(rows + f"\tlibtracefs.so.1 => {lib}/libtracefs.so.1 (0x1)\n")),
+                    ("libtraceevent naming no plugin directory", {}, "plugin directories, not one", lambda: s["te"].write_bytes(b"stand-in")),
+                    ("libtraceevent naming two", {}, "plugin directories, not one",
+                     lambda: s["te"].write_bytes(te_bytes + b"/opt/other/traceevent/plugins\x00")),
+                    ("a .so that is a directory", {}, "is not a file", lambda: (s["plugin_dir"] / "plugin_dir.so").mkdir())]
+        if os.geteuid() != 0:  # root reads anything
+            failures += [("an executable that cannot be read", {}, "Permission denied", lambda: s["exe"].chmod(0o111)),
+                         ("a plugin directory that cannot be listed", {}, "cannot be listed", lambda: s["plugin_dir"].chmod(0o111)),
+                         ("a plugin that cannot be read", {}, "Permission denied", lambda: s["plugins"][0].chmod(0)),
+                         ("a library that cannot be read", {}, "Permission denied", lambda: s["tf"].chmod(0))]
+        for what, env, words, setup in failures:
+            if setup:
+                setup()
+            try:
+                got = ident(**env)
+            finally:
+                s["rows"].write_text(rows)
+                s["te"].write_bytes(te_bytes)
+                for x in (s["exe"], s["plugins"][0], s["tf"]):
+                    x.chmod(0o755)
+                s["plugin_dir"].chmod(0o755)
+                if (s["plugin_dir"] / "plugin_dir.so").exists():
+                    (s["plugin_dir"] / "plugin_dir.so").rmdir()
+            expect(words in got["read_status"] and "runtime" not in got, f"an identity with {what}: {got}")
+
+        # The real loader's own list, on this Python: the parser reads what ld.so --list prints.
+        py = os.path.realpath(sys.executable)
+        interp = tk.elf_interp(py)
+        loaded = tk.loader_list(py, tk.launch_env()) if interp else {}
+        expect(interp is not None and interp.startswith("/") and any(k.startswith("libc.so") for k in loaded), f"the real loader's list: {interp} {loaded}")
+        expect(tk.elf_interp(str(s["exe"])) is None, "a script names no loader")
+        # The launch: every search input removed, the fixed ones and any LD_ variable set.
+        env = {"HOME": "/h", "TRACEEVENT_PLUGIN_DIR": "/p", "TRACECMD_PLUGIN_DIR": "/q", "LD_LIBRARY_PATH": "/l", "LD_FOO": "1", "PATH": "/bin", "LC_ALL": "C"}
+        expect(tk.launch_env(env) == {"PATH": "/bin", "LC_ALL": "C"}, f"the launch environment: {tk.launch_env(env)}")
+        argv = tk.launch_argv(env)
+        expect(argv[0] == "env" and all(f"-u {n}" in " ".join(argv) for n in ("HOME", "TRACEEVENT_PLUGIN_DIR", "TRACECMD_PLUGIN_DIR", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "LD_FOO")),
+               f"the launch prefix: {argv}")
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "launch"], capture_output=True, text=True)
+        expect(p.returncode == 0 and p.stdout.splitlines()[:3] == ["env", "-u", "HOME"], f"the launch CLI: {p.stdout!r}")
+
         out = pathlib.Path(d, "tool.json")
-        env = {**saved, "DPKG_QUERY": str(dq), "TK_DPKG_OWNS": str(real)}
-        p = subprocess.run([sys.executable, "tools/tk_record.py", "tool", "--trace-cmd", str(real), "--out", str(out)], capture_output=True, text=True, env=env)
-        expect(p.returncode == 0 and tk.read_tool(out)["sha256"] == sha, f"the CLI: {p.returncode} {p.stderr}")
-        p = subprocess.run([sys.executable, "tools/tk_record.py", "tool", "--trace-cmd", str(bindir / "nope"), "--out", str(out)], capture_output=True, text=True, env=env)
+        env = {**saved, **s["env"]}
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "tool", "--trace-cmd", str(s["link"]), "--out", str(out)], capture_output=True, text=True, env=env)
+        expect(p.returncode == 0 and tk.read_tool(out)["sha256"] == sha256(s["exe"]) and tk.read_tool(out)["runtime"]["plugin_dirs"] == [str(s["plugin_dir"])],
+               f"the CLI: {p.returncode} {p.stderr}")
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "tool", "--trace-cmd", str(s["bindir"] / "nope"), "--out", str(out)], capture_output=True, text=True, env=env)
         expect(p.returncode == 1 and "is not found" in tk.read_tool(out)["read_status"], f"the CLI, not found: {p.returncode}")
+
+        # A saved report: written under the launch, with the identity of the trace-cmd and runtime that wrote it.
+        r = standin_runtime(pathlib.Path(d, "r"), exe_text='#!/bin/sh\necho "$@" >"$0.args"\nenv >"$0.env"\necho "stand-in report"\nexit "${TK_STANDIN_EXIT:-0}"\n')
+        rep, tout = pathlib.Path(d, "rep.txt"), pathlib.Path(d, "rep-tool.json")
+        env = {**saved, **inputs, **r["env"]}
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "report", "--trace-cmd", str(r["link"]), "--dat", "/x/run.csv.trace.dat",
+                            "--out", str(rep), "--tool-out", str(tout)], capture_output=True, text=True, env=env)
+        seen = pathlib.Path(str(r["exe"]) + ".env").read_text().splitlines()
+        os.environ.update(env)
+        try:
+            want = tk.tool_identity(str(r["link"]))
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        expect(p.returncode == 0 and rep.read_text() == "stand-in report\n" and pathlib.Path(str(r["exe"]) + ".args").read_text() == "report -t -i /x/run.csv.trace.dat\n"
+               and not any(x.split("=", 1)[0] in inputs for x in seen) and tk.read_tool(tout) == want and want["read_status"] == "ok",
+               f"a saved report under the launch: {p.returncode} {p.stderr} {[x for x in seen if x.split('=', 1)[0] in inputs]}")
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "report", "--trace-cmd", str(r["link"]), "--dat", "/x/run.csv.trace.dat",
+                            "--out", str(rep), "--tool-out", str(tout)], capture_output=True, text=True, env={**env, "TK_STANDIN_EXIT": "1"})
+        expect(p.returncode == 1 and "exited 1" in tk.read_tool(tout)["read_status"], f"a report that failed names no tool: {p.returncode}")
 
 
 def certified(base, report_tool: dict | None = AUDITED_TOOL) -> tuple[str, list[str]]:
@@ -455,6 +594,52 @@ def evidence() -> None:
         pathlib.Path(str(base) + ".tk-tool-after.json").write_text(json.dumps([AUDITED_TOOL]))
         st, why = certified(base)
         expect(st != "CERTIFIED" and any("not a mapping" in x for x in why), f"an identity that is not a mapping: {st} {why}")
+        # The runtime behind each use, with the executable unchanged (the re-review's decision): a trace library or plugin
+        # changed, absent or added, a search input selected, a preload, or a runtime missing or not understood is
+        # UNSUPPORTED; the audited baseline certifies (above).
+        te, tf = "libtraceevent.so.1", "libtracefs.so.1"
+        hr = f"{timer_clock._TE_PLUGINS}/plugin_hrtimer.so"
+
+        def changed(fn) -> dict:
+            t2 = copy.deepcopy(AUDITED_TOOL)
+            fn(t2)
+            return t2
+
+        def add_plugin(t2: dict, d: str = "/usr/lib/x86_64-linux-gnu/traceevent/plugins") -> None:
+            t2["runtime"]["plugins"][f"{d}/plugin_extra.so"] = {"path": f"{d}/plugin_extra.so", "sha256": "1" * 64, "package": None, "version": None, "architecture": None}
+
+        def env_dir(t2: dict) -> None:
+            t2["runtime"]["inputs"]["TRACEEVENT_PLUGIN_DIR"] = "/opt/plugins"
+            t2["runtime"]["plugin_dirs"].append("/opt/plugins")
+            add_plugin(t2, "/opt/plugins")
+
+        for what, tool, words in (
+                ("libtraceevent's file changed", changed(lambda x: x["runtime"]["libraries"][te].update(sha256="0" * 64)), f"{te}:"),
+                ("libtracefs at another version", changed(lambda x: x["runtime"]["libraries"][tf].update(version="1.8.3-1")), f"{tf}:"),
+                ("libtracefs resolved elsewhere", changed(lambda x: x["runtime"]["libraries"][tf].update(path="/usr/local/lib/libtracefs.so.1")), f"{tf}:"),
+                ("libtracefs absent", changed(lambda x: x["runtime"]["libraries"].pop(tf)), f"{tf}: absent"),
+                ("an unreviewed library", changed(lambda x: x["runtime"]["libraries"].update({"libtracecmd.so.1": {"path": "/x", "sha256": "2" * 64}})), "unreviewed library"),
+                ("a plugin added", changed(add_plugin), "unreviewed plugin"),
+                ("a plugin absent", changed(lambda x: x["runtime"]["plugins"].pop(hr)), "not loaded"),
+                ("a plugin's file changed", changed(lambda x: x["runtime"]["plugins"][hr].update(sha256="3" * 64)), "plugin_hrtimer.so:"),
+                ("a plugin directory from the environment", changed(env_dir), "plugin directories"),
+                ("HOME in the launch", changed(lambda x: x["runtime"]["inputs"].update(HOME="/root")), "search inputs"),
+                ("an LD_ variable in the launch", changed(lambda x: x["runtime"]["inputs"].update(LD=["LD_LIBRARY_PATH"])), "search inputs"),
+                ("a preload", changed(lambda x: x["runtime"].update(preload="/usr/lib/libsomething.so")), "a preload"),
+                ("no runtime", changed(lambda x: x.pop("runtime")), "missing trace_cmd"),
+                ("a runtime that is not a mapping", changed(lambda x: x.update(runtime=[1])), "wrong type"),
+                ("a runtime field not understood", changed(lambda x: x["runtime"].update(extra=1)), "other fields"),
+                ("the first version's unjudged library list", changed(lambda x: x.update(libraries={"libtraceevent1": "unreviewed"})), "does not know: libraries")):
+            write_record(base)
+            st, why = certified(base, report_tool=tool)
+            expect(st != "CERTIFIED" and any(words in x for x in why) and any("main trace" in x or "trace_cmd.report" in x for x in why),
+                   f"the main report's runtime with {what}: {st} {why}")
+            for suffix, use in ((".tk-tool-before.json", "before"), (".tk-tool-after.json", "after")):
+                write_record(base)
+                pathlib.Path(str(base) + suffix).write_text(json.dumps(tool))
+                st, why = certified(base)
+                expect(st != "CERTIFIED" and any(words in x for x in why) and any(timer_clock.TRACE_CMD_USES[use] in x or f"trace_cmd.{use}" in x for x in why),
+                       f"{suffix} with {what}: {st} {why}")
 
         # The calls in the record.
         tc = [f" chronyd-55 [002] d..1. {stamp(S0 + 500_000)}: ntp_adjtimex: (x) tkid=0 modes=1"]
