@@ -2329,10 +2329,12 @@ outputs on the same captures, the corrected commands' dry runs and the reproduce
 and the same cases adapted to the revised interfaces, on the corrected tools (at `6f00c03`). The review at `7553f40`
 (`review-option-a-7553f40/`) found two blockers (a `/proc` scan a fork can escape; status files under the caller's
 umask); `option-a-prep4/` holds its reproducers and four broken copies' outcomes on the corrected tools (at `2088c43`).
+The review at `2111f92` (`review-option-a-2111f92/`) found a failed release falling through to the keeper's group-only
+fallback; `option-a-prep5/` holds its reproducer and the new regression on the corrected tools (at `fc938f3`).
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the Option A review at 7553f40, and the T3 wording correction | `c62862fa274b90e12baae3f357f4bd03a1aea3352fb7bab09144d68554a0f8aa` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the Option A review at 2111f92, and the T3 wording correction | `074d7b170ecfd63fe0a3d272741cdf89a496bea61228806220b217457c068bd8` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2382,6 +2384,12 @@ umask); `option-a-prep4/` holds its reproducers and four broken copies' outcomes
 | `option-a-prep4/broken-copies.txt` | the review's reproducers on the corrected Option A tools (broken-copies.txt) | `3527e2b152ceee8f66a0d7eb75c6e121eb29567972cbf4e67401467a95ce1d54` |
 | `option-a-prep4/reviewer-reproducers.txt` | the review's reproducers on the corrected Option A tools (reviewer-reproducers.txt) | `c3ba188979bef3205b7236441019b58bc3a46ff83effaadf144f2c5e694efbc9` |
 | `option-a-prep4/smoke-race.txt` | the review's reproducers on the corrected Option A tools (smoke-race.txt) | `1829f3b7ae80217ced5ea9a14f9fc165dc0166f5e0bc45be603c7b14ca156d69` |
+| `option-a-prep5/PROVENANCE.txt` | provenance of the review's release-failure case on the corrected tools (at fc938f3) | `f108655a542bf710bf8b1fda92252e24f4825f51a847ea553e74d6c207c8b1f4` |
+| `option-a-prep5/SHA256SUMS` | folder ledger | `e7370f9e225e88087b0b514ba3e148e6557992c6f4aa8d9ce8b439b11047fe20` |
+| `option-a-prep5/check_release_failure.copy.bash` | the review's release-failure case on the corrected Option A tools (check_release_failure.copy.bash) | `224b611775b1b34b030a6f102ff21266a60895b6605fe5c1a51bd65232449ff9` |
+| `option-a-prep5/release-regression.txt` | the review's release-failure case on the corrected Option A tools (release-regression.txt) | `665dfde588ff3f43433ac15599b09a9f97cd2d56d252ec0e0fb0497b9c79274a` |
+| `option-a-prep5/reviewer-reproducer.txt` | the review's release-failure case on the corrected Option A tools (reviewer-reproducer.txt) | `f7f8dfbd4718aa449ab2dcebdc44756bbed3fe135e0cb866528fb973114d195a` |
+| `option-a-prep5/smoke.txt` | the review's release-failure case on the corrected Option A tools (smoke.txt) | `e5f86309168e7d3a657d5fb95c4b2f9a07114dc9bf5bce278a51ad6786502eac` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2509,6 +2517,19 @@ umask); `option-a-prep4/` holds its reproducers and four broken copies' outcomes
 | `review-option-a-7553f40/record-checks.txt` | Option A review evidence at 7553f40 (the reviewer's) | `646967e64a4e30681342dd0afb5ef5060db5b8418409c40165025acd45a7d202` |
 | `review-option-a-7553f40/review.md` | the reviewer's Option A review (at 7553f40): changes requested, two blockers | `c26f292d092d1c54e17ffc33387d6c4fe9f823a72009b940a449d105f71bfbc3` |
 | `review-option-a-7553f40/reviewed.diff` | Option A review evidence at 7553f40 (the reviewer's) | `6dc7c1bbec52ae71e310ad679f422f797d08ef8e61948d908564c4d8a8fce43d` |
+| `review-option-a-2111f92/SHA256SUMS` | Option A review evidence at 2111f92 (the reviewer's) | `ae28c13bae7b36f9091e2082123e501b66e36abdc0a9505211bf073f3468616b` |
+| `review-option-a-2111f92/check_put_mode.bash` | Option A review evidence at 2111f92 (the reviewer's) | `87164cdb6f237b58f387140635a9d1e05dd0fbed41f76811d517061795643d89` |
+| `review-option-a-2111f92/check_release_failure.bash` | Option A review evidence at 2111f92 (the reviewer's) | `e4c1c775770a6e5777fda588e1e7bf4f534ba7414860c15c245ddcd38803e960` |
+| `review-option-a-2111f92/cleanup.txt` | Option A review evidence at 2111f92 (the reviewer's) | `14845b7671216ff7672aa65ae7902634c6b80cff07f3899ba161f3cb9ff1adb4` |
+| `review-option-a-2111f92/developer-ledger-check.txt` | Option A review evidence at 2111f92 (the reviewer's) | `f6e0465438a45e96997c37f80f9912d934eca6160c1d5912c7531ca9c7b390a9` |
+| `review-option-a-2111f92/fixture.bash` | Option A review evidence at 2111f92 (the reviewer's) | `e831abf56b03216b8cb233465d07285e43edbfef0f6d84f59f8229567efe9754` |
+| `review-option-a-2111f92/put-mode.out` | Option A review evidence at 2111f92 (the reviewer's) | `dfb71ff128ff68a97992d6708b8f83f84d38e96d898c7fa0a43f2e029f678653` |
+| `review-option-a-2111f92/release-failure.out` | Option A review evidence at 2111f92 (the reviewer's) | `2390b4eda11057a38b512c63bb6b7e6136d7b145ba9a6bac6e0e60b8d7ad62bb` |
+| `review-option-a-2111f92/repro-experiment.record` | Option A review evidence at 2111f92 (the reviewer's) | `9739d4310ecc65f76feb66491aab4b8da8bdd9fed5d7c7cdcbff6dc6dccfaf58` |
+| `review-option-a-2111f92/repro-keeper.txt` | Option A review evidence at 2111f92 (the reviewer's) | `aec8fcf7c64b264caf5db3ee788a018663b79e5885163b8f1930e5b96bdf2ecb` |
+| `review-option-a-2111f92/repro-supervisor.txt` | Option A review evidence at 2111f92 (the reviewer's) | `ca4bf4ee1a4758723b6801eb5d915f50bc7b2bbc2ecfdd270185e94a7f6c3987` |
+| `review-option-a-2111f92/review.md` | the reviewer's Option A review (at 2111f92): changes requested, one blocker | `b5940112c957697d4c18b558a47bcdc097620c5cb06e1fb2e16c5be790209aa3` |
+| `review-option-a-2111f92/syntax-check.txt` | Option A review evidence at 2111f92 (the reviewer's) | `8914ec557bd88de4058c5645bb04eaa979a23d323032f38abcd8b477e33afea6` |
 | `review-rereview/SHA256SUMS` | re-review evidence (the reviewer's) | `34d751992f69626467dcd7daeb01807bf338615e6908eee11520d356bd0e3600` |
 | `review-rereview/check-fixes.txt` | re-review evidence (the reviewer's) | `6281025ee2928d4d47086095205bd51589ae0b140fe48a683156014e03a9674a` |
 | `review-rereview/check_fixes.py` | re-review evidence (the reviewer's) | `a95ca4593ed98a531b78a4ad16498d134bf6b2808b9cc79a17896eef3e36bdf4` |

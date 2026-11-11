@@ -2274,8 +2274,10 @@ field given twice by its last value. The third (`7553f40`) still confirmed
 the end of the experiment's processes by a `/proc` scan, which a process
 that forks and then exits during the scan can escape, and let the keeper's
 status files take the caller's umask (unreadable to the user when root owns
-them). The corrected procedure is one supervised command, and these tools
-serve it:
+them). The fourth (`2111f92`) let a release that failed fall through to the
+keeper's group-only fallback, which could restore the mask while a
+descendant in a session of its own still ran. The corrected procedure is one
+supervised command, and these tools serve it:
 
 - `tools/option_a.sh` is the supervisor. Before any host change it refuses
   with nothing changed unless the kernel is 7.0.0-42, the emulator's pty
@@ -2303,7 +2305,10 @@ serve it:
   a list that cannot be read is no end. It waits up to 120 s for that.
   Without it, it changes nothing on the host, names what remained, releases
   the keeper (which then ends without restoring) and ends unresolved, for
-  the operator to restore by hand once those processes have ended. With it,
+  the operator to restore by hand once those processes have ended. It
+  records whether the keeper confirmed the release, had acted on it although
+  its answer was lost, or still runs (a release never delivered); in each
+  case nothing is restored, since the keeper never restores on its own. With it,
   it restores and verifies the mask and the quieted services, then ends the
   keeper.
 - `tools/root_keeper.sh` is the privileged half, started through sudo while
@@ -2315,16 +2320,14 @@ serve it:
   only the request FIFO in it; every file the keeper writes there is created
   exclusively, without following a link, relative to that directory, given
   mode 0644 explicitly (whatever the umask, which sudo may pass on), then
-  renamed into place, and nothing but the FIFO changes owner. If the
-  supervisor is killed or crashes (it ends without a finish or a release),
-  the keeper waits until the kernel finds no process left in the
-  supervisor's process group (`kill(-pgid, 0)` fails with `ESRCH`, a test
-  the kernel makes atomically, a zombie counting until it is reaped), then
-  writes the original mask back and verifies it; without that end within 30
-  minutes it ends without restoring, the mask unresolved. That test reaches
-  only the group: a descendant that has left it (a session of its own) is
-  beyond it, the stated limit of this crash path. An owner that cannot be
-  read is not taken as ended.
+  renamed into place, and nothing but the FIFO changes owner. It never
+  restores anything on its own. If its owner ends without a finish or a
+  release (the supervisor was killed, crashed, or its release never
+  arrived), the keeper ends WITHOUT restoring, and logs the state of the
+  supervisor's process group from the kernel (`kill(-pgid, 0)`, which a
+  fork cannot race; for the operator's information only, since it does not
+  reach a descendant outside the group). An owner that cannot be read is not
+  taken as ended.
 - `tools/wq_mask.sh` changes and restores the mask with its append-only
   record. Its census of the unbound workers and rescuers counts an entry
   that still exists but cannot be read, or has no well-formed affinity list
@@ -2384,7 +2387,8 @@ Its exit status:
   above all: no timer run) or a signal, with every restoration verified.
 - 2: it refused, and nothing changed.
 - 3: unresolved. The end of the experiment's processes was not confirmed
-  (nothing was restored, and the released keeper restores nothing either),
+  (nothing was restored, and the keeper, released or not, restores nothing
+  either),
   an owed restoration was not verified, or a record could not be
   written (the final one included: the outcome is then never 0). The
   supervisor names each unresolved item and its remedy. Stop, keep the
@@ -2396,13 +2400,10 @@ Its exit status:
 Nothing is retried, and no budget, guard, rule or load changes. A signal sent
 to the supervisor alone lets the running session finish before it stops; a
 Ctrl-C or a hangup reaches the session too, which runs its own cleanup first.
-The limits: if the supervisor is killed (SIGKILL) or crashes, only the keeper
-acts, restoring the mask once the kernel finds no process left in the
-supervisor's process group (not at all if it does not within 30 minutes; a
-descendant that left the group is not covered then), and the quieted
-services and both records stay for the operator; if the keeper is
-killed too, or the power fails, nothing is restored until the operator does
-(a reboot resets the mask). After a hangup the sessions' own privileged
+The limits: if the supervisor is killed (SIGKILL) or crashes, nothing is
+restored automatically: the keeper ends without restoring, and the mask,
+the quieted services and both records stay for the operator, as after a
+power failure (a reboot resets the mask). After a hangup the sessions' own privileged
 cleanup still depends on their sudo, as before.
 
 The validation passes only if all of these hold, judged on the published
