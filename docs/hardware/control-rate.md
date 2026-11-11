@@ -2150,36 +2150,60 @@ reviewer split the verdicts:
 
 The 105 wakes lie inside the three failed-read write calls, 35 each: the
 port waits out its guard after a read timeout in sleeps of at most 1 ms. The
-generic check could not account for those sleeps. Wake accounting revision 2
-(`tools/trace_correlate.py`) accounts a wake as a guard sleep only by its own
-evidence: inside a failed-read cycle's write call, its timer armed by the
-worker right after a sleep call, for at most 1 ms, at or after the read's
-t0 + budget, and expiring by t0 + budget + guard plus the relative sleep's
-conversion lag. That lag is bounded by the time from the worker's previous
-sleep return to the arming; the last slice of each guard expired 617 to
-973 ns after the guard's end. Every other wake stays a failure. Under it,
-attempt 12's 105 wakes are all accounted and none is unexplained; its T3
-failures stand, and their cause is not established. The read timeouts also
-occur in the untraced run.
+generic check could not account for those sleeps. The accounting review of
+2026-11-11 confirmed, by its own replay, that these 105 are guard sleeps,
+including the last slice of each guard expiring 617 to 973 ns after the
+guard's end (within the 1,422 to 1,851 ns from the previous sleep's return,
+inside the same write call, to the arming). It found revision 2 of the
+generic rule too loose: it accepted a sleep call made before the write call,
+and let a return from before the write call bound the lag.
+
+Wake accounting revision 3 (`tools/trace_correlate.py`) accounts a wake as a
+guard sleep only if the failed read's write call owns it:
+
+- The sleep's call, the worker's arming of its timer (at most 100 us later),
+  the wake and the sleep's return lie in that order inside the write call.
+  The call is part of that write call's complete sequence of sleeps: no
+  return before its first call, and exactly one return per call.
+- The guard was still pending when the sleep read its clock. The sleep's
+  floor (the write call's start for the first sleep, else the previous
+  sleep's return) is before t0 + budget + guard.
+- The sleep lasts at most 1 ms, from at or after t0 + budget. Its expiry is
+  at or before t0 + budget + guard plus the time from its floor to its
+  arming; a return from before the write call bounds nothing.
+
+Every other wake stays a failure. The tests include the review's two
+counterexamples, each refused. Revision 3 still accounts all 105 of attempt
+12's wakes and leaves none unexplained. Its T3 failures stand, and their
+cause is not established; the read timeouts also occur in the untraced run.
 
 The first cost figures were not bounds. A difference of conditional medians
 can understate the recorder's contribution or be negative, and those runs
 mixed updates from outside the measured window: attempt 12's two CPU 3
-updates came before its run. `tools/tk_cost.py` now restricts everything to
-one recorded window, the probe's first wake to its last cycle end, and reports
-those differences as descriptive. Inside the windows:
+updates came before its run. `tools/tk_cost.py` restricts everything to one
+recorded window, the probe's first wake to its last cycle end, and reports
+those differences as descriptive (accepted by the accounting review). Its
+cycle wakes are the sleeps the trace establishes, through the same pairing
+as the timer-wake check, since a deadline still ahead at a cycle's end stamp
+does not show a sleep: the probe's bookkeeping after the stamp can use up
+the rest of the period. Inside the windows:
 
 - Attempt 12: CPU 3 performed no update; CPU 5 performed 19,617, at a median
-  of 0.49 us each.
-- Attempt 13: CPU 3 performed 47,597, at a median of 0.32 us each.
-- No late cycle wake and no worker wait of 50 us or more overlapped an
+  of 0.49 us each. The trace establishes 18,029 sleeps; one transition began
+  awake.
+- Attempt 13: CPU 3 performed 47,597, at a median of 0.32 us each. The trace
+  establishes 47,323 sleeps; 32 transitions began awake.
+- No late sleep wake and no worker wait of 50 us or more overlapped an
   update on CPU 3.
 
-These are observations, not cost limits. The corrected analyses, revision 2
-and the corrected cost tool, are pending review, and no new acquisition was
-needed for them. Hardware and H2 stay paused until the validation is decided
-and a revised H2 plan is accepted, and no failed historical slot is promoted.
-This qualifies no control rate.
+These are observations, not cost limits. A U whose clock rule failed is now
+printed as a candidate, "candidate U; conversion not accepted", never as
+validated; the certificate's verdict stays separate. This is a reporting
+change only, approved by the accounting review, with the numerical rule
+unchanged. Attempt 13 prints its 524 ns that way. The corrected analyses are
+pending review, and no new acquisition was needed for them. Hardware and H2
+stay paused, T3's read failures still prevent an overall validation pass, and
+no failed historical slot is promoted. This qualifies no control rate.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

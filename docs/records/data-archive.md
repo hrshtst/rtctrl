@@ -2312,9 +2312,15 @@ and both its probe runs fail T3 with 14 and 3 read failures); attempt 13's certi
 rejected (one local timer entry with no deadline of its own fails the deadline-slot accounting; its 524 ns is not an
 accepted bound). The first cost figures are not bounds. No control rate is qualified.
 
+The accounting review (2026-11-11, at `134da46`; `review-accounting/`) accepted the descriptive cost wording and the windowed
+counts, supported attempt 12's 105 wakes as guard sleeps by its own replay, and found two corrections: the generic
+guard rule (revision 2) did not establish that the write call owned a sleep, and the cost tool's slept cycles were
+inferred from deadlines. It approved printing a failed conversion's U as a candidate. `analysis-20261111-rev3/` holds the
+corrected analyses (tools at `5d677db`), pending review.
+
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents and the reviewer's split verdicts | `6d3d17ee6645708eb8fd9b130d6c442c7b99f4b6834e2df83f6916253dd46b63` |
+| `README.md` | the section's README: contents, the reviewer's split verdicts and the accounting review's | `3d703c249b02fa1b5976c79221bfd53d6e51fe356ac2395b8e57fa57d2c9dd47` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2330,6 +2336,12 @@ accepted bound). The first cost figures are not bounds. No control rate is quali
 | `analysis-20261111/tk_cost.py.uncommitted` | derived analysis: the cost tool as run for cost-12.txt and cost-13.txt (byte-identical to 6360881) | `7d5cf891280814c6571238a9f777f4badb2b5946b87372f19700f3bb60516ef1` |
 | `analysis-20261111/trace_correlate-wake2.uncommitted.diff` | derived analysis: the wake accounting revision 2 change as run for the wake2 outputs | `3390ade6db6e70f4b2896f95a2758cf6ba5481d46e1cf4b9fc4add067d609b91` |
 | `analysis-20261111/window-13.txt` | derived analysis: attempt 13's main-trace rows around the local timer entry with no deadline (74813.324788190 s) | `236b2f04b32b9a82f8afdf8406477ae5620c26162fbd03d0c3bb87603a9abcbc` |
+| `analysis-20261111-rev3/PROVENANCE.txt` | derived analysis: provenance of the corrected analyses (tools at 5d677db, the differences from revision 2) | `5ea0d7ec7f0d00937d6cf001e7f5c1278ea7416e7323efbdb069ae29f84a35a8` |
+| `analysis-20261111-rev3/SHA256SUMS` | derived analysis: folder ledger | `40fbc182666f64b2d92c8822d8dd08a324eb76bd92ec7f5a50c6184c55789b92` |
+| `analysis-20261111-rev3/correlate-12-wake3.txt` | derived analysis: trace_correlate.py with wake accounting revision 3, attempt 12 (corrected analysis pending review) | `f14d976e5498cfda7e12331548f91d95febaaaf0fe565d673b3a30bf5596ed98` |
+| `analysis-20261111-rev3/correlate-13-wake3.txt` | derived analysis: trace_correlate.py with wake accounting revision 3 and the candidate U label, attempt 13 (corrected analysis pending review) | `c3e9c260cd298f4eb0e90d2547376dffe7176a5fde932e8511dd22fca3784a50` |
+| `analysis-20261111-rev3/cost-12-rev3.txt` | derived analysis: tk_cost.py with the trace-established sleeps, attempt 12 (corrected analysis pending review) | `840de865143ca3feafa5c7d0fdd294ccb9df36794ad5a4ccbefcdff9cce63563` |
+| `analysis-20261111-rev3/cost-13-rev3.txt` | derived analysis: tk_cost.py with the trace-established sleeps, attempt 13 with attempt 11 as baseline (corrected analysis pending review) | `aea87a0af3092860a483e2b776f5ada0c102ee4e76ca10e37f41955f2e602b57` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2413,3 +2425,14 @@ accepted bound). The first cost figures are not bounds. No control rate is quali
 | `review/reviewed-cost-commit.diff` | validation review evidence (the reviewer's) | `059b16dbe001af30c0808f380516bfc925f6e1a787ba57d06397e95ea2c92684` |
 | `review/window-facts.txt` | validation review evidence (the reviewer's) | `105193a0fd1968ecd31614f06ce9302dbd8c181c25e996b83c6bb48bf20ac96f` |
 | `review/window_facts.py` | validation review evidence (the reviewer's) | `2c7ce4e72bf51ad45bd4f9eb4e3b913096f898968b244432b382f612a38eb649` |
+| `review-accounting/SHA256SUMS` | accounting review evidence (the reviewer's) | `ec72081b29665cae77181cf6ab3fa7555bf0cbfc16e2964eb08b73274da80928` |
+| `review-accounting/evidence-checks.txt` | accounting review evidence (the reviewer's) | `045e0fde12cd0ba905ea06bb2949fc5ad8fb8061215232203acc52f40f2d1119` |
+| `review-accounting/evidence_checks.py` | accounting review evidence (the reviewer's) | `318d4c5d35dddc8160e1dd2b9affa354b99a51495cd15da835012b952c38df4b` |
+| `review-accounting/guard-counterexamples.txt` | accounting review evidence (the reviewer's) | `994f565b80cdd7a75a28055e1f7c788c16f7f3736e2b248e03b119b5eebf1fd1` |
+| `review-accounting/guard_counterexamples.py` | accounting review evidence (the reviewer's) | `c798fb5e0d5655f16e2e96a7424f8b2b47dded8bc73b19b8b17447cd1c79f10d` |
+| `review-accounting/replay-12.txt` | accounting review evidence (the reviewer's) | `9c2661cb989dcd18fdbb5635ad4a1191b8b11243a6b90810551ff9f6fb15099e` |
+| `review-accounting/replay-13.txt` | accounting review evidence (the reviewer's) | `dc3199c893709730d46d39af716d0d30ba9500fb286b906fa20458331d3a90c8` |
+| `review-accounting/replay_guards.py` | accounting review evidence (the reviewer's) | `932aec41d78c495db8806cdc030b30d6c16034db0fe511dda4130bbfc33a93cb` |
+| `review-accounting/review.md` | the reviewer's accounting review of 2026-11-11 (at 134da46) | `6c32a430a569baa3ad5961de093f70649411d0506b35d913dccde0d47fb39b2e` |
+| `review-accounting/reviewed-analysis.diff` | accounting review evidence (the reviewer's) | `fdf03480f389e7204b16bbe49f251712bedda2b92bd4254ca31af84f7c8b774b` |
+| `review-accounting/tests.txt` | accounting review evidence (the reviewer's) | `f9f1d4c184f22aee57fb3cb1fadb0a38d84df4885ed16a611586f5fc08088713` |
