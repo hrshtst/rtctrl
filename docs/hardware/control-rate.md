@@ -1042,7 +1042,15 @@ paired with an untraced control of the same condition):
   made after the session's own check) is never removed; one it created is
   removed (verified) on every exit, even if a later step of the start
   failed; after a status that does not say (sudo's own failure, an
-  interruption), an instance found is left in place and reported;
+  interruption), an instance found is left in place and reported. Whether it
+  exists is answered only from a directory listing the helper read in full
+  (`present` or `absent`, status 0); a check that gives no answer (sudo's own
+  failure, whose status 1 the helpers once gave for absence, or an unreadable
+  tracefs) is never taken for absence: nothing is removed, the instance stays
+  owed and is checked again at every cleanup and at exit, and the run record
+  names it until its absence is confirmed. Before anything is sent, an
+  instance left by an earlier session, or one whose absence is not
+  confirmed, refuses the session;
 - a timekeeping record (`tools/tk_recorder.sh`, through sudo; the certificate's
   evidence): kprobes on `ntp_adjtimex` and `ntp_clear` and on the entry and
   return of `update_wall_time`, in a private instance on the mono clock with
@@ -1056,7 +1064,14 @@ paired with an untraced control of the same condition):
   come the last state read, the second read-back, the entry probe's disable
   before the others, the hit, miss and buffer counts, `trace-cmd extract -B`
   and `trace-cmd report -t` (nanosecond stamps, which the parser requires), the
-  kernel log's scan, and the removal, with ownership as for the TSC instance. A
+  kernel log's scan, and the removal, with ownership and checked existence as
+  for the TSC instance; a recorder still owed stops further runs. trace-cmd's
+  identity (`tools/tk_record.py tool`: the file the session runs, resolved once
+  at its start so that sudo runs the same file, its SHA-256, and its package,
+  version and architecture from dpkg, with its libraries' versions recorded) is
+  read before the main trace starts and after the recorder's report; one not
+  read before the run stops the session before anything starts, and one not
+  read after it is a tracer failure. A
   failed step is a tracer failure and leaves that file absent or partial, never
   an empty record, and an interrupted run collects what it can before it
   removes the recorder. Its user-space helpers are pinned to the tracer CPUs;
@@ -1098,13 +1113,14 @@ paired with an untraced control of the same condition):
   The picks are filtered to CPU 3, the
   server's calls to CPU 3's server, wherever they run. The session defines
   them once, before anything is sent, and refuses a group left by an
-  earlier session; it records the layout, the definitions and each event's
+  earlier session or one whose absence is not confirmed; it records the layout, the definitions and each event's
   format, and each run's hit and miss counts (`kprobe_profile`) right before
   and after the probe. Counts that cannot be read stop the session as a
   tracer failure. The group is removed (verified) on every exit, and a
   failed removal fails the session (status 3); a group whose definition had
   an unknown outcome is left in place and reported, with the commands that
-  remove it by hand. Whether each fetch argument reads as intended is
+  remove it by hand, and one whose existence is not confirmed stays owed as
+  for the TSC instance. Whether each fetch argument reads as intended is
   confirmed in the rehearsal before any use on the arm.
 
 A known unrelated batch workload (`tools/batch_workloads.sh`, by process
@@ -1159,9 +1175,17 @@ the sampler's bound, plus the chord over the interval and the clock-read
 difference; U is the largest over all intervals. The slope range and the
 10 ms clock-read maximum in it come from a certificate for that acquisition,
 from the timekeeping record: the audited kernel (7.0.0-42-generic, its config
-hash) and trace-cmd, clocksource `tsc` before and after with a clean kernel log,
+hash); the audited trace-cmd (3.3.3-1ubuntu2, amd64, the installed executable's
+SHA-256) for every use the certificate rests on, the acquisition, the recorder's
+extraction and report, and the main trace's report that the analysis read, a
+later replay's included (a saved `--report` needs `--report-tool`, the identity
+of the trace-cmd that wrote it; an identity missing, unread or of another build
+is UNSUPPORTED until a new audit); clocksource `tsc` before and after with a
+clean kernel log;
 a complete record (every probe enabled before and after, no misses, no losses,
-hits equal to records), no modifying timekeeping call from arming to the last
+hits equal to records, each file read whole: a row that repeats, contradicts
+another or is not understood makes it unreadable, never overwritten or
+skipped); no modifying timekeeping call from arming to the last
 state read, settled updates before the first read, no unmatched update entry
 up to the end of the interval, every overlapping update within 10 ms, unchanged
 frequency, constant and tick, the nominal 10,000 us tick, no `ntp_tick_adj` boot
@@ -2057,8 +2081,11 @@ preserved, then the emulator controls and end-to-end timer validation on
 are archived in `stage1_hardware/`, each with its own verdict.
 
 That design was frozen as revision 53 on 2026-11-11, and the session and the
-analysis now implement it (the conversion and the timekeeping record, above),
-pending the reviewer's implementation review. Changing `tools/timer_service.py`
+analysis now implement it (the conversion and the timekeeping record, above).
+The implementation review of 2026-11-11 requested three corrections, now made
+and pending its re-review: the cleanup's existence checks answer only from a
+listing read in full, the evidence files are read strictly, and the audited
+trace-cmd build is enforced for every use. Changing `tools/timer_service.py`
 voids the controls accepted under the earlier analysis for new work; their
 recorded results stand. Nothing here has run on the real kernel inside a
 session: the extraction and report path, the recorder's cost under load on the
