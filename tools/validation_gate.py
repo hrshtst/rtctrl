@@ -85,8 +85,26 @@ FIXED = ("started", "cpu", "original_cpumask", "original_requested", "original_i
 STEPS = ("restore_owed", "set_write", "set_verified", "set_failed", "observed", "restore_write", "restore_failed", "restored")
 
 
-def fields(v: str) -> tuple[float, dict]:
-    """A step's time and its key=value fields (a reason= field takes the rest of the line)."""
+# The fields each structured line holds: exactly one of these sets, each field once. A reason= field is free text
+# (the rest of the line); every other field is one word.
+SCHEMA = {
+    "started": [set()],
+    "restore_owed": [set()],
+    "set_write": [{"status"}],
+    "set_verified": [{"cpumask", "requested", "workers", "allowed", "unknown"}],
+    "set_failed": [{"reason"}],
+    "observed": [{"cpumask", "requested", "result"}, {"result"}],
+    "restore_write": [{"status"}],
+    "restore_failed": [{"reason"}],
+    "restored": [{"cpumask", "requested", "workers", "allowed", "unknown", "context"}],
+    "session_start": [set()],
+    "session_end": [{"status"}],
+}
+
+
+def fields(v: str, kind: str) -> tuple[float, dict]:
+    """A line's time and its key=value fields, checked against SCHEMA[kind]: a field twice, or a set of fields other
+    than the kind's, is unreadable (contradictory or unexpected evidence, never the last value)."""
     t = wq_time(v)
     rest = v.split(None, 1)[1] if " " in v else ""
     out: dict = {}
@@ -94,11 +112,17 @@ def fields(v: str) -> tuple[float, dict]:
         k, sep, tail = rest.partition("=")
         if not sep or not re.fullmatch(r"[a-z_]+", k):
             raise Unreadable(f"not a key=value field: {rest!r}")
+        if k in out:
+            raise Unreadable(f"the field {k} twice in {v!r}")
         if k == "reason":
             out[k], rest = tail, ""
         else:
             val, _, rest = tail.partition(" ")
+            if not val:
+                raise Unreadable(f"an empty field {k} in {v!r}")
             out[k] = val
+    if set(out) not in SCHEMA[kind]:
+        raise Unreadable(f"unexpected fields for {kind}: {sorted(out)} in {v!r}")
     return t, out
 
 
@@ -116,8 +140,8 @@ def read_wq(path: pathlib.Path) -> dict:
     if any(k not in STEPS for k in keys[len(FIXED):]):
         raise Unreadable(f"{path}: an unknown record line")
     fixed = {k: ln.partition("=")[2] for k, ln in zip(FIXED, lines)}
-    steps = [(ln.partition("=")[0], *fields(ln.partition("=")[2])) for ln in lines[len(FIXED):]]
-    return {"fixed": fixed, "started": wq_time(fixed["started"]), "steps": steps}
+    steps = [(ln.partition("=")[0], *fields(ln.partition("=")[2], ln.partition("=")[0])) for ln in lines[len(FIXED):]]
+    return {"fixed": fixed, "started": fields(fixed["started"], "started")[0], "steps": steps}
 
 
 def read_experiment(path: pathlib.Path) -> dict:
@@ -134,7 +158,7 @@ def read_experiment(path: pathlib.Path) -> dict:
             continue
         if k in out:
             raise Unreadable(f"{path}: {k} twice")
-        t, f = fields(v)
+        t, f = fields(v, "session_" + m[2])
         out[k] = (t, f.get("status"))
     return out
 

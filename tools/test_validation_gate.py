@@ -3,7 +3,8 @@
 check fails on its own defect (a read failure, a recovery, an incomplete summary, a recorded T3 that disagrees, a
 verdict outside the allowed failures or doubled, the hardware adapter or no --port, a run mask other than the target,
 a failed or late verification, no observation after the run or one that differs, a restoration before the run ended,
-failed or missing controls, the wrong mode); unreadable evidence exits 2."""
+failed or missing controls, the wrong mode); unreadable evidence exits 2, contradictory or unexpected fields in the
+mask record's steps or the experiment's session markers (a field twice, an empty or missing one, an extra one) included."""
 
 from __future__ import annotations
 
@@ -195,12 +196,42 @@ def units() -> None:
                              ["cpu=99", "target=ffffffff", f"set_verified={TS.format('09:59:03')}", f"observed={TS.format('10:00:40')} matches"]),
                             ("an unknown line", GOOD_RECORD + ["unknown=1"]),
                             ("a fixed value twice", GOOD_RECORD + ["target=fffffff7"]),
-                            ("a step that is not key=value", GOOD_RECORD + [f"observed={TS.format('10:04:20')} matches"])):
+                            ("a step that is not key=value", GOOD_RECORD + [f"observed={TS.format('10:04:20')} matches"]),
+                            # The re-review's contradictory fields (2026-11-11, Option A re-review, finding 4), and their kin.
+                            ("a verification with allowed=49 then allowed=0",
+                             at(GOOD_RECORD, "set_verified", GOOD_RECORD[9].replace("allowed=0", "allowed=49 allowed=0"))),
+                            ("an observation with result=differs then result=matches",
+                             at(GOOD_RECORD, "observed", GOOD_RECORD[10].replace("result=matches", "result=differs result=matches"))),
+                            ("a write with status=1 then status=0",
+                             at(GOOD_RECORD, "set_write", f"set_write={TS.format('09:59:02')} status=1 status=0")),
+                            ("a write with an unexpected field", at(GOOD_RECORD, "set_write", f"set_write={TS.format('09:59:02')} status=0 forced=1")),
+                            ("a write with an empty status", at(GOOD_RECORD, "set_write", f"set_write={TS.format('09:59:02')} status=")),
+                            ("a verification without its unknown count", at(GOOD_RECORD, "set_verified", GOOD_RECORD[9].replace(" unknown=0", ""))),
+                            ("an owed restoration with a field", at(GOOD_RECORD, "restore_owed", f"restore_owed={TS.format('09:59:01')} status=0")),
+                            ("a start time with a field", at(GOOD_RECORD, "started", f"started={TS.format('09:59:00')} status=0")),
+                            ("a restoration without its context", GOOD_RECORD + [CLOSED[0], CLOSED[1].replace(" context=restore", "")]),
+                            ("a restoration with context twice", GOOD_RECORD + [CLOSED[0], CLOSED[1] + " context=restore"])):
             try:
                 g(run, lines)
                 expect(False, f"{what}: read")
             except vg.Unreadable:
                 record(d, GOOD_RECORD)
+        # The free-form reason keeps the rest of its line, field-like words included.
+        _, f = vg.fields(f"{TS.format('09:59:02')} reason=write failed: status=1 cpumask=x", "set_failed")
+        expect(f == {"reason": "write failed: status=1 cpumask=x"}, f"a reason holding key=value words: {f}")
+        # The same rule for the experiment record's session markers.
+        for what, exp_lines in (("a session end with status=1 then status=0 (re-review, finding 4)",
+                                 at(EXPERIMENT, "session_A_end", f"session_A_end={TS.format('10:00:30')} status=1 status=0")),
+                                ("a session end without its status", at(EXPERIMENT, "session_A_end", f"session_A_end={TS.format('10:00:30')}")),
+                                ("a session end with an unexpected field",
+                                 at(EXPERIMENT, "session_A_end", f"session_A_end={TS.format('10:00:30')} status=0 retried=1")),
+                                ("a session start with a status", at(EXPERIMENT, "session_A_start", f"session_A_start={TS.format('09:59:30')} status=0")),
+                                ("a session end twice", EXPERIMENT + [f"session_A_end={TS.format('10:00:31')} status=0"])):
+            try:
+                g(run, exp_lines=exp_lines)
+                expect(False, f"{what}: read")
+            except vg.Unreadable:
+                experiment(d)
         for what in ("no summary", "no record", "no experiment record"):
             r2 = write_run(d, "u")
             record(d, GOOD_RECORD)
