@@ -6,11 +6,13 @@ EMU="$1"
 TEACH="$2"
 INSPECT="$3"
 CONFIG="$4"
-ROOT="$5"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "teach_smoke" "${5:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 LINK="$ROOT/ttyDXL"
 BUNDLE="$ROOT/torque-bundle"
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 "$EMU" --link "$LINK" >"$ROOT/emu.log" 2>&1 &
 EMU_PID=$!
@@ -120,4 +122,5 @@ for path, expected_valid in ((sys.argv[1], "0"), (sys.argv[2], "1")):
     assert all(b >= a for a, b in zip(times, times[1:])), path
 EOF
 
+scratch_release
 echo "x7_teach emulator workflow OK"

@@ -6,9 +6,11 @@ set -eu
 APP="$1"
 PLOTTER="$2"
 CONFIG="$3"
-ROOT="$4"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "ptp_plot_smoke" "${4:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 
 "$APP" --config "$CONFIG" --output "$ROOT/trajectory.zvs" \
@@ -30,4 +32,5 @@ fi
 grep -q "missing columns" "$ROOT/malformed.log"
 test ! -e "$ROOT/malformed.png"
 
+scratch_release
 echo "PTP diagnostics plotting OK"

@@ -5,12 +5,14 @@ set -eu
 
 APP="$1"
 CONFIG="$2"
-ROOT="$3"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "ptp_bundle_smoke" "${3:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 BUNDLE="$ROOT/archive"
 REPRODUCED="$ROOT/reproduced.zvs"
 REPRODUCED_CSV="$ROOT/reproduced.csv"
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 
 "$APP" --config "$CONFIG" --bundle "$BUNDLE" --motion-time 0.2 \
@@ -111,4 +113,5 @@ grep -q "cannot finish PTP output '.*capped.zvs'" "$ROOT/capped.log" || {
 }
 [ "$(stat -c %s "$ROOT/capped.zvs")" -le 4096 ]
 
+scratch_release
 echo "PTP bundle creation and replay OK"

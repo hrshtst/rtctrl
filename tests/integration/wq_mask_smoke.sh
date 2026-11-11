@@ -20,8 +20,10 @@
 #
 # usage: wq_mask_smoke.sh <scratch dir>
 set -u
-ROOT=$1
-rm -rf "$ROOT"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "wq_mask_smoke" "${1:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 mkdir -p "$ROOT/sys" "$ROOT/proc" "$ROOT/state"
 export ROOT
 fail() { echo "FAILED: $1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
@@ -56,7 +58,7 @@ reset() {  # the host as it starts: the original masks, the workers on every CPU
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"
   printf '%s\n' 00000000 >"$ROOT/sys/cpumask_isolated"
-  rm -rf "$ROOT/proc"/* "$ROOT/state"/*
+  scratch_rm "$ROOT/proc"/* "$ROOT/state"/*
   local p c
   for p in 101:kworker/u128:3 102:kworker/u128:4-events_unbound 103:kworker/R-writeback 104:kworker/R-kblockd 105:bash; do
     mkdir -p "$ROOT/proc/${p%%:*}"; printf '%s\n' "${p#*:}" >"$ROOT/proc/${p%%:*}/comm"
@@ -97,7 +99,7 @@ run() { "$TOOL" "$@" >"$ROOT/out" 2>&1; }
 reset; printf 'started=x\n' >"$ROOT/state/rec"
 run clear 3; st=$?
 [ "$st" -eq 2 ] && [ "$(masks)" = "$ORIG $ORIG" ] && grep -q 'a record is open' "$ROOT/out" || fail "an open record did not refuse ($st)" "$ROOT/out"
-reset; rm "$ROOT/sys/cpumask_requested"
+reset; scratch_rm "$ROOT/sys/cpumask_requested"
 run clear 3; st=$?
 [ "$st" -eq 2 ] && [ ! -e "$ROOT/state/rec" ] || fail "an unreadable mask did not refuse ($st)" "$ROOT/out"
 reset; printf 'ffff,zz\n' >"$ROOT/sys/cpumask"
@@ -112,7 +114,7 @@ run clear 3; st=$?
 reset; printf '00000008\n' >"$ROOT/sys/cpumask"; printf '00000008\n' >"$ROOT/sys/cpumask_requested"
 run clear 3; st=$?
 [ "$st" -eq 2 ] && grep -q 'would be empty' "$ROOT/out" || fail "an empty target did not refuse ($st)" "$ROOT/out"
-reset; rm -rf "$ROOT/proc"/*
+reset; scratch_rm "$ROOT/proc"/*
 run clear 3; st=$?
 [ "$st" -eq 2 ] && [ ! -e "$ROOT/state/rec" ] || fail "no readable workers did not refuse ($st)" "$ROOT/out"
 reset; chmod 500 "$ROOT/state"
@@ -137,7 +139,7 @@ for bad in 'Cpus_allowed_list:\t0-x' 'Name:\tno list'; do
   [ "$st" -eq 2 ] && [ ! -e "$ROOT/state/rec" ] || fail "a worker status '$bad' did not refuse ($st)" "$ROOT/out"
 done
 # A worker that has gone (its entry removed) is no worker: clear succeeds without it.
-reset; rm -rf "$ROOT/proc/101"
+reset; scratch_rm "$ROOT/proc/101"
 run clear 3 && grep -q '^set_verified=.* workers=3 allowed=0 unknown=0$' "$ROOT/state/rec" || fail "a gone worker" "$ROOT/out"
 run restore || fail "restore after a gone worker" "$ROOT/out"
 # A worker that becomes unreadable once the target is written: the verification is incomplete, so clear restores, but the
@@ -227,4 +229,5 @@ cp "$ROOT/rec.good" "$ROOT/state/rec"
 printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"; printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"; workers "$ORIG"
 run restore || fail "restore after a reboot" "$ROOT/out"
 [ ! -e "$ROOT/state/rec" ] || fail "the record stayed open after a reboot's restore"
+scratch_release
 echo "wq_mask smoke OK"

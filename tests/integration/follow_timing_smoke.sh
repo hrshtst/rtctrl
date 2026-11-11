@@ -10,10 +10,12 @@ EMU="$1"
 FOLLOW="$2"
 PLAN="$3"
 SRC="$4"
-ROOT="$5"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "follow_timing_smoke" "${5:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 LINK="$ROOT/tty"
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 "$PLAN" --config "$SRC/config/ptp_example.toml" --output "$ROOT/ptp.zvs" \
   --no-diagnostics --motion-time 0.5 >"$ROOT/plan.log" 2>&1
@@ -113,4 +115,5 @@ grep -q 'timing summary already exists' "$ROOT/refuse-summary.log"
 test ! -e "$ROOT/third.csv"
 test "$(cat "$ROOT/third.csv.summary.toml")" = keep
 
+scratch_release
 echo "follow timing log OK"

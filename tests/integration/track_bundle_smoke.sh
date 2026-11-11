@@ -7,10 +7,12 @@ PLAN_APP="$2"
 PLAN_CONFIG="$3"
 MODEL="$4"
 HARDWARE="$5"
-ROOT="$6"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "track_bundle_smoke" "${6:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 BUNDLE="$ROOT/archive"
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 
 "$PLAN_APP" --config "$PLAN_CONFIG" --output "$ROOT/reference.zvs" \
@@ -96,4 +98,5 @@ grep -q "log: writing .*capped.csv failed; the log is incomplete" \
 }
 [ "$(stat -c %s "$ROOT/capped.csv")" -le 8192 ]
 
+scratch_release
 echo "track bundle creation and replay OK"

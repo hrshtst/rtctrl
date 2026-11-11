@@ -8,8 +8,10 @@
 # usage: tsc_mono_pairs_smoke.sh <tsc_mono_pairs> <scratch dir>
 set -u
 BIN=$1
-ROOT=$2
-rm -rf "$ROOT"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "tsc_mono_pairs_smoke" "${2:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 mkdir -p "$ROOT"
 fail() { echo "FAILED: $1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 
@@ -37,4 +39,5 @@ for bad in "--cpu" "--output $ROOT/x.csv --interval-ms 0" "--output $ROOT/x.csv 
   "$BIN" $bad >/dev/null 2>&1
   [ $? -eq 2 ] || fail "'$bad' was not refused with status 2"
 done
+scratch_release
 echo "tsc_mono_pairs smoke OK"

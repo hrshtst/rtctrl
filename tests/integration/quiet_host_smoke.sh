@@ -19,8 +19,10 @@
 #
 # usage: quiet_host_smoke.sh <scratch dir>
 set -u
-ROOT=$1
-rm -rf "$ROOT"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "quiet_host_smoke" "${1:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 mkdir -p "$ROOT/sd"
 fail() { echo "FAILED: $1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 pids=()
@@ -126,7 +128,7 @@ units() {  # uu active, ls active, ls enabled
   echo "$1" >"$SD/system.unattended-upgrades.service.active"
   echo "$2" >"$SD/user.localsearch-3.service.active"
   echo "$3" >"$SD/user.localsearch-3.service.enabled"
-  rm -f "$SD/system.apt-daily.service.active" "$SD/system.apt-daily-upgrade.service.active" "$SD/log" "$SD/unknown.count"
+  scratch_rm "$SD/system.apt-daily.service.active" "$SD/system.apt-daily-upgrade.service.active" "$SD/log" "$SD/unknown.count"
 }
 now() { echo "$(cat "$SD/system.unattended-upgrades.service.active") $(cat "$SD/user.localsearch-3.service.active") $(cat "$SD/user.localsearch-3.service.enabled")"; }
 QH=tools/quiet_host.sh
@@ -227,7 +229,7 @@ chmod u+w "$ROOT/rec"
 for at in is-active:apt-daily.service is-enabled:localsearch-3.service; do
   units active active enabled
   echo active >"$SD/system.apt-daily.service.active"
-  [ "$at" = is-enabled:localsearch-3.service ] && rm -f "$SD/system.apt-daily.service.active"
+  [ "$at" = is-enabled:localsearch-3.service ] && scratch_rm "$SD/system.apt-daily.service.active"
   FAKE_UNKNOWN=$at "$QH" stop >"$ROOT/unk.log" 2>&1
   [ $? -eq 2 ] && grep -q "cannot read ${at#*:}'s state" "$ROOT/unk.log" && [ "$(now)" = "active active enabled" ] &&
     [ ! -e "$QUIET_HOST_STATE" ] || fail "an unreadable $at before the changes: $(now)" "$ROOT/unk.log"
@@ -236,9 +238,10 @@ units active active enabled
 FAKE_UNKNOWN=is-active:unattended-upgrades.service FAKE_UNKNOWN_FROM=2 "$QH" stop >"$ROOT/unk2.log" 2>&1
 [ $? -eq 1 ] && grep -q "cannot read unattended-upgrades.service's state" "$ROOT/unk2.log" && [ -e "$QUIET_HOST_STATE" ] ||
   fail "an unreadable state in the stop's verification" "$ROOT/unk2.log"
-rm -f "$SD/unknown.count"
+scratch_rm "$SD/unknown.count"
 FAKE_UNKNOWN=is-active:unattended-upgrades.service "$QH" restore >"$ROOT/unk3.log" 2>&1
 [ $? -eq 1 ] && [ -e "$QUIET_HOST_STATE" ] || fail "an unreadable state in a restore" "$ROOT/unk3.log"
 "$QH" restore >/dev/null 2>&1 || fail "restore once the state reads again"
 [ "$(now)" = "active active enabled" ] && [ ! -e "$QUIET_HOST_STATE" ] || fail "after the last restore: $(now)"
+scratch_release
 echo "quiet host smoke OK"

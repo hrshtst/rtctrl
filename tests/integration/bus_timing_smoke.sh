@@ -12,10 +12,12 @@ set -eu
 EMU="$1"
 PROBE="$2"
 INSPECT="$3"
-ROOT="$4"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "bus_timing_smoke" "${4:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 LINK="$ROOT/tty"
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 "$EMU" --link "$LINK" --firmware 45 >"$ROOT/emu.log" 2>&1 &
 EMU_PID=$!
@@ -466,4 +468,5 @@ for profile in current position; do
   test "$(cut -d, -f18 "$ROOT/cal47-$profile.csv" | sed 1d | sort -u)" = 1
 done
 
+scratch_release
 echo "bus timing probe OK"

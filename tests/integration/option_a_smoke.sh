@@ -19,8 +19,10 @@
 #
 # usage: option_a_smoke.sh <scratch dir>
 set -u
-ROOT=$1
-rm -rf "$ROOT"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "option_a_smoke" "${1:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 mkdir -p "$ROOT"
 fail() { echo "FAILED: $1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 ORIG=ffffffff
@@ -66,7 +68,7 @@ cat >"$ROOT/quiet" <<'EOF'
 case "$1" in
   stop) echo "started=x" >"$QUIET_HOST_STATE"; "$QUIET_HOST_SUDO" systemctl stop unattended-upgrades.service ;;
   restore) [ -e "$QUIET_HOST_STATE" ] || exit 0
-           "$QUIET_HOST_SUDO" systemctl start unattended-upgrades.service && rm "$QUIET_HOST_STATE" ;;
+           "$QUIET_HOST_SUDO" systemctl start unattended-upgrades.service && { . "$RTCTRL_SCRATCH_LIB"; scratch_rm "$QUIET_HOST_STATE"; } ;;
 esac
 EOF
 # The session's stand-in: the dry run, or a run that writes its probe log (and the controls' record in the timer mode),
@@ -113,7 +115,7 @@ EOF
 chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate"
 
 reset() {  # the host as it starts
-  rm -rf "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT"/calls "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* \
+  scratch_rm "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT"/calls "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* \
          "$ROOT"/session.* "$ROOT"/gate.exit.* "$ROOT/dry.exit" "$ROOT/kernel.mode" "$ROOT/uu.log" "$ROOT/sup.out"
   mkdir -p "$ROOT/sys" "$ROOT/state" "$ROOT/proc"
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"; printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"
@@ -169,7 +171,7 @@ grep -q 'request .*: mask fffffff7: status 0' "$E/keeper/keeper.log" && grep -q 
 # After the experiment, the gate on both runs passes against the closed record too.
 reset; : >"$ROOT/real-gate"
 (unset OPTION_A_GATE; start; wait "$sup"; echo $? >"$ROOT/real.st")
-st=$(cat "$ROOT/real.st"); rm -f "$ROOT/real-gate"
+st=$(cat "$ROOT/real.st"); scratch_rm "$ROOT/real-gate"
 [ "$st" -eq 0 ] && restored && grep -q 'gate_A_end=.* status=0' "$E/experiment.record" && grep -q 'gate_B_end=.* status=0' "$E/experiment.record" ||
   fail "the experiment with the real gate ($st)" "$E/supervisor.log"
 closed=$(ls "$WQ_MASK_RECORD".restored-* | head -n 1)
@@ -249,7 +251,7 @@ WQ_MASK_SUDO=none tools/wq_mask.sh restore >/dev/null 2>&1 || :
 
 # The keeper alone: its list, its directory.
 reset
-K=$ROOT/k; mkdir -m 700 "$K"; mkfifo -m 600 "$K/requests"; mkdir -m 700 "$K/replies"
+K=$ROOT/k; scratch_within "$K" || exit 2; mkdir -m 700 "$K"; mkfifo -m 600 "$K/requests"; mkdir -m 700 "$K/replies"
 sleep 30 &
 owner=$!
 ostart=$(sed 's/.*) //' "/proc/$owner/stat" | cut -d ' ' -f 20)
@@ -265,7 +267,8 @@ out=$(c status); st4=$?
 echo "$TARGET" | c tee "$ROOT/sys/cpumask" && [ "$(masks)" = "$TARGET $TARGET" ] || fail "the keeper's target write" "$K/keeper.log"
 c finish && [ "$(masks)" = "$ORIG $ORIG" ] || fail "the keeper's finish" "$K/keeper.log"
 kill "$owner" 2>/dev/null
-chmod 755 "$K"; rm -f "$K/keeper.ready"
+chmod 755 "$K"; scratch_rm "$K/keeper.ready"
 tools/root_keeper.sh serve "$K" "$$" "$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 20)" 999999 3 2>/dev/null; st=$?
 [ "$st" -eq 2 ] && [ ! -e "$K/keeper.ready" ] || fail "a keeper in a directory that is not private ($st)"
+scratch_release
 echo "option_a smoke OK"

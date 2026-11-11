@@ -11,11 +11,15 @@ MODEL="$5"
 HARDWARE="$6"
 PLOTTER="$7"
 COMPARATOR="$8"
-ROOT="$9"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init follow_plot_smoke "${9:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 
 bash "$BUNDLE_SMOKE" "$FOLLOW_APP" "$PLAN_APP" "$PLAN_CONFIG" \
-  "$MODEL" "$HARDWARE" "$ROOT/run" >"$ROOT-bundle.log" 2>&1
-python "$PLOTTER" "$ROOT/run/archive/simulation.csv" \
+  "$MODEL" "$HARDWARE" "$ROOT/follow_bundle_smoke" >"$ROOT/bundle.log" 2>&1
+RUN=$(scratch_nested follow_bundle_smoke)  # the bundle test's own child, left in this one's
+python "$PLOTTER" "$RUN/archive/simulation.csv" \
   --output "$ROOT/follow.png" >"$ROOT/plot.log" 2>&1
 
 test -s "$ROOT/follow.png"
@@ -23,9 +27,9 @@ grep -q "maximum joint tracking error" "$ROOT/plot.log"
 grep -q "phase cycles" "$ROOT/plot.log"
 
 BUNDLE_PLOTTER="$(dirname "$PLOTTER")/follow_bundle_tracking.py"
-python "$BUNDLE_PLOTTER" "$ROOT/run/archive" \
+python "$BUNDLE_PLOTTER" "$RUN/archive" \
   >"$ROOT/bundle-plot.log" 2>&1
-test -s "$ROOT/run/archive/tracking-analysis.png"
+test -s "$RUN/archive/tracking-analysis.png"
 grep -q "maximum joint tracking error" "$ROOT/bundle-plot.log"
 
 printf 'time_s,phase\n0,tracking\n' >"$ROOT/malformed.csv"
@@ -38,9 +42,9 @@ grep -q "missing columns" "$ROOT/malformed.log"
 test ! -e "$ROOT/malformed.png"
 
 mkdir -p "$ROOT/comparison"
-cp "$ROOT/run/archive/simulation.csv" "$ROOT/comparison/position.csv"
+cp "$RUN/archive/simulation.csv" "$ROOT/comparison/position.csv"
 awk 'BEGIN { FS=OFS="," } NR > 1 { $4=5 } { print }' \
-  "$ROOT/run/archive/simulation.csv" >"$ROOT/comparison/cbp.csv"
+  "$RUN/archive/simulation.csv" >"$ROOT/comparison/cbp.csv"
 python "$COMPARATOR" "$ROOT/comparison/position.csv" \
   "$ROOT/comparison/cbp.csv" --output "$ROOT/comparison.png" \
   --summary-csv "$ROOT/comparison.csv" >"$ROOT/comparison.log" 2>&1
@@ -97,4 +101,5 @@ grep -q "FAILURE ANALYSIS: CBP tracking ended in abort_hold" \
   "$ROOT/failure-analysis.log"
 grep -q "cbp_abort_common_prefix" "$ROOT/failure-analysis.csv"
 
+scratch_release
 echo "follow telemetry plotting OK"

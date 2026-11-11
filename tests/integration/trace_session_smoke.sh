@@ -40,7 +40,10 @@ set -eu
 
 EMU="$1"
 PROBE="$2"
-ROOT="$3"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "trace_session_smoke" "${3:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 INSPECT="$4"
 SAMPLER="${5:-}"  # tsc_mono_pairs (x86-64 builds); without it the timer mode is not run
 LINK="$ROOT/tty"
@@ -48,7 +51,6 @@ OUT="$ROOT/out"
 FAKE="$ROOT/fake"
 DATE=20000101
 
-rm -rf "$ROOT"
 mkdir -p "$OUT" "$FAKE" "$ROOT/tracefs" "$ROOT/usbdev"
 "$EMU" --link "$LINK" --firmware 47 >"$ROOT/emu.log" 2>&1 &
 EMU_PID=$!
@@ -170,7 +172,7 @@ echo "trace-ready" >>"$FAKE_LOG.events"
 # FAKE_TRACE_LIFE: end on its own after that many seconds, successfully.
 end=$(( $(date +%s) + ${FAKE_TRACE_LIFE:-100000} ))
 while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
-rm -f "$tdir/$(basename "$out").cpu0"
+. "$RTCTRL_SCRATCH_LIB"; scratch_rm "$tdir/$(basename "$out").cpu0"
 if [ "${FAKE_TRACE_ENOSPC:-0}" = 1 ]; then
   echo "partial stand-in trace" >"$out"
   echo "trace-cmd: No space left on device"
@@ -386,7 +388,7 @@ case "$1" in
          done
          echo "cpus: $n" ;;
   remove) [ "${FAKE_TK_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: it remains" >&2; exit 1; }
-         rm -f "$mark"; rm -rf "$TRACEFS/instances/$3" ;;
+         . "$RTCTRL_SCRATCH_LIB"; scratch_rm "$mark" "$TRACEFS/instances/$3" ;;
   exists) "$(dirname "$0")/exists_answer" "$mark" "$FAKE_LOG.tk_exists_calls" "${FAKE_TK_EXISTS_FAIL:-}" ;;
 esac
 EOF
@@ -488,7 +490,7 @@ case "$1" in
   stats) [ "${FAKE_TSC_STATS:-}" = fail ] && { echo "stand-in: cannot read the stats" >&2; exit 1; }
          printf 'CPU: %s\nentries: 1\noverrun: %s\ncommit overrun: 0\ndropped events: 0\n' "$4" "${FAKE_TSC_OVERRUN:-0}" ;;
   remove) [ "${FAKE_TSC_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
-          rm -f "$mark" ;;
+          . "$RTCTRL_SCRATCH_LIB"; scratch_rm "$mark" ;;
   exists) "$(dirname "$0")/exists_answer" "$mark" "$FAKE_LOG.tsc_exists_calls" "${FAKE_TSC_EXISTS_FAIL:-}" ;;
 esac
 EOF
@@ -514,7 +516,7 @@ case "$1" in
           : >"$mark"
           echo "fair-server probes $3: $(names "$4" | wc -l) events defined ($(names "$4" | xargs))" ;;
   remove) [ "${FAKE_FS_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
-          rm -f "$mark" ;;
+          . "$RTCTRL_SCRATCH_LIB"; scratch_rm "$mark" ;;
   exists) "$(dirname "$0")/exists_answer" "$mark" "$FAKE_LOG.fs_exists_calls" "${FAKE_FS_EXISTS_FAIL:-}" ;;
   profile) [ "${FAKE_FS_PROFILE:-}" = fail ] && { echo "stand-in: cannot read kprobe_profile" >&2; exit 1; }
            n=$(( $(cat "$FAKE_LOG.fs_profile_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$FAKE_LOG.fs_profile_calls"
@@ -558,7 +560,9 @@ cat >"$FAKE/umount" <<'EOF'
 echo "$*" >>"$FAKE_LOG.umount"
 [ -e "$FAKE_UMOUNT_FAIL" ] && { echo "umount: $1: target is busy" >&2; exit 32; }
 line=$(grep "^$1 " "$FAKE_MOUNTS") || { echo "umount: $1: not mounted" >&2; exit 32; }
-find "$1" -mindepth 1 -delete
+. "$RTCTRL_SCRATCH_LIB"
+scratch_within "$1" || { echo "umount stand-in: $1 lies outside the scratch directory" >&2; exit 1; }
+find -- "${1:?}" -mindepth 1 -delete
 chmod "${line##* }" "$1"
 grep -v "^$1 " "$FAKE_MOUNTS" >"$FAKE_MOUNTS.new"; mv "$FAKE_MOUNTS.new" "$FAKE_MOUNTS"
 EOF
@@ -566,7 +570,8 @@ cat >"$FAKE/rmdir" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.rmdir"
 [ -e "$FAKE_RMDIR_FAIL" ] && { echo "rmdir: failed to remove '$1': Device or resource busy" >&2; exit 1; }
-exec rmdir "$@"
+. "$RTCTRL_SCRATCH_LIB"
+scratch_rmdir "$@"
 EOF
 # The stand-in kernel's ring-buffer sizing for one trace array ($1 its
 # directory, $2 the KiB requested per CPU), as Linux 7.0 sizes it: n = max(2,
@@ -642,6 +647,7 @@ export TRACE_SESSION_CPU_ROOT="$ROOT/cpu"
 export MOUNT="$FAKE/mount" FINDMNT="$FAKE/findmnt" UMOUNT="$FAKE/umount" RMDIR="$FAKE/rmdir" FAKE_MOUNTS="$ROOT/mounts"
 export FAKE_UMOUNT_FAIL="$ROOT/umount-fail" FAKE_RMDIR_FAIL="$ROOT/rmdir-fail" TRACE_STAGE_CAPACITY=findmnt
 export TRACE_SESSION_STAGE_ROOT="$ROOT/stage" TRACE_SESSION_MEMINFO="$ROOT/meminfo"
+scratch_within "$TRACEFS" "$TRACE_SESSION_STAGE_ROOT" "$FAKE" || exit 2  # the trees the session and its stand-ins empty
 export FS_PROBE_TOOL="$FAKE/fs_probes" FAIR_SERVER_BTF_RAW="$PWD/tests/data/btf_raw_fair_server.txt"
 if [ -n "$SAMPLER" ]; then export TSC_SAMPLER="$SAMPLER"; fi
 echo "4 4 0" >"$ROOT/fake.latency-state"
@@ -1332,7 +1338,8 @@ grep -q "^                      $FAKE/perf record -k mono -C 0 -F 999 --call-gra
 # cannot be set is status 4 (created: the caller's); its stats name the CPU
 # first.
 T="$ROOT/tsc-tree"
-rm -rf "$T"
+scratch_within "$T" || exit 2
+scratch_rm "$T"
 mkdir -p "$T/instances/held" "$T/instances/s/per_cpu/cpu3"
 printf 'entries: 1\noverrun: 0\n' >"$T/instances/s/per_cpu/cpu3/stats"
 set +e
@@ -1375,7 +1382,8 @@ fi
 # written; the counts name every event, and a missing one fails; removing
 # events that are absent succeeds.
 T="$ROOT/fs-tree"
-rm -rf "$T"
+scratch_within "$T" || exit 2
+scratch_rm "$T"
 mkdir -p "$T/events/held" "$T/nowrite/kprobe_events"
 printf 'p:held/rtfs_a f x=$arg1\n' >"$T/held.defs"
 printf 'p:fresh/rtfs_a f x=$arg1\nr:fresh/rtfs_b f y=$retval\n' >"$T/fresh.defs"
@@ -1537,7 +1545,7 @@ EOF
   fi
   grep -q 'the trace instance rtctrl_tsc remains from an earlier session' "$ROOT/timer-stale.log" ||
     fail "no refusal for the stale instance" "$ROOT/timer-stale.log"
-  rm -f "$ROOT/fake.tsc_instance_exists"
+  scratch_rm "$ROOT/fake.tsc_instance_exists"
   # A failed removal fails an otherwise successful session (status 3).
   set +e
   FAKE_TSC_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
@@ -1548,7 +1556,7 @@ EOF
     fail "a failed removal gave status $st" "$ROOT/timer-rmfail.log"
   grep -q 'cleanup: trace instance rtctrl_tsc NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 33).run.txt" ||
     fail "the record lacks the failed removal" "$ROOT/timer-rmfail.log"
-  rm -f "$ROOT/fake.tsc_instance_exists"
+  scratch_rm "$ROOT/fake.tsc_instance_exists"
   # Loss counts that cannot be read are not counts of zero: a failed read
   # of each buffer's stats, a missing CPU and a malformed counter stop the
   # session with the count unknown.
@@ -1595,7 +1603,7 @@ EOF
   # reported.
   for c in "39 race 1 left" "40 partial 1 removed" "41 unknown 1 left"; do
     read -r att how want_st want_mark <<<"$c"
-    rm -f "$ROOT/fake.tsc_instance_exists"
+    scratch_rm "$ROOT/fake.tsc_instance_exists"
     set +e
     FAKE_TSC_START=$how TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
       --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/timer-own-$how.log" 2>&1
@@ -1610,7 +1618,7 @@ EOF
   done
   grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/timer-own-unknown.log" ||
     fail "the unknown start's instance was not reported" "$ROOT/timer-own-unknown.log"
-  rm -f "$ROOT/fake.tsc_instance_exists"
+  scratch_rm "$ROOT/fake.tsc_instance_exists"
   # The timekeeping recorder: one left by an earlier session refuses the
   # session; ownership follows its start's status; a failed removal is
   # status 3; each failed step is a tracer failure, never an empty success;
@@ -1622,10 +1630,10 @@ EOF
   fi
   grep -q 'the timekeeping recorder rtctrl_tk remains from an earlier session' "$ROOT/tk-stale.log" && [ -e "$ROOT/fake.tk_recorder_exists" ] ||
     fail "no refusal for the stale recorder, or it was removed" "$ROOT/tk-stale.log"
-  rm -f "$ROOT/fake.tk_recorder_exists"
+  scratch_rm "$ROOT/fake.tk_recorder_exists"
   for c in "61 race left" "62 partial removed" "63 unknown left"; do
     read -r att how want_mark <<<"$c"
-    rm -f "$ROOT/fake.tk_recorder_exists"
+    scratch_rm "$ROOT/fake.tk_recorder_exists"
     set +e
     FAKE_TK_START=$how TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
       --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-own-$how.log" 2>&1
@@ -1642,7 +1650,7 @@ EOF
   done
   grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/tk-own-unknown.log" ||
     fail "the unknown recorder start was not reported" "$ROOT/tk-own-unknown.log"
-  rm -f "$ROOT/fake.tk_recorder_exists"
+  scratch_rm "$ROOT/fake.tk_recorder_exists"
   # An unknown start, then existence checks that fail as sudo does (status
   # 1, which the helpers once answered for absence): nothing is removed, the
   # recorder stays owed and is checked again at every cleanup and at exit,
@@ -1654,7 +1662,7 @@ EOF
     what=${rest%%|*} rest=${rest#*|}
     ident=${rest%%|*} exit_what=${rest#*|}
     tool_log="$ROOT/fake.$tool" mark="$ROOT/fake.${tool}_exists"
-    rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tsc_instance_exists" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.tsc_exists_calls"
+    scratch_rm "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tsc_instance_exists" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.tsc_exists_calls"
     n_rm=$(grep -c '^remove ' "$tool_log" || true)
     set +e
     env "$start_env" "$fail_env" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
@@ -1673,9 +1681,9 @@ EOF
     [ -e "$mark" ] || fail "$who: what was not confirmed was removed"
     [ "$(grep -c '^remove ' "$tool_log" || true)" -eq "$n_rm" ] || fail "$who: a removal was sent for what may be another session's" "$tool_log"
   done
-  rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tsc_instance_exists"
+  scratch_rm "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tsc_instance_exists"
   # A check that fails once and then answers absent ends the obligation, and says so.
-  rm -f "$ROOT/fake.tk_exists_calls"
+  scratch_rm "$ROOT/fake.tk_exists_calls"
   set +e
   FAKE_TK_START=unknown-none FAKE_TK_EXISTS_FAIL=2-2 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
     --attempt 74 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/unk-later.log" 2>&1
@@ -1692,7 +1700,7 @@ EOF
   for c in "75 FAKE_TSC_EXISTS_FAIL=1 the trace instance rtctrl_tsc" "76 FAKE_TK_EXISTS_FAIL=1 the timekeeping recorder rtctrl_tk" \
            "77 FAKE_FS_EXISTS_FAIL=1 the probe group rtctrl_fs"; do
     read -r att envv what <<<"$c"
-    rm -f "$ROOT/fake.tsc_exists_calls" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.fs_exists_calls"
+    scratch_rm "$ROOT/fake.tsc_exists_calls" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.fs_exists_calls"
     set +e
     env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" --duration 2 \
       --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/pre-unk-$att.log" 2>&1
@@ -1702,7 +1710,7 @@ EOF
       [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att").run.txt" ] ||
       fail "$envv: an unanswered check before the session: status $st" "$ROOT/pre-unk-$att.log"
   done
-  rm -f "$ROOT/fake.tsc_exists_calls" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.fs_exists_calls"
+  scratch_rm "$ROOT/fake.tsc_exists_calls" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.fs_exists_calls"
   # A failed removal is status 3, and no further run starts while the recorder is owed.
   set +e
   FAKE_TK_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
@@ -1715,7 +1723,7 @@ EOF
     grep -q 'the trace instance or the timekeeping recorder was not removed: no further run' "$ROOT/tk-rmfail.log" &&
     [ ! -e "$(base current-100hz-rt-idle-bounded-timer 64).run.txt" ] ||
     fail "a failed recorder removal gave status $st, or another run started" "$ROOT/tk-rmfail.log"
-  rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tk_states"
+  scratch_rm "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tk_states"
   for c in "65 FAKE_TK_STATES=off the probes did not read back enabled at the end" \
            "66 FAKE_TK_EXTRACT=fail the record was not extracted" \
            "67 FAKE_TK_STATS=fail the recorder's buffer stats were not read" \
@@ -1723,7 +1731,7 @@ EOF
            "69 FAKE_JOURNAL=fail the kernel log was not read" \
            "79 FAKE_DPKG_FAIL_FROM=3 trace-cmd's identity was not read after the recorder's report"; do
     read -r att envv why <<<"$c"
-    rm -f "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
+    scratch_rm "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
     set +e
     env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" \
       --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-fail-$att.log" 2>&1
@@ -1736,7 +1744,7 @@ EOF
     [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "$envv: the recorder remains" "$b.run.txt"
     [ ! -e "$ROOT/fake.tsc_instance_exists" ] || fail "$envv: the TSC instance remains" "$b.run.txt"
   done
-  rm -f "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
+  scratch_rm "$ROOT/fake.tk_states" "$ROOT/fake.dpkg_calls"
   grep -qF "trace-cmd identity, after the recorder's report: not read (the package that installed $(realpath "$FAKE/trace-cmd") is not known (dpkg-query: no path found matching pattern" \
     "$(base current-100hz-rt-idle-bounded-fast-motion-timer 79).run.txt" || fail "the unread identity is not in the record" "$(base current-100hz-rt-idle-bounded-fast-motion-timer 79).run.txt"
   # trace-cmd's identity unread before the run: nothing is started, neither the trace nor the recorder.
@@ -1746,7 +1754,7 @@ EOF
     --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-tool.log" 2>&1
   st=$?
   set -e
-  rm -f "$ROOT/fake.dpkg_calls"
+  scratch_rm "$ROOT/fake.dpkg_calls"
   b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 80)
   [ "$st" -eq 1 ] && grep -q '^verdict: not run (trace-cmd identity)$' "$b.run.txt" &&
     grep -q '^trace-cmd identity, before the main trace: not read (the package that installed ' "$b.run.txt" &&
@@ -1767,7 +1775,7 @@ EOF
   [ "$st" -eq 1 ] && grep -q '^main timer event enable before the TSC instance: 0$' "$b.run.txt" && grep -q '^verdict: not run (timekeeping recorder)' "$b.run.txt" &&
     [ ! -e "$ROOT/fake.tk_recorder_exists" ] || fail "a main event that was off: status $st" "$b.run.txt"
   # An interruption during the run: the recorder's evidence is collected, and it is removed.
-  rm -f "$ROOT/fake.tk_states"
+  scratch_rm "$ROOT/fake.tk_states"
   TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt 71 --duration 30 \
     --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-int.log" 2>&1 &
   pid=$!
@@ -1786,7 +1794,7 @@ EOF
   done
   (cd "$OUT" && sha256sum --quiet -c "$(basename "$b").staging.sha256") || fail "the interrupted recorder run's ledger" "$b.run.txt"
   # Its one reading of the fair server's counts would flip the parity that stand-in's misses go by.
-  rm -f "$ROOT/fake.fs_profile_calls"
+  scratch_rm "$ROOT/fake.fs_profile_calls"
   # The launch every use of trace-cmd runs under: a producer that fails
   # after printing the right prefix, one that prints a truncated, a
   # malformed or an extended prefix, refuses the session before anything is
@@ -1838,10 +1846,10 @@ EOF
   grep -q 'the probe group rtctrl_fs remains from an earlier session' "$ROOT/fs-stale.log" &&
     [ -e "$ROOT/fake.fs_group_exists" ] && [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer 44).run.txt" ] ||
     fail "no refusal for the stale probe group, or it was removed" "$ROOT/fs-stale.log"
-  rm -f "$ROOT/fake.fs_group_exists"
+  scratch_rm "$ROOT/fake.fs_group_exists"
   for c in "45 fail 2 absent" "46 partial 2 absent" "47 unknown 2 left" "48 race 2 left"; do
     read -r att how want_st want_mark <<<"$c"
-    rm -f "$ROOT/fake.fs_group_exists"
+    scratch_rm "$ROOT/fake.fs_group_exists"
     set +e
     FAKE_FS_DEFINE=$how TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
       --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-def-$how.log" 2>&1
@@ -1860,11 +1868,11 @@ EOF
   grep -q 'exists after a definition whose outcome is unknown; it was left in place' "$ROOT/fs-def-unknown.log" &&
     grep -q 'echo -:rtctrl_fs/rtfs_dl_pick | sudo tee -a ' "$ROOT/fs-def-unknown.log" ||
     fail "the unknown definition's group was not reported with its manual removal" "$ROOT/fs-def-unknown.log"
-  rm -f "$ROOT/fake.fs_group_exists"
+  scratch_rm "$ROOT/fake.fs_group_exists"
   # An unknown definition, then existence checks that fail as sudo does:
   # the group is not removed, stays owed through the exit, and is reported
   # with its identity and its manual removal.
-  rm -f "$ROOT/fake.fs_exists_calls"
+  scratch_rm "$ROOT/fake.fs_exists_calls"
   n_rm=$(grep -c '^remove ' "$ROOT/fake.fs_probes" || true)
   set +e
   FAKE_FS_DEFINE=unknown FAKE_FS_EXISTS_FAIL=2 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
@@ -1879,7 +1887,7 @@ EOF
   [ -e "$ROOT/fake.fs_group_exists" ] && [ "$(cat "$ROOT/fake.fs_exists_calls")" -ge 3 ] &&
     [ "$(grep -c '^remove ' "$ROOT/fake.fs_probes" || true)" -eq "$n_rm" ] ||
     fail "an unconfirmed group was removed, or not checked again at exit" "$ROOT/fs-unk-fail.log"
-  rm -f "$ROOT/fake.fs_group_exists" "$ROOT/fake.fs_exists_calls"
+  scratch_rm "$ROOT/fake.fs_group_exists" "$ROOT/fake.fs_exists_calls"
   set +e
   FAKE_FS_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
     --attempt 49 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-rmfail.log" 2>&1
@@ -1888,7 +1896,7 @@ EOF
   [ "$st" -eq 3 ] && grep -q "CLEANUP FAILED: the fair server's probes (rtctrl_fs) were not removed" "$ROOT/fs-rmfail.log" &&
     grep -q 'cleanup: probe group rtctrl_fs NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 49).run.txt" ||
     fail "a failed probe removal gave status $st" "$ROOT/fs-rmfail.log"
-  rm -f "$ROOT/fake.fs_group_exists"
+  scratch_rm "$ROOT/fake.fs_group_exists"
   set +e
   FAKE_FS_PROFILE=fail TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
     --attempt 51 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion,current:100:rt-idle:full \
@@ -2187,7 +2195,7 @@ printf 'started=2000-01-01T00:00:00+0000\nunattended-upgrades.service_stopped=1\
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 50 --no-usbmon \
   --modes traced --runs current:100:idle:fast </dev/null >"$ROOT/qh-run.log" 2>&1 ||
   fail "the session with a quiet_host record failed" "$ROOT/qh-run.log"
-rm -f "$QUIET_HOST_STATE"
+scratch_rm "$QUIET_HOST_STATE"
 grep -q "^temporary host changes (tools/quiet_host.sh, $QUIET_HOST_STATE): started=2000-01-01T00:00:00+0000 unattended-upgrades.service_stopped=1" \
   "$(base current-100hz-idle-bounded-fast-traced 50).run.txt" || fail "the record lacks the host changes" "$(base current-100hz-idle-bounded-fast-traced 50).run.txt"
 
@@ -2422,7 +2430,7 @@ setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 93 --modes traced \
   grep -q "$kept: run rate-trace-current-100hz-idle-bounded-traced-$DATE-92.csv" "$ROOT/stage-left.log" &&
   [ -d "$kept" ] && [ -e "$kept/.rtctrl-stage" ] || fail "the leftover stage's refusal (status $status)" "$ROOT/stage-left.log"
 [ ! -e "$(base current-100hz-idle-bounded-traced 93).run.txt" ] || fail "a session ran beside a leftover stage" "$ROOT/stage-left.log"
-rm -f "$ROOT/umount-fail"
+scratch_rm "$ROOT/umount-fail"
 TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$kept" --outdir "$OUT" >"$ROOT/retry.log" 2>&1 &&
   [ -z "$(stage_left)" ] && [ ! -s "$ROOT/mounts" ] || fail "the retried release" "$ROOT/retry.log"
 
@@ -2433,7 +2441,7 @@ TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$kept" --out
 status=0
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 94 --modes traced \
   --runs current:100:idle:full </dev/null >"$ROOT/stage-rmdir.log" 2>&1 || status=$?
-rm -f "$ROOT/rmdir-fail"
+scratch_rm "$ROOT/rmdir-fail"
 b=$(base current-100hz-idle-bounded-traced 94)
 kept="$ROOT/stage/$(stage_left)"
 [ "$status" -eq 3 ] && grep -q '^preservation: published and verified; the stage was NOT released' "$b.run.txt" &&
@@ -2448,4 +2456,5 @@ TRACE_STAGE_SUDO=none python3 tools/trace_stage.py release --stage "$kept" --out
   grep -q 'was no longer mounted' "$ROOT/retry.log" && [ -z "$(stage_left)" ] ||
   fail "the retried release of the bare mount point" "$ROOT/retry.log"
 
+scratch_release
 echo "trace session script OK"

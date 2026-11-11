@@ -13,8 +13,10 @@
 # written or read, is missing or malformed, never taken for an empty one.
 set -u
 
-ROOT=$1
-rm -rf "$ROOT"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "sudo_refresh_test" "${1:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 mkdir -p "$ROOT"
 # shellcheck source=tools/sudo_refresh.sh
 . tools/sudo_refresh.sh
@@ -249,7 +251,7 @@ ended ledger-directory
 mv "$dir/children" "$dir/children.kept"
 mkdir "$dir/children"
 unconfirmed "a directory for a ledger" "its ledger $dir/children could not be read"
-rmdir "$dir/children"
+scratch_rmdir "$dir/children"
 mv "$dir/children.kept" "$dir/children"
 confirmed "a directory for a ledger"
 
@@ -295,7 +297,7 @@ mkdir "$dir/children"
 for _ in $(seq 1 300); do refresh_ended "$loop" && break; sleep 0.02; done
 refresh_ended "$loop" || fail "a ledger that cannot be written did not end the loop"
 unconfirmed "a ledger line that was not written" "(loop $loop, status 3) ended, but its ledger $dir/children could not be read"
-rmdir "$dir/children"
+scratch_rmdir "$dir/children"
 mv "$dir/children.kept" "$dir/children"
 unconfirmed "a ledger missing its last line" "did not reap every process it started"
 refresh_pid=
@@ -322,4 +324,5 @@ unset -f kill
 # shellcheck disable=SC2046
 gone "$loop" $(pids "$dir") || fail "a process outlived the stop whose first request went unanswered" "$dir/children"
 
+scratch_release
 echo "sudo refresh OK"

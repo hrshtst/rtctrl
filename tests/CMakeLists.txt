@@ -836,6 +836,17 @@ set_tests_properties(quiet_host_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "quiet host smoke OK"
   LABELS integration)
 
+# The smoke tests' scratch directories (tests/integration/scratch_dir.sh): a
+# new child of an approved base, the only place a test removes anything, on
+# a fake home, repository, build and temporary directory with rm, rmdir and
+# mktemp stood in for.
+add_test(NAME scratch_dir_test
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/scratch_dir_test.sh ${CMAKE_BINARY_DIR}/scratch_dir_test
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(scratch_dir_test PROPERTIES
+  PASS_REGULAR_EXPRESSION "scratch dir test OK"
+  LABELS integration)
+
 # The operator's reversible removal of a CPU from the unbound workqueues'
 # mask (tools/wq_mask.sh) with a stand-in sysfs, /proc and sudo: refusals,
 # verification, failure and interruption paths, restoration and its failure.

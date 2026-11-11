@@ -8,9 +8,11 @@ PLAN="$1"
 BUDGET="$2"
 PTP_CONFIG="$3"
 MODEL="$4"
-ROOT="$5"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "force_budget_smoke" "${5:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 MODEL=$(realpath "$MODEL")
 
@@ -164,4 +166,5 @@ expect 0 within --check --output "$ROOT/check.csv"
 grep -q "configuration preflight passed" "$ROOT/within.out"
 test ! -e "$ROOT/check.csv"
 
+scratch_release
 echo "force budget smoke OK"

@@ -14,9 +14,11 @@ PLAN_CONFIG="$4"
 MODEL="$5"
 HARDWARE="$6"
 EXAMPLE_SPEC="$7"
-ROOT="$8"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "${FRONTEND}_link_force_smoke" "${8:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 
-rm -rf "$ROOT"
 mkdir -p "$ROOT"
 ROOT=$(realpath "$ROOT")
 MODEL=$(realpath "$MODEL")
@@ -283,4 +285,5 @@ for r in rows:
 PY
 fi
 
+scratch_release
 echo "link force smoke OK ($FRONTEND)"

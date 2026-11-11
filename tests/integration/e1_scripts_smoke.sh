@@ -12,13 +12,15 @@ set -eu
 
 EMU="$1"
 PROBE="$2"
-ROOT="$3"
+# shellcheck source=tests/integration/scratch_dir.sh
+. "$(dirname "$0")/scratch_dir.sh"
+scratch_init "e1_scripts_smoke" "${3:-}" || exit 2  # a new child of an approved base: the only place this test removes
+ROOT=$RTCTRL_SCRATCH
 INSPECT="$4"
 LINK="$ROOT/tty"
 OUT="$ROOT/out"
 DATE=20000101
 
-rm -rf "$ROOT"
 mkdir -p "$OUT"
 "$EMU" --link "$LINK" --firmware 47 >"$ROOT/emu.log" 2>&1 &
 EMU_PID=$!
@@ -253,4 +255,5 @@ grep -q 'read path: bounded .*, Fast Sync Read' "$FBASE.run.txt"
 grep -q 'read path: bounded, Fast Sync Read (budget 35.000 ms' "$FBASE.run.txt"
 grep -q -- '--read-instruction fast' "$FBASE.run.txt"
 
+scratch_release
 echo "e1 session scripts OK"
