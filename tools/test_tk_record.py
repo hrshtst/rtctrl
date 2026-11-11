@@ -12,6 +12,7 @@ test asks for. So the script itself runs, in its real order, without tracefs.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -29,6 +30,9 @@ PROBES = ("ntp_adjtimex", "ntp_clear", "update_entry", "update_return")
 ARMED, S0, S1 = 1_000_000_000, 1_500_000_000, 3_500_000_000
 CONFIRMED = S1 + 500_000_000
 TID = 777
+# The audited trace-cmd as tools/tk_record.py tool records it.
+AUDITED_TOOL = {"read_status": "ok", "path": "/usr/bin/trace-cmd", **timer_clock.AUDITED_TRACE_CMD,
+                "libraries": {"libtraceevent1": "1:1.8.7-1", "libtraceevent1-plugin": "1:1.8.7-1", "libtracefs1": "1.8.2-1ubuntu1"}}
 
 
 def stamp(t: int) -> str:
@@ -85,6 +89,8 @@ def write_record(base, armed: int = ARMED, s0: int = S0, s1: int = S1, confirmed
     n.update(hits or {})
     pathlib.Path(b + ".tk-profile.txt").write_text("".join(f"{p} {n[p]} 0\n" for p in PROBES))
     pathlib.Path(b + ".tk-stats.txt").write_text(stats_text(2))
+    pathlib.Path(b + ".tk-tool-before.json").write_text(json.dumps(AUDITED_TOOL))
+    pathlib.Path(b + ".tk-tool-after.json").write_text(json.dumps(AUDITED_TOOL))
 
 
 def stats_text(cpus: int, overrun: int = 0) -> str:
@@ -218,8 +224,76 @@ def state_reads() -> None:
         expect(p.returncode == 1 and json.loads(out.read_text())["read_status"] != "ok", f"an unreadable journal: {p.stderr}")
 
 
-def certified(base) -> tuple[str, list[str]]:
-    c: dict = timer_clock.certify(tk.load(base))
+# A stand-in for dpkg-query, answering as dpkg does: TK_DPKG_OWNS is the one file trace-cmd installed, TK_DPKG_VERSION and
+# TK_DPKG_STATUS its version and status, TK_DPKG_LIBS the libraries installed ("name=version" words).
+DPKG_STANDIN = r'''#!/usr/bin/env bash
+case "$1" in
+  -S) [ "$2" = "${TK_DPKG_OWNS:-}" ] || { echo "dpkg-query: no path found matching pattern $2" >&2; exit 1; }
+      echo "trace-cmd: $2" ;;
+  -W) shift 3; rc=0
+      for p in "$@"; do
+        if [ "$p" = trace-cmd ]; then printf 'trace-cmd\t%s\tamd64\t%s\n' "${TK_DPKG_VERSION:-3.3.3-1ubuntu2}" "${TK_DPKG_STATUS:-ii }"; continue; fi
+        v=; for l in ${TK_DPKG_LIBS:-}; do [ "${l%%=*}" = "$p" ] && v=${l#*=}; done
+        if [ -n "$v" ]; then printf '%s\t%s\tii \n' "$p" "$v"; else echo "dpkg-query: no packages found matching $p" >&2; rc=1; fi
+      done
+      exit $rc ;;
+  *) exit 2 ;;
+esac
+'''
+
+
+def identities() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        dq, bindir, real = pathlib.Path(d, "dpkg-query"), pathlib.Path(d, "bin"), pathlib.Path(d, "pkg", "trace-cmd")
+        dq.write_text(DPKG_STANDIN)
+        dq.chmod(0o755)
+        bindir.mkdir()
+        real.parent.mkdir()
+        real.write_text("#!/bin/sh\necho stand-in trace-cmd\n")
+        real.chmod(0o755)
+        (bindir / "trace-cmd").symlink_to(real)
+        sha = hashlib.sha256(real.read_bytes()).hexdigest()
+        saved = dict(os.environ)
+
+        def ident(name: str = str(bindir / "trace-cmd"), **env: str) -> dict:
+            os.environ.clear()
+            os.environ.update({**saved, "TK_DPKG_OWNS": str(real), "TK_DPKG_LIBS": "libtraceevent1=1:1.8.7-1 libtracefs1=1.8.2-1ubuntu1", **env})
+            try:
+                return tk.tool_identity(name, dpkg_query=str(dq))
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
+
+        got = ident()
+        expect(got == {"read_status": "ok", "path": str(real), "sha256": sha, "package": "trace-cmd", "version": "3.3.3-1ubuntu2",
+                       "architecture": "amd64", "libraries": {"libtraceevent1": "1:1.8.7-1", "libtraceevent1-plugin": None, "libtracefs1": "1.8.2-1ubuntu1"}},
+               f"an identity, through the link to the file it runs: {got}")
+        got = ident("trace-cmd", PATH=f"{bindir}:{saved.get('PATH', '')}")
+        expect(got.get("path") == str(real) and got["read_status"] == "ok", f"a name on PATH: {got}")
+        got = ident(TK_DPKG_VERSION="3.3.4-1")
+        expect(got["read_status"] == "ok" and got["version"] == "3.3.4-1", f"another version is read as it is: {got}")
+        for what, kw, words in (("not found", {"name": str(bindir / "nope")}, "is not found"),
+                                ("not from a package", {"TK_DPKG_OWNS": "/usr/bin/other"}, "is not known"),
+                                ("a package not installed", {"TK_DPKG_STATUS": "rc "}, "not read as installed")):
+            got = ident(**kw)
+            expect(words in got["read_status"] and "version" not in got, f"an identity {what}: {got}")
+        got = tk.tool_identity(str(real), dpkg_query=str(pathlib.Path(d, "no-dpkg")))
+        expect("is not known" in got["read_status"] and "version" not in got, f"no dpkg-query: {got}")
+        if os.geteuid() != 0:
+            real.chmod(0o111)
+            got = ident()
+            real.chmod(0o755)
+            expect(got["read_status"] != "ok" and "sha256" not in got, f"an executable that cannot be read: {got}")
+        out = pathlib.Path(d, "tool.json")
+        env = {**saved, "DPKG_QUERY": str(dq), "TK_DPKG_OWNS": str(real)}
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "tool", "--trace-cmd", str(real), "--out", str(out)], capture_output=True, text=True, env=env)
+        expect(p.returncode == 0 and tk.read_tool(out)["sha256"] == sha, f"the CLI: {p.returncode} {p.stderr}")
+        p = subprocess.run([sys.executable, "tools/tk_record.py", "tool", "--trace-cmd", str(bindir / "nope"), "--out", str(out)], capture_output=True, text=True, env=env)
+        expect(p.returncode == 1 and "is not found" in tk.read_tool(out)["read_status"], f"the CLI, not found: {p.returncode}")
+
+
+def certified(base, report_tool: dict | None = AUDITED_TOOL) -> tuple[str, list[str]]:
+    c: dict = timer_clock.certify(tk.load(base, report_tool=report_tool))
     return c["status"], c["reasons"]
 
 
@@ -361,6 +435,26 @@ def evidence() -> None:
                 f.write_text(json.dumps(v))
             st, why = certified(base)
             expect((st == "CERTIFIED") == want, f"boot {boot}: {st} {why}")
+
+        # The trace-cmd behind each use: the acquisition's and the recorder's from their files, the main report's from the
+        # analysis. Missing, unreadable or another build is UNSUPPORTED (the implementation review's finding 3).
+        write_record(base)
+        st, why = certified(base, report_tool=None)
+        expect(st != "CERTIFIED" and any("reported the main trace" in x and "not identified" in x for x in why), f"no reporting tool: {st} {why}")
+        for what, tool, words in (("another version", {**AUDITED_TOOL, "version": "3.3.4-1"}, "not the audited build"),
+                                  ("another build", {**AUDITED_TOOL, "sha256": "f" * 64}, "not the audited build"),
+                                  ("an unreadable identity", {"read_status": "trace-cmd is not found"}, "not identified")):
+            st, why = certified(base, report_tool=tool)
+            expect(st != "CERTIFIED" and any("main trace" in x and words in x for x in why), f"a reporting tool with {what}: {st} {why}")
+            for suffix, use in ((".tk-tool-before.json", "started the acquisition"), (".tk-tool-after.json", "extracted and reported the recorder")):
+                write_record(base)
+                pathlib.Path(str(base) + suffix).write_text(json.dumps(tool))
+                st, why = certified(base)
+                expect(st != "CERTIFIED" and any(use in x and words in x for x in why), f"{suffix} with {what}: {st} {why}")
+        write_record(base)
+        pathlib.Path(str(base) + ".tk-tool-after.json").write_text(json.dumps([AUDITED_TOOL]))
+        st, why = certified(base)
+        expect(st != "CERTIFIED" and any("not a mapping" in x for x in why), f"an identity that is not a mapping: {st} {why}")
 
         # The calls in the record.
         tc = [f" chronyd-55 [002] d..1. {stamp(S0 + 500_000)}: ntp_adjtimex: (x) tkid=0 modes=1"]
@@ -586,6 +680,7 @@ def main() -> int:
     t0 = time.monotonic()
     parsers()
     state_reads()
+    identities()
     evidence()
     recorder()
     if FAILURES:

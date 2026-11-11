@@ -13,7 +13,11 @@ that can call a U validated: it takes the model from the certificate before
 calculating, refuses a smaller supplied model, checks that everything the
 calculation depended on lies inside the certificate's interval, and accepts
 only if the analysis and the certificate both hold. Missing, unreadable or
-malformed evidence is UNSUPPORTED; it is never read as an empty record.
+malformed evidence is UNSUPPORTED; it is never read as an empty record. The
+certificate holds only for the audited kernel and the audited trace-cmd build,
+identified for every use of trace-cmd it rests on (the acquisition, the
+recorder's extraction and report, and the main trace's report that the
+analysis read, a later replay's included).
 """
 
 from __future__ import annotations
@@ -367,6 +371,12 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
 
 SCHEMA = 1
 AUDITED = dict(release="7.0.0-42-generic", package="7.0.0-42.42", config_sha256="5c1ce5c46247b47a133cf80e7f852fd9d877c832c89848ab42b4db3092fae7aa")
+# The audited trace-cmd (source trace-cmd_3.3.3.orig.tar.gz, the design's source audit): the installed package's executable,
+# whose SHA-256 is that of the file dpkg's own checksum record verifies. Another build or version needs a new audit.
+AUDITED_TRACE_CMD = dict(package="trace-cmd", version="3.3.3-1ubuntu2", architecture="amd64",
+                         sha256="dbcc6cafe1686b7af192868ac9daac719bafa8bdf225b66459c025dca44b0882")
+TRACE_CMD_USES = dict(before="that started the acquisition", after="that extracted and reported the recorder",
+                      report="that reported the main trace for this analysis")
 W_OP_NS = 10_000_000            # the operational maximum on an update's duration; every update in the interval must meet it
 SETTLE_NS = 2_000_000           # two NTP intervals at HZ=1000: a later update is then certain to accumulate and run timekeeping_adjust
 READ_ONLY_MODES = {0, 0xa001}   # adjtimex modes that change nothing: a read, and ADJ_OFFSET_SS_READ
@@ -500,6 +510,13 @@ def certify(ev):
     probes = {}
     for name in PROBES:
         probes[name] = {k: S.get(f"recorder.probes.{name}.{k}", typ, *rng) for k, typ, rng in (("enabled_before", bool, ()), ("enabled_after", bool, ()), ("hits", int, (0,)), ("missed", int, (0,)))}
+    tools = {}
+    for use, desc in TRACE_CMD_USES.items():
+        st_ = S.get(f"trace_cmd.{use}.read_status", str)
+        if st_ is not None and st_ != "ok":
+            S.why.append(f"the trace-cmd {desc} was not identified ({st_})")
+        elif st_ is not None:
+            tools[use] = {k: S.get(f"trace_cmd.{use}.{k}", str) for k in AUDITED_TRACE_CMD}
     st = {}
     for side in ("before", "after"):
         st[side] = {k: S.get(f"state.{side}.{k}", int, *rng) for k, rng in (("t_start", T), ("t_end", T), ("tid", (1,)), ("ret", (0, 5)), ("offset", (-(2**40), 2**40)), ("freq", (-MAX_FREQ, MAX_FREQ)), ("status", (0, 0xffff)), ("constant", (0, 10)), ("tick", (1, 2**31)), ("time_adjust", (-(2**40), 2**40)))}
@@ -530,6 +547,10 @@ def certify(ev):
         why.append(f"evidence schema {schema}, expected {SCHEMA}")
     if release != AUDITED["release"] or config != AUDITED["config_sha256"]:
         why.append("the kernel or its configuration is not the audited one")
+    for use, t in tools.items():
+        if t != AUDITED_TRACE_CMD:
+            why.append(f"the trace-cmd {TRACE_CMD_USES[use]} is not the audited build ({AUDITED_TRACE_CMD['package']} {AUDITED_TRACE_CMD['version']}): "
+                       f"{t['package']} {t['version']} {t['architecture']}, sha256 {t['sha256'][:16]}")
     # The baseline the multiplier unit rests on: the nominal tick, and no boot-time calibration. __setup matches dashes as underscores.
     if sets_ntp_tick_adj(cmdline):
         why.append("the boot command line sets ntp_tick_adj")
@@ -617,7 +638,7 @@ def certify(ev):
     chunk = (abs(a["offset"] - b["offset"]) / (2 ** sh - 1) + 2 / 2 ** sh) / 1e9
     ds = 2 * unit + chunk
     return dict(status="CERTIFIED", reasons=[], ds=ds, W_ns=W_OP_NS, D=D,
-                provenance=dict(audit=AUDITED["package"], mult=mult, shift=shift, unit_ppm=unit * 1e6, chunk_ppm=chunk * 1e6, observed_max_update_ns=max_age, updates_in_interval=len(inside), tick_us=a["tick"], ntp_tick_adj="not on the boot command line", deviation_ppm=deviation_ppm))
+                provenance=dict(audit=AUDITED["package"], trace_cmd=f"{AUDITED_TRACE_CMD['package']} {AUDITED_TRACE_CMD['version']}", mult=mult, shift=shift, unit_ppm=unit * 1e6, chunk_ppm=chunk * 1e6, observed_max_update_ns=max_age, updates_in_interval=len(inside), tick_us=a["tick"], ntp_tick_adj="not on the boot command line", deviation_ppm=deviation_ppm))
 
 
 def analyze(main_parse, inst_parse, samp_pairs, window=None, evidence=None, model=None, cap=None):

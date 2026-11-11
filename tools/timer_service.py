@@ -975,7 +975,7 @@ def reference_pairs(samp: list[tuple], rt_cpu: int) -> list[tuple]:
 
 def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple], record: list[str],
            failures: list, top: int, out, sleep_calls: list[int] | None = None,
-           exploratory_ppm: float | None = None) -> None:
+           exploratory_ppm: float | None = None, report_tool: dict | None = None) -> None:
     """The timer service section of trace_correlate's report, for a run
     recorded in the timer mode. The evidence the mode records must be
     there: the deadline writes, local timer interrupts and system calls on
@@ -985,7 +985,10 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
     SMI count series, the timekeeping record, and the exerciser's file when
     the record says it ran. A late service is a result, not a failure.
     exploratory_ppm supplies a slope range for a capture with no certificate:
-    its U is labelled exploratory and the run still fails."""
+    its U is labelled exploratory and the run still fails. report_tool is the
+    identity of the trace-cmd that reported the main trace for this analysis
+    (tools/tk_record.py tool_identity); the certificate requires the audited
+    build there too."""
     rt = ev.rt_cpu
     calls = sorted(sleep_calls or [])
     print("  timer service (the real-time CPU's deadlines, idle transitions and interrupts):", file=out)
@@ -1023,7 +1026,8 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
         samp, pair_problems = timer_clock.parse_pairs(pairs_file.read_text(errors="replace"))
         model = timer_clock.Model(exploratory_ppm * 1e-6) if exploratory_ppm is not None else None
         r = timer_clock.analyze((ev.ledger.events, ev.ledger.problems), (tsc, inst_problems + pair_problems),
-                                reference_pairs(samp, rt), window=ev.window, evidence=tk_record.load(csv_path), model=model)
+                                reference_pairs(samp, rt), window=ev.window,
+                                evidence=tk_record.load(csv_path, report_tool=report_tool), model=model)
         for why in r["why"]:
             failures.append(f"timer service: {why}")
         print(f"    conversion certificate: {r['cert']}", file=out)
@@ -1043,7 +1047,7 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
                   f"R {m['R_ns']:.1f} ns", file=out)
             if r.get("provenance"):
                 prov = r["provenance"]
-                print(f"    certificate provenance: {prov['audit']}, mult {prov['mult']} shift {prov['shift']}, tick "
+                print(f"    certificate provenance: {prov['audit']}, {prov['trace_cmd']}, mult {prov['mult']} shift {prov['shift']}, tick "
                       f"{prov['tick_us']} us, deviation {prov['deviation_ppm']:.1f} ppm, longest update "
                       f"{prov['observed_max_update_ns']} ns over {prov['updates_in_interval']} updates", file=out)
             print(f"    conversion bound U: {r['U']:.0f} ns (limit {U_LIMIT_NS} ns), {r['U_label']}; longest conversion "

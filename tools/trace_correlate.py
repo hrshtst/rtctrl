@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Correlate a traced torque-off run's probe log with its kernel trace.
 
-usage: trace_correlate.py <run>.csv [--report FILE] [--adapter DEVICE]
-                          [--top N] [--segments-csv FILE]
+usage: trace_correlate.py <run>.csv [--report FILE [--report-tool FILE]]
+                          [--adapter DEVICE] [--top N] [--segments-csv FILE]
 
 Reads the probe's per-cycle log <run>.csv, its summary
 <run>.csv.summary.toml (worker_tid, monotonic_origin_ns, the budget's
@@ -10,7 +10,10 @@ transfer sizes) and the run's trace: <run>.csv.trace.dat through
 `trace-cmd report -t`, or a saved report given with --report. The trace
 must be recorded on the mono clock (tools/trace_session.sh checks it), so
 its timestamps and the probe's stamps (monotonic_origin_ns + *_ns) share
-CLOCK_MONOTONIC.
+CLOCK_MONOTONIC. The trace-cmd that reports the trace is identified (the
+one on PATH, read just before it runs; for a saved report, the identity
+given with --report-tool, as tools/tk_record.py tool writes it), and a
+timer capture's certificate requires the audited build there too.
 
 Association and alignment checks (exit 1 if any fails):
 
@@ -104,6 +107,7 @@ import sys
 import fair_server
 import observer_affinity
 import timer_service
+import tk_record
 
 try:
     import tomllib
@@ -1250,6 +1254,9 @@ def main() -> int:
     parser.add_argument("csv", type=pathlib.Path, help="the probe's per-cycle log (<run>.csv)")
     parser.add_argument("--report", type=pathlib.Path,
                         help="a saved `trace-cmd report -t` of the run (default: run trace-cmd)")
+    parser.add_argument("--report-tool", type=pathlib.Path,
+                        help="the identity of the trace-cmd that wrote --report (tools/tk_record.py tool --out); "
+                        "without it that tool is unidentified, and a timer capture is not certified")
     parser.add_argument("--adapter", help="the adapter's USB device path in xHCI events, e.g. 1-9 "
                         "(default: the run record's adapter line)")
     parser.add_argument("--top", type=int, default=10, help="slowest reads and latest wakes to list")
@@ -1260,6 +1267,8 @@ def main() -> int:
                         help="a slope range for a timer capture with no certificate: its U is labelled exploratory "
                         "and the run still fails (for replays of archived captures)")
     args = parser.parse_args()
+    if args.report_tool and not args.report:
+        parser.error("--report-tool names the tool of a saved --report")
     if tomllib is None:
         print("trace_correlate: needs Python 3.11 or later (tomllib)", file=sys.stderr)
         return 2
@@ -1294,13 +1303,18 @@ def main() -> int:
         except (OSError, ValueError, KeyError, IndexError):
             tr.excl = set()
         tr.excl_window = (run.origin + int(run.rows[0]["wake_ns"]), run.origin + int(run.rows[-1]["cycle_end_ns"]))
+    # The reporting tool's identity: the certificate rests on this use of trace-cmd too.
     if args.report:
+        report_tool = (tk_record.read_tool(args.report_tool) if args.report_tool else
+                       {"read_status": "a saved report (--report) names no reporting tool (--report-tool)"})
         with open(args.report, errors="replace") as f:
             for line in f:
                 tr.feed(line)
     else:
         dat = str(args.csv) + ".trace.dat"
-        proc = subprocess.Popen(["trace-cmd", "report", "-t", "-i", dat], stdout=subprocess.PIPE,
+        # Identified, then run by the path identified, so that what runs is what was read.
+        report_tool = tk_record.tool_identity("trace-cmd")
+        proc = subprocess.Popen([report_tool.get("path") or "trace-cmd", "report", "-t", "-i", dat], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, errors="replace")
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -1331,7 +1345,8 @@ def main() -> int:
     if tr.timer is not None:
         tr.timer.finish(tr.last_ts)
         timer_service.report(args.csv, tr.timer, timer["pairs"], record, failures, args.top, out,
-                             sleep_calls=tr.sleep_calls, exploratory_ppm=args.exploratory_slope_ppm)
+                             sleep_calls=tr.sleep_calls, exploratory_ppm=args.exploratory_slope_ppm,
+                             report_tool=report_tool)
     if tr.fs is not None:
         tr.fs.finish(tr.last_ts)
         fair_server.report(tr.fs, probe_misses(record), args.top, out, failures)

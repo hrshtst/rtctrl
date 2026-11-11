@@ -50,7 +50,8 @@ def evidence_for(lo, hi, armed_before=3 * 10**9, pre=10**9, post=10**9, tc=7, o0
     return dict(schema=1, kernel=dict(read_status="ok", release="7.0.0-42-generic", config_sha256=R.AUDITED["config_sha256"], tsc_khz=3187200, cmdline="BOOT_IMAGE=/boot/vmlinuz-7.0.0-42-generic root=UUID=x ro quiet splash"), clocksource=dict(read_status="ok", before="tsc", after="tsc"),
                 log=dict(read_status="ok", covers=[armed - 10**9, s1 + 3 * 10**9], clock_events=[]),
                 recorder=dict(read_status="ok", armed_t=armed, confirmed_t=s1 + 2 * 10**9, probes=probes, buffer=dict(read_status="ok", overrun=0, dropped=0), calls=calls, updates=updates, unmatched=dict(entries=[], returns=[])),
-                state=dict(before=state(s0, o0), after=state(s1, round(o))))
+                state=dict(before=state(s0, o0), after=state(s1, round(o))),
+                trace_cmd={use: dict(read_status="ok", path="/usr/bin/trace-cmd", **R.AUDITED_TRACE_CMD) for use in R.TRACE_CMD_USES})
 
 
 def without(lst, k):
@@ -487,6 +488,7 @@ SF = ("read_status", "t_start", "t_end", "tid", "ret", "offset", "freq", "status
 missing = ["schema", "kernel", "kernel.read_status", "kernel.release", "kernel.config_sha256", "kernel.tsc_khz", "kernel.cmdline", "clocksource", "clocksource.read_status", "clocksource.before", "clocksource.after", "log", "log.read_status", "log.covers", "log.clock_events",
            "recorder", "recorder.read_status", "recorder.armed_t", "recorder.confirmed_t", "recorder.probes", "recorder.buffer", "recorder.buffer.read_status", "recorder.buffer.overrun", "recorder.buffer.dropped", "recorder.calls", "recorder.updates", "recorder.unmatched", "recorder.unmatched.entries", "recorder.unmatched.returns", "state", "state.before", "state.after"]
 missing += [f"recorder.probes.{n}" for n in R.PROBES] + [f"recorder.probes.{n}.{f}" for n in R.PROBES for f in PF] + [f"state.{side}.{f}" for side in ("before", "after") for f in SF]
+missing += ["trace_cmd"] + [f"trace_cmd.{u}" for u in R.TRACE_CMD_USES] + [f"trace_cmd.{u}.{f}" for u in R.TRACE_CMD_USES for f in ("read_status", *R.AUDITED_TRACE_CMD)]
 bad = [k for k in missing if (lambda r: not (r["accepted"] is False and r["cert"] == "UNSUPPORTED" and r["U_label"] != "validated"))(run(drop(GOOD, k)))]
 claim(f"{len(missing)} nested fields each missing: never validated", not bad, "; ".join(bad)[:90])
 for name, path, value, word in (("a failed read", "log.read_status", "failed", "not read"), ("recorder calls unreadable", "recorder.read_status", "error", "not read"), ("calls is not a list", "recorder.calls", "none", "wrong type"), ("calls is null", "recorder.calls", None, "wrong type"),
@@ -508,6 +510,21 @@ for name, patch, word in (("a different kernel", ("kernel.release", "7.0.0-43-ge
     claim(f"unsupported: {name}", c["status"] == "UNSUPPORTED" and any(word in x for x in c["reasons"]), "; ".join(c["reasons"])[:80])
 c = R.certify(put(GOOD, "recorder.calls", GOOD["recorder"]["calls"][1:]))
 claim("unsupported: the first state read is not in the record", c["status"] == "UNSUPPORTED" and any("before state read is not" in x for x in c["reasons"]), "; ".join(c["reasons"])[:90])
+
+print("end to end: the audited trace-cmd, for every use the certificate rests on:")
+claim("the audited build is named in the provenance", R.certify(GOOD)["provenance"]["trace_cmd"] == "trace-cmd 3.3.3-1ubuntu2", str(R.certify(GOOD)["provenance"].get("trace_cmd")))
+for use, desc in R.TRACE_CMD_USES.items():
+    for name, patch, word in (("another version", (f"trace_cmd.{use}.version", "3.3.4-1"), "not the audited build"), ("another build of the same version", (f"trace_cmd.{use}.sha256", "0" * 64), "not the audited build"),
+                              ("another architecture", (f"trace_cmd.{use}.architecture", "arm64"), "not the audited build"), ("another package", (f"trace_cmd.{use}.package", "trace-cmd-git"), "not the audited build"),
+                              ("an identity that could not be read", (f"trace_cmd.{use}.read_status", "the package that installed /usr/local/bin/trace-cmd is not known"), "not identified"),
+                              ("no identity at all", (f"trace_cmd.{use}", {"read_status": "the trace-cmd that reported the main trace is not identified"}), "not identified"),
+                              ("a version in the wrong form", (f"trace_cmd.{use}.version", 333), "wrong type")):
+        r = run(put(GOOD, *patch))
+        claim(f"unsupported: the trace-cmd {desc}: {name}", r["accepted"] is False and r["cert"] == "UNSUPPORTED" and any(word in x for x in r["cert_reasons"]), "; ".join(r["cert_reasons"])[:80])
+r = run(put(GOOD, "trace_cmd", {"read_status": "ok", "version": "unaudited-new-version"}))
+claim("unsupported: an identity in the implementation review's form, naming no use", r["accepted"] is False and r["cert"] == "UNSUPPORTED", "; ".join(r["cert_reasons"])[:80])
+r = run(put(GOOD, "trace_cmd.report", dict(GOOD["trace_cmd"]["report"], path="/opt/replay/bin/trace-cmd")))
+claim("the same build at another path is the audited build", r["accepted"] is True, str(r["cert_reasons"]))
 c = R.certify(put(GOOD, "state.after.tid", 5))
 claim("unsupported: the last state read is not this process's", c["status"] == "UNSUPPORTED" and any("after state read is not" in x for x in c["reasons"]), "; ".join(c["reasons"])[:90])
 

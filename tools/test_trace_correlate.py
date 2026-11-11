@@ -26,6 +26,8 @@ sleeping) must not.
 """
 
 import csv
+import json
+import os
 import pathlib
 import random
 import subprocess
@@ -348,12 +350,24 @@ class Run:
         return path
 
 
+def saved_report(root: pathlib.Path, name: str, tool: dict | None = test_tk_record.AUDITED_TOOL) -> list[str]:
+    """--report, and --report-tool naming the trace-cmd that wrote it (the audited build unless a test says otherwise;
+    None gives no identity)."""
+    args = ["--report", str(root / f"{name}.report.txt")]
+    if tool is not None:
+        t = root / f"{name}.report-tool.json"
+        t.write_text(json.dumps(tool))
+        args += ["--report-tool", str(t)]
+    return args
+
+
 def correlate(root: pathlib.Path, name: str, **opt) -> tuple[int, str, pathlib.Path]:
+    """The run's analysis from its saved report; opt report_tool (default the audited trace-cmd) names the report's tool."""
+    report_tool = opt.pop("report_tool", test_tk_record.AUDITED_TOOL)
     path = Run(**opt).write(root, name)
     seg = root / f"{name}.segments.csv"
-    p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
-                        str(root / f"{name}.report.txt"), "--adapter", "1-9",
-                        "--segments-csv", str(seg)], capture_output=True, text=True)
+    p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), *saved_report(root, name, report_tool),
+                        "--adapter", "1-9", "--segments-csv", str(seg)], capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr, seg
 
 
@@ -478,6 +492,37 @@ def main() -> int:
         expect("waits after waking (CPU 3: the worker's sched_waking to its switch-in" in out
                and "n=2 " in out and "fair-server probes: not in this capture" in out,
                "the timer-mode run's waits", out)
+        expect("certificate provenance: 7.0.0-42.42, trace-cmd 3.3.3-1ubuntu2, " in out, "the audited trace-cmd in the provenance", out)
+        # The trace-cmd that reported the main trace is part of the certificate (the implementation review's finding 3):
+        # a saved report with no identity, or one written by another version, is not certified.
+        for name, tool, words in (("timer_notool", None, "a saved report (--report) names no reporting tool (--report-tool)"),
+                                  ("timer_newtool", {**test_tk_record.AUDITED_TOOL, "version": "3.3.4-1"},
+                                   "the trace-cmd that reported the main trace for this analysis is not the audited build")):
+            code, out, _ = correlate(root, name, report_tool=tool, timer=True)
+            expect(code == 1 and "conversion certificate: UNSUPPORTED" in out and words in out
+                   and "the conversion was not analysed" in out, f"a saved report: {name}", out)
+        # Without a saved report, the trace-cmd on PATH is identified, then run by the path identified: here a stand-in
+        # of another build (its own SHA-256) that dpkg says is the audited version. It reports the run; it cannot certify it.
+        path = Run(timer=True).write(root, "timer_live")
+        fake_bin = root / "fake_bin"
+        fake_bin.mkdir()
+        tc = fake_bin / "trace-cmd"
+        tc.write_text(f"#!/bin/sh\necho \"$@\" >{root}/timer_live.ran\ncat {root}/timer_live.report.txt\n")
+        tc.chmod(0o755)
+        dq = fake_bin / "dpkg-query"
+        dq.write_text(test_tk_record.DPKG_STANDIN)
+        dq.chmod(0o755)
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}", "DPKG_QUERY": str(dq), "TK_DPKG_OWNS": os.path.realpath(tc)}
+        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--adapter", "1-9"], capture_output=True, text=True, env=env)
+        out = p.stdout + p.stderr
+        ran = (root / "timer_live.ran").read_text() if (root / "timer_live.ran").exists() else ""
+        expect(p.returncode == 1 and ran == f"report -t -i {path}.trace.dat\n" and "conversion certificate: UNSUPPORTED" in out
+               and "the trace-cmd that reported the main trace for this analysis is not the audited build "
+                   "(trace-cmd 3.3.3-1ubuntu2): trace-cmd 3.3.3-1ubuntu2 amd64, sha256 " in out,
+               "a live report by another build of the audited version", out)
+        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--adapter", "1-9", "--report-tool", str(dq)],
+                           capture_output=True, text=True)
+        expect(p.returncode == 2 and "--report-tool names the tool of a saved --report" in p.stderr, "--report-tool alone", p.stderr)
         # A confined run's placement: observer and probe helper threads kept
         # off the excluded CPUs pass; one switched in on CPU 2 during the run
         # fails, and so does a probe helper there.
@@ -495,8 +540,8 @@ def main() -> int:
             pathlib.Path(str(path) + ".observers.jsonl").write_text(
                 '{"kind": "header", "exclude": [2, 3], "allowed": [0, 1], "version": 1}\n'
                 '{"kind": "thread", "pid": 7770, "tid": 7771, "start": 5, "pstart": 5, "mask": [0, 1, 2, 3]}\n')
-            p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
-                                str(root / f"{name}.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
+            p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), *saved_report(root, name),
+                                "--adapter", "1-9"], capture_output=True, text=True)
             out = p.stdout + p.stderr
             expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok)
                    and (ok or "ran on CPUs 2,3" in out) and "lineage: none (a run before 2026-11-09)" in out,
@@ -547,8 +592,8 @@ def main() -> int:
                     lineage.replace("lineage complete: 5 tasks", "lineage INCOMPLETE: 1 unreadable: /proc/7781/stat"))
             elif name != "v2-nolineage":
                 pathlib.Path(str(path) + ".lineage.txt").write_text(lineage)
-            p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
-                                str(root / f"{name}.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
+            p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), *saved_report(root, name),
+                                "--adapter", "1-9"], capture_output=True, text=True)
             out = p.stdout + p.stderr
             words = ("no task lineage after the trace started" if name == "v2-nolineage" else
                      "task lineage is incomplete (lineage INCOMPLETE: 1 unreadable" if name == "v2-incomplete" else
@@ -588,8 +633,8 @@ def main() -> int:
                                 (5560.0, "sched_waking", "comm=perf pid=6005 prio=120 target_cpu=016")):
             r.ev(us, "other", 6100, 12, "d..2.", event, rest)
         path = r.write(root, "recwait")
-        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), "--report",
-                            str(root / "recwait.report.txt"), "--adapter", "1-9"], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), *saved_report(root, "recwait"),
+                            "--adapter", "1-9"], capture_output=True, text=True)
         out = p.stdout + p.stderr
         expect(p.returncode == 0 and "recorder waits (context, not a check): 3 off-CPU spans over 5 ms" in out
                and "begun with a switch-out in D state" in out and "uninterruptible" not in out

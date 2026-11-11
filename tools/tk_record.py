@@ -6,6 +6,7 @@ that assembles the recorder's files into the certificate's evidence.
     tk_record.py state --out FILE [--cmdline FILE]     one state read, with the kernel's identity (no privilege)
     tk_record.py log --journal FILE --from-t N --to-t N --out FILE
                                                        the kernel log's scan over the interval
+    tk_record.py tool --trace-cmd NAME --out FILE      the identity of the trace-cmd that NAME runs (no privilege)
 
 A state read is adjtimex(2) with modes 0, then with ADJ_OFFSET_SS_READ (for
 the adjtime remainder), neither of which changes anything; the two monotonic
@@ -15,6 +16,11 @@ read_status: the certificate treats it as UNSUPPORTED, and never as an empty
 successful record. A row that repeats, contradicts another or is not
 understood makes its file malformed.
 
+A tool's identity is the file its name resolves to, that file's SHA-256, and
+the package that installed it with its version and architecture (dpkg-query,
+or $DPKG_QUERY). The certificate requires the audited build for every use of
+trace-cmd it rests on; the libraries it runs with are recorded, not judged.
+
 The files of a capture <run>.csv, written by tools/trace_session.sh:
     .tk-before.json .tk-after.json   the state reads around the capture
     .tk-log.json                     the kernel log's scan
@@ -22,6 +28,8 @@ The files of a capture <run>.csv, written by tools/trace_session.sh:
     .tk-enable-before.txt .tk-enable-after.txt   the probes' enable states
     .tk-profile.txt .tk-stats.txt    the probes' hits and misses, the buffers' losses
     .tk.txt                          trace-cmd report -t of the recorder's instance
+    .tk-tool-before.json .tk-tool-after.json     trace-cmd's identity before the main
+                                     trace starts and after the recorder's report
 """
 
 from __future__ import annotations
@@ -30,9 +38,12 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 import pathlib
 import platform
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -42,7 +53,11 @@ PROBES = ("ntp_adjtimex", "ntp_clear", "update_entry", "update_return")
 ADJ_OFFSET_SS_READ = 0xa001
 CLOCKSOURCE = "/sys/devices/system/clocksource/clocksource0/current_clocksource"
 SUFFIXES = (".tk-before.json", ".tk-after.json", ".tk-log.json", ".tk-times.txt", ".tk-enable-before.txt",
-            ".tk-enable-after.txt", ".tk-profile.txt", ".tk-stats.txt", ".tk.txt")
+            ".tk-enable-after.txt", ".tk-profile.txt", ".tk-stats.txt", ".tk.txt", ".tk-tool-before.json",
+            ".tk-tool-after.json")
+# The libraries trace-cmd runs with (libtracecmd is linked into it): recorded beside its identity, not part of the audit.
+TRACE_CMD_LIBRARIES = ("libtraceevent1", "libtraceevent1-plugin", "libtracefs1")
+DPKG_OWNER = re.compile(r"([a-z0-9][a-z0-9+.-]*)(?::[a-z0-9-]+)?: (.+)")
 # The kernel log's time is the printk clock, not CLOCK_MONOTONIC: a clock event this near the interval counts as in it.
 LOG_GUARD_NS = 5_000_000_000
 # What the interval must not contain: a clocksource change, TSC trouble, a suspend.
@@ -104,6 +119,56 @@ def state_read(cmdline_path: str = "/proc/cmdline", clocksource_path: str = CLOC
     except OSError as e:
         out["config_sha256"], out["config_status"] = None, str(e)
     return out
+
+
+def tool_identity(name: str, dpkg_query: str | None = None) -> dict:
+    """The identity of the executable NAME resolves to: its path, its SHA-256, and the package that installed it, with
+    its version and architecture. Only reads. A part that cannot be read names read_status, and nothing is assumed."""
+    dq = dpkg_query or os.environ.get("DPKG_QUERY", "dpkg-query")
+    found = shutil.which(name)
+    if found is None:
+        return {"read_status": f"{name} is not found"}
+    path = os.path.realpath(found)
+    out: dict = {"read_status": "ok", "path": path}
+    try:
+        out["sha256"] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+    except OSError as e:
+        out["read_status"] = f"{path}: {e.strerror or e}"
+        return out
+
+    def query(*args: str) -> tuple[int, str, str]:
+        try:
+            p = subprocess.run([dq, *args], capture_output=True, text=True, timeout=30, env={**os.environ, "LC_ALL": "C"})
+        except (OSError, subprocess.SubprocessError) as e:
+            return -1, "", f"{dq}: {e}"
+        return p.returncode, p.stdout, p.stderr.strip()
+
+    rc, text, err = query("-S", path)
+    rows = text.splitlines()
+    m = DPKG_OWNER.fullmatch(rows[0]) if rc == 0 and len(rows) == 1 else None
+    if m is None or m[2] != path:
+        out["read_status"] = f"the package that installed {path} is not known ({(err or text.strip())[:200] or f'exit {rc}'})"
+        return out
+    rc, text, err = query("-W", "-f", "${Package}\t${Version}\t${Architecture}\t${db:Status-Abbrev}\n", m[1])
+    rows = text.splitlines()
+    f = rows[0].split("\t") if rc == 0 and len(rows) == 1 else []
+    if len(f) != 4 or f[0] != m[1] or not f[3].startswith("ii"):
+        out["read_status"] = f"the package {m[1]} is not read as installed ({(err or text.strip())[:200] or f'exit {rc}'})"
+        return out
+    out.update(package=f[0], version=f[1], architecture=f[2])
+    # dpkg-query exits 1 when one of them is not installed, and still lists the others.
+    rc, text, err = query("-W", "-f", "${Package}\t${Version}\t${db:Status-Abbrev}\n", *TRACE_CMD_LIBRARIES)
+    libs = {g[0]: g[1] for g in (ln.split("\t") for ln in text.splitlines()) if len(g) == 3 and g[2].startswith("ii")}
+    out["libraries"] = {lib: libs.get(lib) for lib in TRACE_CMD_LIBRARIES}
+    return out
+
+
+def read_tool(path) -> dict:
+    """A recorded identity (tool_identity's), or one whose read_status says why it could not be read."""
+    v, st = read_json(str(path))
+    if st != "ok":
+        return {"read_status": st}
+    return v if isinstance(v, dict) else {"read_status": f"{path}: not a mapping"}
 
 
 def scan_log(text: str, from_t: int, to_t: int) -> dict:
@@ -273,8 +338,9 @@ def parse_record(text: str, name: str = INSTANCE) -> dict:
             "unmatched": {"entries": sorted(un_e), "returns": sorted(un_r)}}
 
 
-def load(csv_path) -> dict | None:
-    """The evidence of a capture, or None when it has no timekeeping record at all."""
+def load(csv_path, report_tool: dict | None = None) -> dict | None:
+    """The evidence of a capture, or None when it has no timekeeping record at all. report_tool is the identity of the
+    trace-cmd that reported the main trace for this analysis (tool_identity's); without it that use is unidentified."""
     base = str(csv_path)
     if not any(pathlib.Path(base + s).exists() for s in SUFFIXES):
         return None
@@ -310,6 +376,11 @@ def load(csv_path) -> dict | None:
         if k in logv:
             ev["log"][k] = logv[k]
     ev["state"] = {"before": state(before, st_b), "after": state(after, st_a)}
+    # Every use of trace-cmd the certificate rests on: the acquisition (identified before the main trace starts), the
+    # recorder's extraction and report (identified after it), and the report of the main trace this analysis read.
+    ev["trace_cmd"] = {"before": read_tool(base + ".tk-tool-before.json"), "after": read_tool(base + ".tk-tool-after.json"),
+                       "report": report_tool if report_tool is not None
+                       else {"read_status": "the trace-cmd that reported the main trace is not identified"}}
 
     rec: dict = {"read_status": "ok", "buffer": {"read_status": "ok"}}
 
@@ -389,9 +460,14 @@ def main() -> int:
     lg.add_argument("--from-t", type=int, required=True)
     lg.add_argument("--to-t", type=int, required=True)
     lg.add_argument("--out", required=True)
+    tl = sub.add_parser("tool")
+    tl.add_argument("--trace-cmd", required=True, help="the trace-cmd the session runs (a name on PATH, or a path)")
+    tl.add_argument("--out", required=True)
     args = p.parse_args()
     if args.cmd == "state":
         out = state_read(args.cmdline, args.clocksource, args.config_dir)
+    elif args.cmd == "tool":
+        out = tool_identity(args.trace_cmd)
     else:
         text, why = read_text(args.journal)
         out = {"read_status": why} if why else scan_log(text, args.from_t, args.to_t)
