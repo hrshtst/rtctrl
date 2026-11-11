@@ -12,12 +12,11 @@
 # tools/quiet_host.sh have no open record; the experiment's three
 # directories do not exist (it then creates them, fresh); both session
 # commands pass trace_session.sh's dry run; the operator confirms; sudo
-# authenticates; and the root keeper (tools/root_keeper.sh) is ready. With
-# --dry-run it stops after the session dry runs, with scratch directories
-# and nothing changed.
+# authenticates; and the root keeper (tools/root_keeper.sh) is ready in its
+# own root-owned directory. With --dry-run it stops after the session dry
+# runs, with scratch directories and nothing changed.
 #
-# Then, each step's start and end (with its status) in the experiment record,
-# and each obligation recorded before the change that creates it:
+# Then the experiment's steps, in order:
 #   1. tools/quiet_host.sh stop;
 #   2. tools/wq_mask.sh clear 3;
 #   3. the untraced session (attempt 14), without the controls;
@@ -26,24 +25,35 @@
 #   5. the controls and the timer session (attempt 15);
 #   6. tools/wq_mask.sh check, then the gate on the timer run, with the
 #      controls.
-# Any nonzero status, or a signal, stops it there: no further step. The
-# privileged steps go through the keeper (passed as the tools' sudo), which
-# needs no sudo after the start; the sessions use their own sudo as before.
+# No step starts unless no stop is latched, the obligation it creates (steps
+# 1 and 2) is recorded, and its start is recorded; each step's end and status
+# are recorded once it returns. Any nonzero status, a failed record or a
+# signal stops it: no further step. The privileged steps go through the
+# keeper (passed as the tools' sudo), which needs no sudo after its start;
+# the sessions use their own sudo as before.
 #
 # Signals: INT, TERM and HUP are latched. The sessions run in the
 # foreground, in this script's process group, so a Ctrl-C or a hangup of the
 # terminal reaches the running session too, which runs its own cleanup; the
 # supervisor acts once the session has returned (a signal sent to the
-# supervisor alone therefore lets the running session finish). Its cleanup
-# then ignores INT, TERM and HUP, waits (up to 120 s) for any other process
-# of its group to end, and restores, verifying each: tools/wq_mask.sh
-# restore, tools/quiet_host.sh restore, then the keeper's finish (which
-# verifies the original mask). An owed restoration that is not verified is
-# unresolved (exit 3): its record stays open, and no session may start until
-# it is restored. If the supervisor itself is killed (SIGKILL) or crashes,
-# the keeper waits for the group's processes to end and restores the mask,
-# leaving the records open; nothing restores the quieted services then, and
-# a crash of the keeper too, or a power loss, restores nothing (a reboot
+# supervisor alone therefore lets the running step finish, and one that
+# arrives after a step's last check, before its command starts, is acted on
+# when that command returns).
+#
+# The cleanup ignores INT, TERM and HUP. It first needs a confirmed end of
+# every other process of its group: none left (a zombie has ended) and no
+# /proc entry that exists but cannot be read. It waits up to 120 s for that;
+# without it, it changes nothing on the host (no restoration, the keeper left
+# serving, whose own fallback restores the mask only after it confirms the
+# group's end), names what remained, and ends unresolved (exit 3). With it,
+# it restores and verifies: tools/wq_mask.sh restore, tools/quiet_host.sh
+# restore, then the keeper's finish (which verifies the original mask), and
+# copies the keeper's log. An owed restoration that is not verified, or a
+# record that could not be written, the final one included, leaves it
+# unresolved (exit 3): the records stay open, and no session may start until
+# they are restored. If the supervisor itself is killed (SIGKILL) or crashes,
+# only the keeper acts, as above; nothing restores the quieted services then,
+# and a crash of the keeper too, or a power loss, restores nothing (a reboot
 # resets the kernel's mask). Its messages go to the experiment's log and,
 # while it can, to the terminal.
 #
@@ -51,20 +61,23 @@
 # NAME_start=TIME and NAME_end=TIME status=N for each step (quiet_stop,
 # mask_clear, session_A, check_A, gate_A, session_B, check_B, gate_B,
 # mask_restore, quiet_restore, keeper_finish), quiet_owed=TIME and
-# mask_owed=TIME before those changes, signal=TIME NAME, and last
+# mask_owed=TIME before those changes, signal=TIME NAME,
+# group=TIME members=N unknown=N for an unconfirmed end, and last
 # finished=TIME outcome=ACQUIRED|STOPPED|UNRESOLVED reason=TEXT.
 #
 # Exit: 0 both runs acquired and both gates passed, every restoration
-# verified (the acceptance is then judged on the captures); 1 stopped, every
-# restoration verified; 2 refused, nothing changed; 3 an owed restoration
-# not verified.
+# verified and every record written (the acceptance is then judged on the
+# captures); 1 stopped, every restoration verified and every record written;
+# 2 refused, nothing changed; 3 unresolved: the group's end not confirmed, an
+# owed restoration not verified, or a record not written.
 #
 # For tests: OPTION_A_OUT replaces ~/rtctrl-hw, OPTION_A_PORT the emulator's
 # pty, OPTION_A_KERNEL the audited kernel, OPTION_A_TRACE_SESSION,
 # OPTION_A_GATE, OPTION_A_QUIET, OPTION_A_WQ and OPTION_A_KEEPER the tools,
 # OPTION_A_SUDO sudo (none: directly), OPTION_A_YES=1 the confirmation,
-# OPTION_A_RTLIMIT the real-time priority limit read, and
-# QUIET_HOST_STATE and WQ_MASK_RECORD the two records.
+# OPTION_A_RTLIMIT the real-time priority limit read, OPTION_A_GROUP_WAIT the
+# group's wait in seconds, QUIET_HOST_STATE and WQ_MASK_RECORD the two
+# records, and with ROOT_KEEPER_TEST=1 KEEPER_RUNDIR the keeper's /run.
 set -u
 [ -f tools/trace_session.sh ] || { echo "option_a: run from the repository root" >&2; exit 2; }
 OUT=${OPTION_A_OUT:-$HOME/rtctrl-hw}
@@ -78,11 +91,13 @@ KEEPER=$(readlink -f "${OPTION_A_KEEPER:-tools/root_keeper.sh}")
 case "${OPTION_A_SUDO:-sudo}" in none) SUDO=() ;; *) SUDO=("${OPTION_A_SUDO:-sudo}") ;; esac
 QSTATE=${QUIET_HOST_STATE:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/rtctrl-quiet-host.state}
 WREC=${WQ_MASK_RECORD:-${XDG_STATE_HOME:-$HOME/.local/state}/rtctrl-wq-mask.record}
+KRUN=/run
+[ "${ROOT_KEEPER_TEST:-0}" = 1 ] && KRUN=${KEEPER_RUNDIR:-/run}
+GROUP_WAIT=${OPTION_A_GROUP_WAIT:-120}
 RT_CPU=3
 D14=$OUT/clock-validation-14
 D15=$OUT/clock-validation-15
 E=$OUT/clock-validation-option-a
-K=$E/keeper
 COMMON=(--port "$PORT" --usb-device /sys/bus/usb/devices/1-9 --placements open
         --runs current:1000:rt-loaded-excl:fast-motion --duration 20)
 SESSION_A=(--modes untraced --attempt 14 --outdir "$D14")
@@ -99,15 +114,6 @@ log() {  # to the log (once it exists) and, while it can, the terminal
 refuse() { log "option_a: $*: nothing changed"; exit 2; }
 record_failed=0
 rec() { printf '%s\n' "$1" >>"$E/experiment.record" 2>/dev/null || { record_failed=1; log "cannot append to $E/experiment.record"; return 1; }; }
-step() {  # NAME CMD...: the command's status; its start and end recorded (the command runs even if a record fails)
-  local name=$1 st
-  shift
-  rec "${name}_start=$(now)"
-  "$@"
-  st=$?
-  rec "${name}_end=$(now) status=$st"
-  return "$st"
-}
 one() {  # DIR PATTERN: the one file matching, or status 1
   local f
   mapfile -t f < <(find "$1" -maxdepth 1 -type f -name "$2" 2>/dev/null)
@@ -143,7 +149,7 @@ fi
 mkdir "$OUT" 2>/dev/null
 mkdir "$D14" && mkdir "$D15" && mkdir "$E" || { rmdir "$D14" "$D15" "$E" 2>/dev/null; refuse "cannot create the experiment's directories"; }
 LOG=$E/supervisor.log
-undo_dirs() { rmdir "$K/replies" 2>/dev/null; rm -f "$K/requests"; rmdir "$K" "$D14" "$D15" 2>/dev/null; rm -f "$LOG" "$E/experiment.record"; rmdir "$E" 2>/dev/null; }
+undo_dirs() { rmdir "$D14" "$D15" 2>/dev/null; rm -f "$LOG" "$E/experiment.record"; rmdir "$E" 2>/dev/null; }
 for spec in "untraced 14 $D14" "timer 15 $D15"; do
   read -r m a d <<<"$spec"
   extra=(); [ "$m" = timer ] && extra=(--fs-controls 5)
@@ -165,73 +171,150 @@ EOF
   [ "$answer" = yes ] || { undo_dirs; refuse "not confirmed"; }
 fi
 if [ ${#SUDO[@]} -gt 0 ]; then "${SUDO[@]}" -v || { undo_dirs; refuse "sudo did not authenticate"; }; fi
-mkdir -m 700 "$K" && mkfifo -m 600 "$K/requests" && mkdir -m 700 "$K/replies" || { undo_dirs; refuse "cannot create the keeper's directory"; }
 me_start=$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 20)
 me_pgid=$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 3)
-"${SUDO[@]}" "$KEEPER" serve "$K" "$$" "$me_start" "$me_pgid" "$RT_CPU" || { undo_dirs; refuse "the root keeper did not start"; }
+K=$KRUN/rtctrl-keeper-$$-$me_start
+[ ! -e "$K" ] || { undo_dirs; refuse "the keeper's directory $K exists"; }
+"${SUDO[@]}" "$KEEPER" serve "$$" "$me_start" "$me_pgid" "$RT_CPU" || { undo_dirs; refuse "the root keeper did not start"; }
 for ((i = 0; i < 100; i++)); do [ -e "$K/keeper.ready" ] && break; sleep 0.1; done
 kpid=$(sed -n 's/^pid=//p' "$K/keeper.ready" 2>/dev/null)
 [ -n "$kpid" ] && [ -e "/proc/$kpid" ] || { undo_dirs; refuse "the root keeper is not ready (it ends by itself when this script does)"; }
 KENV=(WQ_MASK_SUDO="$KEEPER" QUIET_HOST_SUDO="$KEEPER" ROOT_KEEPER_DIR="$K")
 
 # --- The experiment: owned from here on. ---
-rec "started=$(now) kernel=$(uname -r) supervisor=$$ group=$me_pgid keeper=$kpid" || { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
-rec "directories=$D14 $D15 $E"
+rec "started=$(now) kernel=$(uname -r) supervisor=$$ group=$me_pgid keeper=$kpid keeper_dir=$K" ||
+  { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
+rec "directories=$D14 $D15 $E" || { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
 quiet_owed=0; mask_owed=0; keeper_up=1; stopped=; finished=0
 on_signal() { rec "signal=$(now) $1"; [ -n "$stopped" ] || stopped="signal $1"; log "option_a: $1: no further step; the restoration follows once the running step returns"; }
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
+
 finish() {
   [ "$finished" -eq 1 ] && return
   finished=1
   trap '' INT TERM HUP
-  local i unresolved='' outcome code
-  # The sessions ran in the foreground and have returned; anything else left in the group is waited for.
-  for ((i = 0; i < 1200; i++)); do
-    python3 -I -c '
+  local i g='' unresolved='' outcome code reason
+  # A confirmed end of every other process of the group comes first: nothing changes on the host before it.
+  for ((i = 0; i < GROUP_WAIT * 10; i++)); do
+    g=$(python3 -I -c '
 import os, sys
 g, me = sys.argv[1], {sys.argv[2], str(os.getpid())}
+members, unknown = [], []
 for p in os.listdir("/proc"):
-    if p.isdigit() and p not in me:
-        try:
-            if open(f"/proc/{p}/stat").read().rsplit(")", 1)[1].split()[2] == g:
-                sys.exit(1)
-        except (OSError, IndexError):
-            pass
-' "$me_pgid" "$$" && break
+    if not p.isdigit() or p in me:
+        continue
+    try:
+        s = open(f"/proc/{p}/stat").read()
+    except OSError:
+        if os.path.exists(f"/proc/{p}"):
+            unknown.append(p)
+        continue
+    try:
+        comm = s[s.index("(") + 1:s.rindex(")")]
+        f = s[s.rindex(")") + 2:].split()
+        state, pgrp = f[0], f[2]
+    except (ValueError, IndexError):
+        unknown.append(p)
+        continue
+    if pgrp == g and state not in ("Z", "X"):
+        members.append(f"{p} {comm} {state}")
+print(len(members), len(unknown))
+for m in members:
+    print("  member", m)
+for u in unknown:
+    print("  unknown", u)
+' "$me_pgid" "$$") && [ "$(head -n 1 <<<"$g")" = "0 0" ] && break
     sleep 0.1
   done
-  [ "$i" -lt 1200 ] || log "option_a: processes of the group remain after 120 s; restoring anyway"
+  if [ "$i" -ge $((GROUP_WAIT * 10)) ]; then
+    read -r gm gu <<<"$(head -n 1 <<<"${g:-? ?}")"
+    rec "group=$(now) members=$gm unknown=$gu"
+    log "option_a: UNRESOLVED: the end of the experiment's processes is not confirmed after $GROUP_WAIT s; nothing is restored:"
+    log "${g:-the group could not be read}"
+    log "  the keeper stays and restores the mask only once it confirms the group's end; restore by hand afterwards"
+    log "  (tools/wq_mask.sh restore, tools/quiet_host.sh restore); its log: $K/keeper.log"
+    cp "$K/keeper.log" "$E/keeper.log" 2>/dev/null
+    rec "finished=$(now) outcome=UNRESOLVED reason=${stopped:-none}; unresolved: the group's end"
+    exit 3
+  fi
+  cleanup_step() {  # NAME CMD...: a restoration runs whatever the record does
+    local name=$1 st
+    shift
+    rec "${name}_start=$(now)"
+    "$@"
+    st=$?
+    rec "${name}_end=$(now) status=$st"
+    return "$st"
+  }
   if [ "$mask_owed" -eq 1 ]; then
-    if step mask_restore env "${KENV[@]}" "$WQ" restore >>"$LOG" 2>&1; then mask_owed=0; else unresolved+=" mask"; fi
+    if cleanup_step mask_restore env "${KENV[@]}" "$WQ" restore >>"$LOG" 2>&1; then mask_owed=0; else unresolved+=" mask"; fi
   fi
   if [ "$quiet_owed" -eq 1 ]; then
-    if step quiet_restore env "${KENV[@]}" "$QUIET" restore >>"$LOG" 2>&1; then quiet_owed=0; else unresolved+=" quiet_host"; fi
+    if cleanup_step quiet_restore env "${KENV[@]}" "$QUIET" restore >>"$LOG" 2>&1; then quiet_owed=0; else unresolved+=" quiet_host"; fi
   fi
   if [ "$keeper_up" -eq 1 ]; then
-    if step keeper_finish env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >>"$LOG" 2>&1; then keeper_up=0; else unresolved+=" keeper"; fi
+    if cleanup_step keeper_finish env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >>"$LOG" 2>&1; then keeper_up=0; else unresolved+=" keeper"; fi
   fi
-  if [ -n "$unresolved" ]; then
-    outcome=UNRESOLVED; code=3
-    log "option_a: UNRESOLVED:$unresolved not verified; no session may start until it is restored (tools/wq_mask.sh restore, tools/quiet_host.sh restore)"
-  elif [ -n "$stopped" ]; then outcome=STOPPED; code=1; log "option_a: STOPPED ($stopped); every restoration verified"
-  else outcome=ACQUIRED; code=0; log "option_a: both runs acquired and both gates passed; every restoration verified"
+  cp "$K/keeper.log" "$E/keeper.log" 2>/dev/null || { record_failed=1; log "option_a: cannot copy the keeper's log $K/keeper.log"; }
+  [ "$record_failed" -eq 0 ] || unresolved+=" record"
+  reason=${stopped:-none}${unresolved:+; unresolved:$unresolved}
+  if [ -n "$unresolved" ]; then outcome=UNRESOLVED; code=3
+  elif [ -n "$stopped" ]; then outcome=STOPPED; code=1
+  else outcome=ACQUIRED; code=0
   fi
-  rec "finished=$(now) outcome=$outcome reason=${stopped:-none}${unresolved:+ unresolved:$unresolved}"
+  if ! rec "finished=$(now) outcome=$outcome reason=$reason"; then
+    log "option_a: UNRESOLVED: the final record could not be written (the outcome would have been $outcome)"
+    case " $unresolved " in *" record "*) ;; *) unresolved+=" record" ;; esac
+    code=3
+  fi
+  case "$code" in
+    0) log "option_a: both runs acquired and both gates passed; every restoration verified" ;;
+    1) log "option_a: STOPPED ($stopped); every restoration verified" ;;
+    *) log "option_a: UNRESOLVED (stop: ${stopped:-none}; unresolved:$unresolved); no session may start until each is resolved:"
+       local u
+       for u in $unresolved; do
+         case "$u" in
+           mask) log "  mask: its restoration is not verified: tools/wq_mask.sh restore" ;;
+           quiet_host) log "  quiet_host: the services' restoration is not verified: tools/quiet_host.sh restore" ;;
+           keeper) log "  keeper: its finish is not verified (it may still serve): read $K/keeper.log, check the masks" ;;
+           record) log "  record: $E/experiment.record is incomplete: the outcome is not ACQUIRED; the log $LOG holds the steps" ;;
+         esac
+       done ;;
+  esac
   exit "$code"
 }
 trap finish EXIT
 halt() { [ -n "$stopped" ] || stopped=$1; log "option_a: stop: $stopped"; finish; }
-ok() {  # STATUS WHAT: halts unless the step succeeded, no signal came and the record holds
-  [ "$1" -eq 0 ] || halt "$2 (status $1)"
+ready() {  # no new work after a latched stop or a failed record
   [ -z "$stopped" ] || halt "$stopped"
   [ "$record_failed" -eq 0 ] || halt "the experiment record could not be written"
 }
+owe() {  # NAME: the obligation recorded before the change that creates it
+  ready
+  rec "${1}_owed=$(now)" || halt "the obligation $1 could not be recorded"
+  ready
+}
+step() {  # NAME CMD...: an experiment step, started only once ready and its start recorded; its status
+  local name=$1 st
+  shift
+  ready
+  rec "${name}_start=$(now)" || halt "the start of $name could not be recorded"
+  ready
+  "$@"
+  st=$?
+  rec "${name}_end=$(now) status=$st"
+  return "$st"
+}
+ok() {  # STATUS WHAT: halts unless the step succeeded, no signal came and the record holds
+  [ "$1" -eq 0 ] || halt "$2 (status $1)"
+  ready
+}
 
-rec "quiet_owed=$(now)"; quiet_owed=1
+owe quiet; quiet_owed=1
 step quiet_stop env "${KENV[@]}" "$QUIET" stop; ok $? "tools/quiet_host.sh stop failed"
-rec "mask_owed=$(now)"; mask_owed=1
+owe mask; mask_owed=1
 step mask_clear env "${KENV[@]}" "$WQ" clear "$RT_CPU"; ok $? "tools/wq_mask.sh clear $RT_CPU failed"
 step session_A "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_A[@]}"; ok $? "the untraced session failed"
 step check_A "$WQ" check; ok $? "the mask was not in effect after the untraced session"

@@ -7,15 +7,29 @@
 # A normal experiment runs, in order, the quieting, the mask's clear, the
 # untraced session (without the controls), the check and gate, the controls
 # with the timer session, the check and gate, then restores and verifies
-# everything and ends the keeper (exit 0). Refusals change nothing (fresh
-# directories, a failing dry run, an open record). A failed session, a
-# failed gate, a hangup or an interrupt reaching the process group during a
-# session, and a TERM to the supervisor alone each stop it with no further
-# step and every restoration verified, after the session's own cleanup
-# (exit 1). A restoration that fails is unresolved (exit 3, its record
-# open). A supervisor killed with SIGKILL leaves the keeper to restore the
-# mask once the group's processes have ended. The keeper refuses anything
-# outside its list, and a directory that is not the user's private one.
+# everything and ends the keeper (exit 0); the real gate passes on its
+# records, open and closed. Refusals change nothing (fresh directories, a
+# failing dry run, an open record, a low real-time limit). A failed session,
+# a failed gate, a hangup or an interrupt reaching the process group during
+# a session, a TERM to the supervisor alone during a session, and a TERM
+# latched just before a session starts each stop it with no further step
+# (the latched one before that session) and every restoration verified
+# (exit 1). A record that cannot be written before a session starts stops
+# it before that session, and a final record that cannot be written makes
+# the outcome unresolved, never exit 0 (exit 3). A restoration that fails is
+# unresolved (exit 3, its record open). A process of the group still running
+# when the experiment ends leaves everything unrestored (exit 3); the keeper
+# then restores the mask once that process has ended. A supervisor killed
+# with SIGKILL leaves the keeper to restore the mask once the group's
+# processes have ended. The keeper: its list; a directory of its own, created
+# exclusively; links planted in its replies (temporary or final names, or in
+# place of the directory) redirect nothing; an owner that cannot be read is
+# not taken as ended; a group member that cannot be read is not taken as
+# ended (the keeper ends without restoring once its wait is over), and one
+# seen to end lets it restore.
+#
+# The scratch directory comes through tests/integration/scratch_dir.sh: never
+# empty, never a system or home directory; every removal is under ${ROOT:?}.
 #
 # usage: option_a_smoke.sh <scratch dir>
 set -u
@@ -23,7 +37,6 @@ set -u
 . "$(dirname "$0")/scratch_dir.sh"
 scratch_init "option_a_smoke" "${1:-}" || exit 2  # a new child of an approved base: the only place this test removes
 ROOT=$RTCTRL_SCRATCH
-mkdir -p "$ROOT"
 fail() { echo "FAILED: $1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 ORIG=ffffffff
 TARGET=fffffff7
@@ -33,6 +46,9 @@ export OPTION_A_RTLIMIT=95 OPTION_A_TRACE_SESSION=$ROOT/session OPTION_A_GATE=$R
 export ROOT_KEEPER_TEST=1 KEEPER_SYSFS=$ROOT/sys KEEPER_WRITE=$ROOT/kernel KEEPER_SYSTEMCTL=$ROOT/systemctl
 export WQ_MASK_SYSFS=$ROOT/sys WQ_MASK_PROC=$ROOT/proc WQ_MASK_RECORD=$ROOT/state/wq.rec WQ_MASK_WAIT=1
 export QUIET_HOST_STATE=$ROOT/state/quiet.state
+export KEEPER_RUNDIR=$ROOT/run OPTION_A_GROUP_WAIT=2
+REAL_DATE=$(command -v date)
+REAL_PY=$(command -v python3)
 E=$ROOT/out/clock-validation-option-a
 
 cat >"$ROOT/cpus" <<'EOF'
@@ -101,6 +117,7 @@ if sys.argv[5] == "1":
     "$outdir" "rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-$mode-20261112-$attempt" \
     "$(cat "$ROOT/sys/cpumask")" "$mode" "$ctl" "$attempt" || exit 9
 fi
+[ -e "$ROOT/session.linger.$attempt" ] && { sleep 30 & echo $! >"$ROOT/linger.pid"; }
 : >"$ROOT/running-$attempt"
 end=$(( $(date +%s%N) + $(python3 -c "print(int(float('$(cat "$ROOT/session.secs" 2>/dev/null || echo 0.6)') * 1e9))") ))
 while [ "$(date +%s%N)" -lt "$end" ]; do sleep 0.05; done
@@ -115,9 +132,12 @@ EOF
 chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate"
 
 reset() {  # the host as it starts
-  scratch_rm "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT"/calls "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* \
-         "$ROOT"/session.* "$ROOT"/gate.exit.* "$ROOT/dry.exit" "$ROOT/kernel.mode" "$ROOT/uu.log" "$ROOT/sup.out"
-  mkdir -p "$ROOT/sys" "$ROOT/state" "$ROOT/proc"
+  [ -e "$ROOT/linger.pid" ] && kill "$(cat "$ROOT/linger.pid")" 2>/dev/null
+  scratch_rm "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT/run" "$ROOT/bin" "$ROOT"/calls \
+         "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* "$ROOT"/session.* "$ROOT"/gate.exit.* \
+         "$ROOT/dry.exit" "$ROOT/kernel.mode" "$ROOT/uu.log" "$ROOT/sup.out" "$ROOT"/trigger.* "$ROOT/linger.pid" \
+         "$ROOT/hook.bash" "$ROOT"/hide.*
+  mkdir -p "$ROOT/sys" "$ROOT/state" "$ROOT/proc" "$ROOT/run"
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"; printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"
   printf '00000000\n' >"$ROOT/sys/cpumask_isolated"
   local p
@@ -128,9 +148,10 @@ reset() {  # the host as it starts
   : >"$ROOT/pty"
 }
 masks() { echo "$(cat "$ROOT/sys/cpumask") $(cat "$ROOT/sys/cpumask_requested")"; }
+keeper_dir() { sed -n 's/^started=.* keeper_dir=//p' "$E/experiment.record" "$E/experiment.record.saved" 2>/dev/null | head -n 1; }
 keeper_gone() {  # waits up to 5 s for the experiment's keeper to end
   local pid i
-  pid=$(sed -n 's/^pid=//p' "$E/keeper/keeper.ready" 2>/dev/null)
+  pid=$(sed -n 's/^pid=//p' "$(keeper_dir)/keeper.ready" 2>/dev/null)
   [ -n "$pid" ] || return 1
   for ((i = 0; i < 50; i++)); do [ -e "/proc/$pid" ] || return 0; sleep 0.1; done
   return 1
@@ -164,8 +185,10 @@ restored || fail "the normal experiment's restorations" "$ROOT/sup.out"
 keys=$(sed 's/=.*//' "$E/experiment.record" | tr '\n' ' ')
 want="started directories quiet_owed quiet_stop_start quiet_stop_end mask_owed mask_clear_start mask_clear_end session_A_start session_A_end check_A_start check_A_end gate_A_start gate_A_end session_B_start session_B_end check_B_start check_B_end gate_B_start gate_B_end mask_restore_start mask_restore_end quiet_restore_start quiet_restore_end keeper_finish_start keeper_finish_end finished "
 [ "$keys" = "$want" ] && grep -q '^finished=.* outcome=ACQUIRED reason=none$' "$E/experiment.record" || fail "the experiment record: $keys" "$E/experiment.record"
-grep -q 'request .*: mask fffffff7: status 0' "$E/keeper/keeper.log" && grep -q 'finish: the original is in effect' "$E/keeper/keeper.log" ||
-  fail "the keeper's log" "$E/keeper/keeper.log"
+grep -q 'request .*: mask fffffff7: status 0' "$E/keeper.log" && grep -q 'finish: the original is in effect' "$E/keeper.log" ||
+  fail "the keeper's log (the supervisor's copy)" "$E/keeper.log"
+[ "$(stat -c %a "$(keeper_dir)")" = 755 ] && [ "$(stat -c %a "$(keeper_dir)/replies")" = 755 ] && [ ! -e "$(keeper_dir)/requests" ] ||
+  fail "the keeper's directory: its modes, or the FIFO left"
 
 # The same with the real gate, on realistic run files: the supervisor's and the mask tool's records are what it reads.
 # After the experiment, the gate on both runs passes against the closed record too.
@@ -233,7 +256,7 @@ kill -TERM "$sup"; wait "$sup"; st=$?
 reset; echo refuse-original >"$ROOT/kernel.mode"
 start; wait "$sup"; st=$?
 [ "$st" -eq 3 ] && [ -e "$WQ_MASK_RECORD" ] && [ "$(masks)" = "$TARGET $TARGET" ] &&
-  grep -q '^finished=.* outcome=UNRESOLVED reason=none unresolved: mask keeper$' "$E/experiment.record" || fail "a failed restoration ($st)" "$ROOT/sup.out"
+  grep -q '^finished=.* outcome=UNRESOLVED reason=none; unresolved: mask keeper$' "$E/experiment.record" || fail "a failed restoration ($st)" "$ROOT/sup.out"
 keeper_gone || fail "the keeper stayed after a failed restoration"
 
 # The supervisor killed (SIGKILL) during the untraced session: the keeper waits for the group to end, then restores the mask.
@@ -241,7 +264,7 @@ reset; echo 2 >"$ROOT/session.secs"
 start
 wait_file "$ROOT/running-14" || fail "session 14 did not start" "$ROOT/sup.out"
 kill -KILL "$sup"; wait "$sup" 2>/dev/null
-keeper_log=$E/keeper/keeper.log
+keeper_log=$(keeper_dir)/keeper.log
 for ((i = 0; i < 100; i++)); do grep -q 'is in effect; ending' "$keeper_log" 2>/dev/null && break; sleep 0.1; done
 grep -q 'ended without a finish' "$keeper_log" && grep -q 'is in effect; ending' "$keeper_log" && [ "$(masks)" = "$ORIG $ORIG" ] &&
   [ -e "$WQ_MASK_RECORD" ] && keeper_gone || fail "the keeper after a killed supervisor" "$keeper_log"
@@ -249,26 +272,173 @@ grep -q 'ended without a finish' "$keeper_log" && grep -q 'is in effect; ending'
 [ "$(stat -c %Y "$ROOT/sys/cpumask")" -ge "$(stat -c %Y "$ROOT/mask-during-14")" ] || fail "the keeper restored before the session ended"
 WQ_MASK_SUDO=none tools/wq_mask.sh restore >/dev/null 2>&1 || :
 
-# The keeper alone: its list, its directory.
+# A TERM latched just before the untraced session starts (a debug hook sends it as that step is about to run): that
+# session never starts.
 reset
-K=$ROOT/k; scratch_within "$K" || exit 2; mkdir -m 700 "$K"; mkfifo -m 600 "$K/requests"; mkdir -m 700 "$K/replies"
-sleep 30 &
-owner=$!
-ostart=$(sed 's/.*) //' "/proc/$owner/stat" | cut -d ' ' -f 20)
-tools/root_keeper.sh serve "$K" "$owner" "$ostart" 999999 3 || fail "the keeper did not start"
-wait_file "$K/keeper.ready" || fail "the keeper is not ready" "$K/keeper.log"
+printf '%s\n' 'if [[ $0 == *option_a.sh ]]; then trap '"'"'if [[ $BASH_COMMAND == "step session_A "* && -z ${HOOK_SENT:-} ]]; then HOOK_SENT=1; kill -TERM $$; fi'"'"' DEBUG; fi' >"$ROOT/hook.bash"
+(export BASH_ENV=$ROOT/hook.bash; start; wait "$sup"; echo $? >"$ROOT/term.st")
+st=$(cat "$ROOT/term.st")
+[ "$st" -eq 1 ] && ! grep -q '^session ' "$ROOT/calls" && ! grep -q '^session_A_start=' "$E/experiment.record" && grep -q '^signal=.* TERM$' "$E/experiment.record" &&
+  restored || fail "a TERM latched before the untraced session ($st)" "$ROOT/sup.out"
+
+# Records that cannot be written (a date stand-in turns the experiment record into a directory at the chosen moment):
+# before the untraced session starts, the session does not start; at the final record, the outcome is unresolved.
+mkdate() {  # the chosen moment: before-session-A or final
+  mkdir -p "$ROOT/bin"; echo "$1" >"$ROOT/trigger.mode"
+  cat >"$ROOT/bin/date" <<EOF
+#!/usr/bin/env bash
+rec=$E/experiment.record
+if [ -f "\$rec" ] && [ ! -e "$ROOT/trigger.done" ]; then
+  case "\$(cat "$ROOT/trigger.mode")" in
+    before-session-A) grep -q '^mask_clear_end=' "\$rec" && ! grep -q '^session_A_start=' "\$rec" && { : >"$ROOT/trigger.done"; mv "\$rec" "\$rec.saved"; mkdir "\$rec"; } ;;
+    final) grep -q '^keeper_finish_end=' "\$rec" && { : >"$ROOT/trigger.done"; mv "\$rec" "\$rec.saved"; mkdir "\$rec"; } ;;
+  esac
+fi
+exec $REAL_DATE "\$@"
+EOF
+  chmod +x "$ROOT/bin/date"
+}
+reset; mkdate before-session-A
+(export PATH=$ROOT/bin:$PATH; start; wait "$sup"; echo $? >"$ROOT/rec.st")
+st=$(cat "$ROOT/rec.st")
+[ "$st" -eq 3 ] && ! grep -q '^session ' "$ROOT/calls" && [ "$(masks)" = "$ORIG $ORIG" ] && [ ! -e "$WQ_MASK_RECORD" ] && [ ! -e "$QUIET_HOST_STATE" ] &&
+  grep -q 'the start of session_A could not be recorded' "$E/supervisor.log" &&
+  grep -q 'UNRESOLVED (stop: the start of session_A could not be recorded; unresolved: record)' "$E/supervisor.log" &&
+  grep -q '  record: .*experiment.record is incomplete: the outcome is not ACQUIRED' "$E/supervisor.log" &&
+  ! grep -q '  mask: \|  quiet_host: ' "$E/supervisor.log" || fail "a record failing before the untraced session ($st)" "$E/supervisor.log"
+reset; mkdate final
+(export PATH=$ROOT/bin:$PATH; start; wait "$sup"; echo $? >"$ROOT/rec.st")
+st=$(cat "$ROOT/rec.st")
+[ "$st" -eq 3 ] && grep -q '^session timer' "$ROOT/calls" && [ "$(masks)" = "$ORIG $ORIG" ] && [ ! -e "$WQ_MASK_RECORD" ] && [ ! -e "$QUIET_HOST_STATE" ] &&
+  grep -q 'the final record could not be written (the outcome would have been ACQUIRED)' "$E/supervisor.log" &&
+  grep -q 'UNRESOLVED (stop: none; unresolved: record)' "$E/supervisor.log" && ! grep -q 'both runs acquired' "$E/supervisor.log" ||
+  fail "a final record that cannot be written ($st)" "$E/supervisor.log"
+
+# A process of the group still running when the experiment ends: nothing is restored (exit 3), the keeper stays, and it
+# restores the mask once that process has ended.
+reset; : >"$ROOT/session.linger.14"
+start; wait "$sup"; st=$?
+[ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && [ -e "$WQ_MASK_RECORD" ] && [ -e "$QUIET_HOST_STATE" ] &&
+  grep -q '^group=.* members=1 unknown=0$' "$E/experiment.record" && grep -q 'outcome=UNRESOLVED reason=none; unresolved: the group' "$E/experiment.record" &&
+  ! keeper_gone || fail "a lingering member of the group ($st)" "$E/supervisor.log"
+kill "$(cat "$ROOT/linger.pid")"
+for ((i = 0; i < 50; i++)); do [ "$(masks)" = "$ORIG $ORIG" ] && break; sleep 0.1; done
+[ "$(masks)" = "$ORIG $ORIG" ] && keeper_gone && grep -q 'the group has ended; the original ffffffff is in effect' "$(keeper_dir)/keeper.log" ||
+  fail "the keeper after the lingering member ended" "$(keeper_dir)/keeper.log"
+
+# The keeper alone: its list, its own directory, links planted in it, an owner or a group member that cannot be read.
+owner_start() { sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20; }
+keeper() {  # OWNER PGID [env...]: starts a keeper for OWNER, its directory in K
+  local o=$1 g=$2
+  shift 2
+  K=$ROOT/run/rtctrl-keeper-$o-$(owner_start "$o")
+  scratch_within "$K" || return 1  # the keeper directory the cases below remove from
+  env "$@" tools/root_keeper.sh serve "$o" "$(owner_start "$o")" "$g" 3 || return 1
+  wait_file "$K/keeper.ready"
+}
 c() { ROOT_KEEPER_DIR=$K tools/root_keeper.sh "$@"; }
+reset
+sleep 60 &
+owner=$!
+keeper "$owner" 999999 || fail "the keeper did not start"
+[ "$(stat -c %a "$K")" = 755 ] && [ "$(stat -c %a "$K/requests")" = 600 ] && [ -p "$K/requests" ] || fail "the keeper's directory and FIFO modes"
 echo 0000ffff | c tee "$ROOT/sys/cpumask"; st1=$?
 echo "$TARGET" | c tee /etc/passwd; st2=$?
 c systemctl restart unattended-upgrades.service; st3=$?
 out=$(c status); st4=$?
 [ "$st1" -eq 99 ] && [ "$st2" -eq 99 ] && [ "$st3" -eq 99 ] && [ "$st4" -eq 0 ] && [ "$out" = "cpumask $ORIG requested $ORIG" ] && [ "$(masks)" = "$ORIG $ORIG" ] ||
   fail "the keeper's list ($st1 $st2 $st3 $st4: $out)" "$K/keeper.log"
+# Links planted where the keeper writes its replies (possible only in the test mode: in /run the directory is root's)
+# redirect nothing: a temporary name taken, a final name that is a link, the replies directory itself a link.
+printf 'PRESERVE\n' >"$ROOT/victim"; mkdir -p "$ROOT/elsewhere"
+ln -s "$ROOT/victim" "$K/replies/.p1.part"
+echo "p1 status" >"$K/requests"
+ln -s "$ROOT/victim" "$K/replies/p2"
+echo "p2 status" >"$K/requests"
+for ((i = 0; i < 50; i++)); do grep -q 'request p1: the reply could not be written' "$K/keeper.log" && [ -f "$K/replies/p2" ] && [ ! -L "$K/replies/p2" ] && break; sleep 0.1; done
+[ "$(cat "$ROOT/victim")" = PRESERVE ] && grep -q 'request p1: the reply could not be written' "$K/keeper.log" && [ ! -L "$K/replies/p2" ] &&
+  grep -q '^status=0$' "$K/replies/p2" || fail "links planted in the replies" "$K/keeper.log"
+mv "$K/replies" "$K/replies.real"; ln -s "$ROOT/elsewhere" "$K/replies"
+echo "p3 status" >"$K/requests"
+for ((i = 0; i < 50; i++)); do grep -q 'request p3: the reply could not be written' "$K/keeper.log" && break; sleep 0.1; done
+[ -z "$(ls -A "$ROOT/elsewhere")" ] && grep -q 'request p3: the reply could not be written' "$K/keeper.log" || fail "a replies directory replaced by a link" "$K/keeper.log"
+scratch_rm "$K/replies"; mv "$K/replies.real" "$K/replies"
 echo "$TARGET" | c tee "$ROOT/sys/cpumask" && [ "$(masks)" = "$TARGET $TARGET" ] || fail "the keeper's target write" "$K/keeper.log"
 c finish && [ "$(masks)" = "$ORIG $ORIG" ] || fail "the keeper's finish" "$K/keeper.log"
-kill "$owner" 2>/dev/null
-chmod 755 "$K"; scratch_rm "$K/keeper.ready"
-tools/root_keeper.sh serve "$K" "$$" "$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 20)" 999999 3 2>/dev/null; st=$?
-[ "$st" -eq 2 ] && [ ! -e "$K/keeper.ready" ] || fail "a keeper in a directory that is not private ($st)"
+# Its directory exists already (an earlier keeper's, for this owner): refused.
+tools/root_keeper.sh serve "$owner" "$(owner_start "$owner")" 999999 3 2>/dev/null; st=$?
+[ "$st" -eq 2 ] || fail "a keeper whose directory exists ($st)"
+kill "$owner"
+
+# Fault injection for the keeper alone: a cat that cannot read one owner's stat, a python3 that cannot read one
+# process's stat in the group census; everything else unchanged.
+mkdir -p "$ROOT/hidebin"
+cat >"$ROOT/hidebin/cat" <<EOF
+#!/usr/bin/env bash
+[ -e "$ROOT/hide.owner" ] && [ "\$1" = "/proc/\$($(command -v cat) "$ROOT/hide.owner")/stat" ] && exit 1
+exec $(command -v cat) "\$@"
+EOF
+cat >"$ROOT/hidebin/python3" <<EOF
+#!$REAL_PY
+import builtins, os, sys
+args = sys.argv[1:]
+if "-c" not in args:
+    os.execv("$REAL_PY", ["$REAL_PY"] + args)
+code = args[args.index("-c") + 1]
+hide = "$ROOT/hide.member"
+if os.path.exists(hide) and 'os.listdir("/proc")' in code:
+    pid = open(hide).read().strip()
+    real_open = builtins.open
+    def guarded(path, *a, **kw):
+        if str(path) == f"/proc/{pid}/stat":
+            raise PermissionError("hidden by the test")
+        return real_open(path, *a, **kw)
+    builtins.open = guarded
+sys.argv = ["-c"] + args[args.index("-c") + 2:]
+exec(compile(code, "<string>", "exec"), {"__name__": "__main__"})
+EOF
+chmod +x "$ROOT/hidebin/cat" "$ROOT/hidebin/python3"
+# An owner whose /proc entry cannot be read is not taken as ended: the keeper serves on.
+reset
+sleep 60 &
+owner=$!
+keeper "$owner" 999999 PATH="$ROOT/hidebin:$PATH" || fail "the keeper (an owner hidden) did not start"
+echo "$owner" >"$ROOT/hide.owner"
+for ((i = 0; i < 50; i++)); do grep -q 'cannot be read: not taken as ended' "$K/keeper.log" && break; sleep 0.1; done
+out=$(c status); st=$?
+[ "$st" -eq 0 ] && grep -q 'cannot be read: not taken as ended' "$K/keeper.log" && ! grep -q 'ended without a finish' "$K/keeper.log" ||
+  fail "an owner that cannot be read" "$K/keeper.log"
+scratch_rm "$ROOT/hide.owner"; c finish >/dev/null; kill "$owner"
+# A member of the group that cannot be read is not taken as ended: once the owner has ended, the keeper waits, and when
+# its wait is over it ends WITHOUT restoring.
+group_owner() {  # an owner, in a group of its own, with one child: their pids in owner and child
+  python3 -c 'import os, sys
+os.setsid(); os.execvp("bash", ["bash", "-c", "sleep 60 & echo $! >\"$1\"; wait", "owner", sys.argv[1]])' "$ROOT/child.pid" &
+  owner=$!
+  wait_file "$ROOT/child.pid" || fail "no child"
+  child=$(cat "$ROOT/child.pid"); scratch_rm "$ROOT/child.pid"
+}
+reset
+group_owner
+keeper "$owner" "$owner" PATH="$ROOT/hidebin:$PATH" KEEPER_GROUP_WAIT=2 || fail "the keeper (a member hidden) did not start"
+echo "$TARGET" | c tee "$ROOT/sys/cpumask" || fail "the target write (a member hidden)"
+echo "$child" >"$ROOT/hide.member"
+kill -KILL "$owner"; wait "$owner" 2>/dev/null
+for ((i = 0; i < 80; i++)); do grep -q 'UNRESOLVED' "$K/keeper.log" && break; sleep 0.1; done
+[ "$(masks)" = "$TARGET $TARGET" ] && grep -q 'UNRESOLVED: the end of process group .* is not confirmed .*; the mask is NOT restored' "$K/keeper.log" &&
+  grep -q "unknown $child" "$K/keeper.log" && [ -e "/proc/$child" ] || fail "a hidden member of the group" "$K/keeper.log"
+scratch_rm "$ROOT/hide.member"; kill "$child"
+# The same member seen to end while the keeper waits: the keeper restores.
+reset
+group_owner
+keeper "$owner" "$owner" KEEPER_GROUP_WAIT=20 || fail "the keeper (a member running) did not start"
+echo "$TARGET" | c tee "$ROOT/sys/cpumask" || fail "the target write (a member running)"
+kill -KILL "$owner"; wait "$owner" 2>/dev/null
+for ((i = 0; i < 30; i++)); do grep -q 'waiting for a confirmed end' "$K/keeper.log" && break; sleep 0.1; done
+sleep 1
+[ "$(masks)" = "$TARGET $TARGET" ] || fail "the keeper restored while a member of the group ran" "$K/keeper.log"
+kill "$child"
+for ((i = 0; i < 50; i++)); do [ "$(masks)" = "$ORIG $ORIG" ] && break; sleep 0.1; done
+[ "$(masks)" = "$ORIG $ORIG" ] && grep -q 'the group has ended; the original ffffffff is in effect' "$K/keeper.log" || fail "the keeper after the member ended" "$K/keeper.log"
 scratch_release
 echo "option_a smoke OK"
