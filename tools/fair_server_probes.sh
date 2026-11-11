@@ -7,8 +7,13 @@
 #
 # usage: fair_server_probes.sh define  TRACEFS GROUP DEFFILE
 #        fair_server_probes.sh remove  TRACEFS GROUP DEFFILE   removes each defined event (verified; 0 if absent)
-#        fair_server_probes.sh exists  TRACEFS GROUP           status 0 if the group has events
+#        fair_server_probes.sh exists  TRACEFS GROUP           "present" if the group exists, else "absent"
 #        fair_server_probes.sh profile TRACEFS GROUP DEFFILE   each event's hits and misses (kprobe_profile)
+#
+# exists prints its answer and exits 0 only when it listed the events
+# directory in full; a listing it cannot read is status 1 and no answer, so a
+# failure (its own, or sudo's, whose status is also 1) is never taken for
+# absence. remove verifies its result with the same listings.
 #
 # DEFFILE holds one kprobe_events line per event, every one in GROUP. define
 # writes them in order and checks each event's directory; its status says
@@ -24,6 +29,14 @@ usage() { echo "usage: $0 define|remove|exists|profile TRACEFS GROUP [DEFFILE]" 
 cmd=$1; tfs=$2; group=$3; deffile=${4:-}
 [[ $group =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || usage
 fail() { echo "fair_server_probes: $*" >&2; exit 1; }
+# "present" or "absent": whether DIR's listing, read in full, holds ENTRY.
+# Status 1 and no answer when DIR cannot be listed.
+listed() {  # DIR ENTRY
+  local list
+  [ -d "$1" ] || { echo "fair_server_probes: $1 is not a directory" >&2; return 1; }
+  list=$(ls -A1 --quoting-style=literal -- "$1") || { echo "fair_server_probes: cannot list $1" >&2; return 1; }
+  if grep -qxF -- "$2" <<<"$list" || [ -e "$1/$2" ]; then echo present; else echo absent; fi
+}
 # The event names of DEFFILE, each checked to be in GROUP.
 names=()
 if [ -n "$deffile" ]; then
@@ -61,16 +74,24 @@ case "$cmd" in
     ;;
   remove)
     [ $# -eq 4 ] || usage
+    g=$(listed "$tfs/events" "$group") || fail "cannot tell whether $events exists"
+    [ "$g" = present ] || exit 0
     for n in "${names[@]}"; do
-      [ -e "$events/$n" ] || continue
+      e=$(listed "$events" "$n") || fail "cannot tell whether $events/$n exists"
+      [ "$e" = present ] || continue
       printf -- '-:%s/%s\n' "$group" "$n" >>"$tfs/kprobe_events" || fail "cannot remove $group/$n"
     done
+    # The group's directory goes with its last event; if it is still there, none of these may be.
+    g=$(listed "$tfs/events" "$group") || fail "cannot tell whether $events was removed"
+    [ "$g" = present ] || exit 0
     for n in "${names[@]}"; do
-      [ ! -e "$events/$n" ] || fail "$events/$n remains"
+      e=$(listed "$events" "$n") || fail "cannot tell whether $events/$n was removed"
+      [ "$e" = absent ] || fail "$events/$n remains"
     done
     ;;
   exists)
-    [ -e "$events" ]
+    [ $# -eq 3 ] || usage
+    listed "$tfs/events" "$group" || exit 1
     ;;
   profile)
     [ $# -eq 4 ] || usage

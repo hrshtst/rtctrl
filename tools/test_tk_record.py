@@ -415,15 +415,48 @@ def recorder() -> None:
         p = run("profile")
         expect(p.returncode == 1, f"a duplicate name: {p.stdout}")
 
-        expect(run("exists").returncode == 0, "exists")
+        p = run("exists")
+        expect(p.returncode == 0 and p.stdout == "present\n", f"exists: {p.returncode} {p.stdout!r}")
         log.write_text("")
         p = run("remove")
         w = writes()
         expect(p.returncode == 0 and w[:2] == [f"write instances/{name}/tracing_on 0", f"rmdir instances/{name}"]
                and all(x.startswith("define -:") for x in w[2:]) and len(w) == 6, f"remove, the instance before the probes: {w} {p.stderr}")
-        expect(not (root / "instances" / name).exists() and not (root / "events" / name / "update_entry").exists(), "removed")
+        expect(not (root / "instances" / name).exists() and not (root / "events" / name).exists(), "removed, the group with its last event")
         expect(run("remove").returncode == 0, "removing what is absent")
-        expect(run("exists").returncode == 1, "gone")
+        p = run("exists")
+        expect(p.returncode == 0 and p.stdout == "absent\n", f"gone: {p.returncode} {p.stdout!r}")
+
+        # The checked existence: an answer only from listings read in full. A directory that is missing or cannot be
+        # listed answers nothing with status 1 (sudo's own failure status), and a removal cannot verify through it.
+        fresh()
+        (root / "events" / name).mkdir()
+        p = run("exists")
+        expect(p.returncode == 0 and p.stdout == "present\n", f"the group alone: {p.stdout!r}")
+        fresh()
+        (root / "instances").rmdir()
+        p = run("exists")
+        expect(p.returncode == 1 and p.stdout == "", f"no instances directory: {p.returncode} {p.stdout!r}")
+        if os.geteuid() != 0:  # root lists any directory
+            for sub in ("instances", "events"):
+                fresh()
+                run("start", "1024")
+                (root / sub).chmod(0)
+                try:
+                    p = run("exists")
+                    expect(p.returncode == 1 and p.stdout == "" and "cannot list" in p.stderr, f"an unlistable {sub}: {p.returncode} {p.stdout!r}")
+                    p = run("remove")
+                    expect(p.returncode == 1 and "cannot tell" in p.stderr, f"a removal through an unlistable {sub}: {p.returncode} {p.stderr}")
+                finally:
+                    (root / sub).chmod(0o755)
+            fresh()
+            run("start", "1024")
+            (root / "events" / name).chmod(0)
+            try:
+                p = run("remove")
+                expect(p.returncode == 1 and "cannot tell" in p.stderr, f"an unlistable group: {p.returncode} {p.stderr}")
+            finally:
+                (root / "events" / name).chmod(0o755)
 
         # Ownership: status 2 is not the caller's to remove; 4 is.
         fresh()

@@ -340,12 +340,15 @@ EOF
 # (FAKE_TSC_REMOVE_FAIL: its removal fails; FAKE_TSC_STATS=fail: its stats
 # read fails; FAKE_TSC_OVERRUN: its overrun count; FAKE_TSC_START: race, another session creates it first and
 # the start exits 2; partial, the start creates it and fails, 4; unknown,
-# it creates it and exits 1, a status that does not say).
+# it creates it and exits 1, a status that does not say;
+# FAKE_TSC_EXISTS_FAIL: the existence checks that fail, see exists_answer).
 # The timekeeping recorder's tool: a marker file stands for its instance and
 # group, and FAKE_LOG.order orders its steps against the TSC instance's
-# (FAKE_TK_START: race, partial, unknown, as FAKE_TSC_START;
+# (FAKE_TK_START: race, partial, unknown, as FAKE_TSC_START, and
+# unknown-none, a status that does not say after creating nothing;
 # FAKE_TK_STATES=off: read-backs report a probe off, offend at the end only;
-# FAKE_TK_OVERRUN; FAKE_TK_STATS=fail; FAKE_TK_REMOVE_FAIL).
+# FAKE_TK_OVERRUN; FAKE_TK_STATS=fail; FAKE_TK_REMOVE_FAIL;
+# FAKE_TK_EXISTS_FAIL, as FAKE_TSC_EXISTS_FAIL).
 cat >"$FAKE/tk_recorder" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.tk_recorder"
@@ -358,6 +361,7 @@ case "$1" in
            race) : >"$mark"; echo "tk_recorder: it exists (another session's)" >&2; exit 2 ;;
            partial) : >"$mark"; echo "tk_recorder: cannot enable" >&2; exit 4 ;;
            unknown) : >"$mark"; echo "sudo: a stand-in failure" >&2; exit 1 ;;
+           unknown-none) echo "sudo: a stand-in failure" >&2; exit 1 ;;
          esac
          : >"$mark"
          mkdir -p "$TRACEFS/instances/$3/events"
@@ -381,8 +385,20 @@ case "$1" in
          echo "cpus: $n" ;;
   remove) [ "${FAKE_TK_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: it remains" >&2; exit 1; }
          rm -f "$mark"; rm -rf "$TRACEFS/instances/$3" ;;
-  exists) [ -e "$mark" ] ;;
+  exists) "$(dirname "$0")/exists_answer" "$mark" "$FAKE_LOG.tk_exists_calls" "${FAKE_TK_EXISTS_FAIL:-}" ;;
 esac
+EOF
+# The stand-ins' checked existence: "present" or "absent", status 0. A call
+# counted in the range FAIL (N, or N-M; calls from 1) fails as sudo does,
+# status 1 and no answer, the status the helpers once gave for absence.
+cat >"$FAKE/exists_answer" <<'EOF'
+#!/usr/bin/env bash
+mark=$1 calls=$2 f=$3
+n=$(( $(cat "$calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$calls"
+if [ -n "$f" ] && [ "$n" -ge "${f%-*}" ] && { [ "$f" = "${f%-*}" ] || [ "$n" -le "${f#*-}" ]; }; then
+  echo "sudo: a stand-in failure" >&2; exit 1
+fi
+if [ -e "$mark" ]; then echo present; else echo absent; fi
 EOF
 cat >"$FAKE/journalctl" <<'EOF'
 #!/usr/bin/env bash
@@ -417,7 +433,7 @@ case "$1" in
          printf 'CPU: %s\nentries: 1\noverrun: %s\ncommit overrun: 0\ndropped events: 0\n' "$4" "${FAKE_TSC_OVERRUN:-0}" ;;
   remove) [ "${FAKE_TSC_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
           rm -f "$mark" ;;
-  exists) [ -e "$mark" ] ;;
+  exists) "$(dirname "$0")/exists_answer" "$mark" "$FAKE_LOG.tsc_exists_calls" "${FAKE_TSC_EXISTS_FAIL:-}" ;;
 esac
 EOF
 # The fair server's probe tool: a marker file stands for its group
@@ -425,7 +441,7 @@ EOF
 # 4; unknown, created and a status that does not say, 1; race, another
 # session's group made first, 2. FAKE_FS_REMOVE_FAIL: its removal fails;
 # FAKE_FS_PROFILE=fail: its counts read fails; FAKE_FS_MISSES: misses on
-# the first event after a run).
+# the first event after a run; FAKE_FS_EXISTS_FAIL, as FAKE_TSC_EXISTS_FAIL).
 cat >"$FAKE/fs_probes" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.fs_probes"
@@ -443,7 +459,7 @@ case "$1" in
           echo "fair-server probes $3: $(names "$4" | wc -l) events defined ($(names "$4" | xargs))" ;;
   remove) [ "${FAKE_FS_REMOVE_FAIL:-0}" = 1 ] && { echo "stand-in: cannot remove" >&2; exit 1; }
           rm -f "$mark" ;;
-  exists) [ -e "$mark" ] ;;
+  exists) "$(dirname "$0")/exists_answer" "$mark" "$FAKE_LOG.fs_exists_calls" "${FAKE_FS_EXISTS_FAIL:-}" ;;
   profile) [ "${FAKE_FS_PROFILE:-}" = fail ] && { echo "stand-in: cannot read kprobe_profile" >&2; exit 1; }
            n=$(( $(cat "$FAKE_LOG.fs_profile_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$FAKE_LOG.fs_profile_calls"
            first=1
@@ -1269,6 +1285,27 @@ set -e
 [ "$st_fresh" -eq 4 ] && [ -d "$T/instances/fresh" ] || fail "a created instance whose clock failed: status $st_fresh"
 stats=$(tools/tsc_instance.sh stats "$T" s 3) && [ "${stats%%$'\n'*}" = "CPU: 3" ] ||
   fail "the instance's stats do not name the CPU"
+# Its checked existence: an answer only from a listing read in full; an
+# instances directory that is missing or cannot be listed answers nothing,
+# status 1, and so does a removal that cannot verify.
+set +e
+ex_held=$(tools/tsc_instance.sh exists "$T" held); st_eh=$?
+ex_none=$(tools/tsc_instance.sh exists "$T" none); st_en=$?
+ex_root=$(tools/tsc_instance.sh exists "$T/absent" held 2>/dev/null); st_er=$?
+chmod 000 "$T/instances"
+ex_shut=$(tools/tsc_instance.sh exists "$T" held 2>/dev/null); st_es=$?
+tools/tsc_instance.sh remove "$T" held 2>/dev/null; st_rs=$?
+chmod 755 "$T/instances"
+tools/tsc_instance.sh remove "$T" none; st_rn=$?
+set -e
+[ "$st_eh" -eq 0 ] && [ "$ex_held" = present ] && [ "$st_en" -eq 0 ] && [ "$ex_none" = absent ] ||
+  fail "the instance's existence: '$ex_held' $st_eh, '$ex_none' $st_en"
+[ "$st_er" -eq 1 ] && [ -z "$ex_root" ] || fail "no instances directory answered '$ex_root', status $st_er"
+if [ "$(id -u)" -ne 0 ]; then  # root lists any directory
+  [ "$st_es" -eq 1 ] && [ -z "$ex_shut" ] && [ "$st_rs" -eq 1 ] ||
+    fail "an unlistable instances directory answered '$ex_shut', status $st_es; removal status $st_rs"
+fi
+[ "$st_rn" -eq 0 ] || fail "removing an absent instance: status $st_rn"
 
 # tools/fair_server_probes.sh on a scratch tree: a group that exists, and a
 # first definition the kernel refuses (kprobe_events cannot be written), are
@@ -1302,6 +1339,23 @@ set -e
 [ "$(cat "$T/kprobe_events")" = "$(cat "$T/fresh.defs")" ] || fail "the refused definitions were written"
 [ "$st_prof" -eq 1 ] && [ "$prof" = $'rtfs_a 12 0\nrtfs_b missing' ] || fail "the probe counts: status $st_prof, '$prof'"
 [ "$st_rm" -eq 0 ] || fail "removing absent events: status $st_rm"
+# Its checked existence, as tools/tsc_instance.sh's.
+set +e
+ex_held=$(tools/fair_server_probes.sh exists "$T" held); st_eh=$?
+ex_none=$(tools/fair_server_probes.sh exists "$T" fresh); st_en=$?
+ex_root=$(tools/fair_server_probes.sh exists "$T/nowrite" held 2>/dev/null); st_er=$?
+chmod 000 "$T/events"
+ex_shut=$(tools/fair_server_probes.sh exists "$T" held 2>/dev/null); st_es=$?
+tools/fair_server_probes.sh remove "$T" held "$T/held.defs" 2>/dev/null; st_rs=$?
+chmod 755 "$T/events"
+set -e
+[ "$st_eh" -eq 0 ] && [ "$ex_held" = present ] && [ "$st_en" -eq 0 ] && [ "$ex_none" = absent ] ||
+  fail "the group's existence: '$ex_held' $st_eh, '$ex_none' $st_en"
+[ "$st_er" -eq 1 ] && [ -z "$ex_root" ] || fail "no events directory answered '$ex_root', status $st_er"
+if [ "$(id -u)" -ne 0 ]; then
+  [ "$st_es" -eq 1 ] && [ -z "$ex_shut" ] && [ "$st_rs" -eq 1 ] ||
+    fail "an unlistable events directory answered '$ex_shut', status $st_es; removal status $st_rs"
+fi
 
 # The timer mode (with the real TSC sampler): its events with the CPU
 # filters, the TSC instance started inside the trace and removed, the
@@ -1496,14 +1550,78 @@ if [ -n "$SAMPLER" ]; then
   grep -q 'exists after a start whose outcome is unknown; it was left in place' "$ROOT/tk-own-unknown.log" ||
     fail "the unknown recorder start was not reported" "$ROOT/tk-own-unknown.log"
   rm -f "$ROOT/fake.tk_recorder_exists"
+  # An unknown start, then existence checks that fail as sudo does (status
+  # 1, which the helpers once answered for absence): nothing is removed, the
+  # recorder stays owed and is checked again at every cleanup and at exit,
+  # the record names it once, and the exit counts the unresolved cleanup.
+  # The same for the TSC instance; the fair server's group is the next block's.
+  for c in "72 tk tk_recorder FAKE_TK_START=unknown FAKE_TK_EXISTS_FAIL=2 the timekeeping recorder rtctrl_tk|instance $ROOT/tracefs/instances/rtctrl_tk, probe group $ROOT/tracefs/events/rtctrl_tk|the timekeeping recorder" \
+           "73 tsc tsc_instance FAKE_TSC_START=unknown FAKE_TSC_EXISTS_FAIL=2 the trace instance rtctrl_tsc|$ROOT/tracefs/instances/rtctrl_tsc|the trace instance"; do
+    read -r att who tool start_env fail_env rest <<<"$c"
+    what=${rest%%|*} rest=${rest#*|}
+    ident=${rest%%|*} exit_what=${rest#*|}
+    tool_log="$ROOT/fake.$tool" mark="$ROOT/fake.${tool}_exists"
+    rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tsc_instance_exists" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.tsc_exists_calls"
+    n_rm=$(grep -c '^remove ' "$tool_log" || true)
+    set +e
+    env "$start_env" "$fail_env" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+      --attempt "$att" --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/unk-fail-$who.log" 2>&1
+    st=$?
+    set -e
+    b=$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att")
+    [ "$st" -eq 1 ] && grep -q '^verdict: not run' "$b.run.txt" || fail "$who: unknown start, failed check: status $st" "$ROOT/unk-fail-$who.log"
+    grep -qxF "cleanup: $what UNRESOLVED (the outcome of its start unknown; its existence not confirmed, unknown (exit 1: sudo: a stand-in failure)): $ident" "$b.run.txt" ||
+      fail "$who: the record lacks the unresolved cleanup with its identity" "$b.run.txt"
+    [ "$(grep -c 'UNRESOLVED' "$b.run.txt")" -eq 1 ] || fail "$who: the unresolved cleanup recorded more than once" "$b.run.txt"
+    grep -qF "CLEANUP UNRESOLVED: whether $what exists after a start whose outcome is unknown was not confirmed" "$ROOT/unk-fail-$who.log" &&
+      grep -qF "the session fails: its cleanup did not remove $exit_what" "$ROOT/unk-fail-$who.log" ||
+      fail "$who: the unresolved cleanup was not reported, or not counted at exit" "$ROOT/unk-fail-$who.log"
+    [ "$(cat "$ROOT/fake.${who}_exists_calls")" -ge 4 ] || fail "$who: the obligation was not checked again at exit" "$ROOT/unk-fail-$who.log"
+    [ -e "$mark" ] || fail "$who: what was not confirmed was removed"
+    [ "$(grep -c '^remove ' "$tool_log" || true)" -eq "$n_rm" ] || fail "$who: a removal was sent for what may be another session's" "$tool_log"
+  done
+  rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tsc_instance_exists"
+  # A check that fails once and then answers absent ends the obligation, and says so.
+  rm -f "$ROOT/fake.tk_exists_calls"
+  set +e
+  FAKE_TK_START=unknown-none FAKE_TK_EXISTS_FAIL=2-2 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 74 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/unk-later.log" 2>&1
+  st=$?
+  set -e
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 74)
+  [ "$st" -eq 1 ] && grep -q 'cleanup: the timekeeping recorder rtctrl_tk UNRESOLVED' "$b.run.txt" &&
+    grep -qxF "cleanup: the timekeeping recorder rtctrl_tk (instance $ROOT/tracefs/instances/rtctrl_tk, probe group $ROOT/tracefs/events/rtctrl_tk) confirmed absent" "$b.run.txt" ||
+    fail "a later answer of absence: status $st" "$b.run.txt"
+  if grep -q 'its cleanup did not remove the timekeeping recorder' "$ROOT/unk-later.log"; then
+    fail "a recorder confirmed absent still failed the cleanup" "$ROOT/unk-later.log"
+  fi
+  # Before anything is sent, a check that does not answer refuses the session.
+  for c in "75 FAKE_TSC_EXISTS_FAIL=1 the trace instance rtctrl_tsc" "76 FAKE_TK_EXISTS_FAIL=1 the timekeeping recorder rtctrl_tk" \
+           "77 FAKE_FS_EXISTS_FAIL=1 the probe group rtctrl_fs"; do
+    read -r att envv what <<<"$c"
+    rm -f "$ROOT/fake.tsc_exists_calls" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.fs_exists_calls"
+    set +e
+    env "$envv" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes --attempt "$att" --duration 2 \
+      --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/pre-unk-$att.log" 2>&1
+    st=$?
+    set -e
+    [ "$st" -eq 2 ] && grep -qF "$what was not confirmed absent, unknown (exit 1: sudo: a stand-in failure): nothing was sent" "$ROOT/pre-unk-$att.log" &&
+      [ ! -e "$(base current-100hz-rt-idle-bounded-fast-motion-timer "$att").run.txt" ] ||
+      fail "$envv: an unanswered check before the session: status $st" "$ROOT/pre-unk-$att.log"
+  done
+  rm -f "$ROOT/fake.tsc_exists_calls" "$ROOT/fake.tk_exists_calls" "$ROOT/fake.fs_exists_calls"
+  # A failed removal is status 3, and no further run starts while the recorder is owed.
   set +e
   FAKE_TK_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
-    --attempt 64 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/tk-rmfail.log" 2>&1
+    --attempt 64 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion,current:100:rt-idle:full \
+    </dev/null >"$ROOT/tk-rmfail.log" 2>&1
   st=$?
   set -e
   [ "$st" -eq 3 ] && grep -q 'CLEANUP FAILED: the timekeeping recorder rtctrl_tk was not removed' "$ROOT/tk-rmfail.log" &&
-    grep -q 'cleanup: timekeeping recorder rtctrl_tk NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 64).run.txt" ||
-    fail "a failed recorder removal gave status $st" "$ROOT/tk-rmfail.log"
+    grep -q 'cleanup: timekeeping recorder rtctrl_tk NOT removed' "$(base current-100hz-rt-idle-bounded-fast-motion-timer 64).run.txt" &&
+    grep -q 'the trace instance or the timekeeping recorder was not removed: no further run' "$ROOT/tk-rmfail.log" &&
+    [ ! -e "$(base current-100hz-rt-idle-bounded-timer 64).run.txt" ] ||
+    fail "a failed recorder removal gave status $st, or another run started" "$ROOT/tk-rmfail.log"
   rm -f "$ROOT/fake.tk_recorder_exists" "$ROOT/fake.tk_states"
   for c in "65 FAKE_TK_STATES=off the probes did not read back enabled at the end" \
            "66 FAKE_TK_EXTRACT=fail the record was not extracted" \
@@ -1595,6 +1713,25 @@ if [ -n "$SAMPLER" ]; then
     grep -q 'echo -:rtctrl_fs/rtfs_dl_pick | sudo tee -a ' "$ROOT/fs-def-unknown.log" ||
     fail "the unknown definition's group was not reported with its manual removal" "$ROOT/fs-def-unknown.log"
   rm -f "$ROOT/fake.fs_group_exists"
+  # An unknown definition, then existence checks that fail as sudo does:
+  # the group is not removed, stays owed through the exit, and is reported
+  # with its identity and its manual removal.
+  rm -f "$ROOT/fake.fs_exists_calls"
+  n_rm=$(grep -c '^remove ' "$ROOT/fake.fs_probes" || true)
+  set +e
+  FAKE_FS_DEFINE=unknown FAKE_FS_EXISTS_FAIL=2 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 78 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-unk-fail.log" 2>&1
+  st=$?
+  set -e
+  [ "$st" -eq 2 ] && grep -qF "CLEANUP UNRESOLVED: whether the probe group rtctrl_fs exists after a definition whose outcome is unknown was not confirmed, unknown (exit 1: sudo: a stand-in failure); nothing was removed: $ROOT/tracefs/events/rtctrl_fs" "$ROOT/fs-unk-fail.log" &&
+    [ "$(grep -c 'CLEANUP UNRESOLVED' "$ROOT/fs-unk-fail.log")" -eq 1 ] &&
+    grep -q 'echo -:rtctrl_fs/rtfs_dl_pick | sudo tee -a ' "$ROOT/fs-unk-fail.log" &&
+    grep -q "the session fails: its cleanup did not remove the fair server's probes" "$ROOT/fs-unk-fail.log" ||
+    fail "an unknown definition and a failed check: status $st, or not reported and counted" "$ROOT/fs-unk-fail.log"
+  [ -e "$ROOT/fake.fs_group_exists" ] && [ "$(cat "$ROOT/fake.fs_exists_calls")" -ge 3 ] &&
+    [ "$(grep -c '^remove ' "$ROOT/fake.fs_probes" || true)" -eq "$n_rm" ] ||
+    fail "an unconfirmed group was removed, or not checked again at exit" "$ROOT/fs-unk-fail.log"
+  rm -f "$ROOT/fake.fs_group_exists" "$ROOT/fake.fs_exists_calls"
   set +e
   FAKE_FS_REMOVE_FAIL=1 TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
     --attempt 49 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/fs-rmfail.log" 2>&1

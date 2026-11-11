@@ -9,7 +9,12 @@
 #        tsc_instance.sh stop   TRACEFS NAME      stops recording, prints the trace
 #        tsc_instance.sh stats  TRACEFS NAME CPU  prints the CPU's buffer stats ("CPU: N" first)
 #        tsc_instance.sh remove TRACEFS NAME      removes it (verified; 0 if absent)
-#        tsc_instance.sh exists TRACEFS NAME      status 0 if it exists
+#        tsc_instance.sh exists TRACEFS NAME      "present" if it exists, else "absent"
+#
+# exists prints its answer and exits 0 only when it listed the instances
+# directory in full; a listing it cannot read is status 1 and no answer, so a
+# failure (its own, or sudo's, whose status is also 1) is never taken for
+# absence. remove verifies its result with the same listing.
 #
 # start creates the instance, sets and verifies its clock ([x86-tsc]) and
 # CPU mask, sets its buffer, enables irq_vectors:local_timer_entry and turns
@@ -22,9 +27,17 @@ set -u
 usage() { echo "usage: $0 start|stop|stats|remove|exists TRACEFS NAME [CPU [BUFFER_KB]]" >&2; exit 2; }
 [ $# -ge 3 ] || usage
 cmd=$1; tfs=$2; name=$3
-case "$name" in ""|*/*|.*) usage ;; esac
+[[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || usage
 inst="$tfs/instances/$name"
 fail() { echo "tsc_instance: $*" >&2; exit 1; }
+# "present" or "absent": whether DIR's listing, read in full, holds ENTRY.
+# Status 1 and no answer when DIR cannot be listed.
+listed() {  # DIR ENTRY
+  local list
+  [ -d "$1" ] || { echo "tsc_instance: $1 is not a directory" >&2; return 1; }
+  list=$(ls -A1 --quoting-style=literal -- "$1") || { echo "tsc_instance: cannot list $1" >&2; return 1; }
+  if grep -qxF -- "$2" <<<"$list" || [ -e "$1/$2" ]; then echo present; else echo absent; fi
+}
 case "$cmd" in
   start)
     [ $# -eq 5 ] || usage
@@ -61,13 +74,16 @@ case "$cmd" in
     cat "$inst/per_cpu/cpu$4/stats" || fail "cannot read CPU $4's stats"
     ;;
   remove)
-    [ -e "$inst" ] || exit 0
+    i=$(listed "$tfs/instances" "$name") || fail "cannot tell whether $inst exists"
+    [ "$i" = present ] || exit 0
     echo 0 >"$inst/tracing_on" 2>/dev/null
     rmdir "$inst" || fail "cannot remove $inst"
-    [ ! -e "$inst" ] || fail "$inst remains"
+    i=$(listed "$tfs/instances" "$name") || fail "cannot tell whether $inst was removed"
+    [ "$i" = absent ] || fail "$inst remains"
     ;;
   exists)
-    [ -e "$inst" ]
+    [ $# -eq 3 ] || usage
+    listed "$tfs/instances" "$name" || exit 1
     ;;
   *) usage ;;
 esac

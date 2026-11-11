@@ -1011,26 +1011,86 @@ stop_all() {
   fi
   own_outputs
 }
+# The helpers' checked existence (their exists command): "present" or
+# "absent" from directory listings the helper read in full, with status 0.
+# Anything else (sudo's own failure, whose status 1 the helpers once used
+# for absence; an unreadable tracefs; an interruption; other output) is
+# "unknown", and never absence.
+presence() {  # TOOL NAME -> prints present, absent, or "unknown (why)"
+  local out st
+  out=$(priv "$1" exists "$TRACEFS" "$2" 2>"$tmp/presence.err"); st=$?
+  if [ "$st" -eq 0 ] && { [ "$out" = present ] || [ "$out" = absent ]; }; then
+    echo "$out"
+  else
+    echo "unknown (exit $st${out:+, answered '$(head -c 100 <<<"$out" | tr '\n' ' ' | sed 's/ *$//')'}$( [ -s "$tmp/presence.err" ] && printf ': %s' "$(head -c 300 "$tmp/presence.err" | tr '\n' ' ' | sed 's/ *$//')"))"
+  fi
+}
+# Before anything is sent: a resource left by an earlier session, or one
+# whose absence cannot be confirmed, refuses the session.
+require_absent() {  # TOOL NAME WHAT HINT
+  local p
+  p=$(presence "$1" "$2")
+  case "$p" in
+    absent) return 0 ;;
+    present) finish; die "$3 remains from an earlier session ($4): nothing was sent" ;;
+    *) finish; die "$3 was not confirmed absent, $p: nothing was sent" ;;
+  esac
+}
+# A resource whose creating step's outcome is unknown. Absence, positively
+# confirmed, ends the obligation; until then it stays owed, so that every
+# later cleanup (the exit's included) checks again. One that is present may
+# be another session's: it is left in place. One whose check did not answer
+# is not touched. Either is reported with its identity and how to finish by
+# hand, once per state, and the cleanup fails.
+unknown_resource() {  # TOOL NAME WHAT IDENTITY STEP HINT... -> 0 once absence is confirmed
+  local tool=$1 name=$2 what=$3 ident=$4 step=$5 p line msg h key
+  shift 5
+  key="unknown:$what"
+  p=$(presence "$tool" "$name")
+  if [ "$p" = absent ]; then
+    if [ -n "${cleanup_seen[$key]:-}" ]; then
+      echo "trace_session: cleanup: $what ($ident) confirmed absent" >&2
+      [ -n "$last_note" ] && [ -f "$last_note" ] && printf '\n--- session end ---\ncleanup: %s (%s) confirmed absent\n' "$what" "$ident" >>"$last_note"
+    fi
+    unset 'cleanup_seen[$key]'
+    return 0
+  fi
+  if [ "$p" = present ]; then
+    msg="$what exists after a $step whose outcome is unknown; it was left in place (it may be another session's): $ident"
+    line="$what left in place (the outcome of its $step unknown): $ident"
+  else
+    msg="CLEANUP UNRESOLVED: whether $what exists after a $step whose outcome is unknown was not confirmed, $p; nothing was removed: $ident"
+    line="$what UNRESOLVED (the outcome of its $step unknown; its existence not confirmed, $p): $ident"
+  fi
+  [ "${cleanup_seen[$key]:-}" = "$line" ] && return 1
+  cleanup_seen[$key]=$line
+  echo "trace_session: $msg" >&2
+  for h in "$@"; do echo "  $h" >&2; done
+  if [ -n "$last_note" ] && [ -f "$last_note" ]; then
+    printf '\n--- session end ---\ncleanup: %s\n' "$line" >>"$last_note"
+  fi
+  return 1
+}
+declare -A cleanup_seen=()
+
 # The timer mode's TSC instance: tsc_owed is 1 once this session's start
 # created it, 2 while a start's outcome is unknown (during the start, or
 # after a status that does not say), else 0. An owed instance is removed
 # (and its removal verified) on every path that stops the recorders and on
 # every exit; a failed removal is a cleanup failure (status 3). An instance
 # of unknown ownership is left in place, since it may be another session's,
-# and reported: never removed on a guess.
+# and reported: never removed on a guess, and still owed until its absence
+# is confirmed (unknown_resource).
 tsc_owed=0; ex_pid=; sampler_pid=; smi_job=
 remove_tsc_instance() {
   local out
   [ "$tsc_owed" -ne 0 ] || return 0
   if [ "$tsc_owed" -eq 2 ]; then
+    unknown_resource "$TSC_INSTANCE_TOOL" "$TSC_INSTANCE" "the trace instance $TSC_INSTANCE" \
+      "$TRACEFS/instances/$TSC_INSTANCE" start \
+      "if it is this session's, remove it by hand: sudo rmdir $TRACEFS/instances/$TSC_INSTANCE" || return 1
     tsc_owed=0
-    priv "$TSC_INSTANCE_TOOL" exists "$TRACEFS" "$TSC_INSTANCE" || return 0
-    echo "trace_session: the trace instance $TSC_INSTANCE exists after a start whose outcome is unknown; it was left in place (it may be another session's)" >&2
-    echo "  if it is this session's, remove it by hand: sudo rmdir $TRACEFS/instances/$TSC_INSTANCE" >&2
-    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
-      printf '\n--- session end ---\ncleanup: trace instance %s left in place (the outcome of its start unknown)\n' "$TSC_INSTANCE" >>"$last_note"
-    fi
-    return 1
+    return 0
   fi
   if out=$(priv "$TSC_INSTANCE_TOOL" remove "$TRACEFS" "$TSC_INSTANCE" 2>&1); then
     tsc_owed=0
@@ -1059,6 +1119,12 @@ tk_mono() { tk_run python3 -c 'import time; print(time.clock_gettime_ns(time.CLO
 # and takes the first state read; then records the main event's enable state.
 tk_arm() {  # stage base, note -> 0 once all of that held
   local b=$1 note=$2 line st main
+  # A recorder still owed (an earlier run's removal failed, or its start's
+  # outcome is unknown) is never replaced by a new start's answer.
+  if [ "$tk_owed" -ne 0 ]; then
+    echo "trace_session: the timekeeping recorder $TK_INSTANCE is still owed a cleanup: not started" | tee -a "$note"
+    return 1
+  fi
   tk_owed=2
   line=$(tk_run "${sudo_cmd[@]}" "$TK_RECORDER_TOOL" start "$TRACEFS" "$TK_INSTANCE" "$tk_buffer_kb" 2>&1); st=$?
   case "$st" in 0|4) tk_owed=1 ;; 2) tk_owed=0 ;; *) tk_owed=2 ;; esac
@@ -1130,14 +1196,11 @@ remove_tk_recorder() {
   local out
   [ "$tk_owed" -ne 0 ] || return 0
   if [ "$tk_owed" -eq 2 ]; then
+    unknown_resource "$TK_RECORDER_TOOL" "$TK_INSTANCE" "the timekeeping recorder $TK_INSTANCE" \
+      "instance $TRACEFS/instances/$TK_INSTANCE, probe group $TRACEFS/events/$TK_INSTANCE" start \
+      "if it is this session's, remove it by hand: sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE" || return 1
     tk_owed=0
-    priv "$TK_RECORDER_TOOL" exists "$TRACEFS" "$TK_INSTANCE" || return 0
-    echo "trace_session: the timekeeping recorder $TK_INSTANCE exists after a start whose outcome is unknown; it was left in place (it may be another session's)" >&2
-    echo "  if it is this session's, remove it by hand: sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE" >&2
-    if [ -n "$last_note" ] && [ -f "$last_note" ]; then
-      printf '\n--- session end ---\ncleanup: timekeeping recorder %s left in place (the outcome of its start unknown)\n' "$TK_INSTANCE" >>"$last_note"
-    fi
-    return 1
+    return 0
   fi
   if out=$(priv "$TK_RECORDER_TOOL" remove "$TRACEFS" "$TK_INSTANCE" 2>&1); then
     tk_owed=0
@@ -1170,13 +1233,12 @@ remove_fs_probes() {
   f=$(mktemp)
   printf '%s\n' "$fs_defs" >"$f"
   if [ "$fs_owed" -eq 2 ]; then
-    fs_owed=0
-    if priv "$FS_PROBE_TOOL" exists "$TRACEFS" "$FS_GROUP"; then
-      echo "trace_session: the probe group $FS_GROUP exists after a definition whose outcome is unknown; it was left in place (it may be another session's)" >&2
-      fs_hint
-      if [ -n "$last_note" ] && [ -f "$last_note" ]; then
-        printf '\n--- session end ---\ncleanup: probe group %s left in place (the outcome of its definition unknown)\n' "$FS_GROUP" >>"$last_note"
-      fi
+    local hints
+    mapfile -t hints < <(fs_hint 2>&1)
+    if unknown_resource "$FS_PROBE_TOOL" "$FS_GROUP" "the probe group $FS_GROUP" "$TRACEFS/events/$FS_GROUP" \
+         definition "${hints[@]#  }"; then
+      fs_owed=0
+    else
       st=1
     fi
   elif out=$(priv "$FS_PROBE_TOOL" remove "$TRACEFS" "$FS_GROUP" "$f" 2>&1); then
@@ -1613,20 +1675,13 @@ if [ "$any_timer" -eq 1 ]; then
     *x86-tsc*) ;;
     *) finish; die "the kernel offers no x86-tsc trace clock: nothing was sent" ;;
   esac
-  if priv "$TSC_INSTANCE_TOOL" exists "$TRACEFS" "$TSC_INSTANCE"; then
-    finish
-    die "the trace instance $TSC_INSTANCE remains from an earlier session (sudo rmdir $TRACEFS/instances/$TSC_INSTANCE): nothing was sent"
-  fi
-  if priv "$TK_RECORDER_TOOL" exists "$TRACEFS" "$TK_INSTANCE"; then
-    finish
-    die "the timekeeping recorder $TK_INSTANCE remains from an earlier session (sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE): nothing was sent"
-  fi
+  require_absent "$TSC_INSTANCE_TOOL" "$TSC_INSTANCE" "the trace instance $TSC_INSTANCE" \
+    "sudo rmdir $TRACEFS/instances/$TSC_INSTANCE"
+  require_absent "$TK_RECORDER_TOOL" "$TK_INSTANCE" "the timekeeping recorder $TK_INSTANCE" \
+    "sudo $TK_RECORDER_TOOL remove $TRACEFS $TK_INSTANCE"
   # The fair server's probes, defined once for the session, before anything
   # is sent; a group left by an earlier session refuses it.
-  if priv "$FS_PROBE_TOOL" exists "$TRACEFS" "$FS_GROUP"; then
-    finish
-    die "the probe group $FS_GROUP remains from an earlier session (see $FS_PROBE_TOOL remove): nothing was sent"
-  fi
+  require_absent "$FS_PROBE_TOOL" "$FS_GROUP" "the probe group $FS_GROUP" "see $FS_PROBE_TOOL remove"
   printf '%s\n' "$fs_defs" >"$tmp/fs_defs.txt"
   fs_owed=2
   fs_out=$(priv "$FS_PROBE_TOOL" define "$TRACEFS" "$FS_GROUP" "$tmp/fs_defs.txt" 2>&1)
@@ -2641,8 +2696,8 @@ for spec in "${run_list[@]}"; do
           exit 1 ;;
       esac
       current=
-      if [ "$tsc_owed" -eq 1 ]; then
-        echo "trace_session: the trace instance was not removed: no further run (the cleanup is retried at exit)" >&2
+      if [ "$tsc_owed" -ne 0 ] || [ "$tk_owed" -ne 0 ]; then
+        echo "trace_session: the trace instance or the timekeeping recorder was not removed: no further run (the cleanup is retried at exit)" >&2
         finish
         print_table
         exit 0

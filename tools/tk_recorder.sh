@@ -15,7 +15,12 @@
 #        tk_recorder.sh profile TRACEFS NAME   each probe's "event hits misses" (kprobe_profile)
 #        tk_recorder.sh stats   TRACEFS NAME   each CPU's buffer stats ("CPU: n", then its stats), then "cpus: N"
 #        tk_recorder.sh remove  TRACEFS NAME   removes the instance, then the probes (verified; 0 if absent)
-#        tk_recorder.sh exists  TRACEFS NAME   status 0 if the instance or the group exists
+#        tk_recorder.sh exists  TRACEFS NAME   "present" if the instance or the group exists, else "absent"
+#
+# exists prints its answer and exits 0 only when it listed both directories
+# in full; a listing it cannot read is status 1 and no answer, so a failure
+# (its own, or sudo's, whose status is also 1) is never taken for absence.
+# remove verifies its result with the same listings.
 #
 # NAME names both the instance and the event group. start registers the
 # probes, creates the instance, sets and verifies its clock ([mono]) and
@@ -38,6 +43,14 @@ events="$tfs/events/$name"
 # In the order start enables them: the return probe before the entry probe.
 PROBES=(ntp_adjtimex ntp_clear update_return update_entry)
 fail() { echo "tk_recorder: $*" >&2; exit 1; }
+# "present" or "absent": whether DIR's listing, read in full, holds ENTRY.
+# Status 1 and no answer when DIR cannot be listed.
+listed() {  # DIR ENTRY
+  local list
+  [ -d "$1" ] || { echo "tk_recorder: $1 is not a directory" >&2; return 1; }
+  list=$(ls -A1 --quoting-style=literal -- "$1") || { echo "tk_recorder: cannot list $1" >&2; return 1; }
+  if grep -qxF -- "$2" <<<"$list" || [ -e "$1/$2" ]; then echo present; else echo absent; fi
+}
 defs() {
   printf '%s\n' \
     "p:$name/ntp_adjtimex ntp_adjtimex tkid=\$arg1:u32 modes=+0(\$arg2):u32" \
@@ -121,24 +134,35 @@ case "$cmd" in
     ;;
   remove)
     [ $# -eq 3 ] || usage
-    if [ -e "$inst" ]; then
+    i=$(listed "$tfs/instances" "$name") || fail "cannot tell whether $inst exists"
+    if [ "$i" = present ]; then
       echo 0 >"$inst/tracing_on" 2>/dev/null
       # A probe still enabled here would make its removal below fail: the
       # instance goes first, and its removal disables them.
       rmdir "$inst" || fail "cannot remove $inst"
-      [ ! -e "$inst" ] || fail "$inst remains"
+      i=$(listed "$tfs/instances" "$name") || fail "cannot tell whether $inst was removed"
+      [ "$i" = absent ] || fail "$inst remains"
     fi
+    g=$(listed "$tfs/events" "$name") || fail "cannot tell whether $events exists"
+    [ "$g" = present ] || exit 0
     for p in "${PROBES[@]}"; do
-      [ -e "$events/$p" ] || continue
+      e=$(listed "$events" "$p") || fail "cannot tell whether $events/$p exists"
+      [ "$e" = present ] || continue
       printf -- '-:%s/%s\n' "$name" "$p" >>"$tfs/kprobe_events" || fail "cannot remove $name/$p"
     done
+    # The group's directory goes with its last event; if it is still there, none of the probes may be.
+    g=$(listed "$tfs/events" "$name") || fail "cannot tell whether $events was removed"
+    [ "$g" = present ] || exit 0
     for p in "${PROBES[@]}"; do
-      [ ! -e "$events/$p" ] || fail "$events/$p remains"
+      e=$(listed "$events" "$p") || fail "cannot tell whether $events/$p was removed"
+      [ "$e" = absent ] || fail "$events/$p remains"
     done
     ;;
   exists)
     [ $# -eq 3 ] || usage
-    [ -e "$inst" ] || [ -e "$events" ]
+    i=$(listed "$tfs/instances" "$name") || exit 1
+    g=$(listed "$tfs/events" "$name") || exit 1
+    if [ "$i" = absent ] && [ "$g" = absent ]; then echo absent; else echo present; fi
     ;;
   *) usage ;;
 esac
