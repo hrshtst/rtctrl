@@ -26,16 +26,20 @@ For each CPU that performed updates inside the window:
   can understate or overstate what the recorder adds, and it can be negative; it is neither a bound on the recorder's
   cost nor an estimate of it.
 
-On the real-time CPU, two separate populations: the probe's cycle wakes (a cycle that slept, its scheduled wake after
-the previous cycle's end, from its scheduled wake to its wake stamp), and the worker's waits in the trace (a
-sched_waking of the worker while it was off the CPU, to its next switch-in). Those 50 us or longer are checked for an
-update on that CPU overlapping them. An overlap count of zero describes the recorded update bodies only; it is not
-proof that the instrumentation had no effect.
+On the real-time CPU, two separate populations: the probe's cycle wakes, and the worker's waits in the trace (a
+sched_waking of the worker while it was off the CPU, to its next switch-in). The cycle wakes are the sleeps the trace
+establishes, never inferred from the probe's deadlines: tools/trace_correlate.py's pairing (periodic_sleeps), one timer
+wake of the worker inside the transition from a cycle's end stamp to the next cycle's wake stamp. A scheduled wake still
+ahead at the end stamp does not show a sleep, since the probe's bookkeeping after that stamp can use up the rest of the
+period; the transitions that began awake, lack a wake or hold several are counted, not taken as sleeps. Each sleep's
+lateness is its wake stamp minus its scheduled wake. Wakes and waits of 50 us or longer are checked for an update on
+that CPU overlapping them. An overlap count of zero describes the recorded update bodies only; it is not proof that the
+instrumentation had no effect.
 
 With --baseline, a capture without the recorder at nominally the same condition: the real-time CPU's local timer
-interrupts, the cycle-wake lateness and the worker's waits, each cropped to its own capture's window, side by side. It
-is a comparison between sessions, not a controlled recorder-on and recorder-off experiment: any difference also holds
-whatever else differed between them, and it bounds nothing.
+interrupts, the established sleeps' lateness and the worker's waits, each cropped to its own capture's window, side by
+side. It is a comparison between sessions, not a controlled recorder-on and recorder-off experiment: any difference also
+holds whatever else differed between them, and it bounds nothing.
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import types
 
 try:
     import tomllib
@@ -57,6 +62,10 @@ except ImportError:  # Python < 3.11
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import tk_record  # noqa: E402
+import trace_correlate  # noqa: E402
+
+# The events trace_correlate's sleep pairing reads: the worker's timer wakes and its switches.
+SLEEP_EVENTS = {"hrtimer_expire_entry", "hrtimer_expire_exit", "sched_waking", "sched_switch"}
 
 # The interrupts whose entry and exit the main trace records on every CPU, by the kind their events name.
 IRQ_EVENTS = {"local_timer_entry": ("local timer", 1), "local_timer_exit": ("local timer", -1),
@@ -80,18 +89,22 @@ def quantile(xs: list, p: float):
 
 def scan(lines, tid: int | None = None, rt: int = 3) -> dict:
     """From report lines: every CPU's interrupts as (entry, exit, kind), sorted by entry, and the count of entries or
-    exits with no partner; and, given the worker's tid, its waits on the real-time CPU as (waking, switch-in). Device
-    interrupts pair by their number: one handler can run another's inside it (Intel VMD's runs its NVMe queues')."""
+    exits with no partner; and, given the worker's tid, its waits on the real-time CPU as (waking, switch-in) and the
+    trace_correlate.Trace its sleeps are paired from (else None). Device interrupts pair by their number: one handler can
+    run another's inside it (Intel VMD's runs its NVMe queues')."""
     open_: dict = {}
     irqs: dict = collections.defaultdict(list)
     unpaired = 0
     waits: list = []
     off, waking = True, None
+    trace = trace_correlate.Trace(tid, "") if tid is not None else None
     for ln in lines:
         m = EVENT.match(ln)
         if not m:
             continue
         cpu, t, ev, rest = int(m[1]), int(m[2]) * 1_000_000_000 + int(m[3]), m[4], m[5]
+        if trace is not None and ev in SLEEP_EVENTS:
+            trace.feed(ln.rstrip("\n"))
         if ev in IRQ_EVENTS:
             kind, way = IRQ_EVENTS[ev]
             n = IRQ_NUMBER.search(rest) if kind == "device" else None
@@ -118,7 +131,7 @@ def scan(lines, tid: int | None = None, rt: int = 3) -> dict:
     unpaired += len(open_)
     for v in irqs.values():
         v.sort()
-    return {"irqs": irqs, "unpaired": unpaired, "waits": waits}
+    return {"irqs": irqs, "unpaired": unpaired, "waits": waits, "trace": trace}
 
 
 def interrupts(lines) -> tuple[dict, int]:
@@ -137,27 +150,39 @@ def enclosing(irqs: list, starts: list, entry: int, ret: int):
 
 
 class Capture:
-    """A capture's probe log and summary: its analysis window, the worker, and the cycles that slept."""
+    """A capture's probe log and summary: its analysis window, the worker and the rows (the transitions between them are
+    the candidates for its sleeps; the trace establishes which slept)."""
 
     def __init__(self, csv_path: pathlib.Path) -> None:
         if tomllib is None:
             raise SystemExit("tk_cost: needs Python 3.11 or later (tomllib)")
-        res = tomllib.loads(pathlib.Path(str(csv_path) + ".summary.toml").read_text())["result"]
+        self.summary = tomllib.loads(pathlib.Path(str(csv_path) + ".summary.toml").read_text())
+        res = self.summary["result"]
         self.origin = int(res["monotonic_origin_ns"])
         self.tid = int(res["worker_tid"]) if "worker_tid" in res else None
         with open(csv_path, newline="") as f:
-            rows = [r for r in csv.DictReader(f)]
-        if not rows:
+            self.rows = [r for r in csv.DictReader(f)]
+        if not self.rows:
             raise SystemExit(f"tk_cost: {csv_path}: no cycles")
         o = self.origin
-        self.window = (o + int(rows[0]["wake_ns"]), o + int(rows[-1]["cycle_end_ns"]))
-        # A cycle slept when its scheduled wake was still ahead at the previous cycle's end; the first begins at once.
-        self.wakes = [(o + int(b["scheduled_wake_ns"]), o + int(b["wake_ns"])) for a, b in zip(rows, rows[1:])
-                      if int(b["scheduled_wake_ns"]) > int(a["cycle_end_ns"]) and int(b["wake_ns"]) >= 0]
-        self.cycles = len(rows)
+        self.window = (o + int(self.rows[0]["wake_ns"]), o + int(self.rows[-1]["cycle_end_ns"]))
+        self.cycles = len(self.rows)
 
     def inside(self, a: int, b: int) -> bool:
         return self.window[0] <= a and b <= self.window[1]
+
+
+def sleeps(cap: Capture, trace) -> dict | None:
+    """The capture's sleeps as its trace establishes them (trace_correlate.periodic_sleeps): the slept cycles' (scheduled
+    wake, wake stamp) inside the window, and the counts of the transitions that did not establish a sleep. None without
+    the worker's trace."""
+    if trace is None:
+        return None
+    # Only the transitions between rows: a late wake that ended the run lies after the window.
+    res = {k: v for k, v in cap.summary["result"].items() if k != "late_wake_stop"}
+    p = trace_correlate.periodic_sleeps(types.SimpleNamespace(origin=cap.origin, rows=cap.rows, summary={"result": res}), trace)
+    slept = [(sched, wake) for _, (i, _, sched, wake) in p["pairs"] if i is not None and cap.inside(sched, wake)]
+    return dict(slept=slept, transitions=cap.cycles - 1, began_awake=p["began_awake"], missing=p["missing"], duplicate=p["duplicate"])
 
 
 def rt_cpu_of(csv_path: pathlib.Path, default: int = 3) -> int:
@@ -249,18 +274,25 @@ def analyse(updates: list, scanned: dict, cap: Capture, rt: int, out) -> dict:
         i = bisect.bisect_right(ustarts, b) - 1
         return any(rt_ups[j][1] >= a for j in range(i, max(-1, i - 4), -1))
 
-    wakes = [(s, w) for s, w in cap.wakes if cap.inside(s, w)]
+    sl = sleeps(cap, scanned.get("trace"))
+    wakes = sl["slept"] if sl else []
     late = [(s, w) for s, w in wakes if w - s >= LATE_NS]
     waits = [(a, b) for a, b in scanned["waits"] if cap.inside(a, b)]
     long_ = [(a, b) for a, b in waits if b - a >= LATE_NS]
-    result.update(wakes=len(wakes), late=len(late), late_overlapped=sum(overlapped(s, w) for s, w in late),
+    result.update(sleeps=sl, wakes=len(wakes), late=len(late), late_overlapped=sum(overlapped(s, w) for s, w in late),
                   wakes_overlapped=sum(overlapped(s, w) for s, w in wakes), lateness=sorted(w - s for s, w in wakes),
                   waits=len(waits), long_waits=len(long_), long_overlapped=sum(overlapped(a, b) for a, b in long_),
                   wait_durations=sorted(b - a for a, b in waits))
-    print(f"  cycle wakes on CPU {rt} ({len(wakes)} of {cap.cycles} cycles slept, the scheduled wake after the previous "
-          f"cycle's end): lateness {dist(result['lateness'])}", file=out)
-    print(f"    {len(late)} woke {LATE_NS // 1000} us or more late, {result['late_overlapped']} of them overlapped by an update on "
-          f"CPU {rt}; of all {len(wakes)}, {result['wakes_overlapped']} overlapped by one", file=out)
+    if sl is None:
+        print(f"  cycle wakes on CPU {rt}: no worker_tid in the summary, so no sleep is established from the trace", file=out)
+    else:
+        print(f"  cycle wakes on CPU {rt}, the sleeps the trace establishes (one timer wake of the worker in the transition "
+              f"from a cycle's end stamp to the next wake stamp; tools/trace_correlate.py's pairing): {len(wakes)} of "
+              f"{sl['transitions']} transitions; {sl['began_awake']} began awake, {sl['missing']} without a wake, "
+              f"{sl['duplicate']} with more than one", file=out)
+        print(f"    lateness (wake stamp minus scheduled wake): {dist(result['lateness'])}", file=out)
+        print(f"    {len(late)} woke {LATE_NS // 1000} us or more late, {result['late_overlapped']} of them overlapped by an update "
+              f"on CPU {rt}; of all {len(wakes)}, {result['wakes_overlapped']} overlapped by one", file=out)
     if cap.tid is None:
         print("  the worker's waits: no worker_tid in the summary", file=out)
     else:
@@ -299,8 +331,9 @@ def main() -> int:
         def timers(s: dict, c: Capture) -> list:
             return sorted(y - x for x, y, k in s["irqs"].get(rt, []) if k == "local timer" and c.inside(x, y))
 
-        def lateness(c: Capture) -> list:
-            return sorted(w - s for s, w in c.wakes if c.inside(s, w))
+        def lateness(s: dict, c: Capture) -> list:
+            sl = sleeps(c, s["trace"])
+            return sorted(w - x for x, w in sl["slept"]) if sl else []
 
         def waits(s: dict, c: Capture) -> list:
             return sorted(y - x for x, y in s["waits"] if c.inside(x, y))
@@ -310,8 +343,8 @@ def main() -> int:
               "holds whatever else differed, and bounds nothing")
         print(f"  CPU {rt}'s local timer interrupts, this capture: {dist(timers(scanned, cap))}")
         print(f"  CPU {rt}'s local timer interrupts, baseline:     {dist(timers(bscan, bcap))}")
-        print(f"  cycle-wake lateness, this capture: {dist(lateness(cap))}")
-        print(f"  cycle-wake lateness, baseline:     {dist(lateness(bcap))}")
+        print(f"  the established sleeps' lateness, this capture: {dist(lateness(scanned, cap))}")
+        print(f"  the established sleeps' lateness, baseline:     {dist(lateness(bscan, bcap))}")
         print(f"  the worker's waits, this capture: {dist(waits(scanned, cap))}")
         print(f"  the worker's waits, baseline:     {dist(waits(bscan, bcap))}")
     return 0
