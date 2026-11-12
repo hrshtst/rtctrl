@@ -1,0 +1,23 @@
+# The non-repeatable disturbance of study case D1
+# (config/learn_study/acceptance.toml): a link force applied in one trial
+# only. Modelled on config/link_force_example.toml (same link, point,
+# magnitude and world direction); the profile is moved into the pick
+# reference's motion (about 12.9 s) and held longer.
+#
+# Sized before the acceptance run so that it changes the RMS of the trial
+# it acts in noticeably (the brief asked for 30 to 100 %): in a scratch run
+# of the nominal ILC case's trial 2 (servo-like simulation, pick reference),
+# 3 N raised the aggregate tracking RMS over all 8 joints from 5.98 to
+# 9.21 mrad (+54 %); 0.25, 0.5, 1 and 2 N gave +1, +2, +8 and +27 %.
+format = "rtctrl-x7-link-force"
+version = 1
+link = "crane_x7_tcp_link"
+point_link_m = [0.0, 0.0, 0.0] # in the link's own frame
+magnitude_n = 3.0
+direction_world = [0.0, 1.0, 0.0]
+
+[profile]
+onset_s = 4.0  # tracking time
+rise_s = 0.3
+hold_s = 1.5
+fall_s = 0.3

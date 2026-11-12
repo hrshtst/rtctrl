@@ -1,0 +1,45 @@
+# Exploratory margins of the nominal ILC case (see acceptance.toml):
+# reported, no pass/fail. Each sweep changes one setting of the nominal
+# (two for the cross) and runs 8 trials (0..7, seven updates); every
+# resulting case records its RMS curve, whether it is monotone, the trial
+# of its minimum and the above-3-Hz RMS at the last trial.
+#
+#   uv run --project tools python tools/follow_learn_study.py \
+#       config/learn_study/margins.toml --jobs 4
+format = "rtctrl-learn-study-plan"
+version = 1
+split_hz = 3.0
+
+[references]
+pick = { plan = "../ptp_pick_example.toml" }
+
+# The nominal: servo-like simulation, pick reference, ILC phi 0.5, psi_s 0,
+# advance 0.05 s, cutoff 2 Hz, step clamp 0.05 rad, default limits.
+[defaults]
+reference = "pick"
+follow = "../follow_sim_servo_like.toml"
+learn = "../follow_learn_example.toml"
+method = "ilc"
+trials = 8
+learn_set = { ilc = { phi = 0.5, psi_s = 0.0, advance_s = 0.05, cutoff_hz = 2.0, max_trial_step_rad = 0.05 } }
+
+[[sweep]]
+name = "phi"
+vary = { "learn.ilc.phi" = [0.25, 0.5, 1.0, 1.5, 1.9] }
+
+[[sweep]]
+name = "cutoff"
+vary = { "learn.ilc.cutoff_hz" = [1.0, 2.0, 3.0, 5.0, 8.0] }
+
+[[sweep]]
+name = "advance"
+vary = { "learn.ilc.advance_s" = [0.0, 0.03, 0.05, 0.08, 0.12, 0.2] }
+
+[[sweep]]
+name = "psi"
+vary = { "learn.ilc.psi_s" = [0.0, 0.03, 0.06, 0.1] }
+
+[[sweep]]
+name = "cross"
+note = "cutoff_hz against the command delay"
+vary = { "learn.ilc.cutoff_hz" = [2.0, 5.0], "follow.simulation.command_delay_cycles" = [1, 3] }

@@ -1,0 +1,272 @@
+# Simulation acceptance plan of learning between follow trials (ILC and
+# feedback-error learning through the position command).
+#
+# THE CRITERIA BELOW WERE FIXED BEFORE THE RUNS (2026-11-12), by the study's
+# brief, and are encoded here as stated there. A failed criterion is
+# reported as failed; it is never re-tuned, and no setting, criterion or
+# harness change is made to turn a FAIL into a PASS. The result decides
+# whether, and with which settings, the method may later be proposed for
+# the real arm; a simulation pass is necessary, never sufficient.
+#
+# Run (never opens the bus; outputs under build/learn_study/, gitignored):
+#   uv run --project tools python tools/follow_learn_study.py \
+#       config/learn_study/acceptance.toml --jobs 4
+#
+# Terms: "RMS" is the aggregate tracking RMS over all 8 joints of a trial,
+# e = qref - q over its tracking samples (from the update's report; the last
+# trial's from its log). "Above-split RMS" is the RMS of the error above
+# 3 Hz (follow_learnability.anatomy), the proxy for vibration the learning
+# may add. Trials count from 0; trial 0 runs the zero offset; `trials = 6`
+# means trials 0..5 and five updates. See tools/follow_learn_study.py for
+# the plan schema and the checks.
+#
+# Nominal settings (the candidate for hardware): servo-like simulation
+# (config/follow_sim_servo_like.toml as is), the pick reference, ILC
+# phi = 0.5, psi_s = 0, advance_s = 0.05, cutoff_hz = 2.0,
+# max_trial_step_rad = 0.05, offset limits at their defaults (0.15 rad,
+# 0.5 rad/s); trials 0 to 5.
+format = "rtctrl-learn-study-plan"
+version = 1
+split_hz = 3.0
+
+[references]
+pick = { plan = "../ptp_pick_example.toml" }
+# R12: the pick reference with its first 0.6 s removed (the leading frames
+# that start before 0.6 s), so that the first sample moves.
+pick_moving = { from = "pick", cut_leading_s = 0.6 }
+# R13: the short 2 cm example.
+short = { plan = "../ptp_example.toml" }
+# R14, T1, T2: reference B, a different region and orientation.
+b = { plan = "ptp_b.toml" }
+
+[defaults]
+reference = "pick"
+follow = "../follow_sim_servo_like.toml"
+learn = "../follow_learn_example.toml"
+method = "ilc"
+trials = 6
+
+[criteria]
+# N1 (a) to (e).
+nominal = [
+  { id = "a", check = "runs_ok" },
+  { id = "b", check = "decreasing", from = 0, to = 5 },
+  { id = "c", check = "ratio", trial = 5, of = 0, at_most = 0.15 },
+  { id = "d", check = "no_clamp" },
+  { id = "e", check = "hf_ratio", trial = 5, of = 0, at_most = 1.5 },
+]
+# R1 to R14: (a), (b), RMS(5) <= 30 % of RMS(0), and (e).
+robust = [
+  { id = "a", check = "runs_ok" },
+  { id = "b", check = "decreasing", from = 0, to = 5 },
+  { id = "c", check = "ratio", trial = 5, of = 0, at_most = 0.30 },
+  { id = "e", check = "hf_ratio", trial = 5, of = 0, at_most = 1.5 },
+]
+
+# ------------------------------------------------------------------ ILC
+
+[[case]]
+name = "N1"
+note = "nominal"
+learn_set = { ilc = { phi = 0.5, psi_s = 0.0, advance_s = 0.05, cutoff_hz = 2.0, max_trial_step_rad = 0.05 } }
+criteria = "nominal"
+
+# Robustness: one change from nominal each.
+[[case]]
+name = "R1"
+like = "N1"
+note = "servo stiffness halved (position_kp x 0.5, position_kd x 0.5)"
+follow_scale = { simulation = { position_kp = 0.5, position_kd = 0.5 } }
+criteria = "robust"
+
+[[case]]
+name = "R2"
+like = "N1"
+note = "servo stiffness doubled (position_kp x 2, position_kd x 2)"
+follow_scale = { simulation = { position_kp = 2.0, position_kd = 2.0 } }
+criteria = "robust"
+
+[[case]]
+name = "R3"
+like = "N1"
+note = "command_delay_cycles = 0"
+follow_set = { simulation = { command_delay_cycles = 0 } }
+criteria = "robust"
+
+[[case]]
+name = "R4"
+like = "N1"
+note = "command_delay_cycles = 2"
+follow_set = { simulation = { command_delay_cycles = 2 } }
+criteria = "robust"
+
+[[case]]
+name = "R5"
+like = "N1"
+note = "command_delay_cycles = 3"
+follow_set = { simulation = { command_delay_cycles = 3 } }
+criteria = "robust"
+
+[[case]]
+name = "R6"
+like = "N1"
+note = "damping ratio halved (position_kd x 0.5)"
+follow_scale = { simulation = { position_kd = 0.5 } }
+criteria = "robust"
+
+[[case]]
+name = "R7"
+like = "N1"
+note = "damping ratio doubled (position_kd x 2)"
+follow_scale = { simulation = { position_kd = 2.0 } }
+criteria = "robust"
+
+[[case]]
+name = "R8"
+like = "N1"
+note = "joint friction on: Coulomb 0.15 Nm (XM430) / 0.4 Nm (joint 1), viscous 0.05 / 0.3 Nm s/rad"
+follow_set = { simulation = { coulomb_friction_nm = [0.15, 0.4, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15], viscous_friction_nm_s = [0.05, 0.3, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05] } }
+criteria = "robust"
+
+[[case]]
+name = "R9"
+like = "N1"
+note = "quantize_encoder = false"
+follow_set = { simulation = { quantize_encoder = false } }
+criteria = "robust"
+
+[[case]]
+name = "R10"
+like = "N1"
+note = "phi = 1.0"
+learn_set = { ilc = { phi = 1.0 } }
+criteria = "robust"
+
+[[case]]
+name = "R11"
+like = "N1"
+note = "cutoff_hz = 3.0"
+learn_set = { ilc = { cutoff_hz = 3.0 } }
+criteria = "robust"
+
+[[case]]
+name = "R12"
+like = "N1"
+note = "a reference that does not start at rest (pick without its first 0.6 s)"
+reference = "pick_moving"
+criteria = "robust"
+
+[[case]]
+name = "R13"
+like = "N1"
+note = "the short ptp_example reference"
+reference = "short"
+criteria = "robust"
+
+[[case]]
+name = "R14"
+like = "N1"
+note = "reference B"
+reference = "b"
+criteria = "robust"
+
+# D1: a non-repeatable disturbance in trial 2 only, against N1 extended to
+# 8 trials.
+[[case]]
+name = "N1x8"
+like = "N1"
+note = "N1 extended to 8 trials: the comparison for D1"
+trials = 8
+
+[[case]]
+name = "D1"
+like = "N1"
+note = "link force (d1_link_force.toml) in trial 2 only"
+trials = 8
+perturb = [{ trials = [2], follow_set = { simulation = { link_force = "d1_link_force.toml" } } }]
+criteria = [
+  { id = "a", check = "runs_ok" },
+  # RMS of trials 5, 6, 7 within 1.5 times the same trials of N1x8
+  { id = "b", check = "vs_case", case = "N1x8", trials = [5, 6, 7], at_most = 1.5 },
+  # no trial after 2 exceeds trial 0's RMS
+  { id = "c", check = "bounded", trials = [3, 4, 5, 6, 7], of = 0, at_most = 1.0 },
+]
+
+# S1: the refusal path. Too aggressive by the library's own divergence test
+# (no advance, cutoff_hz = 20, phi = 1.9); no pass criterion on
+# convergence: the curve, what stopped it (clamps, a limit refusal or
+# growth) and whether the RMS exceeded trial 0's are recorded.
+[[case]]
+name = "S1"
+like = "N1"
+note = "too aggressive: advance 0, cutoff 20 Hz, phi 1.9"
+trials = 10
+learn_set = { ilc = { phi = 1.9, advance_s = 0.0, cutoff_hz = 20.0 } }
+
+# ------------------------------------------------------------------ FEL
+# Servo-like simulation, pick reference, learn defaults (the example file)
+# except as stated; trials 0..5.
+
+[[case]]
+name = "F1"
+note = "fel least-squares, gain 1"
+method = "fel"
+learn_set = { fel = { step = "least-squares", gain = 1.0 } }
+criteria = [
+  { id = "a", check = "runs_ok" },
+  { id = "b", check = "ratio", trial = 1, of = 0, at_most = 0.20 },
+  # never more than 20 % above RMS(1) afterwards
+  { id = "c", check = "bounded", trials = [2, 3, 4, 5], of = 1, at_most = 1.2 },
+]
+
+[[case]]
+name = "F2"
+note = "fel least-squares, gain 0.5"
+method = "fel"
+learn_set = { fel = { step = "least-squares", gain = 0.5 } }
+criteria = [
+  { id = "a", check = "runs_ok" },
+  { id = "b", check = "decreasing", from = 0, to = 5 },
+  { id = "c", check = "ratio", trial = 5, of = 0, at_most = 0.10 },
+]
+
+[[case]]
+name = "F3"
+note = "fel normalised-gradient, gain 0.2"
+method = "fel"
+learn_set = { fel = { step = "normalised-gradient", gain = 0.2 } }
+criteria = [
+  { id = "a", check = "runs_ok" },
+  { id = "b", check = "decreasing", from = 0, to = 5 },
+]
+
+[[case]]
+name = "F4"
+note = "fel least-squares, gain 0.5, friction as in R8"
+method = "fel"
+learn_set = { fel = { step = "least-squares", gain = 0.5 } }
+follow_set = { simulation = { coulomb_friction_nm = [0.15, 0.4, 0.15, 0.15, 0.15, 0.15, 0.15, 0.15], viscous_friction_nm_s = [0.05, 0.3, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05] } }
+criteria = [
+  { id = "a", check = "runs_ok" },
+  { id = "b", check = "decreasing", from = 0, to = 5 },
+  { id = "c", check = "ratio", trial = 5, of = 0, at_most = 0.30 },
+]
+
+# Transfer: F2's settings trained for 5 updates (trials 0..5 as in F2; the
+# weights after the fifth update), synthesised for the other reference,
+# which then runs once with the zero offset and once with the synthesised
+# one.
+[[case]]
+name = "T1"
+like = "F2"
+note = "train on pick, transfer to B"
+transfer_to = "b"
+criteria = [{ id = "a", check = "transfer", at_most = 0.5 }]
+
+[[case]]
+name = "T2"
+like = "F2"
+note = "train on B, transfer to pick"
+reference = "b"
+transfer_to = "pick"
+criteria = [{ id = "a", check = "transfer", at_most = 0.5 }]

@@ -11,6 +11,8 @@ a converging case passes its criteria, a refused update stops its case
 with the refusal recorded verbatim and nothing retried, a perturbed trial
 and a transfer run as planned, the parallel run gives the case results of
 the sequential one, and only the three allowed programs are ever run.
+Last, the shipped plans (config/learn_study/) parse, and the acceptance
+plan's criteria and settings are pinned as the study's brief fixed them.
 """
 
 import contextlib
@@ -1063,6 +1065,106 @@ assert "error" in json.loads((ROOT / "no_bin" / "summary.json").read_text())
 # Help states the schema and the exit status.
 status, out, _ = run_main("--help")
 assert status == 0 and "Exit status" in out and "transfer_to" in out
+
+# ------------------------------------------------ the shipped plans
+
+# The acceptance criteria were fixed before the runs: they are pinned here
+# as the study's brief states them, so that no edit of the plan changes
+# them unnoticed.
+NOMINAL = [("a", "runs_ok", {}),
+           ("b", "decreasing", {"from": 0, "to": 5}),
+           ("c", "ratio", {"trial": 5, "of": 0, "at_most": 0.15}),
+           ("d", "no_clamp", {}),
+           ("e", "hf_ratio", {"trial": 5, "of": 0, "at_most": 1.5})]
+ROBUST = [NOMINAL[0], NOMINAL[1],
+          ("c", "ratio", {"trial": 5, "of": 0, "at_most": 0.30}), NOMINAL[4]]
+EXPECTED = {
+    "N1": NOMINAL, **{f"R{i}": ROBUST for i in range(1, 15)}, "N1x8": [],
+    "D1": [NOMINAL[0],
+           ("b", "vs_case", {"case": "N1x8", "trials": [5, 6, 7],
+                             "at_most": 1.5}),
+           ("c", "bounded", {"trials": [3, 4, 5, 6, 7], "of": 0,
+                             "at_most": 1.0})],
+    "S1": [],
+    "F1": [NOMINAL[0], ("b", "ratio", {"trial": 1, "of": 0, "at_most": 0.2}),
+           ("c", "bounded", {"trials": [2, 3, 4, 5], "of": 1,
+                             "at_most": 1.2})],
+    "F2": [NOMINAL[0], NOMINAL[1],
+           ("c", "ratio", {"trial": 5, "of": 0, "at_most": 0.1})],
+    "F3": [NOMINAL[0], NOMINAL[1]],
+    "F4": [NOMINAL[0], NOMINAL[1], ROBUST[2]],
+    "T1": [("a", "transfer", {"at_most": 0.5})],
+    "T2": [("a", "transfer", {"at_most": 0.5})],
+}
+acceptance = fls.load_plan("config/learn_study/acceptance.toml")
+cases = {c["name"]: c for c in acceptance["cases"]}
+assert list(cases) == list(EXPECTED), list(cases)
+for name, criteria in EXPECTED.items():
+    got = [(c["id"], c["check"], {k: v for k, v in c.items()
+                                  if k not in ("id", "check")})
+           for c in cases[name]["criteria"]]
+    assert got == criteria, (name, got)
+NOMINAL_ILC = {"phi": 0.5, "psi_s": 0.0, "advance_s": 0.05,
+               "cutoff_hz": 2.0, "max_trial_step_rad": 0.05}
+FRICTION = {"coulomb_friction_nm": [0.15, 0.4] + [0.15] * 6,
+            "viscous_friction_nm_s": [0.05, 0.3] + [0.05] * 6}
+servo_like = str(pathlib.Path("config/follow_sim_servo_like.toml").resolve())
+example = str(pathlib.Path("config/follow_learn_example.toml").resolve())
+for name, case in cases.items():
+    assert case["follow"] == servo_like and case["learn"] == example, name
+    assert case["perturb"] == [] or name == "D1", name
+    assert case["reference"] == {"R12": "pick_moving", "R13": "short",
+                                 "R14": "b", "T2": "b"}.get(name, "pick")
+    assert case["trials"] == {"N1x8": 8, "D1": 8, "S1": 10}.get(name, 6)
+    assert case["method"] == ("fel" if name[0] in "FT" else "ilc"), name
+    if case["method"] == "ilc":
+        expected = dict(NOMINAL_ILC, **{
+            "R10": {"phi": 1.0}, "R11": {"cutoff_hz": 3.0},
+            "S1": {"phi": 1.9, "advance_s": 0.0, "cutoff_hz": 20.0}}.get(
+                name, {}))
+        assert case["learn_set"] == {"ilc": expected}, name
+    expected_set = {"R3": {"command_delay_cycles": 0},
+                    "R4": {"command_delay_cycles": 2},
+                    "R5": {"command_delay_cycles": 3},
+                    "R8": FRICTION, "R9": {"quantize_encoder": False},
+                    "F4": FRICTION}.get(name)
+    assert case["follow_set"] == ({"simulation": expected_set}
+                                  if expected_set else {}), name
+    expected_scale = {"R1": {"position_kp": 0.5, "position_kd": 0.5},
+                      "R2": {"position_kp": 2.0, "position_kd": 2.0},
+                      "R6": {"position_kd": 0.5},
+                      "R7": {"position_kd": 2.0}}.get(name)
+    assert case["follow_scale"] == ({"simulation": expected_scale}
+                                    if expected_scale else {}), name
+for name, step, gain in (("F1", "least-squares", 1.0),
+                         ("F2", "least-squares", 0.5),
+                         ("F3", "normalised-gradient", 0.2),
+                         ("F4", "least-squares", 0.5),
+                         ("T1", "least-squares", 0.5),
+                         ("T2", "least-squares", 0.5)):
+    assert cases[name]["learn_set"] == {"fel": {"step": step,
+                                                "gain": gain}}, name
+assert cases["T1"]["transfer_to"] == "b"
+assert cases["T2"]["transfer_to"] == "pick"
+assert cases["D1"]["perturb"] == [{"trials": [2], "follow_set": {
+    "simulation": {"link_force": str(pathlib.Path(
+        "config/learn_study/d1_link_force.toml").resolve())}},
+    "follow_scale": {}}]
+assert acceptance["references"]["pick_moving"] == {
+    "kind": "from", "from": "pick", "cut_leading_s": 0.6}
+margins = fls.load_plan("config/learn_study/margins.toml")
+assert [c["name"] for c in margins["cases"]] == (
+    [f"phi={v}" for v in (0.25, 0.5, 1.0, 1.5, 1.9)]
+    + [f"cutoff={v}" for v in (1.0, 2.0, 3.0, 5.0, 8.0)]
+    + [f"advance={v}" for v in (0.0, 0.03, 0.05, 0.08, 0.12, 0.2)]
+    + [f"psi={v}" for v in (0.0, 0.03, 0.06, 0.1)]
+    + [f"cross[cutoff_hz={c},command_delay_cycles={d}]"
+       for c in (2.0, 5.0) for d in (1, 3)])
+for case in margins["cases"]:
+    assert case["trials"] == 8 and case["criteria"] == []
+    assert case["learn_set"]["ilc"] == dict(NOMINAL_ILC, **{
+        key.split(".")[-1]: value for key, value in case["vary"].items()
+        if key.startswith("learn.")}), case["name"]
 
 SCRATCH.cleanup()
 print("follow learn study regressions OK")
