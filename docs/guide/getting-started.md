@@ -139,6 +139,21 @@ The simulation includes home positioning, tracking, and final holding. Review
 it before considering `x7_follow` on hardware. The full configuration and
 safety contract are in [Servo-side trajectory following](usage.md#servo-side-trajectory-following).
 
+`tools/zvs_to_mp4.sh` turns a `.zvs` into an mp4 clip through `rk_anim`'s
+frame capture (it needs `rk_anim`, `ffmpeg`, and a reachable X display). Its
+default camera is a side view from -y; the project's clips use a front view:
+
+```sh
+tools/zvs_to_mp4.sh reference.zvs reference.mp4 -- \
+  -x 2.2 -y 0 -z 0.222 -pan 0 -width 800 -height 800
+```
+
+This puts the camera on +x, 2.2 m from the base and 0.222 m high, looking
+along -x, so +y is to the right and the arm's whole workspace above the base
+stays in frame. The frames are 800 x 836 pixels (the 800 x 800 window plus
+`rk_anim`'s 36-pixel time strip) at the script's default 30.303 fps.
+`tools/zvs_to_mp4.sh --help` lists the other options.
+
 ## Regenerating the model
 
 `models/crane_x7/crane_x7.ztk` is generated from the URDF in

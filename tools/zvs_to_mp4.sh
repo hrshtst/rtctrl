@@ -21,10 +21,21 @@
 # lets the last occurrence win). Default camera: side view from -y,
 #   -x 0 -y -- -1.8 -z 0.3 -pan -- -90
 # Note rk_anim option values that are negative need a bare `--` before them.
+# rk_anim: -pan 0 looks along -x, a pan rotates about the vertical axis (default -90
+# looks along +y from -y), and the first captured frame is blank: judge a later one.
+#
+# Front view used for the project's clips: camera on +x, 2.2 m from the base and
+# 0.222 m high, looking along -x (+y to the right, the arm's whole workspace above
+# the base in frame); 800 x 836 frames (the 800 x 800 window plus rk_anim's
+# 36-pixel time strip). Pass -y 0 and -pan 0 explicitly to override the default:
+#   -x 2.2 -y 0 -z 0.222 -pan 0 -width 800 -height 800
 #
 # Examples:
 #   # PTP plan preview, default side view at 30 fps
 #   tools/zvs_to_mp4.sh ptp.zvs /tmp/ptp.mp4
+#
+#   # front view used for the project's clips (800 x 836 frames)
+#   tools/zvs_to_mp4.sh reference.zvs reference.mp4 -- -x 2.2 -y 0 -z 0.222 -pan 0 -width 800 -height 800
 #
 #   # frame-exact export of a 0.01 s-step sequence (100 fps), keep the PNGs
 #   tools/zvs_to_mp4.sh -s 0.01 -k /tmp/frames follow-pick.zvs /tmp/follow.mp4
