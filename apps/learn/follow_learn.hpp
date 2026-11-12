@@ -66,8 +66,11 @@ inline constexpr std::size_t kMaxTailRows = 200;
 inline constexpr double kSynthesisToleranceRad = 1e-9;
 // Ceilings on the ILC gains (docs/theory/learning-control.md, "Iterative
 // learning control in position form"): phi below the low-frequency
-// convergence condition 0 < phi < 2 (exclusive), psi_s at most 0.1 s, above
-// the bound 2 K^-1 D = 2 (T - theta) of the measured servo.
+// convergence condition 0 < phi < 2 (exclusive); psi_s at most 0.1 s, an
+// engineering cap taken from the library's convergence tests on a
+// representative lagged plant with Q at 2 Hz (contraction 0.91 at psi_s =
+// 0.09 s, divergence at 0.12 s). The usable range of psi_s is to be
+// established in simulation.
 inline constexpr double kIlcPhiBelow = 2.0;
 inline constexpr double kIlcMaxPsiS = 0.1;
 

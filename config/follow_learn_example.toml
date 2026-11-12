@@ -27,7 +27,10 @@ max_offset_rate_rad_s = 0.5  # |delta[i+1] - delta[i]| / dt, at least 0.01
 # run; choose the gains in simulation first (the library's convergence test
 # uses phi = 0.5, psi_s = 0 on a representative lagged plant). Ceilings:
 # phi < 2 (the low-frequency convergence condition 0 < phi < 2) and
-# psi_s <= 0.1 s (the bound 2 K^-1 D of the measured servo is below it).
+# psi_s <= 0.1 s, an engineering cap taken from the library's convergence
+# tests on a representative lagged plant with Q at 2 Hz (contraction 0.91
+# at psi_s = 0.09 s, divergence at 0.12 s); the usable range of psi_s is to
+# be established in simulation.
 [ilc]
 phi = 0.0                 # position-error gain, dimensionless, in [0, 2)
 psi_s = 0.0               # velocity-error gain [s], in [0, 0.1]
