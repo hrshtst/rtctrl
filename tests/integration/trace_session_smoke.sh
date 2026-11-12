@@ -1500,6 +1500,18 @@ EOF
     fail "trace-cmd was not given the timer events" "$ROOT/fake.trace-cmd"
   grep -Eq '^clock offsets: boottime_minus_monotonic_ns -?[0-9]+ tai_minus_monotonic_ns -?[0-9]+ bracket_ns [0-9]+$' "$b.run.txt" ||
     fail "the timer record has no clock offsets" "$b.run.txt"
+  # An open timer run lists the task lineage right after its trace started, before the run, published with it: the
+  # emulator's residency check starts from it (reviewer, 2026-11-12).
+  grep -q '^--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---$' "$b.lineage.txt" &&
+    grep -Eq '^taken monotonic_ns: [0-9]+ [0-9]+$' "$b.lineage.txt" && grep -Eq '^lineage complete: [0-9]+ tasks$' "$b.lineage.txt" &&
+    grep -Eq "^$$ $$ [0-9]+ [0-9]+ [0-9]+ [0-9,-]+$" "$b.lineage.txt" &&
+    grep -Eq '^task lineage after the trace started: .*\.lineage\.txt, [0-9]+ tasks$' "$b.run.txt" &&
+    grep -q 'lineage.txt' "$b.staging.sha256" || fail "the open timer run's lineage" "$b.run.txt"
+  n_clock=$(grep -n -m 1 '^trace clock while recording: ' "$b.run.txt" | cut -d: -f1)
+  n_lin=$(grep -n -m 1 '^task lineage after the trace started: ' "$b.run.txt" | cut -d: -f1)
+  n_pair=$(grep -n -m 1 '^clock pair before: ' "$b.run.txt" | cut -d: -f1)
+  [ -n "$n_clock" ] && [ -n "$n_lin" ] && [ -n "$n_pair" ] && [ "$n_clock" -lt "$n_lin" ] && [ "$n_lin" -lt "$n_pair" ] ||
+    fail "the lineage is not listed between the trace's start and the run ($n_clock, $n_lin, $n_pair)" "$b.run.txt"
   # The analysis's timer-mode fixture uses only events the session records.
   rec_events=$(grep -m 1 -- '-e msr:write_msr' "$ROOT/fake.trace-cmd" | grep -oE -- '-e [a-z_-]+:[a-z_0-9]+' | sed 's/.*://' | sort -u)
   fixture_events=$(python3 tools/test_trace_correlate.py --timer-events | tr ' ' '\n')
@@ -2145,6 +2157,16 @@ if [ -n "$SAMPLER" ]; then
     grep -q '^verdict: not run (placement)$' "$b.run.txt" && ! grep -q '^worker thread ' "$b.run.txt" &&
     [ "$(grep -c '^restore ' "$ROOT/fake.obs_unreadable")" -ge 2 ] ||
     fail "an incomplete lineage after the trace started: status $st" "$b.run.txt"
+  # An open timer run's too stops it before the probe (reviewer, 2026-11-12).
+  set +e
+  OBS_TOOL="$FAKE/obs_unreadable.py" TRACE_SESSION_RTPRIO_LIMIT=99 setsid tools/trace_session.sh "${PROFILE[@]}" --yes \
+    --attempt 96 --duration 2 --modes timer --runs current:100:rt-idle:fast-motion </dev/null >"$ROOT/lin-unreadable-timer.log" 2>&1
+  st=$?
+  set -e
+  b=$(base current-100hz-rt-idle-bounded-fast-motion-timer 96)
+  [ "$st" -ne 0 ] && grep -q 'the task lineage was not listed after the trace started: session stopped' "$b.run.txt" &&
+    grep -q '^verdict: not run (task lineage)$' "$b.run.txt" && ! grep -q '^worker thread ' "$b.run.txt" ||
+    fail "an incomplete lineage after an open timer run's trace started: status $st" "$b.run.txt"
 fi
 
 # A restoration that stays unresolved (a stand-in placement tool whose

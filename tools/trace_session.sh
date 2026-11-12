@@ -77,10 +77,11 @@
 # task (an incomplete lineage is no evidence) and a confine that fails or
 # does not settle (before the probe). Repeated passes are no atomic view: a
 # process forked by a thread not yet confined, whose parent exits before the
-# next pass, leaves the trees unseen. A confined traced run lists the same lineage
+# next pass, leaves the trees unseen. A timer run lists the same lineage
 # right after its trace started (<log>.csv.lineage.txt), for the trace's
-# check to follow with the fork events; a confined run is therefore untraced
-# or in the timer mode. The session's own process tree is exempt, and kernel
+# checks to follow with the fork events (a confined run's placement, the
+# emulator's residency); a confined run is therefore untraced or in the
+# timer mode. The session's own process tree is exempt, and kernel
 # workers are outside this mechanism. An open run leaves the observers as
 # they are.
 #
@@ -179,7 +180,7 @@
 #   <log>.csv.run.txt       command, host state, probe output, verdicts
 #   <log>.csv.tasks.txt     tasks, CPUs and affinities halfway through
 #   <log>.csv.lineage.txt   every task's parent, start times and CPUs right
-#                           after the trace started (confined traced runs)
+#                           after the trace started (timer runs)
 #   <log>.csv.trace.dat     trace-cmd record (traced runs)
 #   <log>.csv.usbmon.pcap   usbmon capture of the adapter (traced runs)
 #   <log>.csv.staging.sha256  the published files' SHA-256 (sha256sum -c)
@@ -2165,10 +2166,13 @@ run_one() {
       outcome=stop
       return
     fi
-    # A confined run's lineage once the trace records: the trace's placement
-    # check starts from it (tasks absent from the placement record included)
-    # and follows the fork events (reviewer, 2026-11-09).
-    if [ "$placement" = confined ]; then
+    # Every timer run's lineage once the trace records (a confined run is
+    # untraced or a timer run): the trace's checks start from it (tasks
+    # absent from any record included) and follow the fork events, a
+    # confined run's placement check (reviewer, 2026-11-09) and the
+    # emulator's residency (tools/emulator_residency.py; reviewer,
+    # 2026-11-12). A listing that fails stops the session before the probe.
+    if [ "$timered" -eq 1 ]; then
       if python3 "$OBS_TOOL" tasks >"$sb.lineage.txt" 2>"$tmp/lineage.err"; then
         echo "task lineage after the trace started: $(basename "$sb").lineage.txt, $(sed -n 's/^lineage complete: //p' "$sb.lineage.txt")" >>"$note"
       else
@@ -2176,7 +2180,7 @@ run_one() {
           cat "$tmp/lineage.err"; } | tee -a "$note"
         stop_all
         restore_observers
-        echo "verdict: not run (placement)" >>"$note"
+        if [ "$placement" = confined ]; then echo "verdict: not run (placement)" >>"$note"; else echo "verdict: not run (task lineage)" >>"$note"; fi
         outcome=stop
         return
       fi
