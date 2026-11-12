@@ -382,6 +382,18 @@ set_tests_properties(follow_learnability_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "follow learnability regressions OK"
   LABELS unit)
 
+# The learning study harness: plan parsing, configuration derivation, the
+# acceptance checks on synthetic curves, the summary, and plans end to end
+# through stand-ins for x7_plan_ptp, x7_follow_sim and x7_follow_learn.
+add_test(NAME follow_learn_study_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_follow_learn_study.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(follow_learn_study_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "follow learn study regressions OK"
+  LABELS unit)
+
 # SI profile flags: strict nonnegative doubles; raw and SI forms of
 # one register are mutually exclusive. Both reject before any bus
 # contact.
