@@ -300,3 +300,132 @@ TEST_CASE("follow config resolves an optional simulation link force",
                         "link_force must be a non-empty path"));
   std::remove(number);
 }
+
+TEST_CASE("follow config reads an optional learned command offset",
+          "[follow][config][learning]") {
+  const char* absent = "build/follow_no_offset.toml";
+  writeConfig(absent);
+  {
+    const auto config = follow::loadConfig(absent);
+    CHECK_FALSE(config.learning.offset_path);
+    CHECK(config.learning.max_offset_rad == 0.15);
+    CHECK(config.learning.max_offset_rate_rad_s == 0.5);
+  }
+  std::remove(absent);
+
+  // Resolved against the config's directory, like every other input.
+  const char* relative = "build/follow_offset.toml";
+  writeConfig(relative, "[learning]\noffset = \"trial1.csv\"\n");
+  {
+    const auto config = follow::loadConfig(relative);
+    REQUIRE(config.learning.offset_path);
+    CHECK(*config.learning.offset_path ==
+          std::filesystem::absolute("build/trial1.csv").lexically_normal());
+    CHECK(config.learning.max_offset_rad == 0.15);
+    CHECK(config.learning.max_offset_rate_rad_s == 0.5);
+  }
+  std::remove(relative);
+
+  const char* lowered = "build/follow_offset_lowered.toml";
+  writeConfig(lowered,
+              "[learning]\noffset = \"/abs/trial2.csv\"\n"
+              "max_offset_rad = 0.05\nmax_offset_rate_rad_s = 0.2\n");
+  {
+    const auto config = follow::loadConfig(lowered);
+    REQUIRE(config.learning.offset_path);
+    CHECK(*config.learning.offset_path == "/abs/trial2.csv");
+    CHECK(config.learning.max_offset_rad == 0.05);
+    CHECK(config.learning.max_offset_rate_rad_s == 0.2);
+  }
+  std::remove(lowered);
+
+  // The defaults themselves are allowed; limits without an offset too (the
+  // offset may come from --offset).
+  const char* ceiling = "build/follow_offset_ceiling.toml";
+  writeConfig(ceiling,
+              "[learning]\nmax_offset_rad = 0.15\n"
+              "max_offset_rate_rad_s = 0.5\n");
+  {
+    const auto config = follow::loadConfig(ceiling);
+    CHECK_FALSE(config.learning.offset_path);
+    CHECK(config.learning.max_offset_rad == 0.15);
+    CHECK(config.learning.max_offset_rate_rad_s == 0.5);
+  }
+  std::remove(ceiling);
+
+  const auto refused = [](const std::string& table, const char* expected) {
+    const char* path = "build/follow_offset_refused.toml";
+    writeConfig(path, "[learning]\n" + table);
+    CAPTURE(table);
+    CHECK_THROWS_WITH(follow::loadConfig(path),
+                      Catch::Matchers::ContainsSubstring(expected));
+    std::remove(path);
+  };
+  // Raising a limit is a config error, however slightly.
+  refused("max_offset_rad = 0.15000000000000002\n",
+          "learning.max_offset_rad must be > 0 and at most 0.15 rad (the "
+          "limit can only be lowered)");
+  refused("max_offset_rad = 0.2\n", "can only be lowered");
+  refused("max_offset_rate_rad_s = 0.5000000000000001\n",
+          "learning.max_offset_rate_rad_s must be > 0 and at most 0.5 "
+          "rad/s (the limit can only be lowered)");
+  refused("max_offset_rate_rad_s = 1.0\n", "can only be lowered");
+  refused("max_offset_rad = 0.0\n", "learning.max_offset_rad must be > 0");
+  refused("max_offset_rate_rad_s = -0.1\n",
+          "learning.max_offset_rate_rad_s must be > 0");
+  refused("max_offset_rad = nan\n", "learning.max_offset_rad must be finite");
+  refused("max_offset_rad = \"0.1\"\n",
+          "learning.max_offset_rad must be finite");
+  refused("offset = \"\"\n", "offset must be a non-empty path");
+  refused("offset = 3\n", "offset must be a non-empty path");
+  refused("offst = \"trial1.csv\"\n", "unknown key 'offst' in learning");
+  refused("max_offset_rad_s = 0.1\n",
+          "unknown key 'max_offset_rad_s' in learning");
+
+  const char* scalar = "build/follow_offset_scalar.toml";
+  writeConfig(scalar, "learning = \"trial1.csv\"\n");
+  CHECK_THROWS_WITH(follow::loadConfig(scalar),
+                    Catch::Matchers::ContainsSubstring(
+                        "learning must be a table"));
+  std::remove(scalar);
+}
+
+TEST_CASE("follow CLI --offset overrides the configured offset path",
+          "[follow][config][learning]") {
+  const char* path = "build/follow_offset_cli.toml";
+  writeConfig(path,
+              "[learning]\noffset = \"configured.csv\"\n"
+              "max_offset_rad = 0.1\n");
+  char app[] = "x7_follow_sim";
+  char config_arg[] = "--config";
+  char config_path[] = "build/follow_offset_cli.toml";
+  char offset_arg[] = "--offset";
+  char offset_path[] = "trial3.csv";
+  char* argv[] = {app, config_arg, config_path, offset_arg, offset_path};
+  for (const bool simulation : {true, false}) {
+    const auto cli = follow::parseCli(5, argv, simulation);
+    REQUIRE(cli.offset_path);
+    CHECK(*cli.offset_path == "trial3.csv");
+    auto config = follow::loadConfig(cli.config_path);
+    follow::applyOverrides(cli, &config);
+    REQUIRE(config.learning.offset_path);
+    // Resolved against the working directory, like --reference.
+    CHECK(*config.learning.offset_path ==
+          std::filesystem::absolute("trial3.csv").lexically_normal());
+    CHECK(config.learning.max_offset_rad == 0.1);  // the limits stay
+  }
+  // Without --offset the configured path stays.
+  {
+    const auto cli = follow::parseCli(3, argv, true);
+    CHECK_FALSE(cli.offset_path);
+    auto config = follow::loadConfig(cli.config_path);
+    follow::applyOverrides(cli, &config);
+    REQUIRE(config.learning.offset_path);
+    CHECK(config.learning.offset_path->filename() == "configured.csv");
+  }
+  char* missing[] = {app, config_arg, config_path, offset_arg};
+  CHECK_THROWS_WITH(follow::parseCli(4, missing, true),
+                    Catch::Matchers::ContainsSubstring(
+                        "--offset requires a value"));
+  std::remove(path);
+}

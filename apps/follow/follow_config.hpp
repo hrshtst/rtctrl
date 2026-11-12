@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "rtctrl/arm/types.hpp"
+#include "rtctrl/learn/command_offset.hpp"
 #include "rtctrl/model/ptp_planner.hpp"
 #include "rtctrl/model/zvs_trajectory.hpp"
 
@@ -81,6 +83,16 @@ struct OutputConfig {
   fs::path hardware_log = "follow_hw.csv";
 };
 
+// A learned command offset (rtctrl/learn/command_offset.hpp), computed
+// offline between trials: tracking commands q_d + delta. The follower only
+// reads and checks it; it never computes or changes one. The limits can
+// only be lowered from learn::OffsetLimits' defaults.
+struct LearningConfig {
+  std::optional<fs::path> offset_path;
+  double max_offset_rad = rtctrl::learn::OffsetLimits{}.max_abs_rad;
+  double max_offset_rate_rad_s = rtctrl::learn::OffsetLimits{}.max_rate_rad_s;
+};
+
 struct Config {
   fs::path source_path;
   fs::path model_path;
@@ -98,6 +110,7 @@ struct Config {
   SafetyConfig safety;
   FinalizationConfig finalization;
   OutputConfig output;
+  LearningConfig learning;
 };
 
 struct Cli {
@@ -111,6 +124,7 @@ struct Cli {
   std::optional<std::string> sweep_current;
   std::optional<fs::path> motion_path;
   std::optional<fs::path> bundle_path;
+  std::optional<fs::path> offset_path;
   std::optional<std::string> port;
   std::optional<arm::ControlMode> mode;
   std::optional<double> effort_limit_nm;
@@ -263,7 +277,8 @@ inline Config loadConfig(const fs::path& path) {
                 {"format", "version", "model", "reference",
                  "hardware_config", "motor_parameters", "control", "home",
                  "reference_processing", "current_based_position",
-                 "simulation", "safety", "finalization", "output"},
+                 "simulation", "safety", "finalization", "output",
+                 "learning"},
                 "root");
   if (root["format"].value_or(std::string{}) != "rtctrl-x7-follow" ||
       root["version"].value_or<std::int64_t>(0) != 1) {
@@ -478,6 +493,33 @@ inline Config loadConfig(const fs::path& path) {
       output, "simulation_log", config.output.simulation_log, ".csv");
   config.output.hardware_log = outputPath(
       output, "hardware_log", config.output.hardware_log, ".csv");
+
+  const auto& learning = optionalTable(root, "learning");
+  rejectUnknown(learning, {"offset", "max_offset_rad", "max_offset_rate_rad_s"},
+                "learning");
+  const auto offset = inputPath(learning, "offset", path, false);
+  if (!offset.empty()) config.learning.offset_path = offset;
+  config.learning.max_offset_rad = number(
+      learning, "max_offset_rad", config.learning.max_offset_rad, "learning");
+  config.learning.max_offset_rate_rad_s =
+      number(learning, "max_offset_rate_rad_s",
+             config.learning.max_offset_rate_rad_s, "learning");
+  const rtctrl::learn::OffsetLimits ceiling;
+  const auto requireLowered = [](const char* key, double value, double bound,
+                                 const char* unit) {
+    if (value > 0.0 && value <= bound) return;
+    char text[160];
+    std::snprintf(text, sizeof text,
+                  "follow config: learning.%s must be > 0 and at most %g %s "
+                  "(the limit can only be lowered)",
+                  key, bound, unit);
+    throw std::runtime_error(text);
+  };
+  requireLowered("max_offset_rad", config.learning.max_offset_rad,
+                 ceiling.max_abs_rad, "rad");
+  requireLowered("max_offset_rate_rad_s",
+                 config.learning.max_offset_rate_rad_s, ceiling.max_rate_rad_s,
+                 "rad/s");
   return config;
 }
 
@@ -498,6 +540,10 @@ inline void applyOverrides(const Cli& cli, Config* config) {
   if (cli.motor_parameters_path) {
     config->motor_parameters_path =
         fs::absolute(*cli.motor_parameters_path).lexically_normal();
+  }
+  if (cli.offset_path) {
+    config->learning.offset_path =
+        fs::absolute(*cli.offset_path).lexically_normal();
   }
   if (cli.mode) config->mode = *cli.mode;
   if (cli.effort_limit_nm) {
@@ -532,7 +578,8 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
                arg == "--interpolation" || arg == "--log" ||
                arg == "--timing-log" || arg == "--bundle" ||
                arg == "--port" || arg == "--motion" ||
-               arg == "--hold-current" || arg == "--sweep-current") {
+               arg == "--hold-current" || arg == "--sweep-current" ||
+               arg == "--offset") {
       if (i + 1 >= argc || argv[i + 1][0] == '-') {
         throw std::runtime_error(arg + " requires a value");
       }
@@ -552,6 +599,7 @@ inline Cli parseCli(int argc, char* argv[], bool simulation) {
       else if (arg == "--hold-current") cli.hold_current = value.string();
       else if (arg == "--sweep-current") cli.sweep_current = value.string();
       else if (arg == "--bundle") cli.bundle_path = value;
+      else if (arg == "--offset") cli.offset_path = value;
       else if (arg == "--port") cli.port = value.string();
       else cli.motion_path = value;
     } else {
