@@ -2,6 +2,8 @@ include(Catch)
 
 add_executable(unit_tests
   unit/smoke_test.cpp
+  unit/ptp_bundle_test.cpp
+  ${CMAKE_SOURCE_DIR}/apps/plan/ptp_bundle.cpp
   unit/attitude_test.cpp
   unit/command_offset_test.cpp
   unit/model_test.cpp

@@ -247,6 +247,8 @@ class Sha256 {
   std::uint64_t total_bytes_ = 0;
 };
 
+}  // namespace
+
 std::string sha256File(const fs::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input) throw std::runtime_error("cannot hash " + path.string());
@@ -260,8 +262,6 @@ std::string sha256File(const fs::path& path) {
   if (!input.eof()) throw std::runtime_error("cannot read " + path.string());
   return hash.finish();
 }
-
-}  // namespace
 
 void copyBundleRegularFile(const fs::path& source,
                            const fs::path& destination) {

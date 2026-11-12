@@ -45,6 +45,10 @@ void writeBundleManifestFor(const std::filesystem::path& root,
                             const std::string& rtctrl_version,
                             const std::string& git_commit, bool git_dirty);
 
+// Lowercase hex SHA-256 of the file's bytes. Throws std::runtime_error if
+// the file cannot be opened or read.
+std::string sha256File(const std::filesystem::path& path);
+
 PreparedBundle prepareBundle(const std::filesystem::path& staging,
                              const std::filesystem::path& source_config,
                              const Config& effective_config);
