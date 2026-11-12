@@ -24,16 +24,14 @@ namespace rtctrl::learn {
 
 using JointArray = std::array<double, model::kCanonicalDof>;  // canonical 8-DOF order
 
-// Zero-phase low-pass: a 2nd-order Butterworth low-pass (bilinear transform
-// with frequency prewarping) applied forward, then backward. The analog
-// prototype of the combined forward-backward magnitude is
-// 1 / (1 + (f/f0)^4), so the design corner is
-// f0 = cutoff_hz / (sqrt(2) - 1)^(1/4) and f0 is prewarped. The digital
-// combined magnitude is then exactly
-// 1 / (1 + (tan(pi f dt) / tan(pi f0 dt))^4): 1/sqrt(2) at cutoff_hz up to
-// the bilinear warping between f0 and cutoff_hz (+0.09 % at 2 Hz and
-// dt = 0.01 s; 0.83 instead of 0.71 at half the Nyquist frequency, and one
-// at the 0.8 limit below). The phase is zero.
+// Zero-phase low-pass: a 2nd-order Butterworth low-pass by the bilinear
+// transform, applied forward, then backward. cutoff_hz itself is prewarped
+// to the analog frequency (2/dt) tan(pi cutoff_hz dt), and the analog
+// corner is that frequency times (sqrt(2) - 1)^(-1/4). The combined
+// forward-backward magnitude is then
+//   1 / (1 + (sqrt(2) - 1) (tan(pi f dt) / tan(pi cutoff_hz dt))^4),
+// exactly 1/sqrt(2) (-3 dB) at cutoff_hz for every admissible cutoff, and
+// the phase is zero.
 //
 // Edges: each column is padded at both ends by odd reflection
 // (2*x[0] - x[k], likewise at the end) of P = min(n - 1,
@@ -93,17 +91,20 @@ struct IlcReport {
 //  6. d = zero-phase low-pass of c over the N samples (Q acts on the whole
 //     bracket, delta_k included);
 //  7. d[i] = delta_k[i][j] + clamp(d[i] - delta_k[i][j], +-max_trial_step_rad),
-//     then clamp(d[i], +-max_abs_rad). The absolute clamp comes last and
-//     wins: where delta_k itself lies outside +-max_abs_rad the change can
-//     exceed max_trial_step_rad.
+//     then clamp(d[i], +-max_abs_rad). delta_k of an enabled joint lies
+//     within +-max_abs_rad (checked), so the absolute clamp only moves d
+//     toward delta_k: the change never exceeds max_trial_step_rad.
 //
 // Throws std::invalid_argument naming the argument unless N >= 2; every
 // value of delta_k and error is finite; dt is finite and > 0; advance_s is
 // finite and >= 0; every phi and psi_s is finite and >= 0; both clamps are
-// finite and > 0; cutoff_hz meets zeroPhaseLowPass's conditions; and the
-// tail is long enough (the message says how many samples it needs). All of
-// it is checked before anything is computed, disabled joints included.
-// Deterministic; the inputs are not modified.
+// finite and > 0; cutoff_hz meets zeroPhaseLowPass's conditions; the tail
+// is long enough (the message says how many samples it needs); and every
+// delta_k sample of an enabled joint has |delta_k| <= max_abs_rad (an input
+// offset that violates the configured clamp is the operator's to resolve;
+// the message names the joint, sample and value). All of it is checked
+// before anything is computed; a disabled joint's delta_k is not checked
+// against the clamp. Deterministic; the inputs are not modified.
 std::vector<JointArray> ilcUpdate(const std::vector<JointArray>& delta_k,
                                   const std::vector<JointArray>& error,
                                   double dt, const IlcOptions& options);

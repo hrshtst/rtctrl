@@ -1,6 +1,7 @@
 #include "rtctrl/learn/ilc_update.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
@@ -22,6 +23,14 @@ template <typename... Parts>
   out << function << ": ";
   (out << ... << parts);
   throw std::invalid_argument(out.str());
+}
+
+// The shortest decimal that reads back as value, so that a value just past
+// a bound does not print as the bound.
+std::string exact(double value) {
+  char buffer[32];
+  const auto result = std::to_chars(buffer, buffer + sizeof buffer, value);
+  return std::string(buffer, result.ptr);
 }
 
 // Direct form I, a0 = 1.
@@ -54,14 +63,14 @@ void checkFinite(const char* function, const char* name,
   }
 }
 
-// 2nd-order Butterworth low-pass by the bilinear transform, prewarped at
-// the design corner f0 = cutoff / (sqrt(2) - 1)^(1/4), so that the
-// forward-backward pair's analog prototype 1 / (1 + (f/f0)^4) is 1/sqrt(2)
-// at the cutoff.
+// 2nd-order Butterworth low-pass by the bilinear transform. The cutoff
+// itself is prewarped, tan(pi cutoff dt), and the analog corner is that
+// times (sqrt(2) - 1)^(-1/4), in units of 2/dt: k below. The pair's
+// combined magnitude is 1 / (1 + (sqrt(2) - 1) (tan(pi f dt) /
+// tan(pi cutoff dt))^4), exactly 1/sqrt(2) at the cutoff.
 Biquad design(double dt, double cutoff_hz) {
   const double sqrt2 = std::sqrt(2.0);
-  const double f0 = cutoff_hz / std::pow(sqrt2 - 1.0, 0.25);
-  const double k = std::tan(kPi * f0 * dt);
+  const double k = std::tan(kPi * cutoff_hz * dt) / std::pow(sqrt2 - 1.0, 0.25);
   const double norm = 1.0 / (1.0 + sqrt2 * k + k * k);
   Biquad q;
   q.a1 = 2.0 * (k * k - 1.0) * norm;
@@ -186,6 +195,19 @@ void checkIlcArguments(const std::vector<JointArray>& delta_k,
   }
   checkFinite(kFn, "delta_k", delta_k);
   checkFinite(kFn, "error", error);
+  // An input offset outside the configured clamp is refused, not silently
+  // clamped: the operator resolves it. Disabled joints are not checked.
+  for (int j = 0; j < kDof; ++j) {
+    if (options.phi[j] == 0.0 && options.psi_s[j] == 0.0) continue;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (std::abs(delta_k[i][j]) > options.max_abs_rad) {
+        fail(kFn, "delta_k[", i, "][", j, "] = ", exact(delta_k[i][j]),
+             " rad exceeds max_abs_rad = ", exact(options.max_abs_rad),
+             " rad on enabled joint ", j,
+             " (the input offset violates the configured clamp)");
+      }
+    }
+  }
 }
 
 std::vector<JointArray> update(const std::vector<JointArray>& delta_k,
@@ -228,7 +250,9 @@ std::vector<JointArray> update(const std::vector<JointArray>& delta_k,
       const double step = options.max_trial_step_rad;
       const double bound = options.max_abs_rad;
       // An unclamped sample keeps d[i] exactly (base + (d[i] - base) need
-      // not round back to d[i]).
+      // not round back to d[i]). |base| <= bound (checked), so where the
+      // absolute clamp acts it moves the value toward base and the change
+      // stays within the trial step.
       for (std::size_t i = 0; i < n; ++i) {
         const double base = delta_k[i][j];
         double value = d[i];

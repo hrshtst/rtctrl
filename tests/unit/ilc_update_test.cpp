@@ -1,5 +1,6 @@
 #include "rtctrl/learn/ilc_update.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -58,16 +59,13 @@ bool bitIdentical(double a, double b) {
 
 // ---------------------------------------------------------------- filter
 
-// The design corner of zeroPhaseLowPass, and the combined forward-backward
-// magnitude of its bilinear design: the analog prototype 1 / (1 + (f/f0)^4)
-// with both frequencies prewarped.
-double designCorner(double cutoff_hz) {
-  return cutoff_hz / std::pow(std::sqrt(2.0) - 1.0, 0.25);
-}
+// The combined forward-backward magnitude of zeroPhaseLowPass's bilinear
+// design: the analog prototype 1 / (1 + (w/w0)^4), with the cutoff
+// prewarped and w0 = that prewarped cutoff * (sqrt(2) - 1)^(-1/4).
 double digitalMagnitude(double f_hz, double dt, double cutoff_hz) {
   const double ratio =
-      std::tan(kPi * f_hz * dt) / std::tan(kPi * designCorner(cutoff_hz) * dt);
-  return 1.0 / (1.0 + std::pow(ratio, 4.0));
+      std::tan(kPi * f_hz * dt) / std::tan(kPi * cutoff_hz * dt);
+  return 1.0 / (1.0 + (std::sqrt(2.0) - 1.0) * std::pow(ratio, 4.0));
 }
 
 struct SineFit {
@@ -292,44 +290,50 @@ TEST_CASE("zero-phase low-pass returns a constant unchanged",
   }
 }
 
-TEST_CASE("zero-phase low-pass: -3 dB at the cutoff with no phase shift",
+TEST_CASE("zero-phase low-pass: exactly -3 dB at the cutoff, no phase shift",
           "[learn][ilc][filter]") {
-  // 20 s at 100 Hz, fitted on [5 s, 15 s]: the edge transients decay at
-  // zeta * w0 = 2 pi f0 / sqrt(2) = 11 1/s, below 1e-20 after 5 s.
-  const double cutoff = 2.0;
+  // 20 s at 100 Hz, fitted on [5 s, 15 s]. The edge transients decay at
+  // 11 1/s or faster (the 2 Hz design's pole radius is 0.895 per sample), so
+  // they are below 1e-20 after 5 s; what is left is rounding in the filter
+  // and in the fit's sums over 1000 samples, well below 1e-12.
   const std::size_t n = 2001;
   const std::size_t from = 500, to = 1500;
-  const std::array<double, 3> freqs = {cutoff, cutoff / 10.0, 5.0 * cutoff};
+  for (const double cutoff : {2.0, 10.0, 25.0, 40.0}) {  // 40 Hz: the limit
+    INFO("cutoff " << cutoff << " Hz");
+    const Signal x = makeSignal(n, [&](std::size_t i, int) {
+      return std::sin(2.0 * kPi * cutoff * static_cast<double>(i) * kDt);
+    });
+    const Signal y = zeroPhaseLowPass(x, kDt, cutoff);
+    const SineFit at = fitSine(y, 0, kDt, cutoff, from, to);
+    CHECK(std::abs(at.amplitude - 1.0 / std::sqrt(2.0)) < 1e-12);
+    CHECK(std::abs(at.phase) < 1e-12);  // forward-backward: exactly zero
+  }
+
+  const double cutoff = 2.0;
   const Signal x = makeSignal(n, [&](std::size_t i, int j) {
     const double t = static_cast<double>(i) * kDt;
-    return j < 3 ? std::sin(2.0 * kPi * freqs[j] * t) : 0.0;
+    const double f = j == 0 ? cutoff / 10.0 : 5.0 * cutoff;
+    return j < 2 ? std::sin(2.0 * kPi * f * t) : 0.0;
   });
   const Signal y = zeroPhaseLowPass(x, kDt, cutoff);
 
-  const SineFit at = fitSine(y, 0, kDt, cutoff, from, to);
-  // the spec's tolerance; the bilinear warping between f0 and the cutoff
-  // moves the digital value 0.09 % above 1/sqrt(2) at 2 Hz / 100 Hz
-  CHECK(std::abs(at.amplitude / (1.0 / std::sqrt(2.0)) - 1.0) < 0.02);
-  // the design's exact steady-state magnitude; 1e-9 covers the fit's rounding
-  CHECK(std::abs(at.amplitude - digitalMagnitude(cutoff, kDt, cutoff)) < 1e-9);
-  // forward-backward: the steady-state phase is exactly zero
-  CHECK(std::abs(at.phase) < 1e-9);
-
-  const SineFit tenth = fitSine(y, 1, kDt, cutoff / 10.0, from, to);
+  const SineFit tenth = fitSine(y, 0, kDt, cutoff / 10.0, from, to);
   CHECK(std::abs(tenth.amplitude - 1.0) < 0.01);  // the spec's passband check
+  // the design's own magnitude, 0.99996; the same rounding bound
   CHECK(std::abs(tenth.amplitude -
-                 digitalMagnitude(cutoff / 10.0, kDt, cutoff)) < 1e-9);
-  CHECK(std::abs(tenth.phase) < 1e-9);
+                 digitalMagnitude(cutoff / 10.0, kDt, cutoff)) < 1e-12);
+  CHECK(std::abs(tenth.phase) < 1e-12);
 
-  // 5x the cutoff: the bilinear design's 1 / (1 + (tan(pi f dt) /
-  // tan(pi f0 dt))^4) = 3.39e-3. The analog prototype 1 / (1 + (f/f0)^4)
-  // would say 3.85e-3: at 10 Hz of a 100 Hz rate the warping is 13 %.
-  const SineFit five = fitSine(y, 2, kDt, 5.0 * cutoff, from, to);
+  // 5x the cutoff: the bilinear design's 1 / (1 + (sqrt(2) - 1)
+  // (tan(pi f dt) / tan(pi fc dt))^4) = 3.38e-3. The analog prototype
+  // 1 / (1 + (sqrt(2) - 1) (f/fc)^4) would say 3.85e-3: at 10 Hz of a
+  // 100 Hz rate the warping is 14 %.
+  const SineFit five = fitSine(y, 1, kDt, 5.0 * cutoff, from, to);
   const double predicted = digitalMagnitude(5.0 * cutoff, kDt, cutoff);
   CHECK(predicted < 3.4e-3);
-  // relative 1e-6: the fit's rounding against a 3.4e-3 amplitude
-  CHECK(std::abs(five.amplitude / predicted - 1.0) < 1e-6);
-  CHECK(std::abs(five.phase) < 1e-6);
+  // relative 1e-9: the rounding bound against a 3.4e-3 amplitude
+  CHECK(std::abs(five.amplitude / predicted - 1.0) < 1e-9);
+  CHECK(std::abs(five.phase) < 1e-9);
 }
 
 TEST_CASE("zero-phase low-pass preserves a ramp in the interior",
@@ -695,6 +699,9 @@ TEST_CASE("ILC clamps the change and the value and reports them",
   auto ramp = [](std::size_t i) {  // -0.199 .. 0.199, never on a bound
     return -0.2 + 0.002 * (static_cast<double>(i) + 0.5);
   };
+  auto inside = [](std::size_t i) {  // -0.14925 .. 0.14925, inside the bound
+    return -0.15 + 0.0015 * (static_cast<double>(i) + 0.5);
+  };
   Signal delta(n, JointArray{});
   Signal error(m, JointArray{});
   for (std::size_t i = 0; i < m; ++i) {
@@ -702,13 +709,14 @@ TEST_CASE("ILC clamps the change and the value and reports them",
       delta[i][1] = 0.14;
       delta[i][2] = -0.12;
       delta[i][3] = 0.01;
-      delta[i][4] = ramp(i);
+      delta[i][4] = inside(i);
       delta[i][6] = 0.3;  // outside the bound, but the joint is disabled
     }
     error[i][0] = i < n ? 0.3 : 0.7;  // the tail is not in the error RMS
     error[i][1] = 0.3;
     error[i][2] = -0.3;
     error[i][3] = 0.02;
+    error[i][4] = 0.04;
     error[i][5] = ramp(i);  // continued through the tail
     error[i][6] = 0.3;
   }
@@ -750,16 +758,23 @@ TEST_CASE("ILC clamps the change and the value and reports them",
     CHECK(std::abs(next[i][3] - 0.03) < 1e-12);
   }
 
-  // 4: the offset ramps past +-0.15 at 25 samples each end; the change is
-  // the filter's ramp error only (< 1e-5, the bound is 1e-3 away)
+  // 4: the offset ramps inside the bound and the update adds 0.04 (below
+  // the trial step), which crosses +0.15 where delta_k > 0.11: the last 27
+  // samples (i = 173 is 2.5e-4 over, i = 172 1.25e-3 under; the filter's
+  // ramp error is below 1e-5). There the absolute clamp shortens the
+  // change, never lengthens it.
   CHECK(r[4].step_clamped == 0);
-  CHECK(r[4].abs_clamped == 50);
+  CHECK(r[4].abs_clamped == 27);
   for (std::size_t i = 0; i < n; ++i) {
-    if (i < 25) CHECK(next[i][4] == -0.15);
-    if (i >= 175) CHECK(next[i][4] == 0.15);
-    if (i >= 25 && i < 175) CHECK(std::abs(next[i][4] - delta[i][4]) < 1e-5);
+    if (i >= 173) {
+      CHECK(next[i][4] == 0.15);
+      CHECK(next[i][4] - delta[i][4] < 0.04);
+    } else {
+      CHECK(std::abs(next[i][4] - (delta[i][4] + 0.04)) < 1e-5);
+    }
   }
   CHECK(r[4].delta_max_abs_rad == 0.15);
+  CHECK(r[4].change_max_abs_rad < 0.04 + 1e-5);
 
   // 5: the error ramps past +-0.05 at 75 samples each end
   CHECK(r[5].step_clamped == 150);
@@ -783,6 +798,63 @@ TEST_CASE("ILC clamps the change and the value and reports them",
   CHECK(r[7].delta_max_abs_rad == 0.0);
   CHECK(r[7].change_rms_rad == 0.0);
   CHECK(r[7].error_rms_rad == 0.0);
+}
+
+TEST_CASE("ILC refuses an enabled joint's offset outside the clamp",
+          "[learn][ilc]") {
+  const std::size_t n = 20, m = 25;
+  const Signal error(m, JointArray{});
+  IlcOptions options;
+  options.phi.fill(0.5);
+  options.phi[3] = 0.0;  // disabled: not checked
+  options.phi[6] = 0.0;  // psi alone: enabled, checked
+  options.psi_s[6] = 0.01;
+  auto run = [&](std::size_t i, int j, double value) {
+    Signal delta(n, JointArray{});
+    delta[i][j] = value;
+    return invalidArgument([&] { ilcUpdate(delta, error, kDt, options); });
+  };
+  CHECK(run(4, 2, 0.15).empty());  // on the bound is inside
+  CHECK(run(5, 2, -0.15).empty());
+  CHECK_THAT(run(4, 2, std::nextafter(0.15, 1.0)),
+             ContainsSubstring("delta_k[4][2] = 0.15000000000000002 rad "
+                               "exceeds max_abs_rad = 0.15 rad on enabled "
+                               "joint 2"));
+  CHECK_THAT(run(7, 5, -0.2), ContainsSubstring("delta_k[7][5] = -0.2 rad"));
+  CHECK_THAT(run(19, 6, 0.3), ContainsSubstring("delta_k[19][6] = 0.3 rad"));
+  CHECK(run(4, 3, 0.5).empty());
+}
+
+TEST_CASE(
+    "ILC: with delta_k inside the bound the change never exceeds the "
+    "trial step",
+    "[learn][ilc]") {
+  // Offsets anywhere in [-0.15, 0.15], on the bounds included, and errors
+  // large enough for both clamps to act often.
+  const std::size_t n = 400, m = 405;
+  const Signal delta = makeSignal(n, [](std::size_t i, int j) {
+    const double v = 0.16 * std::sin(0.031 * static_cast<double>(i) + j);
+    return std::max(-0.15, std::min(0.15, v));
+  });
+  const Signal error = makeSignal(m, [](std::size_t i, int j) {
+    return 0.4 * std::sin(0.017 * static_cast<double>(i) * (j + 1) + 0.5 * j);
+  });
+  IlcOptions options;
+  options.phi.fill(1.0);
+  options.psi_s.fill(0.02);
+  IlcReport report;
+  const Signal next = ilcUpdate(delta, error, kDt, options, report);
+  for (int j = 0; j < kCanonicalDof; ++j) {
+    INFO("joint " << j);
+    CHECK(report.joints[j].step_clamped > 0);
+    CHECK(report.joints[j].abs_clamped > 0);
+    for (std::size_t i = 0; i < n; ++i) {
+      CHECK(std::abs(next[i][j]) <= options.max_abs_rad);
+      // 1e-16: the rounding of delta_k +- step
+      CHECK(std::abs(next[i][j] - delta[i][j]) <=
+            options.max_trial_step_rad + 1e-16);
+    }
+  }
 }
 
 TEST_CASE("ILC requires the hold tail the advance reads", "[learn][ilc]") {
@@ -816,11 +888,12 @@ TEST_CASE("ILC requires the hold tail the advance reads", "[learn][ilc]") {
 
 TEST_CASE("ILC leaves a disabled joint bit-identical", "[learn][ilc]") {
   const std::size_t n = 120, m = 125;
-  // includes -0.0, a subnormal and values beyond the clamp
+  // includes -0.0 and a subnormal; the disabled joint 3 also values beyond
+  // the clamp, which it is not checked against
   const Signal delta = makeSignal(n, [](std::size_t i, int j) {
     if (i == 3) return -0.0;
     if (i == 4) return 4.9e-324;
-    return 0.4 * std::sin(0.7 * static_cast<double>(i) + j);
+    return (j == 3 ? 0.4 : 0.12) * std::sin(0.7 * static_cast<double>(i) + j);
   });
   const Signal error = makeSignal(m, [](std::size_t i, int j) {
     return 0.05 * std::cos(0.3 * static_cast<double>(i) - j);
