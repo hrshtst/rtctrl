@@ -10,6 +10,7 @@
 
 #include "follow/follow_config.hpp"
 #include "rtctrl/arm/arm.hpp"
+#include "rtctrl/learn/command_offset.hpp"
 #include "rtctrl/model/ptp_planner.hpp"
 #include "rtctrl/model/zvs_trajectory.hpp"
 #include "rtctrl/model/zvector.hpp"
@@ -17,12 +18,22 @@
 
 namespace x7::follow {
 
-enum class Phase { Home, HomeCorrection, Tracking, Finalizing, AbortHold };
+// OffsetRamp runs only with a command offset (setCommandOffset): after
+// homing, before tracking.
+enum class Phase {
+  Home,
+  HomeCorrection,
+  OffsetRamp,
+  Tracking,
+  Finalizing,
+  AbortHold
+};
 
 inline const char* phaseName(Phase phase) {
   switch (phase) {
     case Phase::Home: return "home";
     case Phase::HomeCorrection: return "home_correction";
+    case Phase::OffsetRamp: return "offset_ramp";
     case Phase::Tracking: return "tracking";
     case Phase::Finalizing: return "finalizing";
     case Phase::AbortHold: return "abort_hold";
@@ -182,6 +193,36 @@ class FollowRun {
     tracking_start_hook_ = std::move(hook);
   }
 
+  // A learned command offset (rtctrl/learn/command_offset.hpp) that the
+  // frontend's preflight accepted for this reference (follow_preflight.hpp).
+  // With it, the run adds an OffsetRamp phase after homing (from the last
+  // homing command to q_d(0) + delta[0] at no more than
+  // learning.max_offset_rate_rad_s, then a hold of home.settle_time_s),
+  // tracking sample i commands q_d(t_i) + delta[i], and the final hold
+  // commands q_d(T) + delta[N-1]. The logged reference and every tracking
+  // gate stay on q_d; abort holds carry no offset. Null (the default) runs
+  // exactly as without this call. The offset must outlive run(). Throws
+  // std::invalid_argument for a posture run or an offset off this run's
+  // tracking grid.
+  void setCommandOffset(const rtctrl::learn::CommandOffset* offset) {
+    if (offset != nullptr) {
+      if (config_.posture) {
+        throw std::invalid_argument(
+            "follow run: a reference built from the measured posture takes "
+            "no command offset");
+      }
+      const auto grid =
+          rtctrl::learn::trackingGrid(reference_.duration(), robot_.dt());
+      if (offset->delta_rad.size() != grid.samples()) {
+        throw std::invalid_argument(
+            "follow run: the command offset has " +
+            std::to_string(offset->delta_rad.size()) +
+            " samples, the tracking grid " + std::to_string(grid.samples()));
+      }
+    }
+    offset_ = offset;
+  }
+
   RunResult run() {
     RunResult result;
     arm::JointState initial;
@@ -214,6 +255,14 @@ class FollowRun {
       return result;
     }
 
+    if (offset_ != nullptr && !rampOffset(home)) {
+      // An I/O failure ends the run as in homing.
+      result.status = RunStatus::IoFailure;
+      finalize(Phase::AbortHold, last_state_.q.get(), &result);
+      result.cycles = cycles_;
+      return result;
+    }
+
     if (!trackReference(&result)) {
       if (result.status == RunStatus::TrackingError) {
         finalize(Phase::AbortHold, last_state_.q.get(), &result);
@@ -229,7 +278,14 @@ class FollowRun {
 
     model::ZVector final_q(model::kCanonicalDof);
     reference_.sample(reference_.duration(), final_q.get());
-    if (!finalize(Phase::Finalizing, final_q.get(), &result)) {
+    // With an offset the hold keeps its last sample: the learned static
+    // compensation stays while the logged reference is q_d(T).
+    model::ZVector final_command(model::kCanonicalDof);
+    if (offset_ != nullptr) {
+      offsetCommand(final_q, offset_->delta_rad.size() - 1, &final_command);
+    }
+    if (!finalize(Phase::Finalizing, final_q.get(), &result, nullptr,
+                  offset_ != nullptr ? final_command.get() : nullptr)) {
       result.cycles = cycles_;
       return result;
     }
@@ -297,6 +353,7 @@ class FollowRun {
     fillCommand(command_q, &command);
     arm::CommandReceipt receipt;
     if (!robot_.writeCommand(command, &receipt)) return false;
+    zVecCopyNC(command.q.get(), last_command_q_.get());
     ++cycles_;
     if (sink_ != nullptr &&
         !sink_->record({phase, feedback.state.t - global_origin_, phase_time,
@@ -437,13 +494,68 @@ class FollowRun {
     return false;
   }
 
+  // q + delta[sample]: the offset command at a tracking-grid sample.
+  void offsetCommand(const model::ZVector& q, std::size_t sample,
+                     model::ZVector* command) const {
+    const auto& delta = offset_->delta_rad[sample];
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      (*command)[i] = q[i] + delta[i];
+    }
+  }
+
+  // From the last command sent (the homing goal, any home correction
+  // included) to q_d(0) + delta[0], the first tracking command: `steps`
+  // equal increments of at most max_offset_rate_rad_s * dt on every joint,
+  // the last one landing exactly on the target, then a hold there for
+  // home.settle_time_s. The logged reference is q_d(0) at rest. As in
+  // homing, no tracking gate is evaluated.
+  bool rampOffset(const model::ZVector& home) {
+    model::ZVector start(model::kCanonicalDof), target(model::kCanonicalDof),
+        q(model::kCanonicalDof), zero(model::kCanonicalDof),
+        ddq(model::kCanonicalDof);
+    zVecCopyNC(last_command_q_.get(), start.get());
+    offsetCommand(home, 0, &target);
+    double widest = 0.0;
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      widest = std::max(widest, std::fabs(target[i] - start[i]));
+    }
+    const double dt = robot_.dt();
+    const long steps = static_cast<long>(
+        std::ceil(widest / config_.learning.max_offset_rate_rad_s / dt));
+    for (long k = 1; k <= steps; ++k) {
+      if (k == steps) {
+        zVecCopyNC(target.get(), q.get());
+      } else {
+        const double fraction =
+            static_cast<double>(k) / static_cast<double>(steps);
+        for (int i = 0; i < model::kCanonicalDof; ++i) {
+          q[i] = start[i] + (target[i] - start[i]) * fraction;
+        }
+      }
+      if (!submit(Phase::OffsetRamp, (k - 1) * dt, home, zero, ddq, &q)) {
+        return false;
+      }
+    }
+    const long hold =
+        static_cast<long>(std::ceil(config_.home.settle_time_s / dt));
+    for (long i = 0; i < hold; ++i) {
+      if (!submit(Phase::OffsetRamp, (steps + i) * dt, home, zero, ddq,
+                  &target)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   bool trackReference(RunResult* result) {
-    const long intervals = std::max(
-        1L, static_cast<long>(std::ceil(reference_.duration() / robot_.dt())));
-    const double dt = reference_.duration() / intervals;
+    // One definition of the grid for the follower and the offset.
+    const auto grid =
+        rtctrl::learn::trackingGrid(reference_.duration(), robot_.dt());
+    const long intervals = grid.intervals;
+    const double dt = grid.dt_s;
     double over_limit_time = 0.0;
     model::ZVector q(model::kCanonicalDof), dq(model::kCanonicalDof),
-        ddq(model::kCanonicalDof);
+        ddq(model::kCanonicalDof), command(model::kCanonicalDof);
     for (long step = 0; step <= intervals; ++step) {
       const double t = std::min(reference_.duration(), step * dt);
       reference_.sample(t, q.get(), dq.get(), ddq.get());
@@ -479,6 +591,10 @@ class FollowRun {
         if (!acquire(Phase::Tracking, &feedback_)) return false;
         if (postureDeparted(feedback_.state, q, result)) return false;
         if (!send(Phase::Tracking, t, feedback_, q, dq, ddq, q)) return false;
+      } else if (offset_ != nullptr) {
+        // The gates above judged q_d; only the command carries the offset.
+        offsetCommand(q, static_cast<std::size_t>(step), &command);
+        if (!submit(Phase::Tracking, t, q, dq, ddq, &command)) return false;
       } else if (!submit(Phase::Tracking, t, q, dq, ddq)) {
         return false;
       }
@@ -488,15 +604,18 @@ class FollowRun {
 
   // `first`, when given, is the feedback of the hold's first cycle,
   // already read: that cycle is answered with the hold before anything
-  // else, operator input included.
+  // else, operator input included. `command_hold`, when given, is
+  // commanded instead of `hold`, which stays the logged reference.
   bool finalize(Phase phase, const zVec hold, RunResult* result,
-                const Feedback* first = nullptr) {
+                const Feedback* first = nullptr,
+                const zVec command_hold = nullptr) {
     model::ZVector q(model::kCanonicalDof), zero(model::kCanonicalDof),
-        ddq(model::kCanonicalDof);
+        ddq(model::kCanonicalDof), command(model::kCanonicalDof);
     zVecCopyNC(hold, q.get());
+    zVecCopyNC(command_hold != nullptr ? command_hold : hold, command.get());
     long start = 0;
     if (first != nullptr) {
-      if (!send(phase, 0.0, *first, q, zero, ddq, q)) return false;
+      if (!send(phase, 0.0, *first, q, zero, ddq, command)) return false;
       start = 1;
     }
     if (simulation_) {
@@ -505,7 +624,7 @@ class FollowRun {
                                   : config_.finalization.simulation_hold_time_s;
       const long cycles = static_cast<long>(std::ceil(duration / robot_.dt()));
       for (long i = start; i < cycles; ++i) {
-        if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q)) {
+        if (!submit(phase, i * robot_.dt(), q, zero, ddq, &command)) {
           return false;
         }
       }
@@ -526,7 +645,7 @@ class FollowRun {
     }
     for (long i = start; i < cycles; ++i) {
       if (interactive && enter_pressed_ && enter_pressed_()) return true;
-      if (!submit(phase, i * robot_.dt(), q, zero, ddq, &q)) {
+      if (!submit(phase, i * robot_.dt(), q, zero, ddq, &command)) {
         return false;
       }
     }
@@ -547,6 +666,8 @@ class FollowRun {
   bool tracking_started_ = false;
   arm::JointState last_state_;
   Feedback feedback_;  // a posture run's current cycle
+  const rtctrl::learn::CommandOffset* offset_ = nullptr;
+  model::ZVector last_command_q_{model::kCanonicalDof};  // of the last write
   double global_origin_ = 0.0;
   std::uint64_t cycles_ = 0;
 };
