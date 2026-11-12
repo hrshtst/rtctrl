@@ -234,6 +234,19 @@ seconds. Mind the letters: here $\Phi$ multiplies the position error and
 $\Psi$ the velocity error, the reverse of the papers' lettering. With
 $\Delta = 0$ and $Q = 1$ this is the papers' law, sign included.
 
+On the follower the offset is a sequence $\delta[0], \dots, \delta[N-1]$ on
+the tracking grid, and the follower adds two phases around tracking (see
+[learning between follow trials](../guide/usage.md#learning-between-follow-trials)).
+Before tracking, after homing, it ramps the command from the last homing
+command to $q_d(0) + \delta[0]$ at a bounded rate and holds it there; after
+tracking, it holds $q_d(T) + \delta[N-1]$. Both remove a command step: once
+the offset carries a static compensation such as $K^{-1}g(q_d)$, $\delta[0]$
+and $\delta[N-1]$ are not zero, and without the ramp the first tracking
+command would jump by $\delta[0]$, while dropping the offset at the end would
+release the compensation in one step. The final hold also supplies the error
+record that the advance $\Delta$ reads past the end of the reference, measured
+against $q_d(T)$ with the last offset sample still applied.
+
 ### Conditions the papers assume
 
 - **Identical initial state** at every trial, on the trajectory and at
@@ -274,6 +287,10 @@ bound is at most of order $2T$. It also comes from a delay-free
 argument, and the 2008 inequality (48) keeps only half of the task-space
 damping, so it is optimistic. The usable range of $\Psi$ has to be
 established in simulation with the command lag included, not assumed.
+The learn configuration of `x7_follow_learn` refuses $\Psi$ above 0.1 s
+and $\Phi$ of 2 or more (the low-frequency condition of the next
+section); these are ceilings, and the usable range inside them is still
+to be established.
 
 ### What 100 Hz sampling adds
 
@@ -289,7 +306,23 @@ needs two elements that are standard in the general ILC literature
   the end of the reference, which the follower's final hold provides.
 - **A zero-phase low-pass $Q$.** The update runs between trials on a
   finished record, so non-causal operations (the advance, a forward and
-  backward filter) cost nothing.
+  backward filter) cost nothing. The implemented $Q$ is a second-order
+  Butterworth low-pass, discretised by the bilinear transform and applied
+  forward, then backward. Its design puts the combined response at -3 dB
+  exactly at the cut-off $f_c$: the cut-off is prewarped, and the analog
+  corner is placed a factor $(\sqrt2 - 1)^{-1/4}$ above it, so that with $h$
+  the grid step
+  ```math
+  |Q(f)| = \frac{1}{1 + (\sqrt2 - 1)\,\big(\tan(\pi f h) / \tan(\pi f_c h)\big)^4},
+  \qquad \arg Q(f) = 0 ,
+  ```
+  which is $1/\sqrt2$ at $f = f_c$; $f_c$ may be at most 0.8 of the Nyquist
+  frequency. Each record is padded at both ends by odd reflection
+  ($2x_0 - x_m$ before the start, likewise after the end) over
+  $\lceil 1.5/(f_c h)\rceil$ samples (1.5 periods of the cut-off), or the
+  record's length less one if that is shorter. Each pass starts from the
+  steady state of its first sample, so a constant passes unchanged; the
+  padding is removed afterwards.
 
 Let $G$ be the response from offset to position (a damped spring with
 the transport delay, $G(0) = 1$) and $L(s) = (\Phi + \Psi s)\,e^{s\Delta}$
@@ -310,6 +343,37 @@ servo's bandwidth $G$ is small), $n_k$ is summed trial after trial and
 accumulates in $\delta$. At low frequency $G \approx 1$, so contraction
 needs $0 < \Phi < 2$, and $\Phi = 1$ removes the quasi-static error in
 one trial (inferences of this note from the same condition).
+
+**The update as implemented** (`rtctrl/learn/ilc_update.hpp`, called by
+`x7_follow_learn ilc`). The trial log supplies the error $e_k$ on the $N$
+tracking samples and on the final-hold samples after them. Per joint, with
+$\Phi$ and $\Psi$ not both zero (a joint with both zero is passed through
+unchanged), one update runs in this order:
+
+1. low-pass the error: $\bar e = Q e_k$, over the tracking and hold samples
+   together;
+2. differentiate: $\dot{\bar e}$ by central differences, one-sided at the
+   two ends;
+3. advance: read $\bar e$ and $\dot{\bar e}$ at $t_i + \Delta$, linearly
+   interpolated between samples (this needs $\lceil\Delta/h\rceil$ hold
+   samples);
+4. form the bracket
+   $c_i = \delta_k[i] + \Phi\,\bar e(t_i + \Delta) + \Psi\,\dot{\bar e}(t_i + \Delta)$;
+5. low-pass the bracket over the $N$ tracking samples: $d = Q c$;
+6. clamp the change per trial: $d_i - \delta_k[i]$ to $\pm$
+   `max_trial_step_rad`;
+7. clamp the value to $\pm$ `max_offset_rad`, giving $\delta_{k+1}[i]$.
+
+The previous offset passes $Q$ once and the error twice, before
+differentiation and in the bracket; ignoring the record's edges and the
+clamps, the update reads
+$\delta_{k+1} = Q(1 - QLG)\,\delta_k + Q^2L\,(r + n_k)$ (an inference of
+this note), the same as above where $Q \approx 1$. An input offset outside the
+value clamp is refused, so step 7 only moves a value toward $\delta_k[i]$ and
+the change never exceeds the step clamp. The result must then pass the
+offset limits on value and rate (the learn configuration's, which can only
+be lower than the follower's ceilings); one that does not is refused, never
+clipped.
 
 ### Limits
 
@@ -398,6 +462,58 @@ error on a held-out trajectory (mean baseline/residual ratio 2.47). That
 figure is an offline prediction from logs recorded without offset, not a
 closed-loop result.
 
+### The two update steps as implemented
+
+`rtctrl/learn/regressor_feedforward.hpp` (called by `x7_follow_learn fel`)
+evaluates the regressors of the table on the reference, smoothed by a
+zero-phase Gaussian and differentiated, at the $N$ tracking samples $t_n$.
+The error signal of joint $i$ is the trial's error $\bar e_i$, smoothed by a
+zero-phase Gaussian of its own width over the tracking and hold samples and
+differentiated, then read at the advance:
+$s_i(t_n) = \bar e_i(t_n + \Delta) + T_s\,\dot{\bar e}_i(t_n + \Delta)$, which
+is the pairing of the batch rule above. A regressor column whose RMS over the
+trial is below $10^{-6}$ is skipped and its weight kept (the gravity column of
+joint 0, which turns about the vertical axis, is one). Per arm joint there are
+two steps, each scaled by a gain $\eta \in (0, 1]$:
+
+- **Normalised gradient**, the batch form of Kawato's rule with one learning
+  rate per weight:
+  ```math
+  w_{il,k+1} = w_{il,k} + \eta\,
+    \frac{\sum_n \phi_{il}(t_n)\,s_i(t_n)}{\sum_n \phi_{il}(t_n)^2},
+  ```
+  that is, $1/\tau_L = \eta \big/ \big(h\sum_n \phi_{il}(t_n)^2\big)$ for
+  weight $l$, with $h$ the grid step. With $C$ the Gram matrix of the
+  RMS-normalised columns,
+  $C_{ab} = \overline{\phi_a\phi_b}\big/\sqrt{\overline{\phi_a^2}\;\overline{\phi_b^2}}$
+  (bars are means over the trial), the update is refused when
+  $\eta\,\lambda_{\max}(C) \ge 2$.
+- **Least squares**: the step $\Delta w_i$ minimises
+  $\sum_n \big(s_i(t_n) - \sum_l \phi_{il}(t_n)\,\Delta w_{il}\big)^2$ plus a
+  ridge penalty $\rho N$ (with $\rho$ = `fel.ridge`) times the squared norm
+  of the step in RMS-normalised units, and
+  $w_{i,k+1} = w_{i,k} + \eta\,\Delta w_i$.
+
+The library's unit tests established the following, on synthetic plants (the
+error of a trial is exactly what the regressors express with the planted
+weights, delayed by the advance), not on the arm:
+
+- The normalised gradient reduces the remaining error quickly, at every update
+  with the default smoothing and no lead, but it learns weakly excited weight
+  directions (small eigenvalues of $C$) slowly: the RMS of the remaining error
+  converges, not the weights.
+- Least squares at $\eta = 1$ recovers the planted weights in one update,
+  within the ridge's shrinkage, when the error enters unsmoothed.
+- The guard $\eta\,\lambda_{\max} < 2$ is the convergence condition for an
+  aligned, unit-gain plant whose error enters without smoothing or lead, where
+  the normalised weight error iterates $u \leftarrow (I - \eta C)\,u$. It is
+  not a proof for the real servo, nor for the smoothed or led error signal.
+- With a derivative lead $T_s$ of 0.02 s (the value the tests examine), the
+  normalised gradient still contracts the weight error at every update, but
+  the remaining error is no longer guaranteed to fall at every update. The
+  lead (`fel.error_lead_s`) therefore defaults to zero, and the error signal
+  is then the smoothed, advanced position error alone.
+
 ## Slotine and Li adaptive control in position form
 
 ### The textbook law
@@ -481,18 +597,24 @@ flexibility included.
   [design philosophy](../guide/overview.md#design-philosophy) and the
   [bring-up checklist](../hardware/bringup.md)). The follower's
   simulator (`SimArm`) replaces each servo by the spring law of this
-  note, $\tau = k_p(u - q) - k_d\dot q$ with an effort clamp and no
-  transport delay, and `x7_follow_sim` takes one `position_kp` and one
-  `position_kd` for all joints from its `[simulation]` table. The
-  default stiffness, 1000 Nm/rad, is far above the measured $K$ (see the
-  [evidence](#evidence)), so the simulation acceptance must set the
-  simulated servo gains from the measured $K$ and $T$ before a learnable
-  error exists there. One value for all joints cannot match the measured
-  per-joint spread, and matching $T$ through $k_d$ alone books the
-  transport delay as damping, which makes the simulated bound on $\Psi$
-  optimistic. A learned offset does not transfer from simulation to
-  hardware; the simulation certifies the update machinery and its
-  stability with the modeled lag.
+  note, $\tau = k_p(u - q) - k_d\dot q$ with an effort clamp. Its default
+  stiffness, 1000 Nm/rad on every joint, is far above the measured $K$
+  (see the [evidence](#evidence)) and leaves almost no learnable error.
+  The servo-like mode of `x7_follow_sim` (see
+  [servo-like simulation](../guide/usage.md#servo-like-simulation)) sets
+  per-joint gains, a transport delay of whole control cycles, encoder
+  quantization of the feedback, and optional joint friction;
+  `config/follow_sim_servo_like.toml` sets the gains from the measured $K$
+  and $T$, with part of $T$ booked as a one-cycle delay rather than as
+  damping. It is still not a calibrated twin of the arm: one round
+  stiffness per servo model does not match the measured per-joint spread,
+  the split of $T$ into $k_d/k_p$ and $\theta$ is chosen rather than
+  measured (so the simulated bound on $\Psi$ is only as good as that
+  split), friction is off unless configured, the servo's voltage
+  saturation is represented only by the effort clamp, and the simulator
+  adds a numeric damping of its own. A learned offset still does not
+  transfer from simulation to hardware; the simulation certifies the update
+  machinery and its stability with the modeled lag.
 - **Success for ILC** is a monotone fall of the aggregate tracking RMS
   over trials toward the non-repeatable floor.
 - **The follower's safety gates stay unchanged** and stay evaluated

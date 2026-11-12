@@ -623,10 +623,12 @@ confirmed CBP `abort_hold` can be examined with the explicit
 `--failure-analysis` shared-prefix mode documented in
 [Teaching playback and servo-mode comparison](teaching-playback.md#simulate-both-playback-modes).
 
-The checked-in `config/follow_example.toml` documents every option. Input paths
-are relative to that TOML file. Output
-paths are invocation-relative and are created exclusively; an existing file
-is refused. The main processing controls are:
+The checked-in `config/follow_example.toml` documents every option except the
+servo-like `[simulation]` keys, which `config/follow_sim_servo_like.toml`
+shows (see [servo-like simulation](#servo-like-simulation)). Input paths are
+relative to the TOML file that names them. Output paths are
+invocation-relative and are created exclusively; an existing file is refused.
+The main processing controls are:
 
 - `control.rate_hz`: one 20 to 200 Hz cycle rate for every phase. Hardware
   timing has been validated at 100 Hz; other rates print an experimental-use
@@ -658,6 +660,11 @@ is refused. The main processing controls are:
 - `simulation.link_force`: an optional prescribed link-force disturbance for
   `x7_follow_sim`; the hardware frontend ignores it. See
   [link-force disturbances](#link-force-disturbances-and-the-force-budget-screen).
+- `simulation` servo keys: the simulated servo's gains, and optionally a
+  command delay, encoder quantization and joint friction. See
+  [servo-like simulation](#servo-like-simulation).
+- `learning`: an optional learned command offset added to the tracking
+  command. See [learning between follow trials](#learning-between-follow-trials).
 
 This first version deliberately uses one homogeneous motor mode for home,
 tracking, and finalization. Changing a Dynamixel operating mode requires
@@ -670,7 +677,100 @@ the robot dynamics. Current-based position uses the same position adapter with
 the requested effort ceiling. These adapters verify phase logic,
 interpolation, safety gates, and command saturation. They are not a
 high-fidelity model of the Dynamixel firmware, current loop, friction,
-backlash, or gear compliance.
+backlash, or gear compliance, and the servo-like settings below do not make
+them one.
+
+#### Servo-like simulation
+
+By default every simulated servo is the same stiff spring: `position_kp =
+1000.0` Nm/rad and `position_kd = 5.0` Nm·s/rad on every joint, each command
+applied as soon as it is written, and exact feedback. That servo leaves almost
+no tracking error. Optional `[simulation]` keys make the simulated servo
+softer, slower and coarser, and can add joint friction:
+
+| Key | Default | Accepted values |
+|---|---|---|
+| `position_kp` | `1000.0` | one number for every joint, or an array of 8 in canonical order; each > 0 [Nm/rad] |
+| `position_kd` | `5.0` | the same two forms; each >= 0 [Nm·s/rad] |
+| `coulomb_friction_nm` | absent (off) | one number or 8; each >= 0 [Nm] |
+| `viscous_friction_nm_s` | absent (off) | one number or 8; each >= 0 [Nm·s/rad] |
+| `friction_v0_rad_s` | `0.05` | a number > 0 [rad/s] |
+| `command_delay_cycles` | `0` | a TOML integer >= 0 |
+| `quantize_encoder` | `false` | a TOML boolean |
+
+Every value must be finite, an array needs exactly eight entries, and each key
+takes only its own TOML type: `quantize_encoder = 1` and
+`command_delay_cycles = 1.0` are refused. When `position_kp` or `position_kd`
+is an array it replaces the scalar for every joint; entry 7 is the gripper
+servo, whose torque is split over both fingers.
+
+- **Friction** adds `-fc * tanh(v / v0) - fv * v` to each joint's torque
+  before the effort clamp, with `fc` from `coulomb_friction_nm`, `fv` from
+  `viscous_friction_nm_s` and `v0` from `friction_v0_rad_s`.
+- **`command_delay_cycles`**: the command accepted at cycle `k` reaches the
+  simulated servo at cycle `k + command_delay_cycles`. Until the first one
+  arrives, the arm holds its activation posture.
+- **`quantize_encoder`**: the feedback position is rounded to the 4096-count
+  encoder, and the feedback velocity is a servo-style estimate (a first-order
+  lag of 0.12 s, rounded to the servo's velocity unit of 0.229 rpm). The
+  simulated servo itself still acts on the exact state.
+
+The integrator is explicit, so the integration step bounds the usable gains:
+per joint, keep `sqrt(kp / I) * integration_step_s` and
+`(kd / I) * integration_step_s` well under 2, with `I` the 0.05 kg·m² reflected
+inertia every simulated joint carries, and with friction also
+`(fc / v0 + fv) / I * integration_step_s`.
+
+`config/follow_sim_servo_like.toml` sets these keys for the learning study.
+Its purpose is a tracking error of realistic size and structure (a spring
+deflection under the required torque plus a lag behind the reference) in
+simulation, where the default servo leaves almost nothing to learn. It is a
+servo-LIKE setting derived from the stiffness and lag measured on the arm (see
+the theory note's [evidence](../theory/learning-control.md#evidence)), not a
+calibrated twin of the arm: one round stiffness per servo model (20 Nm/rad on
+the XM430 joints, 60 Nm/rad on joint 1, the XM540), damping fixed by
+`kd / kp = 0.04 s`, a one-cycle command delay, encoder quantization, and no
+friction. A learned offset does not transfer from this simulation to the arm.
+It replays the PTP example, which must be generated first:
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_example.toml
+./build/apps/x7_follow_sim --config config/follow_sim_servo_like.toml \
+  --log servo-like.csv --motion servo-like.zvs
+```
+
+The following are properties of the simulator, measured on its own logs; they
+say nothing about the arm:
+
+- The lag a fit recovers from a servo-like log (the lag-stiffness fit of
+  [learnability analysis](#learnability-analysis-of-follow-logs), for example)
+  is `kd / kp` plus `command_delay_cycles + 1` control cycles: about 60 ms for
+  the shipped file.
+- At startup the arm holds its activation posture until the first delayed
+  command arrives. In the log, `applied_seq` trails `submitted_seq` by
+  `command_delay_cycles + 1`, since each row's feedback is read before that
+  cycle's command is written.
+- `quantize_encoder` changes the logged position and velocity. The logged
+  torque stays the exact servo torque, `kp * (u - q) - kd * dq` on the exact
+  state, without friction, disturbance, or the simulator's numeric damping.
+- The simulator adds a numeric damping of 0.05 times each link's inertia
+  divided by `integration_step_s`. At the default step it is comparable to the
+  configured `kd` on some joints, so changing `integration_step_s` changes the
+  effective damping; keep the step fixed across runs that are compared.
+- With soft gains the arm sags under gravity: homing corrects the sag by
+  moving the home goal (home correction), and plain tracking then commands
+  `q_d(0)` and drops that correction, so the elbow sags by tens of mrad in the
+  first tracking cycles. In a learning run the `offset_ramp` phase handles
+  this (see [learning between follow trials](#learning-between-follow-trials)).
+- A short, small reference identifies the stiffness poorly: the fit needs a
+  reference that varies the joint torques, and the 2 cm PTP example barely
+  does.
+
+A bundle (`--bundle`) of a servo-like run records these keys in its portable
+`follow.toml`: the gains in the form given (one number or eight), and the
+friction, delay and quantization keys whenever they are set. Replaying that
+`follow.toml` reproduces the bundle's log and motion byte for byte. The hardware frontend `x7_follow` ignores
+`[simulation]`.
 
 #### Motor parameters and hardware run
 
@@ -755,7 +855,8 @@ path must not exist. It is refused before the source configuration is loaded,
 and publishing uses a no-replace rename. `--check` and `--bundle` are mutually
 exclusive. A completed archive contains `source.toml`, portable `follow.toml`,
 the reference, deployment and optional motor parameter files, model and meshes,
-the frontend outputs, `result.toml`, and a SHA-256 `manifest.toml`. Normal
+the optional link-force spec and learned offset, the frontend outputs,
+`result.toml`, and a SHA-256 `manifest.toml`. Normal
 controller refusals are archived with their result and full log; setup failures
 remove the private staging directory.
 
@@ -854,6 +955,437 @@ units, with null for every value that is not identifiable; the tables on
 standard output show errors in mrad and times in ms. The exit status is 0
 on success, 1 on invalid input (the reason on standard error), and 2 on a
 usage error.
+
+### Learning between follow trials
+
+The follower can command the reference plus a learned position offset,
+`q_d + delta`, read from an offset file. The offset is computed offline between
+trials, from the previous trial's log, by `x7_follow_learn`; the follower only
+reads and checks it and never computes or changes one. The schemes, their sign
+convention and their limits are in the
+[position-based learning control](../theory/learning-control.md) note.
+
+This section is the workflow in simulation, with `x7_follow_sim`. Applying a
+learned offset on the physical arm is not approved yet (see the note's
+[comparison](../theory/learning-control.md#comparison)).
+
+#### The follower with an offset
+
+Name the offset in the follow configuration:
+
+```toml
+[learning]
+offset = "offset_1.csv"      # relative to this config
+max_offset_rad = 0.15        # |delta| on every joint and sample
+max_offset_rate_rad_s = 0.5  # |delta[i+1] - delta[i]| / dt
+```
+
+or on the command line, which overrides `[learning] offset`:
+
+```sh
+./build/apps/x7_follow_sim --config config/follow_sim_servo_like.toml \
+  --offset offset_1.csv --check
+```
+
+`[learning] offset` is resolved against the configuration file's directory,
+like the other inputs; `--offset FILE` is resolved against the invocation
+directory, like every command-line path. The two limits default to the values
+shown (0.15 rad is also the home-correction clamp) and can only be lowered: a
+value that is not positive or exceeds the default is refused, and so is a rate
+limit below 0.01 rad/s. The `offset_ramp` phase below moves at the rate limit,
+and the floor bounds its length (at 0.01 rad/s the widest ramp it can be asked
+for, the 0.15 rad home-correction clamp plus a 0.15 rad offset, takes 30 s).
+
+The preflight reads files only and runs before any simulation step or bus
+contact, `--check` included. It reads the offset file with the strict reader
+described [below](#the-offset-file), hashing it before and after the read (a
+file that changed in between is refused), and accepts it only for this run:
+
+- its grid must be the tracking grid of the loaded reference at
+  `control.rate_hz` (the same sample count, the step within 1e-12 s);
+- its `reference_sha256` must be this run's
+  [reference signature](#the-reference-signature), computed from the
+  configuration after the command-line overrides;
+- every value must be within `max_offset_rad`, and every change from one
+  sample to the next within `max_offset_rate_rad_s` times the step;
+- every command it produces, `q_d(t_i) + delta[i]` at each tracking sample and
+  `q_d(T) + delta[N-1]` for the final hold, must lie inside the model's joint
+  limits.
+
+A refusal names the problem; a limit violation names the joint, sample, time
+and value, and a signature mismatch lists what the signature covers. The
+reference check and this one validate exactly the samples the follower will
+command (one grid definition serves the follower, its preflight and
+`x7_follow_learn`), and a reference whose grid cannot be built at
+`control.rate_hz` is refused before any bus contact, as is a posture run's.
+An accepted offset prints one line, before the run or before `--check`'s
+`configuration and reference preflight passed`:
+
+```text
+command offset accepted: method METHOD, trial K, max |delta| X rad, sha256 HASH
+```
+
+With an offset, the run gains one phase and two commands change:
+
+- **`offset_ramp`**, between homing and tracking: the command moves from the
+  last homing command (the home goal, any home correction included) to
+  `q_d(0) + delta[0]`, the first tracking command, in equal steps of at most
+  `max_offset_rate_rad_s` times the control period on every joint, and then
+  holds there for `home.settle_time_s`. It lasts the largest joint distance
+  divided by the rate limit, rounded up to whole cycles, plus that hold (only
+  the hold when the distance is zero). Its logged reference is `q_d(0)` at
+  rest, and, as in homing, no tracking gate is evaluated. The phase runs for
+  every offset, an all-zero one included, so that every trial of a series
+  follows the same procedure. A run with a zero offset therefore differs from
+  a run without one: it has this phase, and it removes a home correction
+  gradually instead of in the first tracking command.
+- **Tracking** sample `i` commands `q_d(t_i) + delta[i]`.
+- **The final hold** commands `q_d(T) + delta[N-1]`: the last offset sample
+  (the learned static compensation) stays applied while the logged reference
+  is `q_d(T)`. Abort holds, a failure during the ramp included, hold the
+  measured posture and carry no offset.
+
+The log keeps its schema. `qrefN_rad` stays the reference, `qcmdN_rad` is the
+command sent (reference plus offset; in `offset_ramp`, the ramp command), and
+`errorN_rad` stays `q - qref`. The safety gates are unchanged and are judged on
+the reference, never on the command. A reference built from the measured
+posture (`--hold-current`, `--sweep-current`, both hardware-only) takes no
+offset: the combination is refused before the bus is opened, since an offset
+belongs to one reference and this one is made from the posture at run time.
+
+A [bundle](#portable-follow-bundles) of a run with an offset archives the file
+as `offset.csv`, writes a `[learning]` table (`offset = "offset.csv"` and both
+limits) into the portable `follow.toml`, and adds three lines to
+`result.toml`: `offset_method`, `offset_trial`, and `offset_sha256` (of the
+file's bytes). The portable `follow.toml` keeps every setting the signature
+covers, and the archived reference keeps its bytes, so replaying the bundle
+accepts its offset.
+
+#### The offset file
+
+An offset is one self-contained text file: a `# key: value` preamble, a column
+header, and one row per tracking-grid sample. `x7_follow_learn` writes it; a
+hand-edited file is no longer what its lineage says produced it. The layout,
+with each value's meaning in place of the value:
+
+```text
+# format: rtctrl-x7-follow-offset
+# version: 1
+# method: ilc
+# trial: 1
+# dt_s: <grid step>
+# samples: <N>
+# reference_duration_s: <T>
+# reference_sha256: <reference signature of the run the offset is for>
+# parent_sha256: <SHA-256 of the file this offset was updated from>
+# source_log_sha256: <SHA-256 of the trial log the update read>
+time_s,delta0_rad,delta1_rad,delta2_rad,delta3_rad,delta4_rad,delta5_rad,delta6_rad,delta7_rad
+0.000000000,<delta0>,<delta1>,<delta2>,<delta3>,<delta4>,<delta5>,<delta6>,<delta7>
+```
+
+An empty value is written as `# key:` (no space after the colon), as in the
+trial-0 file's `parent_sha256` and `source_log_sha256`. `method` is `zero`,
+`ilc` or `fel`, and `trial` counts the learning updates applied. Sample `i` is
+at `t = i * dt_s`; the grid is the follower's tracking grid, `max(1,
+ceil(T * rate_hz))` intervals of `T / intervals`, so `dt_s` can differ from
+`1 / rate_hz` in the last digits. `time_s` is written with `%.9f` and every
+other number with `%.17g`, so a file reads back bit for bit.
+
+The reader is strict. It requires the format and version; the ten preamble
+keys in this order, each once; the exact column header; nine fields per row,
+each a finite number; as many rows as `samples`; each `time_s` within 1e-6 s of
+`i * dt_s`; and a final newline. It then checks the structure: at least two
+samples, spanning `reference_duration_s` within 1e-9 s; every hash empty or 64
+lowercase hex digits (the reference signature never empty); trial 0 if and only if
+method `zero`, whose values must all be exactly zero and which has no parent
+or source; and both a parent and a source for every later trial. Offset files
+are created exclusively: an existing file or symlink is refused and left
+untouched, and a partially written file is removed.
+
+The three hashes are the file's lineage:
+
+- `reference_sha256` names the run the offset belongs to: its
+  [reference signature](#the-reference-signature), not the reference file's
+  hash;
+- `parent_sha256` names the file this offset was computed from: the previous
+  offset for `ilc`, the weights file for `fel`;
+- `source_log_sha256` names the trial log the update read.
+
+A hash identifies a file but cannot recreate it. Keep every offset, weights
+file, log and report of a series: the chain can be checked only by hashing the
+kept files, and the next update needs the previous offset (for `fel`, also its
+weights file) byte for byte.
+
+#### The reference signature
+
+The `reference_sha256` field of an offset file, and of a weights file, holds
+the reference signature: the SHA-256 of a canonical text covering the
+reference file's SHA-256, `control.rate_hz`, `control.mode` and every
+`[reference_processing]` setting (interpolation, filter, cut-off, window and
+Savitzky-Golay order, each whether or not the filter uses it). The follower
+tracks the reference after its processing, on the grid of its rate, in its
+mode; an offset learned under one of these settings is the wrong offset under
+another, although the reference file is the same. The follower's preflight
+and `x7_follow_learn` therefore refuse an offset whose signature is not the
+run's.
+
+- `x7_follow` and `x7_follow_sim` compute the signature from the
+  configuration after their command-line overrides, so `--reference`,
+  `--mode`, `--filter` and `--interpolation` change it whenever they change a
+  covered setting, and the follower then refuses an offset learned without
+  them. `x7_follow_learn` computes it from the follow configuration file
+  alone. A learning series therefore keeps its settings in the follow
+  configuration and keeps them fixed; changing any covered setting, an unused
+  filter parameter included, starts a new series.
+- Offset files written before the signature was introduced hold the
+  reference file's hash in this field and are refused: restart such a series
+  with `init`. A weights file's field only records the reference it was
+  trained on last and is never compared, so `synth` still evaluates older
+  weights, while continuing an older `fel` series fails at its offset.
+- Not covered, by decision: the servo gains (the servos' registers, a
+  `motor_parameters` file, or the simulation's `[simulation]` keys), the
+  model, the current-based position effort limits, and the homing, safety and
+  finalization settings, which do not change the tracked trajectory. Running
+  an offset with the servo and model it was learned with is the operator's
+  responsibility.
+
+#### The learning tool
+
+`x7_follow_learn` computes one update and never opens the bus. Each command
+names its inputs and outputs explicitly (`x7_follow_learn COMMAND --help`
+describes one); every output must not exist yet. The follow configuration
+given with `--follow-config` supplies the reference exactly as the follower
+loads it (model, reference file, `reference_processing`, `control.rate_hz`)
+and, with `control.mode`, the reference signature; the tool has no override
+options. `--offset` names the offset the trial ran with. When the follow
+configuration also names a `[learning] offset`, `ilc` and `fel` refuse unless
+that file has the same content (SHA-256) as `--offset`, since it would
+otherwise be in doubt which of the two the trial ran with; a configuration
+without one names nothing to compare (the trial may have used `--offset`).
+
+`init` writes the trial-0 offset, all zeros on the follow configuration's
+tracking grid:
+
+```sh
+./build/apps/x7_follow_learn init --follow-config follow.toml \
+  --output offset_0.csv
+```
+
+`ilc` reads a trial's log and the offset it ran with and writes the next
+offset by iterative learning control (method `ilc`, trial plus one):
+
+```sh
+./build/apps/x7_follow_learn ilc --config learn.toml \
+  --follow-config follow.toml --log trial_0.csv --offset offset_0.csv \
+  --output offset_1.csv --report report_1.toml
+```
+
+`init-weights` writes trial-0 feedforward weights (all zero) with the learn
+configuration's regressor options, the starting point of feedback-error
+learning:
+
+```sh
+./build/apps/x7_follow_learn init-weights --config learn.toml \
+  --output weights_0.toml
+```
+
+`fel` reads a trial's log, the offset it ran with and the weights that offset
+was made from, and writes the next weights and the offset they give on the
+same reference (method `fel`):
+
+```sh
+./build/apps/x7_follow_learn fel --config learn.toml \
+  --follow-config follow.toml --log trial_0.csv --offset offset_0.csv \
+  --weights weights_0.toml --output-weights weights_1.toml \
+  --output offset_1.csv --report report_1.toml
+```
+
+`synth` evaluates trained weights (trial 1 or later) on the reference of
+another follow configuration and writes that offset:
+
+```sh
+./build/apps/x7_follow_learn synth --config learn.toml \
+  --weights weights_5.toml --follow-config other_follow.toml \
+  --output other_offset.csv
+```
+
+The learn configuration (format `rtctrl-x7-follow-learn`, version 1) holds the
+offset limits and the gains of both update laws.
+`config/follow_learn_example.toml` lists every key with its default; an absent
+key keeps the default, and unknown keys, wrong types and values out of range
+are errors that name the key:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `limits.max_offset_rad` | `0.15` | bound on every value the tool writes [rad]; may only be lowered |
+| `limits.max_offset_rate_rad_s` | `0.5` | bound on `abs(delta[i+1] - delta[i]) / dt` [rad/s]; may only be lowered, not below 0.01 |
+| `ilc.phi` | `0.0` | position-error gain, dimensionless, in [0, 2) |
+| `ilc.psi_s` | `0.0` | velocity-error gain [s], in [0, 0.1] |
+| `ilc.advance_s` | `0.05` | time advance: the error at `t + advance_s` updates `delta(t)` [s] |
+| `ilc.cutoff_hz` | `2.0` | -3 dB point of the zero-phase low-pass; at most 0.8 of the Nyquist frequency |
+| `ilc.max_trial_step_rad` | `0.05` | clamp on the change of each sample per update [rad] |
+| `fel.step` | `"normalised-gradient"` | or `"least-squares"` |
+| `fel.gain` | `0.2` | learning gain, in (0, 1] |
+| `fel.advance_s` | `0.05` | pairs the regressors at `t` with the error at `t + advance_s` [s] |
+| `fel.error_lead_s` | `0.0` | error signal `e + error_lead_s * de/dt` [s], >= 0 |
+| `fel.error_smooth_sigma_s` | `0.04` | zero-phase Gaussian smoothing of the error [s] (0 = none) |
+| `fel.ridge` | `1e-6` | least-squares penalty on the RMS-normalised columns |
+| `fel.regressors.smooth_sigma_s` | `0.04` | zero-phase Gaussian smoothing of the reference [s] (0 = none) |
+| `fel.regressors.coulomb_v0_rad_s` | `0.05` | speed scale of the regressor `tanh(dq / v0)` [rad/s], > 0 |
+
+`phi` and `psi_s` are one number for the seven arm joints, or an array of all
+eight canonical joints whose gripper entry (the last) is 0: the gripper is
+never learned. ILC is off until they are set: with both 0 on every joint (the
+default), `ilc` refuses to run, and a joint with both 0 is passed through
+unchanged. The ceilings come from the theory note: `phi < 2` is the
+low-frequency contraction condition `0 < Φ < 2` of the
+[sampled law](../theory/learning-control.md#what-100-hz-sampling-adds), and
+`psi_s <= 0.1 s` caps the velocity gain, which the note's
+[gain condition](../theory/learning-control.md#conditions-the-papers-assume)
+bounds by `2 K^-1 D`, less than twice the measured lag. Within the ceilings
+the usable gains are still to be found in simulation. The ILC update clamps each sample's change to `max_trial_step_rad`
+and its value to `limits.max_offset_rad`, and the summary reports how many
+samples each clamp changed. Feedback-error learning always updates arm joints
+0 to 6; a regressor column with an RMS below 1e-6 over the trial is skipped
+and its weight kept (the gravity column of joint 0, which turns about the
+vertical axis, is one). The weights file records the regressor options, and
+`fel` and `synth` refuse weights learned with options other than the learn
+configuration's `[fel.regressors]`. The learn configuration's `[limits]` are
+independent of the follow configuration's `[learning]` limits: keep the two
+equal, or the tool can write an offset that the follower then refuses.
+
+Before it writes anything, the tool checks:
+
+- that every output path is non-empty, distinct from the others, and absent;
+- that no input changes while it is read (each input is hashed before and
+  after reading);
+- that the input offset belongs to this run (the follower's run check, the
+  reference signature included, under the learn configuration's limits) and
+  leaves the gripper at zero;
+- for `ilc` and `fel`, that a `[learning] offset` named by the follow
+  configuration has the content of `--offset`;
+- for `fel`, that the input offset was made from the input weights: the same
+  trial, and from trial 1 on method `fel`, the weights file's hash as parent,
+  the same source log, and values equal to the weights' synthesis on this
+  reference within 1e-9 rad;
+- that the log belongs to this reference and this offset: in every tracking
+  row, `qref` equals the reference sample and `qcmd - qref` equals the offset
+  sample, each within 1e-6 rad, at the grid time within 1e-6 s;
+- that the trial completed: no `abort_hold` row, exactly one contiguous block
+  of as many `tracking` rows as the grid has samples, preceded only by `home`,
+  `home_correction` and `offset_ramp` rows and followed only by `finalizing`
+  rows, every one of them with `receipt_accepted = 1`;
+- that the final hold is long enough: the tool reads at most the first 200
+  `finalizing` rows (checked like the tracking rows, against `q_d(T)` and the
+  last offset sample), and the update needs at least `advance_s / dt`,
+  rounded up, of them (5 at the default advance at 100 Hz). The error is
+  filtered over the tracking and hold rows together, so keep `[finalization]`
+  the same throughout a series.
+
+An update whose result violates the limits (its value or its rate) is refused
+with a message naming the joint, sample and value, and nothing is written: the
+offset is never clipped to fit. (The ILC clamps above belong to the update law
+and act before this check; an ILC result can still fail the rate limit, and
+the message then suggests a lower `cutoff_hz` or lower gains.) The written
+offset is read back and must match bit for bit; any failure after the first
+output removes every output already written. A run without an offset passes
+as the trial of a zero offset (its commands are the reference), but run trial
+0 with the zero offset file, so that every trial of the series has the same
+phases.
+
+On success the tool prints each output with its SHA-256, a per-joint table
+(tracking RMS of the measured trial, offset RMS and peak, and the ILC clamp
+counts or the feedback-error eigenvalue and skipped columns), and the
+aggregate tracking RMS of the trial it read:
+
+```text
+tracking RMS of trial K: X rad over all 8 joints, Y rad over arm joints 0-6
+```
+
+`K` is the input offset's trial number. Over a series, these lines are the
+learning curve. `--report FILE` (for `ilc` and `fel`) writes the same numbers
+as TOML (format `rtctrl-x7-follow-learn-report`; the `[tracking]` table's
+`aggregate_rms_rad` and `arm_rms_rad`, the per-joint tracking and offset
+values, the `[ilc]` or `[fel]` diagnostics), together with the path and SHA-256
+of every input and of the outputs written before it.
+
+The tool's error is `e = qref - q`, the negative of the log's `errorN_rad`
+column: the theory note's sign (see its
+[sign convention](../theory/learning-control.md#the-servo-as-a-spring-with-lag)).
+With positive gains, the next offset rises where `q < qref` (`e > 0`).
+
+#### A learning loop in simulation
+
+Each trial runs with the offset of the previous update and logs to a name of
+its own; the update then reads that log and that offset:
+
+```sh
+follow=config/follow_sim_servo_like.toml  # the reference and the servo
+learn=learn.toml        # a copy of config/follow_learn_example.toml, phi set
+run=learning-series     # one new directory per series
+mkdir "$run"
+./build/apps/x7_follow_learn init --follow-config "$follow" \
+  --output "$run/offset_0.csv"
+for k in 0 1 2 3 4 5 6 7; do
+  ./build/apps/x7_follow_sim --config "$follow" \
+    --offset "$run/offset_$k.csv" \
+    --log "$run/trial_$k.csv" --motion "$run/trial_$k.zvs" || break
+  ./build/apps/x7_follow_learn ilc --config "$learn" \
+    --follow-config "$follow" --log "$run/trial_$k.csv" \
+    --offset "$run/offset_$k.csv" --output "$run/offset_$((k + 1)).csv" \
+    --report "$run/report_$((k + 1)).toml" || break
+done
+grep -H '^aggregate_rms_rad' "$run"/report_*.toml
+```
+
+Give the trial and the update the same follow configuration and keep it fixed
+through the series. The follower refuses the trial's offset when
+`--reference`, `--filter`, `--interpolation` or `--mode` changes a setting the
+[reference signature](#the-reference-signature) covers, so such settings
+belong in the follow configuration. For feedback-error learning, start from
+`init-weights` as well and replace the `ilc` line by `fel` with
+`--weights "$run/weights_$k.toml"` and
+`--output-weights "$run/weights_$((k + 1)).toml"`.
+
+The integration test `x7_follow_learn_loop_smoke`
+(`tests/integration/follow_learn_loop_smoke.sh`) runs this loop end to end:
+four ILC trials of the pick example in the servo-like simulation, checking
+that the follower accepts each offset the tool wrote, that each offset's
+lineage and signature chain to the previous trial's, and that the aggregate
+tracking RMS falls at every trial. Run it with
+`ctest --test-dir build -R x7_follow_learn_loop_smoke`.
+
+#### Two schemes
+
+- **ILC** (`ilc`) learns the offset signal itself, sample by sample, for one
+  reference. Each offset's parent is the previous offset.
+- **Feedback-error learning** (`fel`) learns weights of six regressors per arm
+  joint evaluated on the reference (`g`, `tau_dyn`, `ddq`, `dq`, `coulomb`,
+  `constant`; the note's
+  [regressor table](../theory/learning-control.md#feedback-error-learning-in-position-form)).
+  Each update writes the next weights and realises them as an offset on the
+  same reference; that offset's parent is the weights file. `synth` applies
+  trained weights to another reference: the transfer test. The scheme removes
+  only what the regressors can express.
+
+#### Limitations
+
+- An offset is valid only for the run it was learned for: the reference file,
+  its processing, the control rate and mode (together, the
+  [reference signature](#the-reference-signature)) and the tracking grid. The
+  follower and the tool refuse it for any other run.
+- Nothing binds an offset to the servo gains, the model, the current-based
+  position effort limits, or the homing, safety and finalization settings.
+  Keeping those as they were when the offset was learned is the operator's
+  responsibility.
+- The weights record their regressor options and lineage, not the model or the
+  servo gains: `synth` evaluates them with the model of the follow
+  configuration it is given, and nothing checks that the servos are the ones
+  the weights were learned with. The report records the hashes of the follow
+  configuration and the model each update used.
+- The tool does not check feedback freshness. It reads `phase`,
+  `phase_time_s`, `receipt_accepted`, `qref`, `q` and `qcmd`, so a stale
+  feedback sample enters the update as it is.
 
 ### Link-force disturbances and the force-budget screen
 
