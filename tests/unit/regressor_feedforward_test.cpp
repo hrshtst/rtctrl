@@ -381,6 +381,409 @@ void expectInvalid(F&& call, const std::vector<std::string>& phrases) {
   }
 }
 
+// ------------------------------------- the update with the default smoothing
+
+// Every joint moves inside a sin^4 window, so the reference, its rate and
+// its acceleration vanish at both ends (at rest, as a planned reference is):
+// the regressors are constant there and the plant's hold before and after
+// the grid continues them smoothly.
+std::vector<JointArray> restToRestReference(std::size_t n, double dt) {
+  std::vector<JointArray> q(n);
+  const double duration = static_cast<double>(n - 1) * dt;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double t = static_cast<double>(i) * dt;
+    const double s = std::sin(kPi * t / duration);
+    const double window = s * s * s * s;
+    for (int j = 0; j < kCanonicalDof; ++j) {
+      const double scale = j == kGripper ? 0.15 : 1.0;
+      q[i][j] = kPosture[j] +
+                scale * window *
+                    (0.5 * std::sin(2.0 * kPi * (0.4 + 0.07 * j) * t + 0.5 * j) +
+                     0.15 * std::sin(2.0 * kPi * (1.1 + 0.05 * j) * t));
+    }
+  }
+  return q;
+}
+
+std::array<Row, kArm> columnRms(const std::vector<RegressorRow>& phi) {
+  std::array<Row, kArm> out{};
+  for (int j = 0; j < kArm; ++j) {
+    for (int l = 0; l < kRegressorCount; ++l) {
+      double sum = 0.0;
+      for (const auto& row : phi) sum += row[j][l] * row[j][l];
+      out[j][l] = std::sqrt(sum / static_cast<double>(phi.size()));
+    }
+  }
+  return out;
+}
+
+// Planted weights of about 0.01 rad per unit-RMS column; zero on the
+// columns the update skips (joint 0's gravity).
+Weights plantedOnKept(const std::array<Row, kArm>& column_rms) {
+  Weights w{};
+  for (int j = 0; j < kArm; ++j) {
+    for (int l = 0; l < kRegressorCount; ++l) {
+      if (column_rms[j][l] < 1e-6) continue;
+      w[j][l] = 0.01 * std::sin(1.3 * j + 0.7 * l + 0.2) / column_rms[j][l];
+    }
+  }
+  return w;
+}
+
+// The plant's error is exactly what the weights miss, `shift` samples late,
+// held before the shift and after the grid:
+// e[m] = sum_l phi[clamp(m - shift, 0, N - 1)][j][l] (planted - current)[j][l].
+// It vanishes identically when the weights are the planted ones, so those
+// stay the fixed point of the update even through the smoother.
+std::vector<JointArray> heldPlantError(const std::vector<RegressorRow>& phi,
+                                       const Weights& planted,
+                                       const Weights& current,
+                                       std::size_t shift, std::size_t tail) {
+  const std::size_t n = phi.size();
+  std::vector<JointArray> e(n + tail);
+  for (std::size_t m = 0; m < e.size(); ++m) {
+    const std::size_t i = m < shift ? 0 : std::min(m - shift, n - 1);
+    for (int j = 0; j < kCanonicalDof; ++j) {
+      double sum = 0.0;
+      for (int l = 0; l < kRegressorCount; ++l) {
+        sum += phi[i][j][l] * (planted[j][l] - current[j][l]);
+      }
+      e[m][j] = sum;
+    }
+  }
+  return e;
+}
+
+// RMS over the grid of joint j's remaining error Phi (w* - w).
+double remainingRms(const std::vector<RegressorRow>& phi,
+                    const Weights& planted, const Weights& w, int j) {
+  double sum = 0.0;
+  for (const auto& row : phi) {
+    double e = 0.0;
+    for (int l = 0; l < kRegressorCount; ++l) {
+      e += row[j][l] * (planted[j][l] - w[j][l]);
+    }
+    sum += e * e;
+  }
+  return std::sqrt(sum / static_cast<double>(phi.size()));
+}
+
+using Dense = std::vector<std::vector<double>>;
+
+Dense denseZero(std::size_t k) {
+  return Dense(k, std::vector<double>(k, 0.0));
+}
+
+Dense product(const Dense& a, const Dense& b) {
+  Dense out = denseZero(a.size());
+  for (std::size_t p = 0; p < a.size(); ++p) {
+    for (std::size_t q = 0; q < a.size(); ++q) {
+      for (std::size_t r = 0; r < a.size(); ++r) out[p][q] += a[p][r] * b[r][q];
+    }
+  }
+  return out;
+}
+
+Dense transposed(const Dense& a) {
+  Dense out = denseZero(a.size());
+  for (std::size_t p = 0; p < a.size(); ++p) {
+    for (std::size_t q = 0; q < a.size(); ++q) out[q][p] = a[p][q];
+  }
+  return out;
+}
+
+std::vector<double> times(const Dense& a, const std::vector<double>& x) {
+  std::vector<double> out(a.size(), 0.0);
+  for (std::size_t p = 0; p < a.size(); ++p) {
+    for (std::size_t q = 0; q < a.size(); ++q) out[p] += a[p][q] * x[q];
+  }
+  return out;
+}
+
+double quadratic(const Dense& a, const std::vector<double>& x) {
+  const auto ax = times(a, x);
+  double sum = 0.0;
+  for (std::size_t p = 0; p < x.size(); ++p) sum += x[p] * ax[p];
+  return sum;
+}
+
+// Gaussian elimination with partial pivoting (a different algorithm from the
+// library's Cholesky).
+std::vector<double> solveDense(Dense a, std::vector<double> b) {
+  const std::size_t k = b.size();
+  for (std::size_t c = 0; c < k; ++c) {
+    std::size_t pivot = c;
+    for (std::size_t r = c + 1; r < k; ++r) {
+      if (std::fabs(a[r][c]) > std::fabs(a[pivot][c])) pivot = r;
+    }
+    std::swap(a[c], a[pivot]);
+    std::swap(b[c], b[pivot]);
+    REQUIRE(a[c][c] != 0.0);
+    for (std::size_t r = c + 1; r < k; ++r) {
+      const double f = a[r][c] / a[c][c];
+      for (std::size_t q = c; q < k; ++q) a[r][q] -= f * a[c][q];
+      b[r] -= f * b[c];
+    }
+  }
+  std::vector<double> x(k);
+  for (std::size_t c = k; c-- > 0;) {
+    double v = b[c];
+    for (std::size_t q = c + 1; q < k; ++q) v -= a[c][q] * x[q];
+    x[c] = v / a[c][c];
+  }
+  return x;
+}
+
+// Whether the symmetric part of q is positive definite (Cholesky succeeds).
+bool positiveDefinite(const Dense& q) {
+  const std::size_t k = q.size();
+  Dense l = denseZero(k);
+  for (std::size_t j = 0; j < k; ++j) {
+    double d = q[j][j];
+    for (std::size_t p = 0; p < j; ++p) d -= l[j][p] * l[j][p];
+    if (!(d > 0.0)) return false;
+    l[j][j] = std::sqrt(d);
+    for (std::size_t i = j + 1; i < k; ++i) {
+      double v = 0.5 * (q[i][j] + q[j][i]);
+      for (std::size_t p = 0; p < j; ++p) v -= l[i][p] * l[j][p];
+      l[i][j] = v / l[j][j];
+    }
+  }
+  return true;
+}
+
+// One joint's update in RMS-normalised weight units u = rms * (w* - w), as
+// the test derives it with its own smoother. The held plant makes the error
+// record linear in u: e = sum_c u_c A_c, A_c the held record of normalised
+// column a_c. The error signal is then s = sum_c u_c S_c, S_c the signal of
+// A_c (smoothing, rate, advance, lead), so one update is
+//   normalised gradient: u <- (I - gain M) u,
+//   least squares:       u <- (I - gain (C + ridge I)^-1 M) u,
+// with C = mean(a_p a_q) and M = mean(a_p S_q): the regressors as the error
+// signal path sees them. Without smoothing or lead S_c = a_c and M = C; the
+// smoother's attenuation of the regressors is M - C. RMS(Phi (w* - w))^2 is
+// u^T C u.
+struct SignalPath {
+  std::vector<int> kept;
+  std::vector<double> scale;
+  std::vector<std::vector<double>> a;       // [column][sample]
+  std::vector<std::vector<double>> signal;  // S_c, [column][sample]
+  Dense c;
+  Dense m;
+
+  std::vector<double> u(const Weights& planted, const Weights& w,
+                        int j) const {
+    std::vector<double> out;
+    for (std::size_t k = 0; k < kept.size(); ++k) {
+      out.push_back(scale[k] * (planted[j][kept[k]] - w[j][kept[k]]));
+    }
+    return out;
+  }
+};
+
+SignalPath signalPath(const std::vector<RegressorRow>& phi, int j,
+                      const FelOptions& options, std::size_t shift,
+                      std::size_t tail) {
+  REQUIRE(options.advance_s / kDt == static_cast<double>(shift));
+  const std::size_t n = phi.size();
+  SignalPath path;
+  const auto column_rms = columnRms(phi);
+  for (int l = 0; l < kRegressorCount; ++l) {
+    if (column_rms[j][l] < options.negligible_rms) continue;
+    path.kept.push_back(l);
+    path.scale.push_back(column_rms[j][l]);
+  }
+  const std::size_t k = path.kept.size();
+  for (std::size_t c = 0; c < k; ++c) {
+    std::vector<double> a(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      a[i] = phi[i][j][path.kept[c]] / path.scale[c];
+    }
+    std::vector<double> record(n + tail);
+    for (std::size_t m = 0; m < record.size(); ++m) {
+      record[m] = a[m < shift ? 0 : std::min(m - shift, n - 1)];
+    }
+    const auto smooth =
+        plainSmooth(record, options.error_smooth_sigma_s, kDt);
+    const auto rate = plainGradient(smooth, kDt);
+    std::vector<double> signal(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      signal[i] = smooth[i + shift] + options.error_lead_s * rate[i + shift];
+    }
+    path.a.push_back(a);
+    path.signal.push_back(signal);
+  }
+  path.c = denseZero(k);
+  path.m = denseZero(k);
+  for (std::size_t p = 0; p < k; ++p) {
+    for (std::size_t q = 0; q < k; ++q) {
+      double cc = 0.0;
+      double mm = 0.0;
+      for (std::size_t i = 0; i < n; ++i) {
+        cc += path.a[p][i] * path.a[q][i];
+        mm += path.a[p][i] * path.signal[q][i];
+      }
+      path.c[p][q] = cc / static_cast<double>(n);
+      path.m[p][q] = mm / static_cast<double>(n);
+    }
+  }
+  return path;
+}
+
+// The least-squares step at gain 1 in normalised units.
+std::vector<double> leastSquaresStep(const SignalPath& path,
+                                     const std::vector<double>& u,
+                                     double ridge) {
+  Dense normal = path.c;
+  for (std::size_t p = 0; p < normal.size(); ++p) normal[p][p] += ridge;
+  const auto du = solveDense(normal, times(path.m, u));
+  std::vector<double> out(u.size());
+  for (std::size_t p = 0; p < u.size(); ++p) out[p] = u[p] - du[p];
+  return out;
+}
+
+// The smoother's relative distortion of the remaining error a u:
+// RMS(s - a u) / RMS(a u), s = sum_c u_c S_c.
+double signalDistortion(const SignalPath& path, const std::vector<double>& u) {
+  const std::size_t n = path.a.front().size();
+  double distortion = 0.0;
+  double size = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    double e = 0.0;
+    double s = 0.0;
+    for (std::size_t c = 0; c < u.size(); ++c) {
+      e += u[c] * path.a[c][i];
+      s += u[c] * path.signal[c][i];
+    }
+    distortion += (s - e) * (s - e);
+    size += e * e;
+  }
+  return std::sqrt(distortion / size);
+}
+
+constexpr std::size_t kModelSamples = 300;
+
+// (a) for the given lead, all other options at their defaults.
+void checkLeastSquaresContraction(double lead) {
+  ChainModel chain(kModelPath);
+  JointMap map(chain);
+  const auto phi = learn::buildRegressors(
+      chain, map, restToRestReference(kModelSamples, kDt), kDt, {});
+  FelOptions options;  // the defaults: sigma 0.04 s, advance 0.05 s, ...
+  REQUIRE(options.error_smooth_sigma_s == 0.04);
+  REQUIRE(options.ridge == 1e-6);
+  options.step = FelOptions::Step::LeastSquares;
+  options.gain = 1.0;
+  options.error_lead_s = lead;
+  const Weights planted = plantedOnKept(columnRms(phi));
+
+  // A priori: the factor of the first update on RMS(Phi (w* - w)) from the
+  // derived operator, u1 = (I - (C + ridge I)^-1 M) u0.
+  std::array<SignalPath, kArm> paths;
+  std::array<double, kArm> predicted{};
+  for (int j = 0; j < kArm; ++j) {
+    paths[j] = signalPath(phi, j, options, kShift, kTail);
+    const auto u0 = paths[j].u(planted, Weights{}, j);
+    const auto u1 = leastSquaresStep(paths[j], u0, options.ridge);
+    predicted[j] = std::sqrt(quadratic(paths[j].c, u1) /
+                             quadratic(paths[j].c, u0));
+    INFO("joint " << j << ": predicted first-update factor " << predicted[j]
+                  << ", smoother distortion of the planted error "
+                  << signalDistortion(paths[j], u0));
+    // A large factor: at least 5 in one update.
+    CHECK(predicted[j] <= 0.2);
+  }
+
+  FeedforwardWeights w;
+  std::array<double, kArm> initial{};
+  for (int j = 0; j < kArm; ++j) initial[j] = remainingRms(phi, planted, w.w, j);
+  constexpr int kUpdates = 5;
+  for (int k = 0; k < kUpdates; ++k) {
+    FelReport report;
+    const auto next = learn::felUpdate(
+        w, phi, heldPlantError(phi, planted, w.w, kShift, kTail), kDt,
+        options, &report);
+    for (int j = 0; j < kArm; ++j) {
+      const auto& r = report.joints[j];
+      const double before = remainingRms(phi, planted, w.w, j);
+      const double after = remainingRms(phi, planted, next.w, j);
+      const double kappa = signalDistortion(paths[j], paths[j].u(planted, w.w, j));
+      const double ridge_term = options.ridge / (r.lambda_min + options.ridge);
+      INFO("update " << k << ", joint " << j << ": factor " << after / before
+                     << ", bound " << kappa + ridge_term << " (distortion "
+                     << kappa << ")");
+      // The tolerances below allow for the rounding of two different
+      // computations of the same operator (smoothing sums of 33 terms in
+      // different orders, about 1e-14 relative), amplified by the solve
+      // (cond(C + ridge I) < 2e4, checked) and by passing between u and
+      // RMS(Phi (w* - w)) (sqrt(lambda_max / lambda_min) < 150): below 1e-8.
+      REQUIRE(r.lambda_max / r.lambda_min < 2e4);
+      if (k == 0) CHECK(std::fabs(after / before - predicted[j]) <= 1e-6);
+      // Rigorous bound at every update: with H the ridge hat matrix
+      // (eigenvalues in [0, 1)), the remaining error after a gain-1 step is
+      // ridge a (C + ridge I)^-1 u - H (s - a u), so its RMS is at most
+      // RMS(s - a u) + ridge / (lambda_min + ridge) RMS(a u).
+      CHECK(after <= (kappa + ridge_term + 1e-6) * before);
+    }
+    w = next;
+  }
+  for (int j = 0; j < kArm; ++j) {
+    const double fraction = remainingRms(phi, planted, w.w, j) / initial[j];
+    INFO("joint " << j << ": remaining after " << kUpdates
+                  << " updates: " << fraction);
+    CHECK(fraction <= 1e-2);  // a small fraction within a few updates
+  }
+}
+
+// (b) the normalised gradient at the default gain over a run of updates:
+// returns, per joint, the RMS(Phi (w* - w)) after every update relative to
+// the start, and checks the library against the derived iteration.
+std::array<std::vector<double>, kArm> runNormalisedGradient(
+    const std::vector<RegressorRow>& phi, const Weights& planted,
+    const FelOptions& options, const std::array<SignalPath, kArm>& paths,
+    int updates, std::array<std::vector<double>, kArm>* weight_error) {
+  std::array<std::vector<double>, kArm> remaining;
+  std::array<std::vector<double>, kArm> predicted_u;
+  for (int j = 0; j < kArm; ++j) predicted_u[j] = paths[j].u(planted, Weights{}, j);
+  std::array<double, kArm> initial{};
+  FeedforwardWeights w;
+  for (int j = 0; j < kArm; ++j) {
+    initial[j] = remainingRms(phi, planted, w.w, j);
+    remaining[j].push_back(1.0);
+    const auto u = paths[j].u(planted, w.w, j);
+    double norm = 0.0;
+    for (const double v : u) norm += v * v;
+    (*weight_error)[j].push_back(std::sqrt(norm));
+  }
+  for (int k = 0; k < updates; ++k) {
+    w = learn::felUpdate(w, phi,
+                         heldPlantError(phi, planted, w.w, kShift, kTail), kDt,
+                         options);
+    for (int j = 0; j < kArm; ++j) {
+      const double rms_now = remainingRms(phi, planted, w.w, j);
+      remaining[j].push_back(rms_now / initial[j]);
+      const auto u = paths[j].u(planted, w.w, j);
+      double norm = 0.0;
+      for (const double v : u) norm += v * v;
+      (*weight_error)[j].push_back(std::sqrt(norm));
+      // The derived iteration u <- (I - gain M) u, run alongside. The two
+      // differ by rounding: about 1e-14 |u| per update from the smoothing
+      // sums, not amplified (the iteration contracts, checked by the
+      // caller), over at most 100 updates, seen through
+      // sqrt(lambda_max / lambda_min) < 150: below 1e-9 of the start.
+      const auto mu = times(paths[j].m, predicted_u[j]);
+      for (std::size_t c = 0; c < mu.size(); ++c) {
+        predicted_u[j][c] -= options.gain * mu[c];
+      }
+      const double predicted =
+          std::sqrt(quadratic(paths[j].c, predicted_u[j])) / initial[j];
+      INFO("update " << k << ", joint " << j);
+      CHECK(std::fabs(rms_now / initial[j] - predicted) <= 1e-9);
+    }
+  }
+  return remaining;
+}
+
 }  // namespace
 
 // =========================================================== regressors
@@ -1667,4 +2070,122 @@ TEST_CASE("regressor feedforward: invalid update inputs are rejected",
                  "numerically dependent"});
   o.ridge = 1e-6;  // the ridge makes it well posed
   CHECK_NOTHROW(update(w0, dependent, e, kDt, o)());
+}
+
+// ======================================== the update with default smoothing
+//
+// The model's regressors on a rest-to-rest reference, the planted-weights
+// plant held at both ends (heldPlantError), and the default options: the
+// error smoothed with sigma 0.04 s and advanced by 0.05 s. The smoothed
+// error vanishes only when the remaining error does (C^-1 M nonsingular), so
+// the planted weights stay the fixed point; SignalPath derives each update.
+
+TEST_CASE(
+    "regressor feedforward: with the default error smoothing least squares at "
+    "gain 1 contracts the remaining error as derived",
+    "[learn][regressor_feedforward]") {
+  checkLeastSquaresContraction(0.0);
+}
+
+TEST_CASE(
+    "regressor feedforward: with an error lead and the default smoothing least "
+    "squares at gain 1 contracts the remaining error as derived",
+    "[learn][regressor_feedforward]") {
+  checkLeastSquaresContraction(0.02);
+}
+
+TEST_CASE(
+    "regressor feedforward: with the default error smoothing the normalised "
+    "gradient shrinks the remaining error at every update",
+    "[learn][regressor_feedforward]") {
+  ChainModel chain(kModelPath);
+  JointMap map(chain);
+  const auto phi = learn::buildRegressors(
+      chain, map, restToRestReference(kModelSamples, kDt), kDt, {});
+  const FelOptions options;  // all defaults: gain 0.2, no lead
+  REQUIRE(options.step == FelOptions::Step::NormalisedGradient);
+  const Weights planted = plantedOnKept(columnRms(phi));
+  std::array<SignalPath, kArm> paths;
+  for (int j = 0; j < kArm; ++j) {
+    INFO("joint " << j);
+    paths[j] = signalPath(phi, j, options, kShift, kTail);
+    // RMS(Phi (w* - w))^2 = u^T C u drops at every update, from every start,
+    // exactly when Q = C - T^T C T is positive definite, T = I - gain M.
+    Dense t = paths[j].m;
+    for (std::size_t p = 0; p < t.size(); ++p) {
+      for (std::size_t q = 0; q < t.size(); ++q) {
+        t[p][q] = (p == q ? 1.0 : 0.0) - options.gain * t[p][q];
+      }
+    }
+    Dense q = paths[j].c;
+    const Dense tct = product(transposed(t), product(paths[j].c, t));
+    for (std::size_t p = 0; p < q.size(); ++p) {
+      for (std::size_t r = 0; r < q.size(); ++r) q[p][r] -= tct[p][r];
+    }
+    CHECK(positiveDefinite(q));
+  }
+  constexpr int kUpdates = 100;
+  std::array<std::vector<double>, kArm> weight_error;
+  const auto remaining = runNormalisedGradient(phi, planted, options, paths,
+                                               kUpdates, &weight_error);
+  for (int j = 0; j < kArm; ++j) {
+    for (int k = 0; k < kUpdates; ++k) {
+      INFO("update " << k << ", joint " << j);
+      CHECK(remaining[j][k + 1] < remaining[j][k]);
+    }
+    INFO("joint " << j << ": remaining after " << kUpdates
+                  << " updates: " << remaining[j].back()
+                  << ", normalised weight error "
+                  << weight_error[j].back() / weight_error[j].front());
+    CHECK(remaining[j].back() <= 0.1);  // reduced by 10 within the run
+  }
+}
+
+TEST_CASE(
+    "regressor feedforward: with an error lead and the default smoothing the "
+    "normalised gradient contracts the weight error at every update",
+    "[learn][regressor_feedforward]") {
+  ChainModel chain(kModelPath);
+  JointMap map(chain);
+  const auto phi = learn::buildRegressors(
+      chain, map, restToRestReference(kModelSamples, kDt), kDt, {});
+  FelOptions options;  // defaults but for the lead
+  options.error_lead_s = 0.02;
+  const Weights planted = plantedOnKept(columnRms(phi));
+  std::array<SignalPath, kArm> paths;
+  for (int j = 0; j < kArm; ++j) {
+    INFO("joint " << j);
+    paths[j] = signalPath(phi, j, options, kShift, kTail);
+    // The lead adds lead * mean(a_p d/dt S_q) to M, nearly skew (the rate
+    // couples columns: dq to ddq). That can break the drop of RMS(Phi (w* -
+    // w)) at every update (the Q of the test above is not positive definite
+    // on every joint here), but leaves the symmetric part of M: the
+    // normalised weight error |u| drops at every update, from every start,
+    // exactly when Q2 = gain (M + M^T) - gain^2 M^T M is positive definite.
+    const Dense& m = paths[j].m;
+    const Dense mtm = product(transposed(m), m);
+    Dense q2 = denseZero(m.size());
+    for (std::size_t p = 0; p < m.size(); ++p) {
+      for (std::size_t q = 0; q < m.size(); ++q) {
+        q2[p][q] = options.gain * (m[p][q] + m[q][p]) -
+                   options.gain * options.gain * mtm[p][q];
+      }
+    }
+    CHECK(positiveDefinite(q2));
+  }
+  constexpr int kUpdates = 100;
+  std::array<std::vector<double>, kArm> weight_error;
+  const auto remaining = runNormalisedGradient(phi, planted, options, paths,
+                                               kUpdates, &weight_error);
+  for (int j = 0; j < kArm; ++j) {
+    for (int k = 0; k < kUpdates; ++k) {
+      INFO("update " << k << ", joint " << j);
+      CHECK(weight_error[j][k + 1] < weight_error[j][k]);
+    }
+    INFO("joint " << j << ": remaining after " << kUpdates
+                  << " updates: " << remaining[j].back()
+                  << ", normalised weight error "
+                  << weight_error[j].back() / weight_error[j].front());
+    CHECK(remaining[j].back() <= 0.1);  // reduced by 10 within the run
+  }
 }

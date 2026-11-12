@@ -240,6 +240,13 @@ std::vector<JointArray> felErrorSignal(const std::vector<JointArray>& error,
 //   dw_n the weights of the RMS-normalised columns (the Python tool's
 //   ridge_fit), then w_K += gain * dw.
 //
+// The eigenvalue guard is the convergence condition for an aligned,
+// unit-gain plant whose error enters unsmoothed and without lead; it proves
+// nothing about the real servo, nor about the smoothed or led error signal.
+// The normalised gradient learns weakly excited weight directions (small
+// eigenvalues of C) slowly, so what converges quickly is the RMS of the
+// remaining error, not the weights.
+//
 // Disabled joints and skipped columns keep their weights bit-exactly. The
 // result has trial = w_k.trial + 1, the same regressor options and empty
 // hashes (the caller fills them). Throws std::invalid_argument naming the
