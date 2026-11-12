@@ -1250,6 +1250,18 @@ TEST_CASE(
         result.error_rms[3]);
   CHECK(toml["offset"]["max_abs_rad"][2].value_or(0.0) ==
         result.offset_max_abs[2]);
+  // the new offset's rate: an offset constant to 1e-9 rad (above) changes
+  // by at most 2e-9 rad a sample; none on the gripper
+  CHECK(result.offset_max_rate == fl::offsetMaxRate(offset));
+  for (int j = 0; j < kDof; ++j) {
+    INFO("joint " << j);
+    CHECK(toml["offset"]["max_rate_rad_s"][j].value_or(-1.0) ==
+          result.offset_max_rate[j]);
+    CHECK(result.offset_max_rate[j] <= 2e-9 / offset.dt_s);
+  }
+  CHECK(result.offset_max_rate[kGripper] == 0.0);
+  CHECK(toml["offset"]["aggregate_max_rate_rad_s"].value_or(-1.0) ==
+        result.offset_aggregate_max_rate);
   CHECK(toml["ilc"]["step_clamped"][0].value_or(-1) == 0);
   const auto* inputs = toml["input"].as_array();
   REQUIRE(inputs != nullptr);
@@ -1277,6 +1289,88 @@ TEST_CASE(
   CHECK_THAT(summary, ContainsSubstring("ilc: wrote offset " + next.string()));
   CHECK_THAT(summary, ContainsSubstring("tracking RMS of trial 0: "));
   CHECK_THAT(summary, ContainsSubstring(" rad over all 8 joints, "));
+  char rate_line[96];
+  std::snprintf(rate_line, sizeof rate_line,
+                "offset max rate of trial 1: %.6e rad/s over all 8 joints\n",
+                result.offset_aggregate_max_rate);
+  CHECK_THAT(summary, ContainsSubstring(rate_line));
+}
+
+TEST_CASE(
+    "follow learn: the offset's max rate is the follower's rate measure, "
+    "in the table and the report",
+    "[learn][follow_learn][rate]") {
+  // A hand-made offset in exact binary values: dt 0.5 s, four samples.
+  // Joint 0 steps 1/64, 2/64, -1/64 rad (max 2/64 / 0.5 = 1/16 rad/s, in
+  // the middle); joint 3 steps -4/64 first (1/8 rad/s); joint 5 steps 5/64
+  // last (5/32 rad/s, the largest); the others never move.
+  rl::CommandOffset offset;
+  offset.method = "ilc";
+  offset.trial = 1;
+  offset.dt_s = 0.5;
+  offset.reference_duration_s = 1.5;
+  offset.reference_sha256 = std::string(64, 'a');
+  offset.parent_sha256 = std::string(64, 'b');
+  offset.source_log_sha256 = std::string(64, 'c');
+  offset.delta_rad.assign(4, JointArray{});
+  const double unit = 1.0 / 64.0;
+  const double joint0[] = {0.0, unit, 3 * unit, 2 * unit};
+  const double joint3[] = {0.0, -4 * unit, -4 * unit, -2 * unit};
+  const double joint5[] = {0.0, 0.0, 0.0, 5 * unit};
+  for (int i = 0; i < 4; ++i) {
+    offset.delta_rad[i][0] = joint0[i];
+    offset.delta_rad[i][3] = joint3[i];
+    offset.delta_rad[i][5] = joint5[i];
+  }
+  const JointArray rate = fl::offsetMaxRate(offset);
+  JointArray expected{};
+  expected[0] = 1.0 / 16.0;
+  expected[3] = 1.0 / 8.0;
+  expected[5] = 5.0 / 32.0;
+  CHECK(rate == expected);
+  // The library's limit holds at that rate and refuses just below it, on
+  // the joint and at the interval named.
+  rl::OffsetLimits limits;
+  limits.max_rate_rad_s = 5.0 / 32.0;
+  CHECK_NOTHROW(rl::checkOffsetForRun(offset, 1.5, 0.5, offset.reference_sha256,
+                                      limits));
+  limits.max_rate_rad_s = std::nextafter(5.0 / 32.0, 0.0);
+  CHECK_THAT(refusal([&] {
+               rl::checkOffsetForRun(offset, 1.5, 0.5,
+                                     offset.reference_sha256, limits);
+             }),
+             ContainsSubstring("joint 5, sample 2"));
+
+  fl::LearnResult result;
+  result.command = "synth";
+  result.output_trial = 1;
+  fl::fillOffset(offset, &result);
+  CHECK(result.offset_max_rate == expected);
+  CHECK(result.offset_aggregate_max_rate == 5.0 / 32.0);
+  const std::string summary = fl::formatSummary(result);
+  CHECK_THAT(summary, ContainsSubstring(
+                          "joint  offset_rms_rad  offset_max_rad  "
+                          "offset_max_rate_rad_s\n"));
+  CHECK_THAT(summary, ContainsSubstring("  1.562500e-01\n"));  // joint 5
+  CHECK_THAT(summary,
+             ContainsSubstring("offset max rate of trial 1: 1.562500e-01 "
+                               "rad/s over all 8 joints\n"));
+  // The report keys come after the existing [offset] keys, exact.
+  const std::string report = fl::formatReport(result);
+  const auto max_abs = report.find("\nmax_abs_rad = ");
+  const auto max_rate = report.find("\nmax_rate_rad_s = ");
+  const auto aggregate = report.find("\naggregate_max_rate_rad_s = ");
+  REQUIRE(max_abs != std::string::npos);
+  CHECK(max_abs < max_rate);
+  CHECK(max_rate < aggregate);
+  CHECK(aggregate != std::string::npos);
+  const toml::table toml = toml::parse(report);
+  for (int j = 0; j < kDof; ++j) {
+    INFO("joint " << j);
+    CHECK(toml["offset"]["max_rate_rad_s"][j].value_or(-1.0) == expected[j]);
+  }
+  CHECK(toml["offset"]["aggregate_max_rate_rad_s"].value_or(-1.0) ==
+        5.0 / 32.0);
 }
 
 TEST_CASE(
@@ -1465,6 +1559,8 @@ TEST_CASE("follow learn: fel weights and offset carry their lineage",
   const auto phi = rl::buildRegressors(*ref.chain, *ref.map, ref.q,
                                        ref.grid.dt_s, w1.regressors);
   CHECK(offset1.delta_rad == rl::synthesizeOffset(phi, w1));
+  CHECK(result.offset_max_rate == fl::offsetMaxRate(offset1));
+  CHECK(result.offset_aggregate_max_rate > 0.0);
   REQUIRE(result.fel.has_value());
   CHECK(result.fel->joints[kGripper].enabled == false);
   CHECK(result.outputs.size() == 2);
@@ -1625,6 +1721,10 @@ TEST_CASE(
                                        ref.grid.dt_s, w1.regressors);
   CHECK(offset.delta_rad == rl::synthesizeOffset(phi, w1));
   CHECK(result.measured_trial == -1);
+  CHECK(result.offset_max_rate == fl::offsetMaxRate(offset));
+  CHECK(result.offset_aggregate_max_rate > 0.0);
+  CHECK_THAT(fl::formatSummary(result),
+             ContainsSubstring("offset max rate of trial 1: "));
   // the transferred offset is a valid trial-1 start for fel on the other
   // reference
   REQUIRE_NOTHROW(
@@ -1797,6 +1897,12 @@ TEST_CASE("follow learn: ilc closes the loop through its own files",
       CHECK(joint.step_clamped == 0);  // the convergence is the law's
       CHECK(joint.abs_clamped == 0);
     }
+    // the new offset's rate, as written
+    CHECK(result.offset_max_rate == fl::offsetMaxRate(next));
+    CHECK(result.offset_aggregate_max_rate ==
+          *std::max_element(result.offset_max_rate.begin(),
+                            result.offset_max_rate.end()));
+    CHECK(result.offset_max_rate[kGripper] == 0.0);
   }
   std::string curve;
   for (int k = 0; k < kTrials; ++k) {

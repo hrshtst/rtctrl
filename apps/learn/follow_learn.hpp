@@ -1180,6 +1180,8 @@ struct LearnResult {
   std::size_t offset_samples = 0;
   JointArray offset_rms{};
   JointArray offset_max_abs{};
+  JointArray offset_max_rate{};             // offsetMaxRate [rad/s]
+  double offset_aggregate_max_rate = 0.0;   // over all 8 joints [rad/s]
   std::optional<rl::IlcReport> ilc;
   std::optional<rl::FelReport> fel;
   std::vector<FileRecord> inputs;
@@ -1209,8 +1211,28 @@ inline void fillTracking(const TrialRecord& record, LearnResult* result) {
   result->arm_rms = aggregateRms(result->error_rms, kArmJoints);
 }
 
+// Per joint, the largest |delta[i+1] - delta[i]| / dt_s over consecutive
+// samples [rad/s]: the rate rl::checkOffsetForRun
+// (src/learn/command_offset.cpp) holds to OffsetLimits::max_rate_rad_s,
+// by the same expression; the library has no function that returns it.
+// 0 for a joint that never changes.
+inline JointArray offsetMaxRate(const rl::CommandOffset& offset) {
+  JointArray rate{};
+  const auto& delta = offset.delta_rad;
+  for (std::size_t i = 0; i + 1 < delta.size(); ++i) {
+    for (int j = 0; j < kDof; ++j) {
+      rate[j] = std::max(
+          rate[j], std::fabs(delta[i + 1][j] - delta[i][j]) / offset.dt_s);
+    }
+  }
+  return rate;
+}
+
 inline void fillOffset(const rl::CommandOffset& offset, LearnResult* result) {
   result->has_offset = true;
+  result->offset_max_rate = offsetMaxRate(offset);
+  result->offset_aggregate_max_rate = *std::max_element(
+      result->offset_max_rate.begin(), result->offset_max_rate.end());
   result->offset_samples = offset.delta_rad.size();
   result->dt_s = offset.dt_s;
   result->output_trial = offset.trial;
@@ -1315,6 +1337,10 @@ inline std::string formatReport(const LearnResult& result) {
   out += "\n# The new offset.\n[offset]\n";
   out += "rms_rad = " + tomlFloats(result.offset_rms) + "\n";
   out += "max_abs_rad = " + tomlFloats(result.offset_max_abs) + "\n";
+  // max |delta[i+1] - delta[i]| / dt, the follower's rate limit's measure
+  out += "max_rate_rad_s = " + tomlFloats(result.offset_max_rate) + "\n";
+  out += "aggregate_max_rate_rad_s = " +
+         tomlFloat(result.offset_aggregate_max_rate) + "  # all 8 joints\n";
   if (result.ilc) {
     const auto& joints = result.ilc->joints;
     const auto field = [&joints](auto member) {
@@ -1422,7 +1448,7 @@ inline std::string formatSummary(const LearnResult& result) {
   }
   std::string header = "joint";
   if (measured) header += "  error_rms_rad";
-  header += "  offset_rms_rad  offset_max_rad";
+  header += "  offset_rms_rad  offset_max_rad  offset_max_rate_rad_s";
   if (result.ilc) header += "  step_clamped  abs_clamped";
   if (result.fel) header += "    lambda_max  skipped";
   out += header + "\n";
@@ -1431,8 +1457,9 @@ inline std::string formatSummary(const LearnResult& result) {
     if (measured) {
       add(std::snprintf(line, sizeof line, "  %13.6e", result.error_rms[j]));
     }
-    add(std::snprintf(line, sizeof line, "  %14.6e  %14.6e",
-                      result.offset_rms[j], result.offset_max_abs[j]));
+    add(std::snprintf(line, sizeof line, "  %14.6e  %14.6e  %21.6e",
+                      result.offset_rms[j], result.offset_max_abs[j],
+                      result.offset_max_rate[j]));
     if (result.ilc) {
       const auto& joint = result.ilc->joints[j];
       if (joint.enabled) {
@@ -1460,6 +1487,10 @@ inline std::string formatSummary(const LearnResult& result) {
                       result.measured_trial, result.aggregate_rms,
                       result.arm_rms));
   }
+  add(std::snprintf(line, sizeof line,
+                    "offset max rate of trial %d: %.6e rad/s over all 8 "
+                    "joints\n",
+                    result.output_trial, result.offset_aggregate_max_rate));
   return out;
 }
 

@@ -2,11 +2,13 @@
 # x7_follow_learn end to end on a simulated trial: init, one plain
 # x7_follow_sim run (trial 0, the zero offset), ilc, init-weights, fel and
 # synth, each output's header fields and lineage hashes checked against
-# sha256sum, and every output bound to its follow config's reference
-# signature (init's, which is not the reference file's hash); then refusals (an existing output, a log of another reference,
-# tampered offsets) that exit nonzero and write nothing. Works in a run
-# directory of its own under ROOT, removed after a pass and kept after a
-# failure; nothing else is ever deleted. Never opens the bus.
+# sha256sum, every output bound to its follow config's reference
+# signature (init's, which is not the reference file's hash), and each
+# new offset's max rate in the table and the report; then refusals (an
+# existing output, a log of another reference, tampered offsets) that exit
+# nonzero and write nothing. Works in a run directory of its own under
+# ROOT, removed after a pass and kept after a failure; nothing else is ever
+# deleted. Never opens the bus.
 set -eu
 
 TOOL="$1"
@@ -67,6 +69,52 @@ check_equal() {  # check_equal WHAT GOT WANT
   fi
 }
 
+# check_rate NAME OFFSET [REPORT]: NAME.out's table column
+# offset_max_rate_rad_s and its "offset max rate" line give OFFSET's
+# max |delta[i+1] - delta[i]| / dt per joint and over all 8 (to the
+# printed %.6e); REPORT's [offset] max_rate_rad_s and
+# aggregate_max_rate_rad_s give them exactly, after the existing keys
+check_rate() {
+  python3 - "$WORK/$1.out" "$2" "${3:-}" <<'PY' || fail "$1: offset rate"
+import sys
+import tomllib
+
+out_path, offset_path, report_path = sys.argv[1:4]
+header, rows = {}, []
+for line in open(offset_path).read().split("\n")[:-1]:
+    if line.startswith("# "):
+        key, _, value = line[2:].partition(":")
+        header[key] = value.strip()
+    elif not line.startswith("time_s,"):
+        rows.append([float(v) for v in line.split(",")[1:]])
+dt = float(header["dt_s"])
+rate = [max(abs(b[j] - a[j]) / dt for a, b in zip(rows, rows[1:]))
+        for j in range(8)]
+lines = open(out_path).read().split("\n")
+top = next(i for i, line in enumerate(lines) if line.startswith("joint "))
+column = lines[top].split().index("offset_max_rate_rad_s")
+for j in range(8):
+    cells = lines[top + 1 + j].split()
+    assert int(cells[0]) == j, cells
+    assert abs(float(cells[column]) - rate[j]) <= 5e-7 * rate[j], (j, cells)
+overall = [line for line in lines if line.startswith("offset max rate of ")]
+assert len(overall) == 1, overall
+value = float(overall[0].split(": ")[1].split()[0])
+assert abs(value - max(rate)) <= 5e-7 * max(rate), (value, max(rate))
+assert overall[0].endswith(" rad/s over all 8 joints"), overall
+if report_path:
+    text = open(report_path).read()
+    order = [text.index(f"\n{key} = ") for key in
+             ("rms_rad", "max_abs_rad", "max_rate_rad_s",
+              "aggregate_max_rate_rad_s")]
+    assert order == sorted(order), order
+    with open(report_path, "rb") as stream:
+        offset = tomllib.load(stream)["offset"]
+    assert offset["max_rate_rad_s"] == rate, (offset["max_rate_rad_s"], rate)
+    assert offset["aggregate_max_rate_rad_s"] == max(rate), offset
+PY
+}
+
 # Two references from the PTP example (the follow bundle smoke's plan), the
 # second longer.
 "$PLAN" --config "$PTP_CONFIG" --output "$WORK/reference.zvs" \
@@ -112,6 +160,7 @@ test "$OTHER_SIG" != "$REF_SIG" || fail "both references sign alike"
 check_equal "offset0 parent" "$(header parent_sha256 "$WORK/offset0.csv")" ""
 SAMPLES=$(header samples "$WORK/offset0.csv")
 grep -q "wrote offset $WORK/offset0.csv" "$WORK/init.out"
+check_rate init "$WORK/offset0.csv"
 
 # --- trial 0: one plain simulated run (its command is the reference) -----
 "$FOLLOW_SIM" --config "$WORK/follow.toml" --log "$WORK/trial0.csv" \
@@ -135,6 +184,7 @@ check_equal "offset1 parent" "$(header parent_sha256 "$O1")" \
   "$(sha "$WORK/offset0.csv")"
 check_equal "offset1 source log" "$(header source_log_sha256 "$O1")" "$LOG_SHA"
 grep -q "tracking RMS of trial 0: .* rad over all 8 joints" "$WORK/ilc.out"
+check_rate ilc "$O1" "$WORK/report1.toml"
 check_equal "report1 command" "$(toml command "$WORK/report1.toml")" ilc
 grep -q "^sha256 = \"$LOG_SHA\"$" "$WORK/report1.toml" ||
   fail "report1 lacks the log hash"
@@ -164,6 +214,7 @@ check_equal "fel1 parent" "$(header parent_sha256 "$F1")" "$(sha "$W1")"
 check_equal "fel1 source log" "$(header source_log_sha256 "$F1")" "$LOG_SHA"
 check_equal "fel1 reference" "$(header reference_sha256 "$F1")" "$REF_SIG"
 grep -q "lambda_max" "$WORK/fel.out"
+check_rate fel "$F1" "$WORK/report_fel1.toml"
 
 # --- synth: the trained weights on the other reference --------------------
 expect 0 synth synth --config "$WORK/learn.toml" --weights "$W1" \
@@ -174,6 +225,7 @@ check_equal "transfer trial" "$(header trial "$T")" 1
 check_equal "transfer parent" "$(header parent_sha256 "$T")" "$(sha "$W1")"
 check_equal "transfer source log" "$(header source_log_sha256 "$T")" "$LOG_SHA"
 check_equal "transfer reference" "$(header reference_sha256 "$T")" "$OTHER_SIG"
+check_rate synth "$T"
 
 # --- refusals: exit 1, nothing written --------------------------------------
 # an existing output is left untouched, and the report is never written
