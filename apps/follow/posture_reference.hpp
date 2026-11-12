@@ -13,6 +13,7 @@
 // like any other reference.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -105,12 +106,29 @@ inline PostureReference parseSweepCurrent(const std::string& spec) {
 
 using CanonicalPosture = std::array<double, model::kCanonicalDof>;
 
+// The reference has intervals + 1 frames.
+inline long postureReferenceIntervals(const PostureReference& r) {
+  return std::max(1L, std::lround(r.duration_s / kPostureFrameS));
+}
+
+// The duration the follower will read from the written reference, known
+// before the posture is: each frame lasts kPostureFrameS (written with
+// %.17g, which reads back exactly), summed in file order as
+// model::ZvsTrajectory sums them. Lets the frontend check the tracking
+// grid before any bus contact.
+inline double postureReferenceDuration(const PostureReference& r) {
+  double duration = 0.0;
+  for (long k = 0; k <= postureReferenceIntervals(r); ++k) {
+    duration += kPostureFrameS;
+  }
+  return duration;
+}
+
 // Frames at kPostureFrameS; the first and the last frame equal q0
 // exactly. A sweep's peak joint speed is 15/8 * |amplitude| / (duration/2).
 inline std::vector<CanonicalPosture> postureReferenceFrames(
     const PostureReference& r, const CanonicalPosture& q0) {
-  const long intervals =
-      std::max(1L, std::lround(r.duration_s / kPostureFrameS));
+  const long intervals = postureReferenceIntervals(r);
   std::vector<CanonicalPosture> frames;
   frames.reserve(static_cast<std::size_t>(intervals) + 1);
   for (long k = 0; k <= intervals; ++k) {

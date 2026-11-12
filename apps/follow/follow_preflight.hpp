@@ -35,6 +35,40 @@ inline void requireNewOutput(const std::filesystem::path& path,
   }
 }
 
+// The grid FollowRun::trackReference tracks a reference of this duration
+// on: learn::trackingGrid at the control period 1 / control.rate_hz, which
+// is the arm's dt() in every frontend. The follower builds the same grid
+// only after homing, with torque on; a duration it cannot be built for
+// (non-finite, not > 0, or too many intervals for a long) is refused here
+// instead, naming the rate. Throws std::runtime_error. Pure arithmetic:
+// call it before any bus contact.
+inline rtctrl::learn::TrackingGrid preflightTrackingGrid(double duration_s,
+                                                         const Config& config) {
+  try {
+    return rtctrl::learn::trackingGrid(duration_s,
+                                       1.0 / config.control_rate_hz);
+  } catch (const std::exception& error) {
+    char rate[32];
+    std::snprintf(rate, sizeof rate, "%.9g", config.control_rate_hz);
+    throw std::runtime_error(
+        std::string("follow preflight: the reference cannot be tracked at "
+                    "control.rate_hz = ") +
+        rate + ": " + error.what());
+  }
+}
+
+// The time of tracking-grid sample i, as FollowRun::trackReference
+// computes it: min(duration, i * dt).
+inline double trackingSampleTime(const rtctrl::learn::TrackingGrid& grid,
+                                 double duration_s, std::size_t sample) {
+  return std::min(duration_s, static_cast<double>(sample) * grid.dt_s);
+}
+
+// Every sample the follower will command (preflightTrackingGrid, sample
+// for sample) inside the model joint limits, finite, and within the
+// deployment velocity limits; current-based position effort within the
+// deployment limits. Throws std::runtime_error naming the problem. Reads
+// nothing: call it before any bus contact.
 inline void validateReference(const Config& config,
                               const model::ChainModel& chain,
                               const model::JointMap& map,
@@ -55,11 +89,10 @@ inline void validateReference(const Config& config,
   }
   model::ZVector q(model::kCanonicalDof), dq(model::kCanonicalDof),
       ddq(model::kCanonicalDof);
-  const long intervals = std::max(
-      1L, static_cast<long>(
-              std::ceil(trajectory.duration() * config.control_rate_hz)));
-  for (long sample = 0; sample <= intervals; ++sample) {
-    const double time = trajectory.duration() * sample / intervals;
+  const auto grid = preflightTrackingGrid(trajectory.duration(), config);
+  for (std::size_t sample = 0; sample < grid.samples(); ++sample) {
+    const double time =
+        trackingSampleTime(grid, trajectory.duration(), sample);
     trajectory.sample(time, q.get(), dq.get(), ddq.get());
     for (int i = 0; i < model::kCanonicalDof; ++i) {
       const double lo = chain.jointMin(map.linkId(i));
@@ -160,11 +193,9 @@ inline std::optional<AcceptedOffset> preflightOffset(
     }
   };
   // The grid FollowRun::trackReference commands, sample for sample.
-  const auto grid =
-      rtctrl::learn::trackingGrid(reference.duration(), control_dt_s);
+  const auto grid = preflightTrackingGrid(reference.duration(), config);
   for (std::size_t sample = 0; sample < grid.samples(); ++sample) {
-    const double time = std::min(reference.duration(),
-                                 static_cast<double>(sample) * grid.dt_s);
+    const double time = trackingSampleTime(grid, reference.duration(), sample);
     reference.sample(time, q.get());
     check(sample, time, "tracking sample");
   }

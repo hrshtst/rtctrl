@@ -302,7 +302,8 @@ bool withFileSizeLimit(rlim_t bytes, Body body) {
 
 }  // namespace
 
-// Pins the formula (see FollowerGrid).
+// Pins the formula (see FollowerGrid). That the follower commands this grid
+// and its preflight validates the same one is tested in follow_run_test.cpp.
 TEST_CASE("command offset: the tracking grid is the follower's",
           "[learn][command_offset]") {
   for (const double period : {kPeriod, 0.005, kDyadicPeriod}) {

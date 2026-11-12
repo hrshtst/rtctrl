@@ -6,7 +6,8 @@
 # provenance and replays bit for bit; a small learned offset moves the
 # command and only the command. Tampered or over-limit offsets, a raised
 # limit, another control rate and an offset with a posture reference are
-# refused before any run output. x7_follow only ever gets --check or a
+# refused before any run output, and so is a reference whose tracking grid
+# cannot be built. x7_follow only ever gets --check or a
 # refusal, and a --port that does not exist. Works in a run directory of its
 # own under ROOT, removed after a pass and kept after a failure; nothing else
 # is ever deleted.
@@ -319,6 +320,18 @@ for staging in "$WORK"/.refused-bundle*; do
     exit 1
   fi
 done
+# a reference whose tracking grid cannot be built (two 1e17 s frames: more
+# control periods than a long counts) is refused by the reference
+# preflight, offset or not, before any bus contact; the follower would
+# only build that grid after homing
+HUGE="$WORK/huge-reference.zvs"
+printf '1e17 8 ( 0 0 0 0 0 0 0 0 )\n1e17 8 ( 0 0 0 0 0 0 0 0 )\n' >"$HUGE"
+GRID="the reference cannot be tracked at control.rate_hz = 100"
+# shellcheck disable=SC2046
+refused huge "$GRID" "$FOLLOW_SIM" --config "$WORK/follow.toml" \
+  --reference "$HUGE" $(run_args huge)
+refused huge-hw "$GRID" "$FOLLOW_HW" --config "$WORK/follow.toml" \
+  --reference "$HUGE" --port "$NO_PORT" --log "$WORK/huge-hw.csv"
 # a reference built from the measured posture takes no offset
 POSTURE="cannot be applied to a reference built from the measured posture"
 refused posture "$POSTURE" \

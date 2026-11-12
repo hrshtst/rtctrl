@@ -138,7 +138,13 @@ int main(int argc, char* argv[]) {
           "a reference built from the measured posture must start exactly "
           "there: use reference_processing.filter = none (--filter none)");
     }
-    if (posture) follow::refusePostureOffset(config);
+    if (posture) {
+      follow::refusePostureOffset(config);
+      // The posture reference is built from a bus read, but its duration
+      // is known now: its tracking grid is checked before any bus contact.
+      follow::preflightTrackingGrid(follow::postureReferenceDuration(*posture),
+                                    config);
+    }
 
     model::ChainModel chain(config.model_path.string());
     model::JointMap map(chain);
@@ -246,6 +252,13 @@ int main(int argc, char* argv[]) {
       }
 
       arm::RealArm robot(crane);
+      // Set up before any servo write. setCommandOffset checks the offset
+      // against this run's grid; preflightOffset accepted it on the same
+      // grid (robot.dt() is 1 / control.rate_hz), so it does not throw, and
+      // if it ever did, torque would still be off.
+      follow::FollowRun run(robot, *reference, config, false, &log,
+                            [&enter] { return enter.pressed(); });
+      if (offset) run.setCommandOffset(&offset->offset);
       if (!robot.setMode(config.mode)) {
         throw std::runtime_error("hardware operating-mode setup mismatch");
       }
@@ -259,9 +272,6 @@ int main(int argc, char* argv[]) {
       }
       x7::ShutdownGuard shutdown(crane);
       if (timing_log) timing_log->start();
-      follow::FollowRun run(robot, *reference, config, false, &log,
-                            [&enter] { return enter.pressed(); });
-      if (offset) run.setCommandOffset(&offset->offset);
       result = run.run();
       stats = crane.cycleStats();
       released = shutdown.run();

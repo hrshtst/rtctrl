@@ -95,3 +95,28 @@ TEST_CASE("posture references round-trip through the ZVS reader and are "
   CHECK(q[3] == Approx(kQ0[3] - 0.2));
   std::filesystem::remove(path);
 }
+
+TEST_CASE("a posture reference's duration is known before the posture is",
+          "[follow][posture]") {
+  // x7_follow checks the tracking grid of postureReferenceDuration before
+  // any bus contact; the follower tracks the duration the ZVS reader sums.
+  const std::filesystem::path path = "build/posture_reference_duration.zvs";
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  for (const auto& spec :
+       {follow::parseHoldCurrent("0.001"), follow::parseHoldCurrent("2.5"),
+        follow::parseHoldCurrent("600"), follow::parseSweepCurrent("3:-0.2:2"),
+        follow::parseSweepCurrent("0:0.1:1.234"),
+        follow::parseSweepCurrent("6:1:120")}) {
+    std::filesystem::remove(path);
+    const auto frames = follow::postureReferenceFrames(spec, kQ0);
+    CHECK(frames.size() ==
+          static_cast<std::size_t>(follow::postureReferenceIntervals(spec)) +
+              1);
+    follow::writePostureReferenceZvs(path, frames);
+    model::ZvsTrajectory reference(path.string(), map);
+    INFO(follow::describePostureReference(spec));
+    CHECK(reference.duration() == follow::postureReferenceDuration(spec));
+  }
+  std::filesystem::remove(path);
+}

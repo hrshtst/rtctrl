@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -14,7 +15,9 @@
 #include <thread>
 #include <vector>
 
+#include "follow/follow_preflight.hpp"
 #include "follow/follow_run.hpp"
+#include "rtctrl/hw/config.hpp"
 
 namespace arm = rtctrl::arm;
 namespace follow = x7::follow;
@@ -1044,4 +1047,113 @@ TEST_CASE("an I/O failure in the offset ramp ends the run as in homing",
   }
   CHECK(result.cycles == sink.rows.size());
   std::remove(path.c_str());
+}
+
+namespace {
+
+bool sameBits(double a, double b) {
+  std::uint64_t x = 0;
+  std::uint64_t y = 0;
+  std::memcpy(&x, &a, sizeof x);
+  std::memcpy(&y, &b, sizeof y);
+  return x == y;
+}
+
+// `frames` frames of `frame_s` each, joint 0 rising by 1 mrad per frame.
+std::string rampReference(const std::string& name, double frame_s,
+                          int frames) {
+  const std::string path = "build/" + name;
+  std::FILE* out = std::fopen(path.c_str(), "w");
+  REQUIRE(out != nullptr);
+  for (int k = 0; k < frames; ++k) {
+    std::fprintf(out, "%.17g 8 ( %.17g 0 0 0 0 0 0 0 )\n", frame_s,
+                 0.1 + 0.001 * k);
+  }
+  REQUIRE(std::fclose(out) == 0);
+  return path;
+}
+
+}  // namespace
+
+TEST_CASE("the preflight validates the tracking grid the follower commands",
+          "[follow][run][preflight]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto hardware = rtctrl::hw::Config::load("config/crane_x7.toml");
+  struct Case {
+    double frame_s;
+    int frames;
+    double rate_hz;
+  };
+  // Durations summed from frames on which the preflight's former grid,
+  // max(1, ceil(duration * rate)) intervals, was not the follower's: one
+  // interval more (0.01 s x 6 is 0.060000000000000005 s: 7 intervals at
+  // 100 Hz, the follower's 6) or one fewer (0.1 s at 70 Hz: 7, the
+  // follower's 8).
+  for (const Case c : {Case{0.01, 6, 100.0}, Case{0.1, 1, 70.0},
+                       Case{0.07, 5, 20.0}, Case{0.02, 7, 150.0},
+                       Case{0.03, 181, 200.0}}) {
+    INFO(c.frames << " frames of " << c.frame_s << " s at " << c.rate_hz
+                  << " Hz");
+    const auto path = rampReference("follow_run_grid.zvs", c.frame_s, c.frames);
+    model::ZvsTrajectory reference(path, map);
+    auto config = baseConfig(arm::ControlMode::Position);
+    config.control_rate_hz = c.rate_hz;
+    const auto grid =
+        follow::preflightTrackingGrid(reference.duration(), config);
+    CHECK(std::max(1L, static_cast<long>(std::ceil(reference.duration() *
+                                                   c.rate_hz))) !=
+          grid.intervals);
+    CHECK_NOTHROW(
+        follow::validateReference(config, chain, map, reference, hardware));
+
+    // Every frontend's arm has dt() = 1 / control.rate_hz.
+    IdealArm robot(arm::ControlMode::Position, 1.0 / c.rate_hz);
+    REQUIRE(robot.activate());
+    RowRecorder sink;
+    follow::FollowRun run(robot, reference, config, true, &sink);
+    REQUIRE(run.run().status == follow::RunStatus::Success);
+    const auto tracking = sink.of(follow::Phase::Tracking);
+    REQUIRE(tracking.size() == grid.samples());
+    for (std::size_t i = 0; i < tracking.size(); ++i) {
+      const double t =
+          follow::trackingSampleTime(grid, reference.duration(), i);
+      if (!sameBits(tracking[i].phase_time, t)) {
+        FAIL_CHECK("tracking sample " << i << " at " << tracking[i].phase_time
+                                      << " s, the preflight's at " << t
+                                      << " s");
+      }
+    }
+    std::remove(path.c_str());
+  }
+}
+
+TEST_CASE("the preflight refuses a reference the follower could not track",
+          "[follow][run][preflight]") {
+  model::ChainModel chain("models/crane_x7/crane_x7.ztk");
+  model::JointMap map(chain);
+  const auto hardware = rtctrl::hw::Config::load("config/crane_x7.toml");
+  auto config = baseConfig(arm::ControlMode::Position);
+  // The ZVS reader takes any finite positive frame time: two 1e17 s frames
+  // are 2e19 control periods at 100 Hz, more than a long counts. The
+  // follower would build this grid only after homing, with torque on.
+  const auto path = rampReference("follow_run_huge.zvs", 1e17, 2);
+  model::ZvsTrajectory reference(path, map);
+  REQUIRE(std::isfinite(reference.duration()));
+  CHECK_THROWS(rtctrl::learn::trackingGrid(reference.duration(), 0.01));
+  CHECK_THROWS_WITH(
+      follow::validateReference(config, chain, map, reference, hardware),
+      "follow preflight: the reference cannot be tracked at control.rate_hz "
+      "= 100: tracking grid: reference duration 2e+17 s over control period "
+      "0.01 s is too many intervals");
+  std::remove(path.c_str());
+  // Durations no grid exists for.
+  for (const double duration : {0.0, -1.0, std::nan(""), HUGE_VAL}) {
+    CHECK_THROWS_WITH(
+        follow::preflightTrackingGrid(duration, config),
+        Catch::Matchers::StartsWith("follow preflight: the reference cannot "
+                                    "be tracked at control.rate_hz = 100: "
+                                    "tracking grid: reference duration") &&
+            Catch::Matchers::EndsWith("s must be finite and > 0"));
+  }
 }
