@@ -4,9 +4,12 @@
 # the servo-like log shows a tracking error of the measured arm's order
 # and of the spring law's structure, far above the ideal servo's; its
 # commands reach the servo one cycle later and its positions sit on the
-# encoder grid; --bundle is refused (it cannot record the servo-like keys
-# yet). Works in a run directory of its own under ROOT, removed after a
-# pass and kept after a failure; nothing else is ever deleted.
+# encoder grid. A bundle records the servo-like keys (the example's, and
+# friction, a longer delay and no quantization in a variant), and its
+# follow.toml replayed through x7_follow_sim reproduces the bundle's log
+# and motion byte for byte; a bundle of the ideal servo has none of them.
+# Works in a run directory of its own under ROOT, removed after a pass and
+# kept after a failure; nothing else is ever deleted.
 set -eu
 
 FOLLOW_APP="$1"
@@ -128,12 +131,87 @@ assert not all(on_grid(float(row[f"q{j}_rad"])) for row in ideal_all
                for j in range(8))
 PY
 
-# --bundle cannot record the servo-like keys yet: refused before any output
-expect 1 bundle --config "$SERVO_CONFIG" --reference "$WORK/reference.zvs" \
-  --bundle "$WORK/archive"
-grep -q -- "--bundle does not yet record the servo-like" "$WORK/bundle.err"
-test ! -e "$WORK/archive"
-test -z "$(find "$WORK" -maxdepth 1 -name '.archive.tmp.*' -print -quit)"
+# bundle_replays NAME CONFIG: a bundle of CONFIG on the reference, and its
+# follow.toml replayed, reproduce the same log and motion byte for byte
+bundle_replays() {
+  local name=$1 config=$2
+  expect 0 "$name" --config "$config" --reference "$WORK/reference.zvs" \
+    --bundle "$WORK/$name"
+  grep -q "^follow simulation: success" "$WORK/$name.out"
+  grep -qx 'status = "success"' "$WORK/$name/result.toml"
+  expect 0 "$name-replay" --config "$WORK/$name/follow.toml" \
+    --log "$WORK/$name-replay.csv" --motion "$WORK/$name-replay.zvs"
+  cmp "$WORK/$name/simulation.csv" "$WORK/$name-replay.csv"
+  cmp "$WORK/$name/simulation.zvs" "$WORK/$name-replay.zvs"
+}
+
+# same_keys SOURCE BUNDLED [ABSENT...]: the bundled follow.toml has the
+# source config's servo-like [simulation] keys with the same values (the
+# gains as given, a friction number for every joint as eight values), and
+# none of ABSENT (keys the source may set to their defaults)
+same_keys() {
+  python3 - "$@" <<'PY'
+import sys
+import tomllib
+
+source_path, bundled_path, absent = sys.argv[1], sys.argv[2], sys.argv[3:]
+with open(source_path, "rb") as stream:
+    source = tomllib.load(stream)["simulation"]
+with open(bundled_path, "rb") as stream:
+    bundled = tomllib.load(stream)["simulation"]
+GAINS = ("position_kp", "position_kd")
+FRICTION = ("coulomb_friction_nm", "viscous_friction_nm_s")
+SCALARS = ("friction_v0_rad_s", "command_delay_cycles", "quantize_encoder")
+for key in GAINS + FRICTION + SCALARS:
+    if key not in source or key in absent:
+        continue
+    want = source[key]
+    if key in FRICTION and not isinstance(want, list):
+        want = [want] * 8
+    assert bundled.get(key) == want, (key, bundled.get(key), want)
+    if key not in GAINS or isinstance(want, list):
+        assert type(bundled[key]) is type(want), key
+for key in absent:
+    assert key not in bundled, (key, bundled[key])
+PY
+}
+
+# the example's servo-like keys are recorded and replay, and bundling does
+# not change the run
+bundle_replays archive "$SERVO_CONFIG"
+cmp "$WORK/archive/simulation.csv" "$WORK/servo.csv"
+same_keys "$SERVO_CONFIG" "$WORK/archive/follow.toml" \
+  coulomb_friction_nm viscous_friction_nm_s friction_v0_rad_s
+
+# the other keys: friction (eight values and one number), its v0, a
+# two-cycle delay; quantization off is its default and not written
+sed -e 's/^command_delay_cycles = 1$/command_delay_cycles = 2/' \
+  -e 's/^quantize_encoder = true$/quantize_encoder = false/' \
+  -e 's/^# \(coulomb_friction_nm\) = 0.0 .*/\1 = [0.3, 0.5, 0.3, 0.3, 0.2, 0.2, 0.2, 0.1]/' \
+  -e 's/^# \(viscous_friction_nm_s\) = 0.0 .*/\1 = 0.05/' \
+  -e 's/^# \(friction_v0_rad_s\) = 0.05 .*/\1 = 0.1/' \
+  -e "s|^model = \"|model = \"$(dirname "$SERVO_CONFIG")/|" \
+  -e "s|^hardware_config = \"|hardware_config = \"$(dirname "$SERVO_CONFIG")/|" \
+  "$SERVO_CONFIG" >"$WORK/friction.toml"
+grep -q '^friction_v0_rad_s = 0.1$' "$WORK/friction.toml"
+grep -q '^viscous_friction_nm_s = 0.05$' "$WORK/friction.toml"
+bundle_replays friction "$WORK/friction.toml"
+same_keys "$WORK/friction.toml" "$WORK/friction/follow.toml" \
+  quantize_encoder
+# the friction changes the run: the keys are not only written
+if cmp -s "$WORK/friction/simulation.csv" "$WORK/archive/simulation.csv"; then
+  echo "friction: the run is the example's" >&2
+  exit 1
+fi
+
+# a bundle of the ideal servo writes none of the servo-like keys
+expect 0 ideal-bundle --config "$IDEAL_CONFIG" \
+  --reference "$WORK/reference.zvs" --bundle "$WORK/ideal-bundle"
+same_keys "$IDEAL_CONFIG" "$WORK/ideal-bundle/follow.toml" \
+  coulomb_friction_nm viscous_friction_nm_s friction_v0_rad_s \
+  command_delay_cycles quantize_encoder
+grep -qx 'position_kp = 1000' "$WORK/ideal-bundle/follow.toml"
+grep -qx 'position_kd = 5' "$WORK/ideal-bundle/follow.toml"
 
 rm -rf "$WORK"
 echo "follow servo-like simulation smoke OK"

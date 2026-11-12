@@ -117,11 +117,44 @@ void writeEffectiveConfig(const fs::path& path, const Config& config,
     out << "\ninitial_joints = ";
     writeArray(out, config.simulation.initial_joints);
   }
-  out << "\nintegration_step_s = " << config.simulation.integration_step_s
-      << "\nposition_kp = " << config.simulation.position_kp
-      << "\nposition_kd = " << config.simulation.position_kd;
-  if (config.simulation.link_force_path) {
+  // The servo-like keys are written exactly when they are set (the
+  // optional ones present, the others away from their defaults), so a
+  // bundle of a configuration without them stays as it was.
+  const SimulationConfig& simulation = config.simulation;
+  const SimulationConfig defaults;
+  out << "\nintegration_step_s = " << simulation.integration_step_s;
+  out << "\nposition_kp = ";
+  if (simulation.position_kp_joints) {
+    writeArray(out, *simulation.position_kp_joints);
+  } else {
+    out << simulation.position_kp;
+  }
+  out << "\nposition_kd = ";
+  if (simulation.position_kd_joints) {
+    writeArray(out, *simulation.position_kd_joints);
+  } else {
+    out << simulation.position_kd;
+  }
+  if (simulation.link_force_path) {
     out << "\nlink_force = " << quote(x7::kLinkForceBundleFile);
+  }
+  if (simulation.coulomb_friction_nm) {
+    out << "\ncoulomb_friction_nm = ";
+    writeArray(out, *simulation.coulomb_friction_nm);
+  }
+  if (simulation.viscous_friction_nm_s) {
+    out << "\nviscous_friction_nm_s = ";
+    writeArray(out, *simulation.viscous_friction_nm_s);
+  }
+  if (simulation.friction_v0_rad_s != defaults.friction_v0_rad_s) {
+    out << "\nfriction_v0_rad_s = " << simulation.friction_v0_rad_s;
+  }
+  if (simulation.command_delay_cycles != defaults.command_delay_cycles) {
+    out << "\ncommand_delay_cycles = " << simulation.command_delay_cycles;
+  }
+  if (simulation.quantize_encoder != defaults.quantize_encoder) {
+    out << "\nquantize_encoder = "
+        << (simulation.quantize_encoder ? "true" : "false");
   }
   out << "\n\n[safety]\nwarning_error_rad = "
       << config.safety.warning_error_rad

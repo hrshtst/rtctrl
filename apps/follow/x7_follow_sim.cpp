@@ -78,14 +78,6 @@ int main(int argc, char* argv[]) {
     follow::applyOverrides(cli, &config);
     if (cli.log_path) config.output.simulation_log = *cli.log_path;
     if (cli.motion_path) config.output.simulation_motion = *cli.motion_path;
-    if (bundle && config.simulation.servoLike()) {
-      // The bundle's effective follow.toml would drop these keys and the
-      // bundled run would silently be the ideal servo.
-      throw std::runtime_error(
-          "--bundle does not yet record the servo-like [simulation] keys "
-          "(per-joint gains, friction, command delay, encoder "
-          "quantization); run with --log and --motion instead");
-    }
     if (bundle) {
       const auto prepared = follow::prepareBundle(bundle->staging(), config);
       config = follow::loadConfig(prepared.config_path);
