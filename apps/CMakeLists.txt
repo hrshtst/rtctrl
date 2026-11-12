@@ -1,9 +1,9 @@
 # Sources are grouped by domain (bus/ bringup/ gravity/ track/ plan/
-# ident/ study/ disturb/, cross-domain headers in common/); binaries stay
-# FLAT at build/apps/ — the bring-up checklist, operator shell history, and
-# archived session notes all invoke ./build/apps/<name>, so no
-# add_subdirectory() here. App-layer includes are subdir-qualified and
-# resolve from this directory as the include root.
+# ident/ study/ disturb/ learn/, cross-domain headers in common/);
+# binaries stay FLAT at build/apps/ — the bring-up checklist, operator
+# shell history, and archived session notes all invoke ./build/apps/<name>,
+# so no add_subdirectory() here. App-layer includes are subdir-qualified
+# and resolve from this directory as the include root.
 
 add_executable(dxl_emu bus/dxl_emu.cpp)
 target_link_libraries(dxl_emu PRIVATE rtctrl::rtctrl)
@@ -86,6 +86,11 @@ target_include_directories(x7_teach PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(x7_force_budget disturb/x7_force_budget.cpp)
 target_link_libraries(x7_force_budget PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_force_budget PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Offline model-torque table for analysis tools: never opens the bus.
+add_executable(x7_model_torque learn/x7_model_torque.cpp)
+target_link_libraries(x7_model_torque PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_model_torque PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
         bringup/x7_move_simple bringup/x7_pose gravity/x7_float

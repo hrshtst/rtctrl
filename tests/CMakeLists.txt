@@ -7,6 +7,7 @@ add_executable(unit_tests
   unit/link_force_test.cpp
   unit/force_budget_test.cpp
   unit/force_budget_config_test.cpp
+  unit/model_torque_test.cpp
   unit/link_force_substep_test.cpp
   unit/link_force_log_test.cpp
   unit/async_writer_test.cpp
@@ -107,6 +108,16 @@ add_test(NAME x7_force_budget_smoke
 set_tests_properties(x7_force_budget_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "force budget smoke OK"
+  LABELS integration)
+
+add_test(NAME x7_model_torque_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/model_torque_smoke.sh
+          $<TARGET_FILE:x7_model_torque>
+          ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+          ${CMAKE_BINARY_DIR}/model_torque_smoke)
+set_tests_properties(x7_model_torque_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "model torque smoke OK"
   LABELS integration)
 
 # The force-budget screen is offline: CLI errors reject before any model,
