@@ -915,7 +915,13 @@ units.
 mean error, the error above a band split (`--split-hz`, default 3 Hz), the
 reference speed and acceleration at the first and last tracking sample (a
 rest-to-rest check), a lag-stiffness fit `e = -tau/K - T*dqref + c` on the
-log's torque, and a servo-law fit `tau = Ks*(applied - q) - Ds*dq + b`:
+log's torque, and a servo-law fit `tau = Ks*(applied - q) - Ds*dq + b`. Per
+log it also prints the aggregate RMS of the error and of the error above the
+split, over all 8 joints and over arm joints 0 to 6 (the RMS over the joints
+of the per-joint values), in the line
+`aggregate RMS e: 8 joints X mrad, arm 0-6 Y mrad; above S Hz: 8 joints X mrad, arm 0-6 Y mrad`;
+its JSON holds them as `aggregate.all` and `aggregate.arm`, each with
+`e_rms_rad` and `e_rms_above_split_rad`:
 
 ```sh
 uv run --project tools tools/follow_learnability.py anatomy \
@@ -967,7 +973,9 @@ convention and their limits are in the
 
 This section is the workflow in simulation, with `x7_follow_sim`. Applying a
 learned offset on the physical arm is not approved yet (see the note's
-[comparison](../theory/learning-control.md#comparison)).
+[comparison](../theory/learning-control.md#comparison)); what the simulation
+showed is in the note's
+[simulation acceptance](../theory/learning-control.md#simulation-acceptance).
 
 #### The follower with an offset
 
@@ -1237,13 +1245,18 @@ are errors that name the key:
 eight canonical joints whose gripper entry (the last) is 0: the gripper is
 never learned. ILC is off until they are set: with both 0 on every joint (the
 default), `ilc` refuses to run, and a joint with both 0 is passed through
-unchanged. The ceilings come from the theory note: `phi < 2` is the
-low-frequency contraction condition `0 < Φ < 2` of the
-[sampled law](../theory/learning-control.md#what-100-hz-sampling-adds), and
-`psi_s <= 0.1 s` caps the velocity gain, which the note's
+unchanged. `phi < 2` is the low-frequency contraction condition
+`0 < Φ < 2` of the theory note's
+[sampled law](../theory/learning-control.md#what-100-hz-sampling-adds).
+`psi_s <= 0.1 s` is an engineering cap, taken from the library's convergence
+tests on a representative lagged plant with the low-pass at 2 Hz; it is not
+the note's
 [gain condition](../theory/learning-control.md#conditions-the-papers-assume)
-bounds by `2 K^-1 D`, less than twice the measured lag. Within the ceilings
-the usable gains are still to be found in simulation. The ILC update clamps each sample's change to `max_trial_step_rad`
+`2 K^-1 D`, which the note maps onto the servo only by inference. The gains
+tried inside the ceilings, and the nominal candidate (`phi = 0.5`,
+`psi_s = 0`), are in the note's
+[simulation acceptance](../theory/learning-control.md#simulation-acceptance).
+The ILC update clamps each sample's change to `max_trial_step_rad`
 and its value to `limits.max_offset_rad`, and the summary reports how many
 samples each clamp changed. Feedback-error learning always updates arm joints
 0 to 6; a regressor column with an RMS below 1e-6 over the trial is skipped
@@ -1293,21 +1306,35 @@ as the trial of a zero offset (its commands are the reference), but run trial
 0 with the zero offset file, so that every trial of the series has the same
 phases.
 
-On success the tool prints each output with its SHA-256, a per-joint table
-(tracking RMS of the measured trial, offset RMS and peak, and the ILC clamp
-counts or the feedback-error eigenvalue and skipped columns), and the
-aggregate tracking RMS of the trial it read:
+On success the tool prints each output with its SHA-256 and a per-joint table
+with the columns `error_rms_rad` (the tracking RMS of the measured trial, when
+a log was read), `offset_rms_rad`, `offset_max_rad` and
+`offset_max_rate_rad_s` of the new offset (the last is the largest
+`abs(delta[i+1] - delta[i]) / dt`, the measure the offset rate limit bounds),
+then `step_clamped` and `abs_clamped` for `ilc`, or `lambda_max` and `skipped`
+for `fel`. Two lines follow: the aggregate tracking RMS of the trial it read,
+and the new offset's maximum rate over all joints:
 
 ```text
 tracking RMS of trial K: X rad over all 8 joints, Y rad over arm joints 0-6
+offset max rate of trial M: R rad/s over all 8 joints
 ```
 
-`K` is the input offset's trial number. Over a series, these lines are the
-learning curve. `--report FILE` (for `ilc` and `fel`) writes the same numbers
-as TOML (format `rtctrl-x7-follow-learn-report`; the `[tracking]` table's
-`aggregate_rms_rad` and `arm_rms_rad`, the per-joint tracking and offset
-values, the `[ilc]` or `[fel]` diagnostics), together with the path and SHA-256
-of every input and of the outputs written before it.
+`K` is the trial the log recorded and `M` the new offset's trial. Without a
+log (`init`, `synth`) the `error_rms_rad` column and the first line are
+absent. Over a series, the first lines are the learning curve. `--report FILE`
+(for `ilc` and `fel`) writes the same numbers as TOML (format
+`rtctrl-x7-follow-learn-report`): the `[tracking]` table's
+`aggregate_rms_rad`, `arm_rms_rad` and per-joint `error_rms_rad`; the
+`[offset]` table of the new offset, with the per-joint `rms_rad`,
+`max_abs_rad` and `max_rate_rad_s` and the maximum rate over all 8 joints,
+`aggregate_max_rate_rad_s`; the `[ilc]` or `[fel]` diagnostics; and the path
+and SHA-256 of every input and of the outputs written before it. The offset's
+rate here and the aggregate error above 3 Hz of
+[`anatomy`](#learnability-analysis-of-follow-logs) are reported because a stop
+rule must watch them besides the aggregate RMS: in the theory note's
+[over-aggressive case](../theory/learning-control.md#an-over-aggressive-setting)
+the aggregate RMS never rose above trial 0's while both grew.
 
 The tool's error is `e = qref - q`, the negative of the log's `errorN_rad`
 column: the theory note's sign (see its
@@ -1353,7 +1380,11 @@ four ILC trials of the pick example in the servo-like simulation, checking
 that the follower accepts each offset the tool wrote, that each offset's
 lineage and signature chain to the previous trial's, and that the aggregate
 tracking RMS falls at every trial. Run it with
-`ctest --test-dir build -R x7_follow_learn_loop_smoke`.
+`ctest --test-dir build -R x7_follow_learn_loop_smoke`. The integration test
+`x7_follow_offset_emulator_smoke`
+(`tests/integration/follow_offset_emulator_smoke.sh`) rehearses the hardware
+frontend `x7_follow` with an offset over the bus emulator, for plumbing and
+lineage only: the emulated servo has no gravity or dynamics.
 
 #### Two schemes
 
@@ -1386,6 +1417,131 @@ tracking RMS falls at every trial. Run it with
 - The tool does not check feedback freshness. It reads `phase`,
   `phase_time_s`, `receipt_accepted`, `qref`, `q` and `qcmd`, so a stale
   feedback sample enters the update as it is.
+
+### The simulation study harness
+
+`tools/follow_learn_study.py` runs whole learning series in simulation and
+evaluates criteria fixed in a plan beforehand. It invokes only `x7_plan_ptp`,
+`x7_follow_sim` and `x7_follow_learn`, none of which opens the bus. Its
+results for the checked-in plans are in the theory note's
+[simulation acceptance](../theory/learning-control.md#simulation-acceptance).
+
+A plan is a TOML file (format `rtctrl-learn-study-plan`, version 1; paths
+relative to the plan) with:
+
+- `[references]`: named references, each planned by `x7_plan_ptp` (`plan`),
+  copied from a prepared `.zvs` (`zvs`), or another reference without its
+  leading frames (`from` with `cut_leading_s` or `cut_leading_frames`);
+- `[defaults]`: the reference, the base follow and learn configurations, the
+  method (`ilc` or `fel`) and the number of trials (`trials = 6` is trials 0
+  to 5, five updates), with values set (`follow_set`, `learn_set`) or scaled
+  (`follow_scale`) in those configurations;
+- `[criteria]`: named sets of checks;
+- `[[case]]`: one learning series each, starting from the defaults or from an
+  earlier case (`like`), with its changes, optional per-trial perturbations
+  (`perturb`, for example a link force in one trial), for `fel` an optional
+  transfer target (`transfer_to`), and its criteria, which are never
+  inherited;
+- `[[sweep]]`: exploratory, one case per combination of the values in `vary`,
+  without criteria.
+
+The checks are `runs_ok`, `decreasing`, `ratio`, `bounded`, `no_clamp`,
+`hf_ratio`, `vs_case` and `transfer`; the tool's `--help` documents them and
+the full schema. "RMS" in a check is the aggregate tracking RMS over all 8
+joints, and `hf_ratio` compares the RMS of the error above the band split
+(`split_hz`, default 3 Hz). For each case the harness writes the case's follow
+and learn configurations into a directory of its own and runs the
+[learning loop](#a-learning-loop-in-simulation): `init` (and `init-weights`
+for `fel`), then each trial with `x7_follow_sim` and, after every trial but
+the last, the update with `--report`. Any nonzero exit, or a result the
+harness cannot confirm (the follower's acceptance line for exactly the offset
+passed, an offset's lineage), stops that case; the stop is recorded verbatim,
+and nothing is retried with other settings.
+
+Two plans are checked in under `config/learn_study/`:
+
+- `acceptance.toml`, the acceptance plan, whose criteria were fixed before the
+  runs: the nominal ILC case and its robustness cases, a disturbance in one
+  trial, an over-aggressive case, and the feedback-error and transfer cases;
+- `margins.toml`, exploratory sweeps of the nominal ILC case (gain, cut-off,
+  advance, velocity gain, and the cut-off against the command delay),
+  reported without pass or fail.
+
+Build first, then run a plan:
+
+```sh
+uv run --project tools python tools/follow_learn_study.py \
+  config/learn_study/acceptance.toml --jobs 4
+```
+
+`--out DIR` names the output directory (default
+`build/learn_study/PLAN-STEM-YYYYmmdd-HHMMSS`), which must not exist;
+`--bin-dir DIR` says where the binaries are (default `build/apps`); `--jobs N`
+runs N cases at a time, each in a child process (default 1). The output
+directory receives a directory per case, the references, a copy of the plan,
+and `summary.json` (SI units). Standard output gets one line per case: its
+name, the verdict of each criterion and the RMS curve in mrad. The exit status
+is 0 when every case completed and every criterion passed, 1 when a criterion
+failed or a case stopped, and 2 on a usage error, an invalid plan or a
+reference that could not be prepared.
+
+### The adaptive-control study
+
+`x7_adaptive_follow_study` is a simulation-only study of Slotine and Li's
+adaptive controller in position form (the theory note's
+[Slotine and Li section](../theory/learning-control.md#slotine-and-li-adaptive-control-in-position-form);
+results in
+[Slotine and Li in simulation](../theory/learning-control.md#slotine-and-li-in-simulation)).
+It has no bus code and no `--port`: the follow configuration's hardware file
+is read only for the simulated effort limits. Like `x7_efl_study`, it is
+offline by charter and is not a controller for the real arm.
+
+It runs repeated passes of one follow reference on the simulated arm of
+`x7_follow_sim`, with the configuration's
+[servo-like](#servo-like-simulation) keys, each pass on a fresh simulated arm:
+homing by the plain position command (a minimum-jerk move to `q_d(0)` and the
+settle, without the follower's home corrections); the follower's offset ramp
+to `q_d(0) + delta_0`; tracking with the in-loop adaptive offset; and a 1 s
+hold at `q_d(T) + delta` with the controller still in the loop. The weights
+adapt every control cycle and carry over between passes. The configuration
+must use position mode; its `learning.max_offset_rad` clamps the offset and
+its `learning.max_offset_rate_rad_s` sets the ramp's rate.
+
+```sh
+./build/apps/x7_plan_ptp --config config/ptp_pick_example.toml \
+  --output pick.zvs --no-diagnostics
+./build/apps/x7_adaptive_follow_study \
+  --config config/follow_sim_servo_like.toml --reference pick.zvs \
+  --form desired --gamma 0.5 --out adaptive-desired
+```
+
+| Option | Meaning |
+|---|---|
+| `--config FILE` | the follow simulation configuration (required) |
+| `--form FORM` | `desired` (regressors on the desired trajectory) or `proper` (on the measured state); required |
+| `--gamma G` | common adaptation rate [1/s], >= 0 (required); 0 keeps the weights fixed |
+| `--out DIR` | output directory (required) |
+| `--reference FILE` | overrides the configuration's reference |
+| `--lambda L` | proper form only: `dq_r = dq_d + L e` [1/s] (default 0) |
+| `--lead T_S` | error signal `e + T_S de/dt` [s] (default 0) |
+| `--advance DELTA` | pairs the regressor row of DELTA ago with the present error [s] (default 0.05) |
+| `--passes P` | repeated passes (default 8) |
+| `--command-delay-cycles N` | overrides `simulation.command_delay_cycles` |
+| `--no-offset-ramp` | starts tracking without the ramp to `q_d(0) + delta_0` |
+| `--initial-weights FILE` | starts from the last pass of an earlier run's `weights.csv` |
+
+The study creates DIR if needed and writes, overwriting what is there,
+`summary.csv` (one row per pass: tracking RMS over all and over the arm joints
+and per joint, the above-3-Hz RMS, the worst error, the maximum offset and
+offset rate, the clamped cycles), `weights.csv` (the weights after each
+pass), `regressor_scale.csv` (per pass, the mean square of each regressor
+column as used in the loop over its mean square on the desired trajectory:
+the factor by which that weight's effective adaptation rate differs from
+`gamma`), `last_pass.csv` (every cycle of the last pass run) and
+`settings.txt`. Standard output gets one line per pass. A pass whose RMS
+exceeds 3 times pass 0's, or that produces a non-finite value, is marked
+diverged and ends the run. The last line says whether the passes completed or
+diverged; the exit status is 0 in both cases and 1 on an error.
 
 ### Link-force disturbances and the force-budget screen
 
