@@ -4,7 +4,7 @@
 // velocity estimate (first-order lag + one-LSB quantization) in
 // state.dq.
 //
-// Two startup semantics, both pinned by tests/unit/lagged_arm_test.cpp:
+// Three startup semantics, all pinned by tests/unit/lagged_arm_test.cpp:
 //  * legacy (default; the x7_track_sim behavior): the FIRST command
 //    passes through immediately AND becomes the pending command, so it
 //    is applied twice; every later command is applied one cycle after
@@ -14,11 +14,21 @@
 //    zero-current commands, so the command accepted at cycle k is
 //    applied at cycle k + delay_cycles from the first cycle on
 //    (docs/records/history.md (EFL frozen specification), preregistered constants).
+//  * hold-preloaded (first_passthrough = false and hold_preload = true;
+//    the follower's servo-like simulation, any mode): the queue begins
+//    with `delay_cycles` (>= 0) HOLD slots instead (counted, not stored).
+//    A hold slot reaching the actuator writes nothing, so the inner arm
+//    keeps its activation goal (SimArm's position modes hold the
+//    activated posture) and the command records stay as they were
+//    (invalid before the first application); the command accepted at
+//    cycle k is applied at cycle k + delay_cycles, and delay_cycles = 0
+//    passes every command through.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <stdexcept>
 
 #include "rtctrl/arm/arm.hpp"
 
@@ -32,6 +42,9 @@ struct LaggedArmOptions {
   bool first_passthrough = true;  // legacy startup; false = zero-preload
   bool exact_velocity = false;    // pass state.dq through unfiltered
   bool quantize_pos = true;       // round positions to the encoder LSB
+  // Hold slots instead of zero-current commands in the preloaded queue
+  // (requires first_passthrough = false; delay_cycles >= 0).
+  bool hold_preload = false;
 };
 
 struct LaggedArm : arm::Arm {
@@ -40,6 +53,15 @@ struct LaggedArm : arm::Arm {
 
   LaggedArm(arm::Arm& inner, double vel_tau, LaggedArmOptions options = {})
       : inner_(inner), vel_tau_(vel_tau), opt_(options) {
+    if (opt_.hold_preload) {
+      if (opt_.first_passthrough || opt_.delay_cycles < 0) {
+        throw std::invalid_argument(
+            "LaggedArm: hold_preload needs first_passthrough = false and "
+            "delay_cycles >= 0");
+      }
+      holds_left_ = opt_.delay_cycles;
+      return;
+    }
     if (!opt_.first_passthrough) {
       arm::JointCommand zero;
       zero.mode = arm::ControlMode::Current;
@@ -87,6 +109,7 @@ struct LaggedArm : arm::Arm {
 
   bool writeCommand(const arm::JointCommand& cmd,
                     arm::CommandReceipt* receipt = nullptr) override {
+    if (opt_.hold_preload) return writeAfterHold(cmd, receipt);
     const std::uint64_t this_seq = ++wrapper_seq_;
     const double now = last_time_;
     bool ok = true;
@@ -116,6 +139,29 @@ struct LaggedArm : arm::Arm {
     std::uint64_t seq;
   };
 
+  // The hold-preloaded pipeline. The first delay_cycles calls meet the
+  // hold slots: their commands only join the queue and nothing is
+  // written. Afterwards this command joins the queue first, so the front
+  // is the command accepted delay_cycles calls ago (this one when
+  // delay_cycles = 0). Between calls the queue holds at most
+  // delay_cycles commands.
+  bool writeAfterHold(const arm::JointCommand& cmd,
+                      arm::CommandReceipt* receipt) {
+    const std::uint64_t this_seq = ++wrapper_seq_;
+    const double now = last_time_;
+    bool ok = true;
+    pending_.push_back({cmd, this_seq});
+    if (holds_left_ > 0) {
+      --holds_left_;
+    } else {
+      ok = inner_.writeCommand(pending_.front().cmd);
+      if (ok) adoptInnerRecords(pending_.front().seq, now);
+      pending_.pop_front();
+    }
+    if (receipt != nullptr) *receipt = {ok, this_seq, now};
+    return ok;
+  }
+
   // Take the inner sim's freshly synthesized records (they carry the
   // clamp truth) but stamp them with the WRAPPER's sequence.
   void adoptInnerRecords(std::uint64_t wrapper_seq, double now) {
@@ -134,6 +180,7 @@ struct LaggedArm : arm::Arm {
   double vel_tau_;
   LaggedArmOptions opt_;
   std::deque<Pending> pending_;
+  int holds_left_ = 0;  // hold-preload slots not yet reached
   std::uint64_t wrapper_seq_ = 0;
   bool primed_ = false;
   double last_time_ = 0.0;
