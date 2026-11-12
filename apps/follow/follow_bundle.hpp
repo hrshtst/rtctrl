@@ -1,12 +1,29 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "follow/follow_config.hpp"
+#include "follow/follow_preflight.hpp"
 #include "plan/ptp_bundle.hpp"
 
 namespace x7::follow {
+
+// Archived name of the learned command offset inside a follow bundle.
+inline constexpr const char* kOffsetBundleFile = "offset.csv";
+
+// Result-file lines (root-level TOML keys) recording which learned offset
+// a run applied; empty without one.
+inline std::string offsetProvenance(
+    const std::optional<AcceptedOffset>& accepted) {
+  if (!accepted) return {};
+  // The method is one of zero/ilc/fel and the hash 64 hex characters (the
+  // offset passed its structural check), so neither needs escaping.
+  return "offset_method = \"" + accepted->offset.method +
+         "\"\noffset_trial = " + std::to_string(accepted->offset.trial) +
+         "\noffset_sha256 = \"" + accepted->sha256 + "\"\n";
+}
 
 struct PreparedBundle {
   std::filesystem::path config_path;

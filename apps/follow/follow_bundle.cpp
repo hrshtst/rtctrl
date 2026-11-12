@@ -140,6 +140,12 @@ void writeEffectiveConfig(const fs::path& path, const Config& config,
       << "\n\n[output]\nsimulation_motion = \"simulation.zvs\""
       << "\nsimulation_log = \"simulation.csv\""
       << "\nhardware_log = \"hardware.csv\"\n";
+  if (config.learning.offset_path) {
+    out << "\n[learning]\noffset = " << quote(kOffsetBundleFile)
+        << "\nmax_offset_rad = " << config.learning.max_offset_rad
+        << "\nmax_offset_rate_rad_s = "
+        << config.learning.max_offset_rate_rad_s << '\n';
+  }
   out.close();
   if (!out) throw std::runtime_error("cannot finish " + path.string());
 }
@@ -164,6 +170,10 @@ PreparedBundle prepareBundle(const fs::path& staging,
     x7::ptp::copyBundleRegularFile(
         *effective_config.simulation.link_force_path,
         staging / x7::kLinkForceBundleFile);
+  }
+  if (effective_config.learning.offset_path) {
+    x7::ptp::copyBundleRegularFile(*effective_config.learning.offset_path,
+                                   staging / kOffsetBundleFile);
   }
   const auto config_path = staging / "follow.toml";
   writeEffectiveConfig(config_path, effective_config,

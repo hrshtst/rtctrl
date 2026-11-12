@@ -25,6 +25,7 @@ add_executable(unit_tests
   unit/ptp_config_test.cpp
   unit/follow_config_test.cpp
   unit/follow_run_test.cpp
+  unit/follow_offset_test.cpp
   unit/posture_reference_test.cpp
   unit/track_run_test.cpp
   unit/track_config_test.cpp
@@ -153,6 +154,23 @@ add_test(NAME x7_follow_bundle_smoke
 set_tests_properties(x7_follow_bundle_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "follow bundle creation and replay OK"
+  LABELS integration)
+
+# x7_follow only gets --check or a refusal, with a --port that does not
+# exist: it never opens a bus.
+add_test(NAME x7_follow_offset_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_offset_smoke.sh
+          $<TARGET_FILE:x7_follow_sim>
+          $<TARGET_FILE:x7_follow>
+          $<TARGET_FILE:x7_plan_ptp>
+          ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+          ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+          ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
+          ${CMAKE_BINARY_DIR}/follow_offset_smoke)
+set_tests_properties(x7_follow_offset_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "follow offset smoke OK"
+  FAIL_REGULAR_EXPRESSION "bus:"
   LABELS integration)
 
 add_test(NAME x7_follow_link_force_smoke

@@ -54,6 +54,7 @@ void usage() {
       "  --effort-limit-nm VALUE\n"
       "  --filter none|low-pass|moving-average|savitzky-golay\n"
       "  --interpolation linear|shape-preserving-cubic\n"
+      "  --offset FILE        learned command offset ([learning] offset)\n"
       "  --port DEV\n"
       "  --log FILE\n"
       "  --timing-log FILE    per-cycle host timing (hardware only)\n"
@@ -137,6 +138,7 @@ int main(int argc, char* argv[]) {
           "a reference built from the measured posture must start exactly "
           "there: use reference_processing.filter = none (--filter none)");
     }
+    if (posture) follow::refusePostureOffset(config);
 
     model::ChainModel chain(config.model_path.string());
     model::JointMap map(chain);
@@ -148,9 +150,12 @@ int main(int argc, char* argv[]) {
           config.reference_path.string(), map, config.reference);
     }
     auto hardware = hw::Config::load(config.hardware_config_path.string());
+    std::optional<follow::AcceptedOffset> offset;
     if (reference) {
       follow::validateReference(config, chain, map, *reference, hardware);
+      offset = follow::preflightOffset(config, chain, map, *reference);
     }
+    if (offset) std::printf("%s\n", follow::describeOffset(*offset).c_str());
 
     std::optional<parameters::ParameterDump> parameter_dump;
     if (config.motor_parameters_path) {
@@ -256,6 +261,7 @@ int main(int argc, char* argv[]) {
       if (timing_log) timing_log->start();
       follow::FollowRun run(robot, *reference, config, false, &log,
                             [&enter] { return enter.pressed(); });
+      if (offset) run.setCommandOffset(&offset->offset);
       result = run.run();
       stats = crane.cycleStats();
       released = shutdown.run();
@@ -286,8 +292,10 @@ int main(int argc, char* argv[]) {
           bundle->staging(), "hardware", follow::statusName(result.status),
           result.cycles, result.worst_home_error_rad,
           result.worst_tracking_error_rad,
-          config.simulation.link_force_path ? x7::hardwareLinkForceProvenance()
-                                            : std::string());
+          (config.simulation.link_force_path
+               ? x7::hardwareLinkForceProvenance()
+               : std::string()) +
+              follow::offsetProvenance(offset));
       x7::ptp::writeBundleManifestFor(
           bundle->staging(), "rtctrl-x7-follow-bundle", 1,
           rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);

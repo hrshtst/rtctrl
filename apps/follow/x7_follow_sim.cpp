@@ -49,6 +49,7 @@ void usage() {
       "  --effort-limit-nm VALUE\n"
       "  --filter none|low-pass|moving-average|savitzky-golay\n"
       "  --interpolation linear|shape-preserving-cubic\n"
+      "  --offset FILE        learned command offset ([learning] offset)\n"
       "  --motion FILE\n"
       "  --log FILE\n"
       "  --bundle NEW_DIRECTORY\n"
@@ -105,6 +106,8 @@ int main(int argc, char* argv[]) {
                                 : config.finalization.simulation_hold_time_s);
       x7::preflightLinkForce(*link_force, chain, run_s);
     }
+    const auto offset = follow::preflightOffset(config, chain, map, reference);
+    if (offset) std::printf("%s\n", follow::describeOffset(*offset).c_str());
     if (cli.check) {
       std::printf("configuration and reference preflight passed\n");
       return 0;
@@ -166,6 +169,7 @@ int main(int argc, char* argv[]) {
         x7::armLinkForce(robot, *link_force, force_log.get(), run,
                          &force_report);
       }
+      if (offset) run.setCommandOffset(&offset->offset);
       result = run.run();
       released = robot.deactivate();
       log_ok = log.close();
@@ -179,8 +183,9 @@ int main(int argc, char* argv[]) {
           bundle->staging(), "simulation", follow::statusName(result.status),
           result.cycles, result.worst_home_error_rad,
           result.worst_tracking_error_rad,
-          link_force ? x7::simulationLinkForceProvenance(force_report.outcome)
-                     : std::string());
+          (link_force ? x7::simulationLinkForceProvenance(force_report.outcome)
+                      : std::string()) +
+              follow::offsetProvenance(offset));
       x7::ptp::writeBundleManifestFor(
           bundle->staging(), "rtctrl-x7-follow-bundle", 1,
           rtctrl::version(), x7::gitrev::kBuildSha, x7::gitrev::kBuildDirty);
