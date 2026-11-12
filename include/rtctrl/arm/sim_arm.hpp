@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,10 +36,11 @@ class LinkForceCsvLog;
 // zeroed at the stop).
 //
 // JointState::tau reports the servo-equivalent canonical torque BEFORE
-// the model-coordinate effort clamp (and without the setDisturbance and
-// numeric-damping terms), so under saturation it can differ from the
-// effort the forward dynamics used. Only the link-force telemetry below
-// is exact about what was applied.
+// the model-coordinate effort clamp (and without the setDisturbance,
+// numeric-damping and joint-friction terms), so under saturation, and
+// whenever friction is configured, it can differ from the effort the
+// forward dynamics used. Only the link-force telemetry below is exact
+// about what was applied.
 //
 // Link-force disturbance (setLinkForce): a prescribed external force on
 // one link, added to the forward dynamics as J^T f AFTER the actuator
@@ -59,11 +61,34 @@ class SimArm : public Arm {
     double sim_dt = 1e-4;      // integrator step [s]
     double control_dt = 0.01;  // one step() advances this much [s]
     // Servo-loop gains. The explicit integrator bounds usable gains by
-    // the smallest joint inertia: sqrt(kp/I)*dt and (kd/I)*dt well
-    // under ~2. Defaults fit the wrist links (~5e-4 kg·m²) at 1e-4 s.
+    // the smallest inertia I the joints present, never below
+    // reflected_inertia (added to every joint below; the links only add
+    // to it): for every joint, sqrt(kp/I)*sim_dt and (kd/I)*sim_dt well
+    // under ~2 with I = reflected_inertia, and with friction also
+    // (fc/friction_v0 + fv)/I*sim_dt (the smoothed Coulomb slope at
+    // rest). The defaults give 0.014 and 0.01 at 1e-4 s; a bare wrist
+    // link (~5e-4 kg·m², no reflected inertia) would give 0.14 and 1.0.
     double kp = 1000.0;  // position-mode servo stiffness [Nm/rad]
     double kd = 5.0;     // position-mode damping [Nms/rad]
     double kv = 5.0;     // velocity-mode gain [Nms/rad]
+    // Optional per-joint servo gains in canonical order, replacing kp and
+    // kd in the position and current-based position modes: exactly 8
+    // entries when given, kp8 finite and > 0, kd8 finite and >= 0
+    // (otherwise the constructor throws std::invalid_argument); empty =
+    // the scalar for every joint. Entry 7 is the gripper servo, whose
+    // torque is split over both fingers as with the scalars.
+    std::vector<double> kp8;  // [Nm/rad]
+    std::vector<double> kd8;  // [Nms/rad]
+    // Optional joint friction, off by default (both vectors empty):
+    // tau_f = -fc * tanh(v / friction_v0) - fv * v per canonical joint
+    // (the gripper's on finger_a, its canonical joint), added to the
+    // joint torque with the disturbance and numeric damping before the
+    // effort clamp and never reported in JointState::tau. Each vector has
+    // exactly 8 finite entries >= 0 when given (an empty one is zero);
+    // friction_v0 is finite and > 0 always.
+    std::vector<double> fc8;    // Coulomb level [Nm]
+    std::vector<double> fv8;    // viscous coefficient [Nms/rad]
+    double friction_v0 = 0.05;  // Coulomb smoothing speed [rad/s]
     // Finger coupling: overdamped — relative-velocity damping never
     // resists common-mode motion and is what pulls the pair together
     // through the effort clamp.
@@ -171,6 +196,13 @@ class SimArm : public Arm {
   model::ZVector effort9_{model::kModelDof};
   model::ZVector damping9_{model::kModelDof};
   model::ZVector disturbance_{model::kCanonicalDof + 1};  // [8] = finger_b
+  // Resolved per-joint servo gains (kp8/kd8, else the scalars) and the
+  // joint friction (canonical order; friction_ false = the path without it).
+  std::array<double, model::kCanonicalDof> kp8_{};
+  std::array<double, model::kCanonicalDof> kd8_{};
+  bool friction_ = false;
+  std::array<double, model::kCanonicalDof> fc8_{};
+  std::array<double, model::kCanonicalDof> fv8_{};
   model::ZvsWriter* log_ = nullptr;
 
   // Link-force state (see setLinkForce).

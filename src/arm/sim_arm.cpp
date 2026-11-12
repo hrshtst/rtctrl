@@ -27,6 +27,24 @@ double axisInertia(rkChain* chain, int link_id) {
   return inertia->c.zz + mass * (com->c.x * com->c.x + com->c.y * com->c.y);
 }
 
+// An optional canonical per-joint vector: empty, or exactly 8 finite
+// entries, each > 0 (positive) or >= 0 (otherwise).
+void checkJointVector(const std::vector<double>& values, const char* name,
+                      bool positive) {
+  if (values.empty()) return;
+  if (static_cast<int>(values.size()) != kCanonicalDof) {
+    throw std::invalid_argument(std::string("SimArm: ") + name +
+                                " must have 8 entries");
+  }
+  for (const double value : values) {
+    if (!std::isfinite(value) || (positive ? value <= 0.0 : value < 0.0)) {
+      throw std::invalid_argument(
+          std::string("SimArm: ") + name + " entries must be finite and " +
+          (positive ? "positive" : "non-negative"));
+    }
+  }
+}
+
 }  // namespace
 
 SimArm::SimArm(Options options)
@@ -36,6 +54,21 @@ SimArm::SimArm(Options options)
   if (static_cast<int>(options_.effort_limit8.size()) != kCanonicalDof) {
     throw std::invalid_argument("SimArm: effort_limit8 must have 8 entries");
   }
+  checkJointVector(options_.kp8, "kp8", true);
+  checkJointVector(options_.kd8, "kd8", false);
+  checkJointVector(options_.fc8, "fc8", false);
+  checkJointVector(options_.fv8, "fv8", false);
+  if (!std::isfinite(options_.friction_v0) || options_.friction_v0 <= 0.0) {
+    throw std::invalid_argument(
+        "SimArm: friction_v0 must be finite and positive");
+  }
+  for (int i = 0; i < kCanonicalDof; ++i) {
+    kp8_[i] = options_.kp8.empty() ? options_.kp : options_.kp8[i];
+    kd8_[i] = options_.kd8.empty() ? options_.kd : options_.kd8[i];
+    fc8_[i] = options_.fc8.empty() ? 0.0 : options_.fc8[i];
+    fv8_[i] = options_.fv8.empty() ? 0.0 : options_.fv8[i];
+  }
+  friction_ = !options_.fc8.empty() || !options_.fv8.empty();
 
   if (!options_.initial_q8.empty()) {
     if (static_cast<int>(options_.initial_q8.size()) != kCanonicalDof) {
@@ -178,16 +211,15 @@ void SimArm::computeTorques() {
       const double dq = v9_[offset];
       switch (mode_) {
         case ControlMode::Position:
-          tau8[i] = options_.kp * (zVecElemNC(cmd_.q.get(), i) - q) -
-                    options_.kd * dq;
+          tau8[i] = kp8_[i] * (zVecElemNC(cmd_.q.get(), i) - q) -
+                    kd8_[i] * dq;
           break;
         case ControlMode::CurrentBasedPosition: {
           const double limit = std::clamp(
               std::fabs(zVecElemNC(cmd_.effort_limit.get(), i)), 0.0,
               options_.effort_limit8[i]);
           tau8[i] = std::clamp(
-              options_.kp * (zVecElemNC(cmd_.q.get(), i) - q) -
-                  options_.kd * dq,
+              kp8_[i] * (zVecElemNC(cmd_.q.get(), i) - q) - kd8_[i] * dq,
               -limit, limit);
           break;
         }
@@ -222,6 +254,17 @@ void SimArm::computeTorques() {
                  damping9_[off_a] * v9_[off_a];
   tau9_[off_b] = grip + couple + zVecElemNC(disturbance_.get(), kCanonicalDof) -
                  damping9_[off_b] * v9_[off_b];
+  if (friction_) {
+    // Joint friction at the substep-start velocity, like the numeric
+    // damping, on each canonical joint's model coordinate (the gripper's
+    // is finger_a, as for setDisturbance); clamped with the rest below.
+    for (int i = 0; i < kCanonicalDof; ++i) {
+      const int offset = map_.rokiOffset(i);
+      const double v = v9_[offset];
+      tau9_[offset] +=
+          -fc8_[i] * std::tanh(v / options_.friction_v0) - fv8_[i] * v;
+    }
+  }
 
   for (int i = 0; i < kModelDof; ++i) {
     tau9_[i] = std::clamp(tau9_[i], -effort9_[i], effort9_[i]);
