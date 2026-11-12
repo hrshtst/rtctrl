@@ -127,6 +127,22 @@ set_tests_properties(x7_model_torque_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "model torque smoke OK"
   LABELS integration)
 
+add_test(NAME x7_follow_learn_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_learn_smoke.sh
+          $<TARGET_FILE:x7_follow_learn>
+          $<TARGET_FILE:x7_plan_ptp>
+          $<TARGET_FILE:x7_follow_sim>
+          ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+          ${CMAKE_SOURCE_DIR}/config/follow_example.toml
+          ${CMAKE_SOURCE_DIR}/config/follow_learn_example.toml
+          ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+          ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
+          ${CMAKE_BINARY_DIR}/follow_learn_smoke)
+set_tests_properties(x7_follow_learn_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "follow learn smoke OK"
+  LABELS integration)
+
 # The force-budget screen is offline: CLI errors reject before any model,
 # reference, or bus work (no "bus:" line ever).
 add_test(NAME x7_force_budget_requires_config COMMAND x7_force_budget)
