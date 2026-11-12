@@ -62,6 +62,28 @@ struct SimulationConfig {
   // Prescribed link-force disturbance (rtctrl-x7-link-force spec);
   // simulation-only, hardware frontends ignore it.
   std::optional<fs::path> link_force_path;
+  // Servo-like simulation (all optional; absent = the ideal servo above).
+  // position_kp/kd given as an array of 8: per canonical joint, replacing
+  // the scalar (which then keeps its default and is unused).
+  using JointValues = std::array<double, model::kCanonicalDof>;
+  std::optional<JointValues> position_kp_joints;
+  std::optional<JointValues> position_kd_joints;
+  // Joint friction, a number (every joint) or 8 values; absent = off.
+  std::optional<JointValues> coulomb_friction_nm;
+  std::optional<JointValues> viscous_friction_nm_s;
+  double friction_v0_rad_s = 0.05;
+  // Commands reach the simulated servo this many cycles after acceptance.
+  int command_delay_cycles = 0;
+  // Feedback position rounded to the encoder LSB, velocity a servo-style
+  // estimate (common/lagged_arm.hpp).
+  bool quantize_encoder = false;
+
+  // Whether any servo-like key is set.
+  bool servoLike() const {
+    return position_kp_joints || position_kd_joints || coulomb_friction_nm ||
+           viscous_friction_nm_s || command_delay_cycles != 0 ||
+           quantize_encoder;
+  }
 };
 
 struct SafetyConfig {
@@ -392,8 +414,49 @@ inline Config loadConfig(const fs::path& path) {
   const auto& simulation = optionalTable(root, "simulation");
   rejectUnknown(simulation,
                 {"initial_posture", "initial_joints", "integration_step_s",
-                 "position_kp", "position_kd", "velocity_kp", "link_force"},
+                 "position_kp", "position_kd", "velocity_kp", "link_force",
+                 "coulomb_friction_nm", "viscous_friction_nm_s",
+                 "friction_v0_rad_s", "command_delay_cycles",
+                 "quantize_encoder"},
                 "simulation");
+  // The servo-like keys take only their own TOML types (no conversion
+  // between booleans and numbers).
+  const auto fail = [](const char* key, const char* problem) {
+    throw std::runtime_error(std::string("follow config: simulation.") + key +
+                             problem);
+  };
+  // A number (every joint) or an array of eight numbers (canonical order).
+  const auto joint_values = [&simulation, &fail](const char* key) {
+    SimulationConfig::JointValues values{};
+    const auto node = simulation[key];
+    const auto* list = node.as_array();
+    if (list == nullptr && !node.is_number()) {
+      fail(key, " must be a number or eight numbers");
+    }
+    if (list != nullptr && list->size() != model::kCanonicalDof) {
+      fail(key, " needs one number or eight values");
+    }
+    for (int i = 0; i < model::kCanonicalDof; ++i) {
+      const toml::node& item = list != nullptr ? *list->get(i) : *node.node();
+      if (!item.is_number()) fail(key, " must be a number or eight numbers");
+      const double value = *item.value<double>();
+      if (!std::isfinite(value)) fail(key, " must be finite");
+      values[i] = value;
+    }
+    return values;
+  };
+  if (simulation["friction_v0_rad_s"] &&
+      !simulation["friction_v0_rad_s"].is_number()) {
+    fail("friction_v0_rad_s", " must be finite");
+  }
+  if (simulation["command_delay_cycles"] &&
+      !simulation["command_delay_cycles"].is_integer()) {
+    fail("command_delay_cycles", " must be an integer");
+  }
+  if (simulation["quantize_encoder"] &&
+      !simulation["quantize_encoder"].is_boolean()) {
+    fail("quantize_encoder", " must be boolean");
+  }
   const auto link_force = inputPath(simulation, "link_force", path, false);
   if (!link_force.empty()) config.simulation.link_force_path = link_force;
   if (const auto value = simulation["initial_posture"].value<std::string>()) {
@@ -424,10 +487,34 @@ inline Config loadConfig(const fs::path& path) {
   config.simulation.integration_step_s = number(
       simulation, "integration_step_s", config.simulation.integration_step_s,
       "simulation");
-  config.simulation.position_kp = number(
-      simulation, "position_kp", config.simulation.position_kp, "simulation");
-  config.simulation.position_kd = number(
-      simulation, "position_kd", config.simulation.position_kd, "simulation");
+  if (simulation["position_kp"].as_array() != nullptr) {
+    config.simulation.position_kp_joints = joint_values("position_kp");
+  } else {
+    config.simulation.position_kp = number(
+        simulation, "position_kp", config.simulation.position_kp, "simulation");
+  }
+  if (simulation["position_kd"].as_array() != nullptr) {
+    config.simulation.position_kd_joints = joint_values("position_kd");
+  } else {
+    config.simulation.position_kd = number(
+        simulation, "position_kd", config.simulation.position_kd, "simulation");
+  }
+  if (simulation["coulomb_friction_nm"]) {
+    config.simulation.coulomb_friction_nm = joint_values("coulomb_friction_nm");
+  }
+  if (simulation["viscous_friction_nm_s"]) {
+    config.simulation.viscous_friction_nm_s =
+        joint_values("viscous_friction_nm_s");
+  }
+  config.simulation.friction_v0_rad_s =
+      number(simulation, "friction_v0_rad_s",
+             config.simulation.friction_v0_rad_s, "simulation");
+  config.simulation.command_delay_cycles =
+      integer(simulation, "command_delay_cycles",
+              config.simulation.command_delay_cycles, "simulation");
+  config.simulation.quantize_encoder =
+      boolean(simulation, "quantize_encoder",
+              config.simulation.quantize_encoder, "simulation");
   // Schema-v1 archives may contain this former velocity-adapter gain. Keep
   // accepting and validating it so position/CBP bundles remain replayable.
   const double legacy_velocity_kp =
@@ -437,6 +524,33 @@ inline Config loadConfig(const fs::path& path) {
       config.simulation.position_kd < 0.0 ||
       legacy_velocity_kp <= 0.0) {
     throw std::runtime_error("follow config: invalid simulation gain or step");
+  }
+  const auto every_joint =
+      [](const std::optional<SimulationConfig::JointValues>& values,
+         bool positive) {
+        return !values ||
+               std::all_of(values->begin(), values->end(),
+                           [positive](double v) {
+                             return positive ? v > 0.0 : v >= 0.0;
+                           });
+      };
+  if (!every_joint(config.simulation.position_kp_joints, true) ||
+      !every_joint(config.simulation.position_kd_joints, false)) {
+    throw std::runtime_error(
+        "follow config: simulation.position_kp must be positive and "
+        "position_kd non-negative on every joint");
+  }
+  if (!every_joint(config.simulation.coulomb_friction_nm, false) ||
+      !every_joint(config.simulation.viscous_friction_nm_s, false) ||
+      config.simulation.friction_v0_rad_s <= 0.0) {
+    throw std::runtime_error(
+        "follow config: simulation friction must be non-negative with a "
+        "positive friction_v0_rad_s");
+  }
+  if (config.simulation.command_delay_cycles < 0) {
+    throw std::runtime_error(
+        "follow config: simulation.command_delay_cycles must be "
+        "non-negative");
   }
 
   const auto& safety = optionalTable(root, "safety");

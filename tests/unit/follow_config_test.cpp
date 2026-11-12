@@ -271,6 +271,135 @@ TEST_CASE("hardware follow refuses a parameter dump that owns mode",
                     Catch::Matchers::ContainsSubstring("unconfigured"));
 }
 
+TEST_CASE("follow config keeps the ideal simulated servo by default",
+          "[follow][config][servo_like]") {
+  const char* path = "build/follow_servo_default.toml";
+  writeConfig(path, "[simulation]\nposition_kp = 300\nposition_kd = 2.5\n");
+  const auto simulation = follow::loadConfig(path).simulation;
+  std::remove(path);
+  CHECK(simulation.position_kp == 300.0);  // the scalar form, as before
+  CHECK(simulation.position_kd == 2.5);
+  CHECK_FALSE(simulation.position_kp_joints);
+  CHECK_FALSE(simulation.position_kd_joints);
+  CHECK_FALSE(simulation.coulomb_friction_nm);
+  CHECK_FALSE(simulation.viscous_friction_nm_s);
+  CHECK(simulation.friction_v0_rad_s == 0.05);
+  CHECK(simulation.command_delay_cycles == 0);
+  CHECK_FALSE(simulation.quantize_encoder);
+  CHECK_FALSE(simulation.servoLike());
+  CHECK_FALSE(follow::SimulationConfig{}.servoLike());
+}
+
+TEST_CASE("follow config reads the servo-like simulation keys",
+          "[follow][config][servo_like]") {
+  const char* path = "build/follow_servo_like.toml";
+  writeConfig(path,
+              "[simulation]\n"
+              "position_kp = [20, 60, 20.5, 20, 20, 20, 20, 21]\n"
+              "position_kd = [0.8, 2.4, 0.8, 0, 0.8, 0.8, 0.8, 0.84]\n"
+              "coulomb_friction_nm = 0.1\n"
+              "viscous_friction_nm_s = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]\n"
+              "friction_v0_rad_s = 0.02\n"
+              "command_delay_cycles = 2\n"
+              "quantize_encoder = true\n");
+  const auto simulation = follow::loadConfig(path).simulation;
+  std::remove(path);
+  REQUIRE(simulation.position_kp_joints);
+  REQUIRE(simulation.position_kd_joints);
+  CHECK((*simulation.position_kp_joints)[1] == 60.0);
+  CHECK((*simulation.position_kp_joints)[2] == 20.5);
+  CHECK((*simulation.position_kp_joints)[7] == 21.0);
+  CHECK((*simulation.position_kd_joints)[3] == 0.0);
+  CHECK((*simulation.position_kd_joints)[7] == 0.84);
+  CHECK(simulation.position_kp == 1000.0);  // the unused scalar default
+  REQUIRE(simulation.coulomb_friction_nm);
+  for (const double value : *simulation.coulomb_friction_nm) {
+    CHECK(value == 0.1);  // one number applies to every joint
+  }
+  REQUIRE(simulation.viscous_friction_nm_s);
+  CHECK((*simulation.viscous_friction_nm_s)[0] == 0.0);
+  CHECK((*simulation.viscous_friction_nm_s)[7] == 0.7);
+  CHECK(simulation.friction_v0_rad_s == 0.02);
+  CHECK(simulation.command_delay_cycles == 2);
+  CHECK(simulation.quantize_encoder);
+  CHECK(simulation.servoLike());
+
+  // each key alone marks the simulation servo-like (friction_v0 alone
+  // changes nothing and does not)
+  for (const char* key :
+       {"position_kp = [1, 1, 1, 1, 1, 1, 1, 1]",
+        "position_kd = [1, 1, 1, 1, 1, 1, 1, 1]", "coulomb_friction_nm = 0",
+        "viscous_friction_nm_s = 0", "command_delay_cycles = 1",
+        "quantize_encoder = true"}) {
+    INFO(key);
+    const char* single = "build/follow_servo_single.toml";
+    writeConfig(single, std::string("[simulation]\n") + key + "\n");
+    CHECK(follow::loadConfig(single).simulation.servoLike());
+    std::remove(single);
+  }
+  const char* v0 = "build/follow_servo_v0.toml";
+  writeConfig(v0, "[simulation]\nfriction_v0_rad_s = 0.1\n");
+  CHECK_FALSE(follow::loadConfig(v0).simulation.servoLike());
+  std::remove(v0);
+}
+
+TEST_CASE("follow config rejects invalid servo-like simulation keys",
+          "[follow][config][servo_like]") {
+  const auto rejects = [](const std::string& line, const char* message) {
+    INFO(line);
+    const char* path = "build/follow_servo_bad.toml";
+    writeConfig(path, "[simulation]\n" + line + "\n");
+    CHECK_THROWS_WITH(follow::loadConfig(path),
+                      Catch::Matchers::ContainsSubstring(message));
+    std::remove(path);
+  };
+  // wrong lengths (one-element arrays included) and types
+  rejects("position_kp = [20, 60, 20, 20, 20, 20, 20]",
+          "position_kp needs one number or eight values");
+  rejects("position_kd = [0.8]", "position_kd needs one number or eight");
+  rejects("coulomb_friction_nm = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]",
+          "coulomb_friction_nm needs one number or eight values");
+  rejects("viscous_friction_nm_s = \"0.1\"",
+          "viscous_friction_nm_s must be a number or eight numbers");
+  rejects("position_kp = [20, 60, 20, 20, \"20\", 20, 20, 20]",
+          "position_kp must be a number or eight numbers");
+  rejects("position_kd = [0.8, 2.4, 0.8, true, 0.8, 0.8, 0.8, 0.8]",
+          "position_kd must be a number or eight numbers");
+  rejects("position_kp = \"20\"", "position_kp must be finite");  // as before
+  rejects("coulomb_friction_nm = true",
+          "coulomb_friction_nm must be a number or eight numbers");
+  rejects("friction_v0_rad_s = true", "friction_v0_rad_s must be finite");
+  // non-finite and out-of-range values
+  rejects("position_kp = [20, 60, 20, 20, 20, nan, 20, 20]",
+          "position_kp must be finite");
+  rejects("position_kd = [0.8, inf, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]",
+          "position_kd must be finite");
+  rejects("coulomb_friction_nm = nan", "coulomb_friction_nm must be finite");
+  rejects("position_kp = [20, 60, 20, 0, 20, 20, 20, 20]",
+          "position_kp must be positive");
+  rejects("position_kp = [20, -60, 20, 20, 20, 20, 20, 20]",
+          "position_kp must be positive");
+  rejects("position_kd = [0.8, 2.4, -0.8, 0.8, 0.8, 0.8, 0.8, 0.8]",
+          "position_kd non-negative");
+  rejects("position_kp = 0", "invalid simulation gain");  // scalar, as before
+  rejects("position_kd = -1", "invalid simulation gain");
+  rejects("coulomb_friction_nm = -0.1", "friction must be non-negative");
+  rejects("viscous_friction_nm_s = [0, 0, 0, 0, 0, 0, 0, -0.1]",
+          "friction must be non-negative");
+  rejects("friction_v0_rad_s = 0", "positive friction_v0_rad_s");
+  rejects("friction_v0_rad_s = -0.05", "positive friction_v0_rad_s");
+  rejects("friction_v0_rad_s = inf", "friction_v0_rad_s must be finite");
+  rejects("command_delay_cycles = -1",
+          "command_delay_cycles must be non-negative");
+  rejects("command_delay_cycles = 1.5",
+          "command_delay_cycles must be an integer");
+  rejects("command_delay_cycles = true",
+          "command_delay_cycles must be an integer");
+  rejects("quantize_encoder = 1", "quantize_encoder must be boolean");
+  // an unknown key is still rejected
+  rejects("command_delay = 1", "unknown key 'command_delay' in simulation");
+}
+
 TEST_CASE("follow config resolves an optional simulation link force",
           "[follow][config][link_force]") {
   const char* absent = "build/follow_no_link_force.toml";

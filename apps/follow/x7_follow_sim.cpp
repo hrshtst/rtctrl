@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 #include "bus/dxl_parameters.hpp"
+#include "common/lagged_arm.hpp"
 #include "common/link_force_bundle.hpp"
 #include "common/link_force_run.hpp"
 #include "follow/follow_bundle.hpp"
@@ -39,6 +40,10 @@ namespace model = rtctrl::model;
 namespace parameters = rtctrl::apps::dxl_parameters;
 
 namespace {
+
+// Time constant of the servo-style velocity estimate when the encoder is
+// quantized (the lag model's value in x7_efl_study and its unit tests).
+constexpr double kServoVelocityLagS = 0.12;
 
 void usage() {
   std::printf(
@@ -73,6 +78,14 @@ int main(int argc, char* argv[]) {
     follow::applyOverrides(cli, &config);
     if (cli.log_path) config.output.simulation_log = *cli.log_path;
     if (cli.motion_path) config.output.simulation_motion = *cli.motion_path;
+    if (bundle && config.simulation.servoLike()) {
+      // The bundle's effective follow.toml would drop these keys and the
+      // bundled run would silently be the ideal servo.
+      throw std::runtime_error(
+          "--bundle does not yet record the servo-like [simulation] keys "
+          "(per-joint gains, friction, command delay, encoder "
+          "quantization); run with --log and --motion instead");
+    }
     if (bundle) {
       const auto prepared = follow::prepareBundle(bundle->staging(), config);
       config = follow::loadConfig(prepared.config_path);
@@ -128,6 +141,14 @@ int main(int argc, char* argv[]) {
     options.sim_dt = config.simulation.integration_step_s;
     options.kp = config.simulation.position_kp;
     options.kd = config.simulation.position_kd;
+    const auto assign = [](const auto& values, std::vector<double>* target) {
+      if (values) target->assign(values->begin(), values->end());
+    };
+    assign(config.simulation.position_kp_joints, &options.kp8);
+    assign(config.simulation.position_kd_joints, &options.kd8);
+    assign(config.simulation.coulomb_friction_nm, &options.fc8);
+    assign(config.simulation.viscous_friction_nm_s, &options.fv8);
+    options.friction_v0 = config.simulation.friction_v0_rad_s;
     options.effort_limit8.clear();
     for (const auto& joint : hardware.joints) {
       options.effort_limit8.push_back(joint.effort_limit);
@@ -164,7 +185,24 @@ int main(int argc, char* argv[]) {
       if (!robot.setMode(config.mode) || !robot.activate()) {
         throw std::runtime_error("simulation arm activation failed");
       }
-      follow::FollowRun run(robot, reference, config, true, &log);
+      // Transport delay and encoder readout: the command accepted at cycle
+      // k reaches the servo at cycle k + command_delay_cycles, the arm
+      // holding its activation posture until then; feedback exact unless
+      // quantize_encoder.
+      std::unique_ptr<x7::LaggedArm> lagged;
+      if (config.simulation.command_delay_cycles > 0 ||
+          config.simulation.quantize_encoder) {
+        x7::LaggedArmOptions lag;
+        lag.delay_cycles = config.simulation.command_delay_cycles;
+        lag.first_passthrough = false;
+        lag.hold_preload = true;
+        lag.quantize_pos = config.simulation.quantize_encoder;
+        lag.exact_velocity = !config.simulation.quantize_encoder;
+        lagged =
+            std::make_unique<x7::LaggedArm>(robot, kServoVelocityLagS, lag);
+      }
+      arm::Arm& plant = lagged ? static_cast<arm::Arm&>(*lagged) : robot;
+      follow::FollowRun run(plant, reference, config, true, &log);
       if (link_force) {
         x7::armLinkForce(robot, *link_force, force_log.get(), run,
                          &force_report);

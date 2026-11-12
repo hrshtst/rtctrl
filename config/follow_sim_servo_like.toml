@@ -1,0 +1,72 @@
+# Servo-LIKE follow simulation: x7_follow_sim with simulated servos set from
+# the stiffness and lag measured on the physical arm (docs/theory/
+# learning-control.md, "The servo as a spring with lag", its Evidence
+# subsection: K of 17 to 24 Nm/rad on the XM430 joints and about 60 Nm/rad on
+# the XM540 joint, canonical joint 1; lag T of 39 to 77 ms). It is NOT a
+# calibrated twin of the arm: one round stiffness per servo model, a damping
+# fixed by kd/kp = 0.04 s, a one-cycle command delay, the encoder LSB, and no
+# friction. Its purpose is to give the learning study a tracking error of
+# realistic size and structure in simulation (a spring deflection under the
+# required torque plus a lag behind the reference); the default 1000 Nm/rad
+# servo leaves almost no error to learn. A learned offset does not transfer
+# from this simulation to hardware.
+#
+# First generate the referenced file:
+#   ./build/apps/x7_plan_ptp --config config/ptp_example.toml
+# then run:
+#   ./build/apps/x7_follow_sim --config config/follow_sim_servo_like.toml
+format = "rtctrl-x7-follow"
+version = 1
+model = "../models/crane_x7/crane_x7.ztk"
+reference = "../ptp.zvs"
+hardware_config = "crane_x7.toml"
+
+[control]
+rate_hz = 100.0
+mode = "position"
+
+[home]
+profile = "minimum-jerk"
+velocity_limit = 0.25
+trapezoid_acceleration_fraction = 0.2
+strict = true
+tolerance_rad = 0.01
+correction_retries = 5
+settle_time_s = 0.3
+
+[reference_processing]
+filter = "none"
+interpolation = "shape-preserving-cubic"
+
+[simulation]
+initial_posture = "model"
+integration_step_s = 0.0001
+# Per canonical joint (0..7); joint 1 is the XM540-W270, the rest XM430-W350.
+position_kp = [20.0, 60.0, 20.0, 20.0, 20.0, 20.0, 20.0, 20.0]    # [Nm/rad]
+position_kd = [0.8, 2.4, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]            # kd/kp = 0.04 s
+# A command accepted at cycle k reaches the servo at cycle k + 1; with the
+# one-cycle hold of the logged reference, the lag a fit of the log recovers
+# is about kd/kp + 2 cycles = 60 ms, inside the measured range (the fit
+# needs a reference that varies the joint torques; the 2 cm PTP example
+# barely does).
+command_delay_cycles = 1
+# Feedback position rounded to the 4096-count encoder, velocity a
+# servo-style estimate.
+quantize_encoder = true
+# Joint friction is off; per joint as a number or 8 values:
+# coulomb_friction_nm = 0.0      # tau_f = -fc tanh(v / v0) - fv v [Nm]
+# viscous_friction_nm_s = 0.0    # [Nm s/rad]
+# friction_v0_rad_s = 0.05       # Coulomb smoothing speed v0 [rad/s]
+
+[safety]
+warning_error_rad = 0.2
+sustained_abort_error_rad = 0.5
+sustained_abort_time_s = 0.2
+immediate_abort_error_rad = 1.0
+
+[finalization]
+simulation_hold_time_s = 2.0
+
+[output]
+simulation_motion = "follow_sim_servo_like.zvs"
+simulation_log = "follow_sim_servo_like.csv"
