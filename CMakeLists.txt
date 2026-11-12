@@ -40,6 +40,7 @@ add_library(rtctrl
   src/arm/link_force_interval.cpp
   src/arm/link_force_log.cpp
   src/arm/sim_arm.cpp
+  src/learn/ilc_update.cpp
   src/dxl/sync_group.cpp
   src/dxl/port.cpp
   src/dxl/status_parser.cpp
