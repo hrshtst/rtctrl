@@ -325,6 +325,38 @@ rehearsal.
   line, `home` is the worst home error and `tracking` the worst error of the
   measured position against the reference `q_d` over the tracking samples,
   not against the command.
+- **A nonzero `deadline misses` count in the `hardware timing:` line is
+  expected**, and by itself is not a stop. Homing measures the home error
+  once after the homing settle and once after each home-correction settle,
+  and each measurement is a cycle in which the follower only reads the state
+  and submits no command. The hardware layer counts such a cycle as a
+  controller deadline miss; in position mode the servo keeps its previous
+  goal for it. Where a missed cycle falls is what matters, and `anatomy`
+  shows it (the [missed-cycle check](#the-missed-cycle-check) below).
+
+### The missed-cycle check
+
+A cycle without a submission has no row in the follow log, so it shows as a
+step of 2 in `feedback_seq` between consecutive rows. Run on a run's log,
+`tools/follow_learnability.py anatomy` prints one line per log that counts
+these gaps and attributes each to the phase of the row before it:
+
+```text
+missed cycles (feedback_seq gaps): home A, home_correction B, offset_ramp C, tracking D, finalizing E (first 200 rows: F), abort_hold G; total T
+```
+
+and writes the same counts to its JSON as the `missed_cycles` object. The
+settle rows that precede each home-error measurement are `home_correction`
+rows, so the homing misses are expected under `home_correction`. The check,
+used by G1 in H0 and by S2 in H1:
+
+- no missed cycle during `offset_ramp`, `tracking`, or the first 200 rows of
+  the final hold (C, D and F are 0);
+- missed cycles during homing are expected, one per home-error measurement
+  (one after the homing settle and one after each home-correction settle),
+  and are recorded;
+- every `deadline misses` the console reports is accounted for: the console
+  count equals the log's total T.
 
 ## Settings
 
@@ -383,6 +415,16 @@ This follows the repository's rule that a tolerance or gate is never widened
 as a remedy for a failing check, while the numbers remain the owner's to
 set.
 
+One criterion was restated before the first hardware run, on 2026-11-12:
+"no deadline miss" in G1 and S2. The emulator rehearsal of the H0 command
+lines showed that it cannot be met by construction, because homing's
+home-error measurements are counted as deadline misses (each of the three
+rehearsal runs reported one, in the cycle between the last `home_correction`
+row and the first `offset_ramp` row). It is replaced by the
+[missed-cycle check](#the-missed-cycle-check). This is the correction of a
+criterion found to be ill-posed before any run, not a change made to get
+past a failed check.
+
 ## Stage H0: repeatability with a zero offset
 
 H0 is the first hardware step, and also the first run of the offset-capable
@@ -428,8 +470,18 @@ offset three times, with the first series' tightened tracking gates.
    timing:` line (stale submissions, deadline misses) and the `hardware
    faults:` line (read and write failures, maximum feedback age), read as the
    bring-up [troubleshooting](bringup.md#troubleshooting) explains them.
-   Inspect the result and let the arm and servos settle before the next run.
-   After `zero_1`, take the `params_P_first.toml` dump (opening step 6).
+   Then run `anatomy` on that run's log (it is quick and offline) and read
+   its missed-cycles line for the [missed-cycle check](#the-missed-cycle-check):
+
+    ```sh
+    uv run --project tools tools/follow_learnability.py anatomy \
+      --json "$series/anatomy_zero_1.json" "$series/zero_1/hardware.csv"
+    ```
+
+    (`anatomy_zero_2.json` from `zero_2/hardware.csv`, and `anatomy_0.json`
+    from `trial_0/hardware.csv`). Inspect the result and let the arm and
+    servos settle before the next run. After `zero_1`, take the
+    `params_P_first.toml` dump (opening step 6).
 
 6. After the three runs (the logs are each bundle's `hardware.csv`):
 
@@ -437,12 +489,6 @@ offset three times, with the first series' tightened tracking gates.
     uv run --project tools tools/follow_learnability.py repeat \
       --json "$series/h0_repeat.json" "$series/zero_1/hardware.csv" \
       "$series/zero_2/hardware.csv" "$series/trial_0/hardware.csv"
-    uv run --project tools tools/follow_learnability.py anatomy \
-      --json "$series/anatomy_zero_1.json" "$series/zero_1/hardware.csv"
-    uv run --project tools tools/follow_learnability.py anatomy \
-      --json "$series/anatomy_zero_2.json" "$series/zero_2/hardware.csv"
-    uv run --project tools tools/follow_learnability.py anatomy \
-      --json "$series/anatomy_0.json" "$series/trial_0/hardware.csv"
     ```
 
 **Gate to continue to H1** (*proposal*, predeclared; evaluated as written,
@@ -451,7 +497,7 @@ hold):
 
 | | Criterion | Read from |
 |---|---|---|
-| G1 | every run: status `success`, exit status 0, no `warning:` line, no stale submission, no deadline miss, no read or write failure | each run's console lines |
+| G1 | every run: status `success`, exit status 0, no `warning:` line, no stale submission, no read or write failure, and the [missed-cycle check](#the-missed-cycle-check) passes (restated 2026-11-12, before any run) | each run's console lines; its `anatomy` missed-cycles line |
 | G2 | non-repeatable error at most 3 mrad RMS over all 8 joints | `repeat`, row `all`, column `rms(r)` |
 | G3 | non-repeatable error at most 20 % of the repeatable error | `repeat`, row `all`, `rms(r)` against `debiased` |
 | G4 | initial-state spread within the homing tolerance, 0.01 rad | `repeat`, row `all`, column `q0 spread` |
@@ -522,7 +568,7 @@ update reads. Then, for `k` = 1 to 5, one trial at a time:
     ```
 
 4. **Record** the console lines as in H0 step 5, the operator's observations,
-   and the anatomy:
+   and the anatomy, whose missed-cycles line is read for S2:
 
     ```sh
     uv run --project tools tools/follow_learnability.py anatomy \
@@ -551,7 +597,7 @@ run.
 | | The series stops when | Read from |
 |---|---|---|
 | S1 | the run does not end in `success` with exit status 0 (a tracking-gate trip included), or it printed a `warning:` line | the run's console lines |
-| S2 | any stale submission, deadline miss, or read or write failure (H0 required none, so any is beyond what H0 showed) | `hardware timing:`, `hardware faults:` |
+| S2 | any stale submission or read or write failure, or the [missed-cycle check](#the-missed-cycle-check) fails (restated 2026-11-12, before any run; as in H0, a missed cycle in `offset_ramp`, tracking or the first 200 hold rows is beyond what H0 allowed) | `hardware timing:`, `hardware faults:`; the `anatomy` missed-cycles line |
 | S3 | the tool refuses an update (a limit, an integrity check); the limits are never edited to get past a refusal | the update's exit status and message |
 | S4 | `RMS_k` exceeds `RMS_(k-1)` by more than twice the non-repeatable RMS measured in H0 | `anatomy`; `h0_repeat.json` |
 | S5 | `HF_k` exceeds 1.5 times `HF_0`, or on any single joint the above-3 Hz RMS exceeds twice trial 0's | `anatomy` |

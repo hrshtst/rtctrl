@@ -258,6 +258,11 @@ final Enter confirms that the arm is supported before shutdown. See the
   latency, maximum cycle time, and maximum lateness; the `host-measured
   phases:` lines show where the cycle's time went, and `--timing-log` keeps
   every cycle's host stamps for analysis. The scheduler skips missed period
-  boundaries; it never sends catch-up bursts.
+  boundaries; it never sends catch-up bursts. `x7_follow`'s homing spends one
+  command-less cycle per home-error measurement (one after the homing settle
+  and one after each home-correction settle), and each is counted as a
+  deadline miss, so a run with as many misses as home-error measurements and
+  none later is the follower's normal behaviour;
+  `tools/follow_learnability.py anatomy` shows where each missed cycle fell.
 - Offline rehearsal of every step: `./build/apps/dxl_emu --link
   /tmp/ttyDXL &` then add `--port /tmp/ttyDXL` to any app.
