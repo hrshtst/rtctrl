@@ -331,8 +331,8 @@ inline LearnConfig parseLearnConfig(std::string_view text,
       if (!(config.ilc.psi_s[j] <= kIlcMaxPsiS)) {
         configFail(source,
                    "ilc.psi_s" + joint +
-                       " must be at most 0.1 s (above it exceeds the bound "
-                       "2 K^-1 D of the measured servo), got " +
+                       " must be at most 0.1 s (an engineering cap; see "
+                       "config/follow_learn_example.toml), got " +
                        exactNumber(config.ilc.psi_s[j]));
       }
     }

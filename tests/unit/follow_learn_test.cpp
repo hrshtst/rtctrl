@@ -567,11 +567,11 @@ TEST_CASE("follow learn: the ILC gains have ceilings",
                parse("[ilc]\nphi = [0.5, 0.5, 0.5, 2.5, 0.5, 0.5, 0.5, 0]\n");
              }),
              ContainsSubstring("ilc.phi[3] must be < 2"));
-  // psi_s: above 2 K^-1 D of the measured servo.
+  // psi_s: above the 0.1 s engineering cap (config/follow_learn_example.toml).
   CHECK_THAT(refusal([&] { parse("[ilc]\npsi_s = 0.10000000000000002\n"); }),
              ContainsSubstring("learn config 'case.toml': ilc.psi_s[0] must "
-                               "be at most 0.1 s (above it exceeds the bound "
-                               "2 K^-1 D of the measured servo), got "
+                               "be at most 0.1 s (an engineering cap; see "
+                               "config/follow_learn_example.toml), got "
                                "0.10000000000000002"));
   CHECK_THAT(
       refusal([&] { parse("[ilc]\npsi_s = [0, 0, 0, 0, 0, 2, 0, 0]\n"); }),
