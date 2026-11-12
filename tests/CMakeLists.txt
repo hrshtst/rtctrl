@@ -180,6 +180,7 @@ add_test(NAME x7_follow_offset_smoke
           $<TARGET_FILE:x7_follow_sim>
           $<TARGET_FILE:x7_follow>
           $<TARGET_FILE:x7_plan_ptp>
+          $<TARGET_FILE:x7_follow_learn>
           ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
           ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
           ${CMAKE_SOURCE_DIR}/config/crane_x7.toml

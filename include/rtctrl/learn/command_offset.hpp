@@ -3,8 +3,9 @@
 // docs/theory/learning-control.md, "Command offset as torque"). The offset
 // is computed offline between trials and handed to the follower as a file;
 // this module holds its grid, validation, limits and file format. Pure
-// logic: no bus, no model. The SHA-256 lineage strings are computed by the
-// app layer; this module only stores and checks their form.
+// logic: no bus, no model. The SHA-256 lineage strings, the reference
+// signature among them, are computed by the app layer; this module only
+// stores them, checks their form and compares them.
 #pragma once
 
 #include <array>
@@ -34,7 +35,11 @@ struct CommandOffset {
   int trial = 0;                    // number of learning updates applied
   double dt_s = 0.0;                // grid step [s]
   double reference_duration_s = 0;  // duration of the reference this belongs to [s]
-  std::string reference_sha256;     // of the reference file's bytes: 64 lowercase hex
+  // The reference signature (64 lowercase hex) the app layer computes
+  // (apps/follow/reference_signature.hpp): a SHA-256 over the reference
+  // file's bytes, the control rate and mode, and every reference-processing
+  // setting, so an offset applies only to the trajectory it was learned on.
+  std::string reference_sha256;
   std::string parent_sha256;        // of the offset file this was updated from; empty for trial 0
   std::string source_log_sha256;    // of the trial log the update used; empty for trial 0
   std::vector<JointArray> delta_rad;  // sample i is at t = i * dt_s
@@ -74,7 +79,7 @@ TrackingGrid trackingGrid(double reference_duration_s, double control_dt_s);
 
 // The offset of trial 0: method "zero", all zeros on the tracking grid,
 // empty parent and source hashes. Throws std::runtime_error on an invalid
-// grid or reference hash.
+// grid or reference signature.
 CommandOffset zeroOffset(double reference_duration_s, double control_dt_s,
                          const std::string& reference_sha256);
 
@@ -89,12 +94,13 @@ CommandOffset zeroOffset(double reference_duration_s, double control_dt_s,
 void checkOffsetStructure(const CommandOffset& offset);
 
 // The offset may be applied to this run: limits finite and > 0 and
-// max_rate_rad_s at least kMinOffsetRateLimitRadS, the structural check, the tracking grid of (reference_duration_s,
-// control_dt_s) (same sample count, step within kOffsetGridStepToleranceS),
-// the reference hash, |delta| <= max_abs_rad and
-// |delta[i+1] - delta[i]| / dt_s <= max_rate_rad_s on every joint. Throws
-// std::runtime_error naming the joint, sample index, time and value of a
-// limit violation.
+// max_rate_rad_s at least kMinOffsetRateLimitRadS, the structural check,
+// the tracking grid of (reference_duration_s, control_dt_s) (same sample
+// count, step within kOffsetGridStepToleranceS), reference_sha256 equal to
+// the run's reference signature (the argument of that name), |delta| <=
+// max_abs_rad and |delta[i+1] - delta[i]| / dt_s <= max_rate_rad_s on
+// every joint. Throws std::runtime_error naming the joint, sample index,
+// time and value of a limit violation.
 void checkOffsetForRun(const CommandOffset& offset, double reference_duration_s,
                        double control_dt_s, const std::string& reference_sha256,
                        const OffsetLimits& limits);

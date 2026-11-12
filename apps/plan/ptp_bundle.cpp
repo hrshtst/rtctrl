@@ -263,6 +263,13 @@ std::string sha256File(const fs::path& path) {
   return hash.finish();
 }
 
+std::string sha256Text(std::string_view text) {
+  Sha256 hash;
+  hash.update(reinterpret_cast<const unsigned char*>(text.data()),
+              text.size());
+  return hash.finish();
+}
+
 void copyBundleRegularFile(const fs::path& source,
                            const fs::path& destination) {
   copyRegularFile(source, destination);

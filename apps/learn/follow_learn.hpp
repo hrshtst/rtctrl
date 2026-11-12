@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "follow/follow_config.hpp"
+#include "follow/reference_signature.hpp"
 #include "learn/model_torque.hpp"  // the strict CSV field helpers
 #include "plan/ptp_bundle.hpp"     // sha256File
 #include "rtctrl/learn/command_offset.hpp"
@@ -487,7 +488,11 @@ struct FollowReference {
   follow::Config config;
   std::string follow_config_sha256;
   std::string model_sha256;
-  std::string reference_sha256;
+  std::string reference_sha256;  // of the reference file's bytes
+  // follow::referenceSignature of the config and those bytes: what every
+  // offset and weights file this tool writes or accepts is bound to (their
+  // reference_sha256 field).
+  std::string reference_signature;
   std::unique_ptr<model::ChainModel> chain;
   std::unique_ptr<model::JointMap> map;
   double control_dt_s = 0.0;
@@ -550,6 +555,8 @@ inline FollowReference loadFollowReference(const fs::path& follow_config) {
                                    ": " + error.what());
         }
       });
+  reference.reference_signature =
+      follow::referenceSignature(config, reference.reference_sha256);
   reference.control_dt_s = 1.0 / config.control_rate_hz;
   reference.duration_s = trajectory->duration();
   try {
@@ -600,12 +607,18 @@ inline rl::CommandOffset readOffsetForRun(const fs::path& path,
                  [&] { return rl::readCommandOffset(path); });
   try {
     rl::checkOffsetForRun(offset, reference.duration_s, reference.control_dt_s,
-                          reference.reference_sha256, limits);
+                          reference.reference_signature, limits);
   } catch (const std::exception& error) {
     throw std::runtime_error(
         offsetLabel(path) + " does not belong to the run of " +
         reference.label() + " under the configured limits: " +
-        learn_detail::withoutPrefix(error.what(), "command offset: "));
+        learn_detail::withoutPrefix(error.what(), "command offset: ") +
+        (offset.reference_sha256 == reference.reference_signature
+             ? std::string()
+             : std::string("; the offset's reference_sha256 is not the "
+                           "reference signature of this follow config, "
+                           "which covers ") +
+                   follow::kReferenceSignatureCovers));
   }
   for (std::size_t i = 0; i < offset.delta_rad.size(); ++i) {
     if (offset.delta_rad[i][kGripperJoint] != 0.0) {
@@ -1531,7 +1544,7 @@ inline rl::CommandOffset offsetOnGrid(const FollowReference& reference,
   offset.trial = trial;
   offset.dt_s = reference.grid.dt_s;
   offset.reference_duration_s = reference.duration_s;
-  offset.reference_sha256 = reference.reference_sha256;
+  offset.reference_sha256 = reference.reference_signature;
   return offset;
 }
 
@@ -1552,10 +1565,11 @@ inline LearnResult runInit(const fs::path& follow_config,
   result.command = "init";
   const FollowReference reference = loadFollowReference(follow_config);
   appendReferenceInputs(reference, &result.inputs);
-  const rl::CommandOffset offset = rl::zeroOffset(
-      reference.duration_s, reference.control_dt_s, reference.reference_sha256);
+  const rl::CommandOffset offset =
+      rl::zeroOffset(reference.duration_s, reference.control_dt_s,
+                     reference.reference_signature);
   rl::checkOffsetForRun(offset, reference.duration_s, reference.control_dt_s,
-                        reference.reference_sha256, rl::OffsetLimits{});
+                        reference.reference_signature, rl::OffsetLimits{});
   fillOffset(offset, &result);
   result.outputs.push_back(
       {"offset", output, writeOffsetChecked(output, offset, &outputs)});
@@ -1633,7 +1647,7 @@ inline LearnResult runIlc(const IlcInputs& in) {
   next.source_log_sha256 = log_sha256;
   try {
     rl::checkOffsetForRun(next, reference.duration_s, reference.control_dt_s,
-                          reference.reference_sha256, config.limits);
+                          reference.reference_signature, config.limits);
   } catch (const std::exception& error) {
     throw std::runtime_error(
         "ilc: the updated offset is refused and nothing was written: " +
@@ -1753,7 +1767,7 @@ inline LearnResult runFel(const FelInputs& in) {
   }
   next_weights.parent_sha256 = weights_sha256;
   next_weights.source_log_sha256 = log_sha256;
-  next_weights.reference_sha256 = reference.reference_sha256;
+  next_weights.reference_sha256 = reference.reference_signature;
   std::string next_weights_sha256;
   const rl::FeedforwardWeights written = writeWeightsChecked(
       in.output_weights, next_weights, &outputs, &next_weights_sha256);
@@ -1767,7 +1781,7 @@ inline LearnResult runFel(const FelInputs& in) {
   next.source_log_sha256 = written.source_log_sha256;
   try {
     rl::checkOffsetForRun(next, reference.duration_s, reference.control_dt_s,
-                          reference.reference_sha256, config.limits);
+                          reference.reference_signature, config.limits);
   } catch (const std::exception& error) {
     throw std::runtime_error(
         "fel: the offset of the updated weights is refused, and nothing was "
@@ -1818,7 +1832,7 @@ inline LearnResult runSynth(const SynthInputs& in) {
   offset.source_log_sha256 = weights.source_log_sha256;
   try {
     rl::checkOffsetForRun(offset, reference.duration_s, reference.control_dt_s,
-                          reference.reference_sha256, config.limits);
+                          reference.reference_signature, config.limits);
   } catch (const std::exception& error) {
     throw std::runtime_error(
         "synth: the offset weights " + quotedPath(in.weights) + " give on " +
@@ -1933,7 +1947,11 @@ inline std::string learnUsage(std::optional<LearnCommand> command) {
              "OFFSET.csv\n"
              "  writes the zero offset (trial 0) on the tracking grid of the "
              "follow config's\n"
-             "  reference and control rate\n";
+             "  reference and control rate. Every offset is bound to the "
+             "follow config's\n"
+             "  reference signature: the reference file, control rate and "
+             "mode, and every\n"
+             "  [reference_processing] setting\n";
     case LearnCommand::InitWeights:
       return "usage: x7_follow_learn init-weights --config LEARN.toml "
              "--output WEIGHTS.toml\n"

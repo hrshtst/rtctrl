@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include "plan/ptp_config.hpp"
 
@@ -48,6 +49,10 @@ void writeBundleManifestFor(const std::filesystem::path& root,
 // Lowercase hex SHA-256 of the file's bytes. Throws std::runtime_error if
 // the file cannot be opened or read.
 std::string sha256File(const std::filesystem::path& path);
+
+// Lowercase hex SHA-256 of the text's bytes (the same digest as sha256File
+// of a file holding exactly those bytes).
+std::string sha256Text(std::string_view text);
 
 PreparedBundle prepareBundle(const std::filesystem::path& staging,
                              const std::filesystem::path& source_config,

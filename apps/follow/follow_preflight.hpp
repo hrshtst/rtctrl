@@ -9,6 +9,7 @@
 #include <string>
 
 #include "follow/follow_config.hpp"
+#include "follow/reference_signature.hpp"
 #include "plan/ptp_bundle.hpp"
 #include "rtctrl/hw/config.hpp"
 #include "rtctrl/learn/command_offset.hpp"
@@ -123,7 +124,8 @@ struct AcceptedOffset {
 
 // A reference built from the measured posture (--hold-current,
 // --sweep-current) takes no learned offset: an offset belongs to one
-// reference file, and this reference is made from the posture at run time.
+// reference (its signature, follow/reference_signature.hpp), and this
+// reference is made from the posture at run time.
 inline void refusePostureOffset(const Config& config) {
   if (config.learning.offset_path) {
     throw std::runtime_error(
@@ -136,7 +138,9 @@ inline void refusePostureOffset(const Config& config) {
 // Empty when no offset is configured. Otherwise reads the offset file and
 // accepts it only for this run: learn::checkOffsetForRun against the
 // loaded reference's duration, the control period 1 / control.rate_hz, the
-// reference file's SHA-256 and the [learning] limits; then every command
+// reference signature of this config (referenceSignature: the reference
+// file, control rate and mode, and every [reference_processing] setting)
+// and the [learning] limits; then every command
 // it produces (q_d(t_i) + delta[i] at each tracking-grid sample i, and the
 // final hold's q_d(T) + delta[N-1]) inside the model joint limits, the
 // limit source of validateReference. Throws std::runtime_error naming the
@@ -166,10 +170,20 @@ inline std::optional<AcceptedOffset> preflightOffset(
                              path.string() + "' changed while it was read");
   }
   const double control_dt_s = 1.0 / config.control_rate_hz;
-  rtctrl::learn::checkOffsetForRun(
-      accepted.offset, reference.duration(), control_dt_s,
-      x7::ptp::sha256File(config.reference_path),
-      {config.learning.max_offset_rad, config.learning.max_offset_rate_rad_s});
+  const std::string signature = referenceSignature(config);
+  try {
+    rtctrl::learn::checkOffsetForRun(
+        accepted.offset, reference.duration(), control_dt_s, signature,
+        {config.learning.max_offset_rad,
+         config.learning.max_offset_rate_rad_s});
+  } catch (const std::exception& error) {
+    if (accepted.offset.reference_sha256 == signature) throw;
+    throw std::runtime_error(
+        std::string(error.what()) +
+        "; the offset's reference_sha256 is not this run's reference "
+        "signature, which covers " +
+        kReferenceSignatureCovers);
+  }
 
   const auto& delta = accepted.offset.delta_rad;
   model::ZVector q(model::kCanonicalDof);

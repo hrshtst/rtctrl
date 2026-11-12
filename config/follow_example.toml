@@ -61,10 +61,12 @@ hardware_log = "follow_hw.csv"
 # Learned command offset (computed offline between trials; the follower only
 # reads and checks it). Tracking then commands reference + offset, after an
 # offset_ramp phase from the home goal; the safety gates stay on the
-# reference. The file must belong to this reference file (SHA-256) and
-# control rate. --offset FILE overrides the path. The limits default to
-# 0.15 rad and 0.5 rad/s and can only be lowered (the rate, which the
-# offset ramp also runs at, not below 0.01 rad/s).
+# reference. The file must belong to this run's reference signature: the
+# reference file (SHA-256), control rate and mode, and every
+# [reference_processing] setting, command-line overrides included (servo
+# gains and the model are not covered). --offset FILE overrides the path.
+# The limits default to 0.15 rad and 0.5 rad/s and can only be lowered (the
+# rate, which the offset ramp also runs at, not below 0.01 rad/s).
 # [learning]
 # offset = "offset_trial1.csv"
 # max_offset_rad = 0.15

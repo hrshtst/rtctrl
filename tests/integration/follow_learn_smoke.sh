@@ -2,7 +2,8 @@
 # x7_follow_learn end to end on a simulated trial: init, one plain
 # x7_follow_sim run (trial 0, the zero offset), ilc, init-weights, fel and
 # synth, each output's header fields and lineage hashes checked against
-# sha256sum; then refusals (an existing output, a log of another reference,
+# sha256sum, and every output bound to its follow config's reference
+# signature (init's, which is not the reference file's hash); then refusals (an existing output, a log of another reference,
 # tampered offsets) that exit nonzero and write nothing. Works in a run
 # directory of its own under ROOT, removed after a pass and kept after a
 # failure; nothing else is ever deleted. Never opens the bus.
@@ -90,9 +91,6 @@ follow_config "$WORK/other.zvs" "$WORK/other.toml"
 sed -e 's/^phi = 0\.0 /phi = 0.5 /' "$LEARN_EXAMPLE" >"$WORK/learn.toml"
 grep -q '^phi = 0\.5 ' "$WORK/learn.toml" || fail "learn config phi not set"
 
-REF_SHA=$(sha "$WORK/reference.zvs")
-OTHER_SHA=$(sha "$WORK/other.zvs")
-
 # --- init: the zero offset ---------------------------------------------
 expect 0 init init --follow-config "$WORK/follow.toml" \
   --output "$WORK/offset0.csv"
@@ -100,8 +98,17 @@ check_equal "offset0 format" "$(header format "$WORK/offset0.csv")" \
   rtctrl-x7-follow-offset
 check_equal "offset0 method" "$(header method "$WORK/offset0.csv")" zero
 check_equal "offset0 trial" "$(header trial "$WORK/offset0.csv")" 0
-check_equal "offset0 reference" \
-  "$(header reference_sha256 "$WORK/offset0.csv")" "$REF_SHA"
+# The reference signature (the reference file, control rate and mode, and
+# the reference processing), not the file's hash; the other reference's
+# differs.
+REF_SIG=$(header reference_sha256 "$WORK/offset0.csv")
+test "${#REF_SIG}" -eq 64 || fail "offset0 reference signature '$REF_SIG'"
+test "$REF_SIG" != "$(sha "$WORK/reference.zvs")" ||
+  fail "offset0 carries the reference file's hash"
+expect 0 init_other init --follow-config "$WORK/other.toml" \
+  --output "$WORK/other0.csv"
+OTHER_SIG=$(header reference_sha256 "$WORK/other0.csv")
+test "$OTHER_SIG" != "$REF_SIG" || fail "both references sign alike"
 check_equal "offset0 parent" "$(header parent_sha256 "$WORK/offset0.csv")" ""
 SAMPLES=$(header samples "$WORK/offset0.csv")
 grep -q "wrote offset $WORK/offset0.csv" "$WORK/init.out"
@@ -123,7 +130,7 @@ O1="$WORK/offset1.csv"
 check_equal "offset1 method" "$(header method "$O1")" ilc
 check_equal "offset1 trial" "$(header trial "$O1")" 1
 check_equal "offset1 samples" "$(header samples "$O1")" "$SAMPLES"
-check_equal "offset1 reference" "$(header reference_sha256 "$O1")" "$REF_SHA"
+check_equal "offset1 reference" "$(header reference_sha256 "$O1")" "$REF_SIG"
 check_equal "offset1 parent" "$(header parent_sha256 "$O1")" \
   "$(sha "$WORK/offset0.csv")"
 check_equal "offset1 source log" "$(header source_log_sha256 "$O1")" "$LOG_SHA"
@@ -149,13 +156,13 @@ check_equal "weights1 trial" "$(sed -n 's/^trial = //p' "$W1")" 1
 check_equal "weights1 parent" "$(toml parent_sha256 "$W1")" \
   "$(sha "$WORK/weights0.toml")"
 check_equal "weights1 source log" "$(toml source_log_sha256 "$W1")" "$LOG_SHA"
-check_equal "weights1 reference" "$(toml reference_sha256 "$W1")" "$REF_SHA"
+check_equal "weights1 reference" "$(toml reference_sha256 "$W1")" "$REF_SIG"
 F1="$WORK/fel1.csv"
 check_equal "fel1 method" "$(header method "$F1")" fel
 check_equal "fel1 trial" "$(header trial "$F1")" 1
 check_equal "fel1 parent" "$(header parent_sha256 "$F1")" "$(sha "$W1")"
 check_equal "fel1 source log" "$(header source_log_sha256 "$F1")" "$LOG_SHA"
-check_equal "fel1 reference" "$(header reference_sha256 "$F1")" "$REF_SHA"
+check_equal "fel1 reference" "$(header reference_sha256 "$F1")" "$REF_SIG"
 grep -q "lambda_max" "$WORK/fel.out"
 
 # --- synth: the trained weights on the other reference --------------------
@@ -166,7 +173,7 @@ check_equal "transfer method" "$(header method "$T")" fel
 check_equal "transfer trial" "$(header trial "$T")" 1
 check_equal "transfer parent" "$(header parent_sha256 "$T")" "$(sha "$W1")"
 check_equal "transfer source log" "$(header source_log_sha256 "$T")" "$LOG_SHA"
-check_equal "transfer reference" "$(header reference_sha256 "$T")" "$OTHER_SHA"
+check_equal "transfer reference" "$(header reference_sha256 "$T")" "$OTHER_SIG"
 
 # --- refusals: exit 1, nothing written --------------------------------------
 # an existing output is left untouched, and the report is never written
@@ -181,14 +188,26 @@ test ! -s "$WORK/clobber.out"
 
 # a log of another reference: the other reference's zero offset is fine,
 # the log is not a run of it
-expect 0 init_other init --follow-config "$WORK/other.toml" \
-  --output "$WORK/other0.csv"
 expect 1 other_log ilc --config "$WORK/learn.toml" \
   --follow-config "$WORK/other.toml" --log "$WORK/trial0.csv" \
   --offset "$WORK/other0.csv" --output "$WORK/other1.csv"
 grep -q "follow log '$WORK/trial0.csv'" "$WORK/other_log.err"
 grep -q "is not a run of this reference" "$WORK/other_log.err"
 test ! -e "$WORK/other1.csv"
+
+# the same reference file under another filter is another trajectory: the
+# trial's offset is not its offset
+sed -e 's/^filter = "none"/filter = "low-pass"/' "$WORK/follow.toml" \
+  >"$WORK/filtered.toml"
+grep -q '^filter = "low-pass"' "$WORK/filtered.toml" ||
+  fail "filtered follow config not written"
+expect 1 filtered ilc --config "$WORK/learn.toml" \
+  --follow-config "$WORK/filtered.toml" --log "$WORK/trial0.csv" \
+  --offset "$WORK/offset0.csv" --output "$WORK/filtered1.csv"
+grep -q "does not match the reference being run" "$WORK/filtered.err"
+grep -q "is not the reference signature of this follow config" \
+  "$WORK/filtered.err"
+test ! -e "$WORK/filtered1.csv"
 
 # tamper replace FILE OUT: OUT is FILE with delta1 of data row 10 changed
 tamper() {

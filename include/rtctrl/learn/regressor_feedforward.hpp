@@ -109,7 +109,11 @@ struct FeedforwardWeights {
   RegressorOptions regressors;  // the options these weights were learned with
   std::string parent_sha256;      // weights file this was updated from; empty for trial 0
   std::string source_log_sha256;  // trial log used; empty for trial 0
-  std::string reference_sha256;   // reference trained on last; empty for trial 0
+  // The reference signature of the reference trained on last (computed by
+  // the app layer, apps/follow/reference_signature.hpp: the reference
+  // file, control rate and mode, and every reference-processing setting);
+  // empty for trial 0.
+  std::string reference_sha256;
 };
 
 inline constexpr const char* kFeedforwardWeightsFormat =

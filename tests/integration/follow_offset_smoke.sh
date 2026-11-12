@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # A learned command offset through the follow frontends end to end. A zero
-# offset (trial 0, written by hand here: the offline tool that makes
-# offsets is not under test) passes --check, runs with an offset_ramp phase
-# between homing and tracking, and is archived in a bundle that records its
-# provenance and replays bit for bit; a small learned offset moves the
-# command and only the command. Tampered or over-limit offsets, a raised
-# limit, another control rate and an offset with a posture reference are
-# refused before any run output, and so is a reference whose tracking grid
-# cannot be built. x7_follow only ever gets --check or a
-# refusal, and a --port that does not exist. Works in a run directory of its
-# own under ROOT, removed after a pass and kept after a failure; nothing else
-# is ever deleted.
+# offset (trial 0, made by x7_follow_learn init, so it carries the reference
+# signature the follower checks; the learned ones are edited from it by
+# hand) passes --check, runs with an offset_ramp phase between homing and
+# tracking, and is archived in a bundle that records its provenance and
+# replays bit for bit; a small learned offset moves the command and only
+# the command. Tampered or over-limit offsets, a raised limit, another
+# control rate, the same reference under other processing or another
+# control mode (from the config or the command line) and an offset with a
+# posture reference are refused before any run output, and so is a
+# reference whose tracking grid cannot be built. x7_follow only ever gets
+# --check or a refusal, and a --port that does not exist. Works in a run
+# directory of its own under ROOT, removed after a pass and kept after a
+# failure; nothing else is ever deleted.
 set -eu
 
 FOLLOW_SIM="$1"
 FOLLOW_HW="$2"
 PLAN_APP="$3"
-PLAN_CONFIG="$4"
-MODEL="$5"
-HARDWARE="$6"
-ROOT="$7"
+LEARN_APP="$4"
+PLAN_CONFIG="$5"
+MODEL="$6"
+HARDWARE="$7"
+ROOT="$8"
 
 mkdir -p "$ROOT"
 WORK=$(mktemp -d "$ROOT/run.XXXXXX")
@@ -100,51 +103,54 @@ EOF
 }
 write_config "$WORK/follow.toml" ""
 
-# write_offset OUTPUT METHOD DELTA3 [REFERENCE_SHA256]: the offset file
-# format by hand, on the 100 Hz tracking grid of reference.zvs, DELTA3 rad
-# on joint 3 at every sample (trial 1 with placeholder lineage unless the
-# method is zero)
-write_offset() {
-  python3 - "$WORK/reference.zvs" "$@" <<'PY'
-import hashlib
-import math
+# The zero offset of follow.toml's reference, from the offline tool.
+"$LEARN_APP" init --follow-config "$WORK/follow.toml" \
+  --output "$WORK/zero.offset.csv" >"$WORK/init.log" 2>&1
+
+# derive_offset OUTPUT METHOD DELTA3 [REFERENCE_SHA256]: zero.offset.csv
+# with DELTA3 rad on joint 3 at every sample (trial 1 with placeholder
+# lineage unless the method is zero), and another reference_sha256 if
+# given; the grid and the signature are the tool's
+derive_offset() {
+  python3 - "$WORK/zero.offset.csv" "$@" <<'PY'
 import sys
 
-reference, output, method, delta3 = sys.argv[1:5]
-with open(reference, "rb") as stream:
-    data = stream.read()
-reference_sha256 = (sys.argv[5] if len(sys.argv) > 5
-                    else hashlib.sha256(data).hexdigest())
-# The reference's duration: its frames' dt in file order, summed as the
-# follower sums them; then learn::trackingGrid at 100 Hz.
-duration = 0.0
-for line in data.decode().splitlines():
-    if line.strip():
-        duration += float(line.split()[0])
-intervals = max(1, math.ceil(duration / 0.01))
-dt = duration / intervals
+source, output, method, delta3 = sys.argv[1:5]
+signature = sys.argv[5] if len(sys.argv) > 5 else None
+with open(source) as stream:
+    lines = stream.read().split("\n")
+assert lines[-1] == "", "no final newline"
 zero = method == "zero"
 lineage = "" if zero else " " + "e" * 64
-lines = ["# format: rtctrl-x7-follow-offset", "# version: 1",
-         "# method: " + method, "# trial: " + ("0" if zero else "1"),
-         "# dt_s: %.17g" % dt, "# samples: %d" % (intervals + 1),
-         "# reference_duration_s: %.17g" % duration,
-         "# reference_sha256: " + reference_sha256,
-         "# parent_sha256:" + lineage, "# source_log_sha256:" + lineage,
-         "time_s," + ",".join("delta%d_rad" % j for j in range(8))]
-for i in range(intervals + 1):
-    values = ["0"] * 8
-    values[3] = delta3
-    lines.append("%.9f," % (i * dt) + ",".join(values))
+derived = []
+for line in lines[:-1]:
+    if line.startswith("# "):
+        key = line[2:].split(":", 1)[0]
+        if key == "method":
+            line = "# method: " + method
+        elif key == "trial":
+            line = "# trial: " + ("0" if zero else "1")
+        elif key in ("parent_sha256", "source_log_sha256"):
+            line = "# " + key + ":" + lineage
+        elif key == "reference_sha256" and signature:
+            line = "# reference_sha256: " + signature
+    elif not line.startswith("time_s,"):
+        fields = line.split(",")
+        fields[4] = delta3  # time_s, delta0_rad, ..., delta3_rad
+        line = ",".join(fields)
+    derived.append(line)
 with open(output, "x") as stream:
-    stream.write("\n".join(lines) + "\n")
+    stream.write("\n".join(derived) + "\n")
 PY
 }
-write_offset "$WORK/zero.offset.csv" zero 0
-write_offset "$WORK/small.offset.csv" ilc 0.01
-write_offset "$WORK/large.offset.csv" ilc 0.2
-write_offset "$WORK/wrong-hash.offset.csv" zero 0 \
+derive_offset "$WORK/small.offset.csv" ilc 0.01
+derive_offset "$WORK/large.offset.csv" ilc 0.2
+derive_offset "$WORK/wrong-hash.offset.csv" zero 0 \
   "$(printf 'f%.0s' $(seq 64))"
+# The signature is not the reference file's hash.
+SIGNATURE=$(sed -n 's/^# reference_sha256: //p' "$WORK/zero.offset.csv")
+test "${#SIGNATURE}" -eq 64
+test "$SIGNATURE" != "$(sha256sum "$WORK/reference.zvs" | cut -d ' ' -f 1)"
 ZERO_SHA=$(sha256sum "$WORK/zero.offset.csv" | cut -d ' ' -f 1)
 SMALL_SHA=$(sha256sum "$WORK/small.offset.csv" | cut -d ' ' -f 1)
 
@@ -305,6 +311,24 @@ sed -e 's/^rate_hz = 100$/rate_hz = 50/' "$WORK/follow.toml" \
   >"$WORK/slow.toml"
 refused slow "samples, the tracking grid" "$FOLLOW_SIM" \
   --config "$WORK/slow.toml" --offset "$WORK/zero.offset.csv" --check
+# the offset is bound to the reference signature: the same reference file
+# under another filter, cut-off, interpolation or control mode is another
+# trajectory, whether the setting comes from the config or the command line
+SIG="is not this run's reference signature, which covers the reference"
+refused filtered "$SIG" "$FOLLOW_SIM" --config "$WORK/follow.toml" \
+  --offset "$WORK/zero.offset.csv" --filter low-pass --check
+refused linear "$SIG" "$FOLLOW_SIM" --config "$WORK/follow.toml" \
+  --offset "$WORK/zero.offset.csv" --interpolation linear --check
+write_config "$WORK/cutoff.toml" '[reference_processing]
+low_pass_cutoff_hz = 4.0'
+refused cutoff "$SIG" "$FOLLOW_SIM" --config "$WORK/cutoff.toml" \
+  --offset "$WORK/zero.offset.csv" --check
+refused cbp "$SIG" "$FOLLOW_SIM" --config "$WORK/follow.toml" \
+  --offset "$WORK/zero.offset.csv" --mode current-based-position \
+  --effort-limit-nm 1 --check
+refused cbp-hw "$SIG" "$FOLLOW_HW" --config "$WORK/follow.toml" \
+  --offset "$WORK/zero.offset.csv" --mode current-based-position \
+  --effort-limit-nm 1 --port "$NO_PORT" --log "$WORK/cbp-hw.csv"
 head -c -1 "$WORK/zero.offset.csv" >"$WORK/truncated.offset.csv"
 refused truncated "missing final newline" "$FOLLOW_SIM" \
   --config "$WORK/follow.toml" --offset "$WORK/truncated.offset.csv" --check

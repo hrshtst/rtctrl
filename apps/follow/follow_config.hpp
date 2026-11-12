@@ -279,6 +279,28 @@ inline model::ReferenceInterpolation parseInterpolation(
       "shape-preserving-cubic");
 }
 
+// The config names parseFilter and parseInterpolation read. Throws
+// std::logic_error for a value outside the enumeration.
+inline const char* referenceFilterName(model::ReferenceFilter filter) {
+  switch (filter) {
+    case model::ReferenceFilter::None: return "none";
+    case model::ReferenceFilter::LowPass: return "low-pass";
+    case model::ReferenceFilter::MovingAverage: return "moving-average";
+    case model::ReferenceFilter::SavitzkyGolay: return "savitzky-golay";
+  }
+  throw std::logic_error("follow config: unknown reference filter");
+}
+
+inline const char* referenceInterpolationName(
+    model::ReferenceInterpolation interpolation) {
+  switch (interpolation) {
+    case model::ReferenceInterpolation::Linear: return "linear";
+    case model::ReferenceInterpolation::ShapePreservingCubic:
+      return "shape-preserving-cubic";
+  }
+  throw std::logic_error("follow config: unknown reference interpolation");
+}
+
 inline model::PtpProfile parseProfile(std::string_view value) {
   if (value == "linear") return model::PtpProfile::Linear;
   if (value == "trapezoidal") return model::PtpProfile::Trapezoidal;

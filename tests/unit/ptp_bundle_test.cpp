@@ -50,6 +50,27 @@ TEST_CASE("sha256File gives the standard SHA-256 vectors", "[plan][bundle]") {
   fs::remove(path);
 }
 
+TEST_CASE("sha256Text gives the standard SHA-256 vectors", "[plan][bundle]") {
+  CHECK(x7::ptp::sha256Text("") ==
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(x7::ptp::sha256Text("abc") ==
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  // 56 bytes: the padding takes a second block.
+  CHECK(x7::ptp::sha256Text(
+            "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") ==
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+  // Bytes, not a C string: an embedded NUL counts.
+  CHECK(x7::ptp::sha256Text(std::string("a\0b", 3)) !=
+        x7::ptp::sha256Text("a"));
+  // The same digest as the file holding the text.
+  const fs::path path = scratchDir() / "text.bin";
+  fs::remove(path);
+  const std::string text = "rtctrl-x7-follow-reference-signature 1\n";
+  writeBytes(path, text);
+  CHECK(x7::ptp::sha256Text(text) == x7::ptp::sha256File(path));
+  fs::remove(path);
+}
+
 TEST_CASE("sha256File throws for a missing file", "[plan][bundle]") {
   const fs::path path = scratchDir() / "missing.bin";
   fs::remove(path);

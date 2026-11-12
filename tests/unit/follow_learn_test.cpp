@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "follow/follow_run.hpp"  // FollowCsvLog, the follower's log writer
+#include "follow/reference_signature.hpp"
 #include "plan/ptp_bundle.hpp"
 #include "rtctrl/learn/command_offset.hpp"
 #include "rtctrl/learn/regressor_feedforward.hpp"
@@ -45,6 +46,11 @@ using Row = std::array<double, kColumns>;
 using Weights = std::array<Row, kDof>;
 
 std::string sha(const fs::path& path) { return x7::ptp::sha256File(path); }
+
+// The reference signature of a follow config, computed apart from the tool.
+std::string signature(const fs::path& follow_config) {
+  return x7::follow::referenceSignature(x7::follow::loadConfig(follow_config));
+}
 
 fs::path scratchDir() {
   const fs::path dir = "build/follow_learn_test";
@@ -332,7 +338,7 @@ rl::CommandOffset fakeOffset(const fl::FollowReference& ref,
   offset.trial = trial;
   offset.dt_s = ref.grid.dt_s;
   offset.reference_duration_s = ref.duration_s;
-  offset.reference_sha256 = ref.reference_sha256;
+  offset.reference_sha256 = ref.reference_signature;
   offset.parent_sha256 = std::string(64, 'a');
   offset.source_log_sha256 = std::string(64, 'b');
   offset.delta_rad.resize(ref.grid.samples());
@@ -863,6 +869,89 @@ TEST_CASE("follow learn: ilc refuses a log of another reference",
   CHECK_FALSE(fs::exists(in.output));
 }
 
+TEST_CASE(
+    "follow learn: ilc refuses an offset learned under other reference "
+    "settings",
+    "[learn][follow_learn][ilc][signature]") {
+  Setup s("signature");
+  const std::string text = fileText(s.follow);
+  const std::string rate = "rate_hz = 100.0\n";
+  REQUIRE(text.find(rate) != std::string::npos);
+  const auto with = [&](const std::string& name, const std::string& body) {
+    const fs::path path = s.files(name);
+    writeText(path, body);
+    return path;
+  };
+  const auto rated = [&](const std::string& replacement) {
+    std::string body = text;
+    body.replace(body.find(rate), rate.size(), replacement);
+    return body;
+  };
+  // The cut-off is judged against a low-pass base, the rest against the
+  // defaults (s.follow).
+  const fs::path low_pass = with(
+      "low_pass.toml", text + "[reference_processing]\nfilter = \"low-pass\"\n"
+                              "low_pass_cutoff_hz = 5.0\n");
+  struct Case {
+    std::string what;
+    fs::path base;
+    fs::path changed;
+  };
+  const std::vector<Case> cases = {
+      {"filter", s.follow,
+       with("filter.toml",
+            text + "[reference_processing]\nfilter = \"low-pass\"\n")},
+      {"cut-off", low_pass,
+       with("cutoff.toml", text +
+                               "[reference_processing]\nfilter = \"low-pass\"\n"
+                               "low_pass_cutoff_hz = 4.0\n")},
+      {"interpolation", s.follow,
+       with("interpolation.toml",
+            text + "[reference_processing]\ninterpolation = \"linear\"\n")},
+      // 99.5 Hz keeps the 1 s reference's grid: only the signature tells.
+      {"control rate", s.follow, with("rate.toml", rated("rate_hz = 99.5\n"))},
+      {"control mode", s.follow,
+       with("mode.toml",
+            rated("rate_hz = 100.0\nmode = \"current-based-position\"\n") +
+                "[current_based_position]\neffort_limit_nm = [1.0]\n")}};
+  int index = 0;
+  for (const Case& c : cases) {
+    INFO(c.what);
+    const std::string tag = std::to_string(index++);
+    const fl::FollowReference base = fl::loadFollowReference(c.base);
+    const fl::FollowReference changed = fl::loadFollowReference(c.changed);
+    REQUIRE(changed.grid.samples() == base.grid.samples());
+    REQUIRE(changed.grid.dt_s == base.grid.dt_s);
+    CHECK(changed.reference_signature != base.reference_signature);
+    const fs::path zero = s.files("zero_" + tag + ".csv");
+    fl::runInit(c.base, zero);
+    Trial trial = plannedTrial(base, rl::readCommandOffset(zero));
+    constantError(&trial, 0.004);
+    const fs::path log = writeLog(s.files, "log_" + tag + ".csv", trial.cycles);
+    // Unchanged settings: accepted.
+    auto in = ilcInputs(s, log, zero, "accepted_" + tag + ".csv");
+    in.follow_config = c.base;
+    CHECK_NOTHROW(fl::runIlc(in));
+    CHECK(fs::exists(in.output));
+    // Changed: refused before the log is read, nothing written.
+    in = ilcInputs(s, log, zero, "refused_" + tag + ".csv");
+    in.follow_config = c.changed;
+    const std::string message = refusal([&] { fl::runIlc(in); });
+    CHECK_THAT(message, ContainsSubstring("offset '" + zero.string() +
+                                          "' does not belong to the run of "
+                                          "reference"));
+    CHECK_THAT(message,
+               ContainsSubstring("does not match the reference being run"));
+    CHECK_THAT(message,
+               ContainsSubstring(
+                   "; the offset's reference_sha256 is not the reference "
+                   "signature of this follow config, which covers the "
+                   "reference file's SHA-256, control.rate_hz, control.mode "
+                   "and every [reference_processing] setting"));
+    CHECK_FALSE(fs::exists(in.output));
+  }
+}
+
 TEST_CASE("follow learn: ilc refuses a log run with another offset",
           "[learn][follow_learn][ilc]") {
   Setup s("other_offset");
@@ -1101,7 +1190,11 @@ TEST_CASE("follow learn: init writes the zero offset of the reference",
   CHECK(zero.delta_rad.size() == grid.samples());
   CHECK(zero.dt_s == grid.dt_s);
   CHECK(zero.reference_duration_s == 1.0);
-  CHECK(zero.reference_sha256 == sha(s.reference));
+  // Bound to the reference signature, not to the file alone.
+  CHECK(zero.reference_sha256 == signature(s.follow));
+  CHECK(zero.reference_sha256 == s.ref.reference_signature);
+  CHECK(zero.reference_sha256 != sha(s.reference));
+  CHECK(s.ref.reference_sha256 == sha(s.reference));
   CHECK(zero.parent_sha256.empty());
   CHECK(zero.source_log_sha256.empty());
   CHECK_THAT(refusal([&] { fl::runInit(s.follow, s.zero); }),
@@ -1126,7 +1219,7 @@ TEST_CASE(
   CHECK(offset.trial == 1);
   CHECK(offset.parent_sha256 == sha(s.zero));
   CHECK(offset.source_log_sha256 == sha(log));
-  CHECK(offset.reference_sha256 == sha(s.reference));
+  CHECK(offset.reference_sha256 == signature(s.follow));
   CHECK(offset.dt_s == zero.dt_s);
   CHECK(offset.reference_duration_s == zero.reference_duration_s);
   // phi 0.5 on a constant 0.004 rad error: 0.002 rad on the arm, none on
@@ -1359,14 +1452,14 @@ TEST_CASE("follow learn: fel weights and offset carry their lineage",
   CHECK(w1.trial == 1);
   CHECK(w1.parent_sha256 == sha(weights0));
   CHECK(w1.source_log_sha256 == sha(log));
-  CHECK(w1.reference_sha256 == sha(s.reference));
+  CHECK(w1.reference_sha256 == signature(s.follow));
   CHECK(w1.regressors.smooth_sigma_s == w0.regressors.smooth_sigma_s);
   const rl::CommandOffset offset1 = rl::readCommandOffset(in.output);
   CHECK(offset1.method == "fel");
   CHECK(offset1.trial == 1);
   CHECK(offset1.parent_sha256 == sha(in.output_weights));  // the weights file
   CHECK(offset1.source_log_sha256 == sha(log));
-  CHECK(offset1.reference_sha256 == sha(s.reference));
+  CHECK(offset1.reference_sha256 == signature(s.follow));
   // the offset is the synthesis of the weights as written
   fl::FollowReference ref = fl::loadFollowReference(s.follow);
   const auto phi = rl::buildRegressors(*ref.chain, *ref.map, ref.q,
@@ -1524,7 +1617,7 @@ TEST_CASE(
   CHECK(offset.trial == 1);
   CHECK(offset.parent_sha256 == sha(in.output_weights));
   CHECK(offset.source_log_sha256 == w1.source_log_sha256);
-  CHECK(offset.reference_sha256 == sha(other));
+  CHECK(offset.reference_sha256 == signature(other_follow));
   CHECK(offset.reference_duration_s == 2.0);
   CHECK(offset.delta_rad.size() == 201);
   fl::FollowReference ref = fl::loadFollowReference(other_follow);
@@ -1535,7 +1628,8 @@ TEST_CASE(
   // the transferred offset is a valid trial-1 start for fel on the other
   // reference
   REQUIRE_NOTHROW(
-      rl::checkOffsetForRun(offset, 2.0, 0.01, sha(other), rl::OffsetLimits{}));
+      rl::checkOffsetForRun(offset, 2.0, 0.01, signature(other_follow),
+                            rl::OffsetLimits{}));
 
   CHECK_THAT(
       refusal([&] {
@@ -1698,7 +1792,7 @@ TEST_CASE("follow learn: ilc closes the loop through its own files",
     CHECK(next.trial == k + 1);
     CHECK(next.parent_sha256 == sha(offsets[k]));
     CHECK(next.source_log_sha256 == sha(log));
-    CHECK(next.reference_sha256 == sha(s.reference));
+    CHECK(next.reference_sha256 == signature(s.follow));
     for (const auto& joint : result.ilc->joints) {
       CHECK(joint.step_clamped == 0);  // the convergence is the law's
       CHECK(joint.abs_clamped == 0);
@@ -1819,7 +1913,7 @@ std::vector<FelTrial> felLoop(FelScenario& f, int trials) {
     CHECK(next.trial == k + 1);
     CHECK(next.parent_sha256 == sha(weights[k]));
     CHECK(next.source_log_sha256 == sha(log));
-    CHECK(next.reference_sha256 == sha(s.reference));
+    CHECK(next.reference_sha256 == signature(s.follow));
     const rl::CommandOffset offset_next = rl::readCommandOffset(offsets[k + 1]);
     CHECK(offset_next.method == "fel");
     CHECK(offset_next.trial == k + 1);
