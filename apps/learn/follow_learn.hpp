@@ -619,6 +619,34 @@ inline rl::CommandOffset readOffsetForRun(const fs::path& path,
   return offset;
 }
 
+// A follow config that names a [learning] offset runs its trial with that
+// file unless the follower's --offset overrides it: the offset the update
+// starts from (--offset of ilc and fel, offset_sha256) must then be the
+// same content (SHA-256), or which of the two the trial ran with is in
+// doubt. A config without one names nothing to compare (the trial may
+// have used --offset). Throws std::runtime_error naming both files.
+inline void requireConfiguredOffset(const FollowReference& reference,
+                                    const fs::path& offset_path,
+                                    const std::string& offset_sha256) {
+  using learn_detail::quotedPath;
+  const auto& configured = reference.config.learning.offset_path;
+  if (!configured) return;
+  const std::string where =
+      "follow config " + quotedPath(reference.follow_config_path);
+  const std::string configured_sha256 = hashInput(
+      *configured, "the [learning] offset " + quotedPath(*configured) +
+                       " of " + where);
+  if (configured_sha256 != offset_sha256) {
+    throw std::runtime_error(
+        where + " names [learning] offset " + quotedPath(*configured) +
+        " (sha256 " + configured_sha256 + "), which is not --offset " +
+        quotedPath(offset_path) + " (sha256 " + offset_sha256 +
+        "): the update must start from the offset the trial ran with; "
+        "pass that file as --offset, or a follow config without a "
+        "[learning] offset");
+  }
+}
+
 // ----------------------------------------------------------- follow log
 
 enum class LogPhase {
@@ -1569,6 +1597,7 @@ inline LearnResult runIlc(const IlcInputs& in) {
   const rl::CommandOffset prev =
       readOffsetForRun(in.offset, reference, config.limits, &offset_sha256);
   result.inputs.push_back({"offset", in.offset, offset_sha256});
+  requireConfiguredOffset(reference, in.offset, offset_sha256);
   learn_detail::requireNextTrial(prev.trial, offsetLabel(in.offset));
   std::string log_sha256;
   const std::vector<LogRow> rows =
@@ -1646,6 +1675,7 @@ inline LearnResult runFel(const FelInputs& in) {
   const rl::CommandOffset prev =
       readOffsetForRun(in.offset, reference, config.limits, &offset_sha256);
   result.inputs.push_back({"offset", in.offset, offset_sha256});
+  requireConfiguredOffset(reference, in.offset, offset_sha256);
   std::string weights_sha256;
   const rl::FeedforwardWeights weights = learn_detail::readWeights(
       in.weights, config, in.config, &weights_sha256, &result);
@@ -1919,7 +1949,9 @@ inline std::string learnUsage(std::optional<LearnCommand> command) {
              "config's reference\n"
              "  with offset PREV.csv, then writes the next offset by "
              "iterative learning\n"
-             "  control (method ilc, trial + 1)\n";
+             "  control (method ilc, trial + 1). A [learning] offset in "
+             "F.toml must be\n"
+             "  PREV.csv's content\n";
     case LearnCommand::Fel:
       return "usage: x7_follow_learn fel --config LEARN.toml --follow-config "
              "F.toml\n"
@@ -1931,7 +1963,8 @@ inline std::string learnUsage(std::optional<LearnCommand> command) {
              "  TRIAL.csv is a completed run with it, then writes the next "
              "weights by\n"
              "  feedback-error learning and the offset they give (method "
-             "fel)\n";
+             "fel). A\n"
+             "  [learning] offset in F.toml must be PREV.csv's content\n";
     case LearnCommand::Synth:
       return "usage: x7_follow_learn synth --config LEARN.toml --weights "
              "W.toml\n"

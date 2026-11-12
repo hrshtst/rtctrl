@@ -1271,6 +1271,73 @@ fl::FelInputs felInputs(Setup& s, const fs::path& log, const fs::path& offset,
 
 }  // namespace
 
+TEST_CASE(
+    "follow learn: ilc and fel refuse a follow config that names another "
+    "offset",
+    "[learn][follow_learn][ilc][fel]") {
+  Setup s("configured_offset", 1.0,
+          "[ilc]\nphi = 0.5\n[fel]\nstep = \"least-squares\"\ngain = 0.5\n");
+  const rl::CommandOffset zero = rl::readCommandOffset(s.zero);
+  Trial trial = plannedTrial(s.ref, zero);
+  constantError(&trial, 0.004);
+  const fs::path log = writeLog(s.files, "log.csv", trial.cycles);
+  // The follow config plus a [learning] table naming `offset` (resolved
+  // against the config's directory, as the follower resolves it).
+  const auto naming = [&](const std::string& name, const fs::path& offset) {
+    const fs::path path = s.files(name);
+    writeText(path, fileText(s.follow) + "[learning]\noffset = \"" +
+                        offset.filename().string() + "\"\n");
+    return path;
+  };
+  const fs::path weights0 = s.files("weights0.toml");
+  fl::runInitWeights(s.config, weights0);
+
+  // The trial's own offset, by name or as a copy: accepted.
+  const fs::path copy = s.files("offset0_copy.csv");
+  fs::copy_file(s.zero, copy);
+  for (const auto& [named, tag] :
+       {std::pair<fs::path, std::string>{s.zero, "same"}, {copy, "copy"}}) {
+    INFO(tag);
+    auto in = ilcInputs(s, log, s.zero, "next_" + tag + ".csv");
+    in.follow_config = naming("follow_" + tag + ".toml", named);
+    CHECK_NOTHROW(fl::runIlc(in));
+    CHECK(fs::exists(in.output));
+    auto fel = felInputs(s, log, s.zero, weights0, tag);
+    fel.follow_config = in.follow_config;
+    CHECK_NOTHROW(fl::runFel(fel));
+    CHECK(fs::exists(fel.output));
+  }
+
+  // Another offset: refused, naming both, nothing written.
+  const fs::path other = s.files("next_same.csv");  // the ilc offset above
+  REQUIRE(sha(other) != sha(s.zero));
+  const fs::path follow_other = naming("follow_other.toml", other);
+  const std::string expected =
+      "follow config '" + follow_other.string() + "' names [learning] offset '" +
+      fs::absolute(other).lexically_normal().string() + "' (sha256 " +
+      sha(other) + "), which is not --offset '" + s.zero.string() +
+      "' (sha256 " + sha(s.zero) +
+      "): the update must start from the offset the trial ran with";
+  auto in = ilcInputs(s, log, s.zero, "refused.csv");
+  in.follow_config = follow_other;
+  CHECK_THAT(refusal([&] { fl::runIlc(in); }), ContainsSubstring(expected));
+  CHECK_FALSE(fs::exists(in.output));
+  auto fel = felInputs(s, log, s.zero, weights0, "refused");
+  fel.follow_config = follow_other;
+  CHECK_THAT(refusal([&] { fl::runFel(fel); }), ContainsSubstring(expected));
+  CHECK_FALSE(fs::exists(fel.output));
+  CHECK_FALSE(fs::exists(fel.output_weights));
+
+  // A configured offset that does not exist cannot be compared.
+  in.follow_config = naming("follow_missing.toml", s.files("missing.csv"));
+  CHECK_THAT(refusal([&] { fl::runIlc(in); }),
+             ContainsSubstring("the [learning] offset '") &&
+                 ContainsSubstring("missing.csv' of follow config '" +
+                                   in.follow_config.string() +
+                                   "': not an existing regular file"));
+  CHECK_FALSE(fs::exists(in.output));
+}
+
 TEST_CASE("follow learn: fel weights and offset carry their lineage",
           "[learn][follow_learn][fel]") {
   Setup s("fel_lineage", 1.0, "[fel]\nstep = \"least-squares\"\ngain = 0.5\n");
