@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "rtctrl/learn/joint_array.hpp"
 #include "rtctrl/model/joint_map.hpp"
 
 namespace rtctrl::learn {
@@ -21,8 +22,6 @@ namespace rtctrl::learn {
 //
 // with Delta a time advance (dead time and servo lag) and Q a zero-phase
 // low-pass, followed by a per-sample clamp on the change and on the value.
-
-using JointArray = std::array<double, model::kCanonicalDof>;  // canonical 8-DOF order
 
 // Zero-phase low-pass: a 2nd-order Butterworth low-pass by the bilinear
 // transform, applied forward, then backward. cutoff_hz itself is prewarped

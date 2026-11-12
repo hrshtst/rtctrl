@@ -23,6 +23,7 @@
 #include <string_view>
 #include <vector>
 
+#include "rtctrl/learn/joint_array.hpp"
 #include "rtctrl/model/joint_map.hpp"
 
 namespace rtctrl::model {
@@ -30,8 +31,6 @@ class ChainModel;
 }
 
 namespace rtctrl::learn {
-
-using JointArray = std::array<double, model::kCanonicalDof>;  // canonical 8-DOF order
 
 // Regressor columns, identical in order and name to
 // tools/follow_learnability.py REGRESSORS.

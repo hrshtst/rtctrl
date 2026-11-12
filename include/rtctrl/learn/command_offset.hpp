@@ -14,11 +14,10 @@
 #include <string>
 #include <vector>
 
+#include "rtctrl/learn/joint_array.hpp"
 #include "rtctrl/model/joint_map.hpp"
 
 namespace rtctrl::learn {
-
-using JointArray = std::array<double, model::kCanonicalDof>;  // canonical 8-DOF order
 
 inline constexpr const char* kCommandOffsetFormat = "rtctrl-x7-follow-offset";
 inline constexpr int kCommandOffsetVersion = 1;
