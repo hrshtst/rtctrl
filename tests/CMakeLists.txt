@@ -49,6 +49,7 @@ add_executable(unit_tests
   unit/command_current_test.cpp
   unit/vendor_gravity_test.cpp
   unit/efl_test.cpp
+  unit/adaptive_position_test.cpp
   unit/study_metrics_test.cpp
   unit/ident_common_test.cpp
   unit/gravity_demo_test.cpp
@@ -771,6 +772,19 @@ add_test(NAME x7_efl_study_smoke
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(x7_efl_study_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "NONCANONICAL" LABELS integration)
+# The simulation-only Slotine and Li study (x7_adaptive_follow_study), one
+# short case: the PTP example reference planned into the run directory,
+# two passes of the proper form on the servo-like simulation, and every
+# output written. The study binary has no bus code.
+add_test(NAME x7_adaptive_follow_study_smoke
+  COMMAND bash -c "set -eu; mkdir -p \"$2\"; \"$0\" --config config/ptp_example.toml --output \"$2/reference.zvs\" --no-diagnostics >/dev/null; \"$1\" --config config/follow_sim_servo_like.toml --reference \"$2/reference.zvs\" --form proper --lambda 2 --gamma 0.5 --passes 2 --out \"$2/out\"; for f in summary.csv weights.csv regressor_scale.csv last_pass.csv settings.txt; do test -s \"$2/out/$f\"; done; test $(wc -l < \"$2/out/summary.csv\") -eq 3"
+          $<TARGET_FILE:x7_plan_ptp> $<TARGET_FILE:x7_adaptive_follow_study>
+          ${CMAKE_BINARY_DIR}/adaptive_follow_smoke
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(x7_adaptive_follow_study_smoke PROPERTIES
+  PASS_REGULAR_EXPRESSION "adaptive follow study: 2 passes, completed"
+  FAIL_REGULAR_EXPRESSION "bus:"
+  LABELS integration)
 # ...and the JSON itself must be well-formed, explicitly noncanonical,
 # and schema-complete (review finding: the stdout regex alone would
 # pass on malformed output).

@@ -124,6 +124,15 @@ target_compile_definitions(x7_efl_study PRIVATE
 target_link_libraries(x7_efl_study PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_efl_study PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Slotine and Li's adaptive controller in position form, a simulation-only
+# study (study/adaptive_position.hpp): SimArm and LaggedArm only, no bus.
+add_executable(x7_adaptive_follow_study study/x7_adaptive_follow_study.cpp
+  ${EFL_GIT_REV_SRC})
+add_dependencies(x7_adaptive_follow_study efl_git_rev)
+target_link_libraries(x7_adaptive_follow_study PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_adaptive_follow_study PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(x7_controller_bench study/x7_controller_bench.cpp)
 target_link_libraries(x7_controller_bench PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_controller_bench PRIVATE
