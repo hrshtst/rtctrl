@@ -1,13 +1,15 @@
 # Learning trials on hardware (draft procedure)
 
-!!! warning "Draft awaiting the owner's decision"
-    This page is a draft procedure for the robot's owner to review and decide
-    on. Learning trials on the physical arm are **not approved**, and **no
-    learning trial has been run on the arm**. The procedure rests on the
-    method's [simulation acceptance](../theory/learning-control.md#simulation-acceptance),
+!!! warning "Draft procedure: H0 approved, the learning series not yet"
+    On 2026-11-12 the robot's owner approved **stage H0** (repeated
+    zero-offset runs) and nothing beyond it. **No learning trial has been run
+    on the arm.** H1, the ILC series, starts only after H0 has been reviewed
+    and the owner has confirmed the numbers fixed from it
+    ([how the numbers are fixed](#how-the-numbers-are-fixed)); H2 comes after
+    H1. The procedure rests on the method's
+    [simulation acceptance](../theory/learning-control.md#simulation-acceptance),
     which is necessary and never sufficient: a simulation pass does not show
-    how the arm will respond. Every number marked *proposal* is for the owner
-    to confirm, change or reject before the first sitting.
+    how the arm will respond.
 
 The [bring-up checklist](bringup.md) governs every powered step on this page,
 its [safety section](bringup.md#safety-read-first) above all. This page does
@@ -22,7 +24,7 @@ the method is described in the
 The demonstration: tracking of one taught reference improves by repetition
 with iterative learning control (ILC) acting through the position command, in
 plain position mode at 100 Hz, on the servo-side follower `x7_follow`.
-Optionally, and only as a separate decision afterwards (stage H2):
+Afterwards, as stage H2, which the owner wants and which comes after H1:
 feedback-error learning (FEL) on the same reference and the transfer of its
 weights to a second taught reference.
 
@@ -35,7 +37,9 @@ Out of scope:
 - current mode and current-based position mode;
 - control rates other than 100 Hz;
 - lifting or widening any existing limit, gate, tolerance or timeout (the
-  offset limits can only be lowered, and are not lowered here).
+  offset limits can only be lowered, and are not lowered here; the tracking
+  gates of the first series are tightened below the follower's existing
+  values, and a later series returning to those values is not a widening).
 
 ## What changes on the arm
 
@@ -65,8 +69,9 @@ Compared with a plain `x7_follow` run of the same reference (details in
 - **The final hold** commands `q_d(T) + delta[N-1]`: the last offset sample
   stays applied until the operator supports the arm and presses Enter. Abort
   holds are unchanged: they hold the measured posture and carry no offset.
-- **The tracking-error safety gates are unchanged** and are judged on the
-  reference `q_d`, never on the command. As in the plain run, they are
+- **The tracking-error safety gates work as in the plain run** and are judged
+  on the reference `q_d`, never on the command; their values for the first
+  series are tightened (see [settings](#settings)). As in the plain run, they are
   evaluated only during tracking: homing has its own strict tolerance, and
   neither the `offset_ramp` nor the final hold evaluates a tracking gate. A
   gate trip ends the run in an abort hold at the measured posture, which
@@ -81,12 +86,12 @@ the operator's final Enter and the verified shutdown. Posture runs
 refused before the bus is opened.
 
 Within a run, nothing in the software stops an offset that is wrong but inside
-its bounds, apart from the tracking gates. With the example configuration's
-values they warn at 0.2 rad and abort at 0.5 rad sustained or 1.0 rad, far
-above the errors expected here; the owner may tighten them for the series
-(never widen them), as proposed under
-[open decisions](#open-decisions-for-the-owner). The bounds limit what such an
-offset can do: the command departs from the
+its bounds, apart from the tracking gates. The follower's existing values
+(those of the baseline bundle) warn at 0.2 rad and abort at 0.5 rad sustained
+or 1.0 rad, far above the errors expected here; for the first series the
+owner has adopted tighter ones (warning at 0.15 rad, abort at 0.2 rad
+sustained for 0.2 s or 0.3 rad at once; see [settings](#settings)). The
+bounds limit what such an offset can do: the command departs from the
 validated reference by at most 0.15 rad per joint, and that departure changes
 by at most 0.5 rad/s. During a run the operator and the power cutoff are the
 protection; between runs, the stop rules below.
@@ -100,7 +105,9 @@ otherwise.
    actuator power cutoff within reach (the cutoff is the stop; `deactivate()`
    is not an emergency stop), the operator at the robot for every powered
    run, the workspace under the arm clear, and the arm supported from below
-   whenever torque goes off, which happens at the end of every run.
+   whenever torque goes off, which happens at the end of every run. The
+   support arrangement during the runs is the owner's responsibility and has
+   been settled by the owner.
 
 2. **The software** is the reviewed commit, built, with its full test suite
    green on that build (`ctest --test-dir build --output-on-failure`, labels
@@ -138,11 +145,14 @@ otherwise.
     mkdir "$series"   # refuses an existing directory
     ```
 
+    The parent directory is the one the owner chooses for the series data,
+    outside the repository; it is not named here.
+
     ```text
     learning-ilc-STAMP/
       follow.toml  learn.toml  reference.zvs
       sim/                          the simulated series
-      params_S_*.toml               servo parameter dumps of sitting S
+      params_P_*.toml               servo parameter dumps of opening P
       offset_0.csv ... offset_5.csv
       report_1.toml ... report_5.toml
       zero_1/  zero_2/              H0 runs 1 and 2 (bundles)
@@ -157,24 +167,40 @@ otherwise.
    copied into the series directory; its SHA-256 equals that of the reference
    in its archived position-mode baseline bundle. `follow.toml` is a copy of
    `config/follow_example.toml` with:
+
     - `model` and `hardware_config` pointing at the reviewed checkout's
       `models/crane_x7/crane_x7.ztk` and `config/crane_x7.toml` (input paths
       are relative to the TOML file that names them), `reference =
       "reference.zvs"`, and `motor_parameters` as in the baseline bundle;
+
     - `[control] rate_hz = 100.0` and `mode = "position"`;
+
     - `[reference_processing]`, all five keys, as in the baseline bundle's
-      `follow.toml`, and `[home]`, `[safety]` and `[finalization]` likewise
+      `follow.toml`, and `[home]` and `[finalization]` likewise
       (`[finalization] wait_time_s = 0`: the hold ends at the operator's
       Enter). These stay unchanged within the series: the reference signature
       covers `[reference_processing]`, and the update filters the error over
-      the tracking and final-hold rows together. `[safety]` may instead hold
-      the tightened gates proposed under
-      [open decisions](#open-decisions-for-the-owner), if the owner chooses
-      them before the series; being in this file, they are then the same in
-      the simulated series;
+      the tracking and final-hold rows together;
+
+    - for the first series, `[safety]` with the tightened gates the owner
+      adopted (see [settings](#settings)) in place of the baseline bundle's:
+
+        ```toml
+        [safety]
+        warning_error_rad = 0.15
+        sustained_abort_error_rad = 0.2
+        sustained_abort_time_s = 0.2
+        immediate_abort_error_rad = 0.3
+        ```
+
+        These keys are not part of the reference signature, so they do not
+        bind the offsets; being in this file, they are the same in the
+        simulated series;
+
     - the servo keys of `config/follow_sim_servo_like.toml` in `[simulation]`,
       so that the same file drives the simulated series (`x7_follow` ignores
       `[simulation]`);
+
     - `[learning]` without `offset` (every run names its offset with
       `--offset`) and with both limits at their defaults.
 
@@ -182,8 +208,9 @@ otherwise.
    `config/follow_learn_example.toml` with `[ilc] phi = 0.5`; every other key
    keeps the default, which is the value in the [settings](#settings) table.
 
-7. **The servo parameters are dumped** before the series and again after it,
-   in every sitting (see [every sitting](#every-sitting)). The offset is not
+7. **The servo parameters are dumped** before the follower runs and again
+   after them (see [opening steps](#opening-steps-at-power-on-and-after-any-issue)).
+   The offset is not
    bound to the servo gains: nothing checks that the servos are the ones the
    offset was learned with, and the dumps are how a change is detected.
 
@@ -193,9 +220,11 @@ otherwise.
    updates without a refusal, meet the [H1](#stage-h1-the-ilc-series) stop
    rules S3, S5, S6 and S7, have its aggregate RMS fall at every trial (S4
    with no non-repeatable part: the simulation is deterministic) and meet the
-   success criterion; otherwise the hardware series does not start. A learned
-   offset does not transfer from this simulation to the arm: the hardware
-   series starts again from the zero offset.
+   success criterion; otherwise the hardware series does not start. It is
+   run before H0 and checked then against the proposed numbers, and its kept
+   outputs are checked again against the numbers fixed after H0, before H1
+   starts. A learned offset does not transfer from this simulation to the
+   arm: the hardware series starts again from the zero offset.
 
     ```sh
     sim="$series/sim"
@@ -220,12 +249,17 @@ otherwise.
 9. **The archive destination** has been prepared by the owner (see
    [records](#records)).
 
-### Every sitting
+### Opening steps at power-on and after any issue
 
-Each sitting opens and closes the same way, following the
-[bring-up steps](bringup.md#steps); `S` names the sitting in file names.
+The opening steps below follow the [bring-up steps](bringup.md#steps), which
+govern them. They are done once when the arm's power is turned on, and again
+after any issue (a fault, a stop, a power cut, anything unexpected), before
+the next follower run; they are not repeated as a matter of course between
+runs or sittings. `P` numbers the openings in file names (1 for the first,
+the next number for each repetition).
 
-1. Power on and connect, with the power cutoff within reach.
+1. Power on (when the power was off) and connect, with the power cutoff
+   within reach.
 
 2. Scan (no torque): `./build/apps/dxl_inspect --port /dev/ttyUSB0 scan`;
    ids 2 to 9 respond.
@@ -234,17 +268,19 @@ Each sitting opens and closes the same way, following the
    voltage about 12 V, temperatures sane. Note the temperatures.
 
 4. Dump the parameters (torque off):
-   `./build/apps/dxl_inspect --port /dev/ttyUSB0 dump-params "$series/params_S_before.toml"`.
+   `./build/apps/dxl_inspect --port /dev/ttyUSB0 dump-params "$series/params_P_before.toml"`.
 
 5. First motion, wrist only: `./build/apps/x7_move_simple 6 0.3`; anything
-   but `complete` ends the sitting.
+   but `complete` is an issue, and no follower run follows it.
 
-6. After the sitting's first `x7_follow` run, and again after its last, dump
-   the parameters (torque off, arm at rest) to `params_S_first.toml` and
-   `params_S_after.toml`, and note the temperatures from `x7_read 20`.
+6. After the first `x7_follow` run since this opening, and again after the
+   last one before the power goes off or the next opening, dump the
+   parameters (torque off, arm at rest) to `params_P_first.toml` and
+   `params_P_after.toml`, and note the temperatures from `x7_read 20`.
 
-`params_S_first.toml` and `params_S_after.toml` must be identical; a
-difference stops the series until the owner has reviewed it. The `before`
+`params_P_first.toml` and `params_P_after.toml`, the two dumps that bracket
+the follower runs, must be identical; a difference stops the series until the
+owner has reviewed it. The `before`
 dump may differ from them in gain and profile registers, since every
 activation writes the operating mode (on which the servo resets its gains and
 profiles), then the follower's position P gain and any motor-parameter file
@@ -308,17 +344,53 @@ proposed and simulated first.
 | updates | five (trials 0 to 5) | simulation acceptance |
 | `control.rate_hz`, `control.mode` | `100.0`, `position` | the only validated hardware rate; the mode of the study |
 | `[reference_processing]`, `[finalization]` | as in the archived baseline run | precondition 5 |
+| `[safety]` of the first series | `warning_error_rad = 0.15`, `sustained_abort_error_rad = 0.2` with `sustained_abort_time_s = 0.2`, `immediate_abort_error_rad = 0.3` | adopted by the owner for the first series (2026-11-12), against a worst tracking error of 0.104 rad in the archived plain run of this reference |
 
 The learn configuration's `[limits]` and the follow configuration's
 `[learning]` limits are independent; keep them equal, as here, or the tool can
 write an offset that the follower then refuses.
 
+The tightened gates apply to the whole first series, H0 included (H0's third
+run is trial 0). The owner doubts that the arm can track this tightly and
+adopted them to try first. A gate trip ends the run in its abort hold at the
+measured posture, and the series stops there (G1 in H0, S1 in H1). If a run
+trips a gate without a fault, that is, the arm simply cannot hold these gates
+on this reference, the next series may be declared with the baseline
+bundle's own gates (`warning_error_rad = 0.2`, `sustained_abort_error_rad =
+0.5` for 0.2 s, `immediate_abort_error_rad = 1.0`). Those are the follower's
+existing values, not a widening beyond them. Such a series is a new series:
+its own directory, its own simulated series with those gates, starting again
+at H0.
+
+## How the numbers are fixed
+
+The numbers on this page (the H0 gate, the stop rules and the success
+criterion) are proposals, and the owner is not sure that they are
+appropriate. The study's reviewer has ruled how they are handled:
+
+- The H0 gate is evaluated as written, and its outcome is reported together
+  with the measured values.
+- The numbers of stop rules S4 to S7 and of the H1 success criterion are
+  fixed after H0, from what H0 measures (the non-repeatable level, the error
+  above 3 Hz, the timing counters), and confirmed by the owner before the H1
+  series starts. H2's numbers are fixed in the same way before H2 starts.
+- A number is never changed during a sitting, or in the middle of a series,
+  in order to keep going. A rule that stops a series ends that series;
+  whether the number was wrong is decided offline, and a changed number
+  applies to a new series, declared before it starts.
+
+This follows the repository's rule that a tolerance or gate is never widened
+as a remedy for a failing check, while the numbers remain the owner's to
+set.
+
 ## Stage H0: repeatability with a zero offset
 
 H0 is the first hardware step, and also the first run of the offset-capable
-follower on the arm. It runs the zero offset three times.
+follower on the arm. The owner approved it on 2026-11-12. It runs the zero
+offset three times, with the first series' tightened tracking gates.
 
-1. Open the sitting ([every sitting](#every-sitting), steps 1 to 5).
+1. If the arm has just been powered on, or after any issue, perform the
+   [opening steps](#opening-steps-at-power-on-and-after-any-issue) 1 to 5.
 
 2. Write the zero offset:
 
@@ -357,7 +429,7 @@ follower on the arm. It runs the zero offset three times.
    faults:` line (read and write failures, maximum feedback age), read as the
    bring-up [troubleshooting](bringup.md#troubleshooting) explains them.
    Inspect the result and let the arm and servos settle before the next run.
-   After `zero_1`, take the `params_S_first.toml` dump.
+   After `zero_1`, take the `params_P_first.toml` dump (opening step 6).
 
 6. After the three runs (the logs are each bundle's `hardware.csv`):
 
@@ -373,7 +445,8 @@ follower on the arm. It runs the zero offset three times.
       --json "$series/anatomy_0.json" "$series/trial_0/hardware.csv"
     ```
 
-**Gate to continue to H1** (*proposal*, predeclared; every criterion must
+**Gate to continue to H1** (*proposal*, predeclared; evaluated as written,
+and its outcome reported with the measured values; every criterion must
 hold):
 
 | | Criterion | Read from |
@@ -384,9 +457,14 @@ hold):
 | G4 | initial-state spread within the homing tolerance, 0.01 rad | `repeat`, row `all`, column `q0 spread` |
 | G5 | nothing unusual seen or heard | the operator |
 
-A G1 failure is a failed run: stop the sitting and investigate as the bring-up
-page says. If G2, G3 or G4 fails, stop: the study's premise, a repeatable
-error, does not hold in position mode, and that is itself the result.
+A G1 failure is a failed run: stop the series and investigate as the bring-up
+page says. A tracking-gate trip is a G1 failure too (the status is
+`tracking_error` and the run ends in its abort hold): the first series stops
+there and does not continue to H1. If the trip came without a fault, the next
+series may be declared with the baseline bundle's gates, as
+[settings](#settings) describes. If G2, G3 or G4 fails, stop: the study's
+premise, a repeatable error, does not hold in position mode, and that is
+itself the result.
 
 Even if nothing else is run, H0 delivers the first position-mode
 repeatability measurement on this arm. The existing one is from
@@ -394,6 +472,11 @@ current-based position mode on another (planned) reference (theory note
 [evidence](../theory/learning-control.md#evidence), provenance B).
 
 ## Stage H1: the ILC series
+
+H1 is not yet approved. It starts only after H0 has passed its gate and been
+reviewed, and after the owner has confirmed the numbers of S4 to S7 and of
+the success criterion, fixed from what H0 measured
+([how the numbers are fixed](#how-the-numbers-are-fixed)).
 
 Trial 0 is the third H0 run (`trial_0`, zero offset): no extra run is needed,
 and its log, `trial_0/hardware.csv`, with `offset_0.csv`, is what the first
@@ -458,14 +541,16 @@ writes them to its JSON as `aggregate.all.e_rms_rad` and
 column and each joint's `e_rms_above_split_rad`. The report of the update
 that reads trial `k` gives `RMS_k` again, as `aggregate_rms_rad`.
 
-**Stop rules** (predeclared; the numbers are *proposals*). Each one ends the
-series for that sitting: no retry, no changed setting. S6 and S7 are read
+**Stop rules** (the numbers of S4 to S7 are *proposals*, fixed after H0 and
+confirmed by the owner before the series, then predeclared). Each rule ends
+the series: no retry, no changed setting and no changed number; whether a
+number was wrong is decided offline, for a new series. S6 and S7 are read
 from the update's report, so they stop the series before the new offset is
 run.
 
 | | The series stops when | Read from |
 |---|---|---|
-| S1 | the run does not end in `success` with exit status 0, or it printed a `warning:` line | the run's console lines |
+| S1 | the run does not end in `success` with exit status 0 (a tracking-gate trip included), or it printed a `warning:` line | the run's console lines |
 | S2 | any stale submission, deadline miss, or read or write failure (H0 required none, so any is beyond what H0 showed) | `hardware timing:`, `hardware faults:` |
 | S3 | the tool refuses an update (a limit, an integrity check); the limits are never edited to get past a refusal | the update's exit status and message |
 | S4 | `RMS_k` exceeds `RMS_(k-1)` by more than twice the non-repeatable RMS measured in H0 | `anatomy`; `h0_repeat.json` |
@@ -495,7 +580,8 @@ bundle of its own (`confirm_K`), to confirm that it is still good; it is not a
 trial, and nothing is updated from it. After an S8 stop or a power cut,
 nothing is re-run in that sitting. Analysis happens offline.
 
-**Success criterion** (*proposal*, predeclared): no stop rule triggered;
+**Success criterion** (*proposal*, fixed after H0 and confirmed by the owner
+before the series, then predeclared): no stop rule triggered;
 `RMS_0 > RMS_1 > RMS_2 > RMS_3`; and `RMS_5` at most one third of `RMS_0`.
 
 The expectation, stated honestly: on the archived data the repeatable error
@@ -504,10 +590,13 @@ current-based position mode on another reference. A clear improvement is
 plausible; the floor on the arm, in position mode on this reference, is
 unknown.
 
-## Stage H2 (optional): feedback-error learning
+## Stage H2: feedback-error learning and the transfer check
 
-H2 is a separate decision, taken only after H1 has been reviewed. It needs its
-own sittings, its own learn configuration and its own simulated series (the
+The owner wants H2 (2026-11-12). It comes after H1: it starts only after H1
+has been run and reviewed, with its numbers fixed before it starts in the
+same way as H1's ([how the numbers are fixed](#how-the-numbers-are-fixed)).
+It needs its own sittings, its own learn configuration and its own simulated
+series (the
 loop of precondition 8 with `fel` in place of `ilc`, as
 [a learning loop in simulation](../guide/usage.md#a-learning-loop-in-simulation)
 describes), and the same stop rules except S7: feedback-error learning has
@@ -603,7 +692,7 @@ with the commit), plus outside it the offset file the update wrote, the update
 report and the `anatomy` JSON. Without `--bundle`, keep at least the log, the
 offset, the report and the follow configuration. Kept for the series:
 `follow.toml`, the learn configurations, `h0_repeat.json`,
-the servo parameter dumps of every sitting, the simulated series directory,
+the servo parameter dumps of every opening, the simulated series directory,
 the commit hash and its test result, and the sitting notes (date, operator,
 console lines and exit statuses, observations, temperatures, every stop and
 the rule that caused it).
@@ -626,26 +715,15 @@ archived records; a simulation result is never quoted as hardware evidence.
 
 ## Open decisions for the owner
 
-- Whether to run H0 at all. It stands on its own as a measurement.
-- The H0 gate numbers (G2 to G4), the H1 stop-rule numbers (S4 to S7) and the
-  success criterion. One point to settle: on a joint with almost no error
-  above 3 Hz in trial 0, the per-joint part of S5 can trigger on noise alone.
-- Whether to tighten the tracking gates for the series. The rules allow it;
-  only widening is forbidden. The default is `[safety]` as in the baseline
-  bundle. A *proposal*: `warning_error_rad = 0.15`,
-  `sustained_abort_error_rad = 0.2` with `sustained_abort_time_s = 0.2`, and
-  `immediate_abort_error_rad = 0.3`, against a worst tracking error of
-  0.104 rad in the archived plain run of this reference. The gates are
-  evaluated only during tracking, against the reference; a trip ends the run
-  in an abort hold at the measured posture. These settings are not part of
-  the reference signature, so they can be set without invalidating offsets,
-  but they must be chosen before the series and then be the same in the
-  simulated series (the shared `follow.toml` ensures it).
-- The number of trials per sitting, and whether a series may be split across
-  sittings or days. The offset is bound to the reference, its processing, the
-  rate and the mode, not to the day; servo temperature is not controlled, and
-  the servo gains are checked only through the dumps.
-- The support arrangement during the runs, beyond the support the bring-up
-  page requires whenever torque goes off.
-- Whether H2 is wanted, and if so whether its trial 0 is a new zero-offset run
-  (as proposed above) and what result of the transfer check counts.
+What is still open after the owner's decisions of 2026-11-12:
+
+- The numbers of H1 (S4 to S7 and the success criterion), to be fixed after
+  H0 from what it measures, and those of H2, to be fixed before H2 starts
+  ([how the numbers are fixed](#how-the-numbers-are-fixed)). One point to
+  settle then: on a joint with almost no error above 3 Hz in trial 0, the
+  per-joint part of S5 can trigger on noise alone.
+- The number of trials per sitting, and whether a series may span days. The
+  offset is bound to the reference, its processing, the rate and the mode,
+  not to the day; servo temperature is not controlled, and the servo gains
+  are checked only through the parameter dumps.
+- What result of the H2 transfer check counts.
