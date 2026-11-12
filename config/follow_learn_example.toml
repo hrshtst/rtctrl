@@ -25,10 +25,12 @@ max_offset_rate_rad_s = 0.5  # |delta[i+1] - delta[i]| / dt, at least 0.01
 # whose gripper entry (the last) is 0: the gripper is never learned. With
 # both 0 on every joint (the default) learning is off and `ilc` refuses to
 # run; choose the gains in simulation first (the library's convergence test
-# uses phi = 0.5, psi_s = 0 on a representative lagged plant).
+# uses phi = 0.5, psi_s = 0 on a representative lagged plant). Ceilings:
+# phi < 2 (the low-frequency convergence condition 0 < phi < 2) and
+# psi_s <= 0.1 s (the bound 2 K^-1 D of the measured servo is below it).
 [ilc]
-phi = 0.0                 # position-error gain, dimensionless, >= 0
-psi_s = 0.0               # velocity-error gain [s], >= 0
+phi = 0.0                 # position-error gain, dimensionless, in [0, 2)
+psi_s = 0.0               # velocity-error gain [s], in [0, 0.1]
 advance_s = 0.05          # Delta >= 0: dead time plus servo lag
 cutoff_hz = 2.0           # -3 dB point of Q, at most 0.8 of Nyquist
 max_trial_step_rad = 0.05 # clamp on |delta_{k+1} - delta_k| per sample

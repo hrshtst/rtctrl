@@ -492,10 +492,10 @@ TEST_CASE(
   const auto parse = [&head](const std::string& body) {
     return fl::parseLearnConfig(head + body, "case.toml");
   };
-  const auto scalar = parse("[ilc]\nphi = 0.5\npsi_s = 2\n");
+  const auto scalar = parse("[ilc]\nphi = 1\npsi_s = 0.05\n");
   for (int j = 0; j < kArm; ++j) {
-    CHECK(scalar.ilc.phi[j] == 0.5);
-    CHECK(scalar.ilc.psi_s[j] == 2.0);  // an integer is a number
+    CHECK(scalar.ilc.phi[j] == 1.0);  // an integer is a number
+    CHECK(scalar.ilc.psi_s[j] == 0.05);
   }
   CHECK(scalar.ilc.phi[kGripper] == 0.0);
   CHECK(scalar.ilc.psi_s[kGripper] == 0.0);
@@ -539,6 +539,37 @@ TEST_CASE("follow learn: the gripper gain must be zero",
                                           "[7] (the gripper) must be 0: the "
                                           "gripper is never learned"));
   }
+}
+
+TEST_CASE("follow learn: the ILC gains have ceilings",
+          "[learn][follow_learn][config]") {
+  const std::string head = "format = \"rtctrl-x7-follow-learn\"\nversion = 1\n";
+  const auto parse = [&head](const std::string& body) {
+    return fl::parseLearnConfig(head + body, "case.toml");
+  };
+  // Just inside: phi below 2, psi_s up to 0.1 s.
+  const auto edge = parse("[ilc]\nphi = 1.9999999999999998\npsi_s = 0.1\n");
+  CHECK(edge.ilc.phi[0] == 1.9999999999999998);
+  CHECK(edge.ilc.psi_s[6] == 0.1);
+  // phi: the low-frequency convergence condition 0 < phi < 2, as one number
+  // (named at the first arm joint) or on one joint of eight.
+  CHECK_THAT(refusal([&] { parse("[ilc]\nphi = 2\n"); }),
+             ContainsSubstring("learn config 'case.toml': ilc.phi[0] must be "
+                               "< 2 (the low-frequency convergence condition "
+                               "0 < phi < 2), got 2"));
+  CHECK_THAT(refusal([&] {
+               parse("[ilc]\nphi = [0.5, 0.5, 0.5, 2.5, 0.5, 0.5, 0.5, 0]\n");
+             }),
+             ContainsSubstring("ilc.phi[3] must be < 2"));
+  // psi_s: above 2 K^-1 D of the measured servo.
+  CHECK_THAT(refusal([&] { parse("[ilc]\npsi_s = 0.10000000000000002\n"); }),
+             ContainsSubstring("learn config 'case.toml': ilc.psi_s[0] must "
+                               "be at most 0.1 s (above it exceeds the bound "
+                               "2 K^-1 D of the measured servo), got "
+                               "0.10000000000000002"));
+  CHECK_THAT(
+      refusal([&] { parse("[ilc]\npsi_s = [0, 0, 0, 0, 0, 2, 0, 0]\n"); }),
+      ContainsSubstring("ilc.psi_s[5] must be at most 0.1 s"));
 }
 
 TEST_CASE("follow learn: the limits may only be lowered",

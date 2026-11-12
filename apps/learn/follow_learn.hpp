@@ -63,6 +63,12 @@ inline constexpr double kLogTimeToleranceS = 1e-6;
 inline constexpr std::size_t kMaxTailRows = 200;
 // A feedback-error-learning offset against the synthesis of its weights.
 inline constexpr double kSynthesisToleranceRad = 1e-9;
+// Ceilings on the ILC gains (docs/theory/learning-control.md, "Iterative
+// learning control in position form"): phi below the low-frequency
+// convergence condition 0 < phi < 2 (exclusive), psi_s at most 0.1 s, above
+// the bound 2 K^-1 D = 2 (T - theta) of the measured servo.
+inline constexpr double kIlcPhiBelow = 2.0;
+inline constexpr double kIlcMaxPsiS = 0.1;
 
 inline constexpr int kDof = model::kCanonicalDof;
 inline constexpr int kArmJoints = 7;     // canonical joints 0..6
@@ -309,6 +315,23 @@ inline LearnConfig parseLearnConfig(std::string_view text,
     config.ilc.phi = learn_detail::jointGains(*ilc, "phi", "ilc.phi", source);
     config.ilc.psi_s =
         learn_detail::jointGains(*ilc, "psi_s", "ilc.psi_s", source);
+    for (int j = 0; j < kDof; ++j) {
+      const std::string joint = "[" + std::to_string(j) + "]";
+      if (!(config.ilc.phi[j] < kIlcPhiBelow)) {
+        configFail(source,
+                   "ilc.phi" + joint +
+                       " must be < 2 (the low-frequency convergence "
+                       "condition 0 < phi < 2), got " +
+                       exactNumber(config.ilc.phi[j]));
+      }
+      if (!(config.ilc.psi_s[j] <= kIlcMaxPsiS)) {
+        configFail(source,
+                   "ilc.psi_s" + joint +
+                       " must be at most 0.1 s (above it exceeds the bound "
+                       "2 K^-1 D of the measured servo), got " +
+                       exactNumber(config.ilc.psi_s[j]));
+      }
+    }
     if (const auto value =
             optionalNumber(*ilc, "advance_s", "ilc.advance_s", source)) {
       requireAtLeastZero(*value, "ilc.advance_s", source);
