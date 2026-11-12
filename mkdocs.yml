@@ -75,6 +75,7 @@ nav:
       - Gravity compensation: theory/gravity-compensation.md
       - Computed torque: theory/computed-torque.md
       - Flexible-mode identification: theory/identification.md
+      - Position-based learning control: theory/learning-control.md
   - Hardware:
       - Bring-up checklist: hardware/bringup.md
       - Control-rate qualification: hardware/control-rate.md

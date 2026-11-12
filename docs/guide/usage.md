@@ -774,6 +774,87 @@ For strict reproduction, build the Git commit recorded by the manifest. A
 hardware replay is intentionally not expected to be byte-identical because
 measured state and bus timing are physical inputs.
 
+### Learnability analysis of follow logs
+
+Two offline tools turn follow logs into the evidence used by the
+[position-based learning control](../theory/learning-control.md) note:
+how the tracking error is structured, how repeatable it is, and how much
+of it a feedforward built only from the reference predicts. Neither opens
+the bus. The numbers they produced on archived hardware logs are in the
+note's [evidence](../theory/learning-control.md#evidence) section.
+
+`x7_model_torque` evaluates the rigid-body model along a table of joint
+trajectories. It selects the reference columns by name, in any order:
+`qrefN_rad`, `dqrefN_rad_s` and `ddqrefN_rad_s2` for all eight canonical
+joints. Other columns, numeric or not, are ignored, so a follow log can be
+passed as it is:
+
+```sh
+./build/apps/x7_model_torque --model models/crane_x7/crane_x7.ztk \
+  --input follow-hw.csv --output follow-hw-torque.csv
+```
+
+For every input data row the output holds `schema_version`, `row` (the
+0-based input row), the model gravity torques `gravity0_nm` to
+`gravity7_nm`, and the inverse-dynamics torques `inverse_dynamics0_nm` to
+`inverse_dynamics7_nm` (which include gravity). The output must not exist:
+it is created exclusively, an existing file is refused, and a partial file
+is removed on failure. Every input row needs the header's field count and
+finite numbers in the selected columns; an error names the row and column.
+
+`tools/follow_learnability.py` analyses the tracking rows of follow logs
+(schema version 1; one contiguous block of `tracking` rows). It uses the
+log's sign, `e = q - qref` from the `errorN_rad` columns, which is the
+opposite of the theory note's (see its
+[sign convention](../theory/learning-control.md#the-servo-as-a-spring-with-lag)).
+It has three subcommands; each one's `--help` documents its fits and
+units.
+
+`anatomy` analyses each log independently: per joint, the RMS, peak and
+mean error, the error above a band split (`--split-hz`, default 3 Hz), the
+reference speed and acceleration at the first and last tracking sample (a
+rest-to-rest check), a lag-stiffness fit `e = -tau/K - T*dqref + c` on the
+log's torque, and a servo-law fit `tau = Ks*(applied - q) - Ds*dq + b`:
+
+```sh
+uv run --project tools tools/follow_learnability.py anatomy \
+  follow-hw-a.csv follow-hw-b.csv
+```
+
+`repeat` takes at least two runs of the same reference (tracking lengths
+within one sample, identical references; otherwise it exits naming the
+logs) and separates the repeatable error (the mean over runs, raw and
+debiased) from the non-repeatable rest, below and above the band split,
+together with the spread of the initial state:
+
+```sh
+uv run --project tools tools/follow_learnability.py repeat \
+  follow-rep-1.csv follow-rep-2.csv follow-rep-3.csv
+```
+
+`predict` tests a feedforward built only from the reference, on the arm
+joints, by leaving one run out: weights fitted on the other runs predict
+the held-out run's error. The runs are named logs, at least two, intended
+to have different references. The tool smooths each reference
+(`--smooth-sigma-s`, default 0.04 s), differentiates it, and calls
+`x7_model_torque` for the model terms; the regressors are those of the
+note's feedback-error-learning table (Coulomb scale `--coulomb-v0`,
+default 0.05 rad/s), with two reduced sets reported alongside. Read the
+held-out residual, not the individual weights:
+
+```sh
+uv run --project tools tools/follow_learnability.py predict \
+  --model-torque ./build/apps/x7_model_torque \
+  --model models/crane_x7/crane_x7.ztk \
+  --run a=follow-hw-a.csv --run b=follow-hw-b.csv --run c=follow-hw-c.csv
+```
+
+With `--json FILE`, any subcommand also writes its results as JSON in SI
+units, with null for every value that is not identifiable; the tables on
+standard output show errors in mrad and times in ms. The exit status is 0
+on success, 1 on invalid input (the reason on standard error), and 2 on a
+usage error.
+
 ### Link-force disturbances and the force-budget screen
 
 These tools support disturbance experiments in which a force acts on the arm
