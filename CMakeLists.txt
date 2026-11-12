@@ -50,6 +50,7 @@ add_library(rtctrl
   src/hw/config.cpp
   src/hw/bus_profile.cpp
   src/hw/crane_x7.cpp
+  src/learn/regressor_feedforward.cpp
   src/arm/real_arm.cpp
   src/util/async_writer.cpp
   src/util/realtime.cpp)

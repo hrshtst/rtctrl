@@ -53,7 +53,8 @@ add_executable(unit_tests
   unit/teach_recording_test.cpp
   unit/bringup_test.cpp
   unit/dxl_parameters_test.cpp
-  unit/x7_common_test.cpp)
+  unit/x7_common_test.cpp
+  unit/regressor_feedforward_test.cpp)
 target_link_libraries(unit_tests PRIVATE rtctrl::rtctrl Catch2::Catch2WithMain)
 # track_common_test preserves the backed-up practical app orchestration
 # (settle gate and latency verification) directly from apps.
