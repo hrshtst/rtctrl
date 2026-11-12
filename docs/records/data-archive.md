@@ -2344,11 +2344,13 @@ and the overall validation failed; `t3-diagnosis-15/` holds the developer's offl
 emulator kept off CPU 3). Its review (`review-option-a2/`) found two false passes of the residency check (a thread
 absent from the supervisor's records; an emulator task carried into the window on CPU 3) and asked for the pty holder's
 visibility limit to be documented; `option-a2-prep2/` holds the corrections' offline evidence (tools at `9535ec5` and
-`6d06bf9`), for review.
+`6d06bf9`). Their re-review (`review-option-a2-b099e5c/`) found two lineage defects (a completeness line accepted by
+prefix, with duplicate rows overwriting one another; a parent learned only at its exit never bringing its earlier
+children); `option-a2-prep3/` holds the corrections' offline evidence (tools at `0399672`), for review.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal and its review, the T3 wording correction | `1e70156d49186b66292610515076359081fdcecf635ae640d72ae2357b3f5801` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its review and re-review, the T3 wording correction | `5e294e93d746595cb1e679285a56df6806e753c60ea033a7ce4f81e65e1a1b5b` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2472,6 +2474,12 @@ visibility limit to be documented; `option-a2-prep2/` holds the corrections' off
 | `option-a2-prep2/reviewer-reproducer.txt` | the review's two counterexamples on the corrected check (each refused or explained) | `4a02bb950ff9c74b1d0f375663cbecfa622177dd002e39bebe79fce78e12079e` |
 | `option-a2-prep2/session-smoke.txt` | trace_session_script_smoke at 9535ec5 (every timer run's lineage) | `a71eb71777950eb5e7d8de031f09cdc20af7cc94ecf5b3b8f9c0506259092e74` |
 | `option-a2-prep2/synthetic-attempt15.lineage.txt` | a synthetic lineage for that demonstration (NOT a session listing) | `345acfa9c28ec1a664a6fa476a86bc648632c395b94bb50c066ea570fb10cbcb` |
+| `option-a2-prep3/PROVENANCE.txt` | Option A second run, the lineage corrections' offline evidence: provenance | `2c4bc877ceb1416ccbe9e29616638ab182987f72006450fdebb56653960515eb` |
+| `option-a2-prep3/SHA256SUMS` | folder ledger | `cbd301a1754e89e7f4be3af0c8973d1d22e166ff1a3db7e799d181afa8788376` |
+| `option-a2-prep3/broken-copies.txt` | the corrected residency check's twenty-seven broken copies, each failing its regressions | `6e54f4b24aeda211e563270c4c62cd5d3b6be5b99cdb6525a0b37be4d120ebe2` |
+| `option-a2-prep3/residency-15.txt` | the corrected emulator_residency.py on attempt 15's capture (FAIL, as it must) | `fa7acb3f897f197dd994ce18c2162b281522ccb093d5eda1e4304aa01bc0cb48` |
+| `option-a2-prep3/reviewer-reproducer.txt` | the re-review's five cases on the corrected check (detected or refused) | `28154342bd25d10d48a52d8d3f1f6c3648015f4e7d93a112a02985dad35ca671` |
+| `option-a2-prep3/strict-read-15.txt` | the strict lineage reader on attempt 15's real halfway lineage (reads, 4126 tasks) | `4a24170ecf86dfe0b6f8826e566448b0faea00d44af14aa5dead72acd8d23834` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2641,6 +2649,27 @@ visibility limit to be documented; `option-a2-prep2/` holds the corrections' off
 | `review-option-a2/pre-existing-unseeded-thread.report.txt` | Option A second-run review evidence (the reviewer's) | `6ebfc4c468c0ced9aa29d8b01162593541d0bc91cd705424392cdeeaa3536513` |
 | `review-option-a2/review.md` | the reviewer's review of the second run's proposal at 5c7cf67 (changes requested) | `3d595e193c5f11dc2b139c464bedce5e61725702a0a394d0450e403ec3524eac` |
 | `review-option-a2/verification.txt` | Option A second-run review evidence (the reviewer's) | `3c74baeef4a64a2599fb6886be73ccff0e5f5684a203c96efb231e837aa340f3` |
+| `review-option-a2-b099e5c/SHA256SUMS` | Option A second-run re-review evidence (the reviewer's) | `c932d736847bb55bdf4d77d585733d8eed2afed8fc57db7838909755b6e00bec` |
+| `review-option-a2-b099e5c/carried-in-fixed.lineage.txt` | Option A second-run re-review evidence (the reviewer's) | `2a7c4c954f16837f1ad4ba631c616d9e62d7928c736a38f83d42b61a59ce641f` |
+| `review-option-a2-b099e5c/carried-in-fixed.out` | Option A second-run re-review evidence (the reviewer's) | `dd0416585f03bca700878ca759d1aa49fc126a5b3944800da44e9647d235240a` |
+| `review-option-a2-b099e5c/carried-in-fixed.report.txt` | Option A second-run re-review evidence (the reviewer's) | `3b0004dd6e39c87ae9eb11a6e23b6eca110dbebb4682a4d42c7f1b3c1b225418` |
+| `review-option-a2-b099e5c/check_lineage_edges.py` | Option A second-run re-review evidence (the reviewer's) | `19ecabfa9069259b0f233e9a04e11e8e85630c0e6c6404c38872c2f88af8f818` |
+| `review-option-a2-b099e5c/count-mismatch.lineage.txt` | Option A second-run re-review evidence (the reviewer's) | `84e5aabe1ff6d1faf4b7a51cfacd7b6504cfabc5d707df22e49d0e7cdb5ba1ba` |
+| `review-option-a2-b099e5c/count-mismatch.out` | Option A second-run re-review evidence (the reviewer's) | `79425ea3a8c146fc89ed934d7f99f4339d3a1f67f308c5a01c03ad92a4a98d76` |
+| `review-option-a2-b099e5c/count-mismatch.report.txt` | Option A second-run re-review evidence (the reviewer's) | `038f8edacd453b129d820ef7bc85d46a3cc35e53e98b16a47dc97fe6b04a7478` |
+| `review-option-a2-b099e5c/developer-ledger-check.txt` | Option A second-run re-review evidence (the reviewer's) | `df2744f1b62e4e6ae42a4a46843eaea649f9cf29113db5090739010c5bd2e18a` |
+| `review-option-a2-b099e5c/duplicate-affinity.lineage.txt` | Option A second-run re-review evidence (the reviewer's) | `40192a13312c28961933bc43fa23dda7b494afe6ffa8c3327e01b16c8a63fc06` |
+| `review-option-a2-b099e5c/duplicate-affinity.out` | Option A second-run re-review evidence (the reviewer's) | `6aaf959b9d2c534df6b0d9f60c88a51c6069e9310e3adcf57bee3b558301026a` |
+| `review-option-a2-b099e5c/duplicate-affinity.report.txt` | Option A second-run re-review evidence (the reviewer's) | `447bd4541a06ba7871f582e293c835e91dd1d18088c2d36fe7ede887c6a761b7` |
+| `review-option-a2-b099e5c/exited-parent-fork.lineage.txt` | Option A second-run re-review evidence (the reviewer's) | `a36f9c1238a2dfc13843fa1dd169c1b9621832a363e57f1ae4901379e3adb1d1` |
+| `review-option-a2-b099e5c/exited-parent-fork.out` | Option A second-run re-review evidence (the reviewer's) | `b9761c1288f56f08ff7f6901246adde9371a62ae9301349d42fb6b8363594bb6` |
+| `review-option-a2-b099e5c/exited-parent-fork.report.txt` | Option A second-run re-review evidence (the reviewer's) | `9094ca12b5e1b4d6d0e2821d1bffa505b4c72235aba166009fa0a165505c4069` |
+| `review-option-a2-b099e5c/fixture.record` | Option A second-run re-review evidence (the reviewer's) | `804c81e635e74563e88a4538e80ec8a127e015aeb6d74e5a614d9a377f8a8549` |
+| `review-option-a2-b099e5c/pre-existing-thread-fixed.lineage.txt` | Option A second-run re-review evidence (the reviewer's) | `c0926b066f7c9bdfcb83a2046605038322978c814a234dd55b1d65af1d8332b8` |
+| `review-option-a2-b099e5c/pre-existing-thread-fixed.out` | Option A second-run re-review evidence (the reviewer's) | `152666ff8d4b20f262bc2ab73f336e1709da7e13052beada9d8cfbb287e89fcf` |
+| `review-option-a2-b099e5c/pre-existing-thread-fixed.report.txt` | Option A second-run re-review evidence (the reviewer's) | `038f8edacd453b129d820ef7bc85d46a3cc35e53e98b16a47dc97fe6b04a7478` |
+| `review-option-a2-b099e5c/review.md` | the reviewer's re-review of the corrections at b099e5c (changes requested) | `5a0522596fed4a1a8336cc842e85c967a55e49b6ae9d1b8ebcf5852b18f9b34c` |
+| `review-option-a2-b099e5c/verification.txt` | Option A second-run re-review evidence (the reviewer's) | `b94cf8a03079d26f2326aaf7bb4c90ed08805bb63fd59ce55c0b49c2856d2bfe` |
 | `review-option-a-7553f40/SHA256SUMS` | Option A review evidence at 7553f40 (the reviewer's) | `75d5c518afefaed5e980bbf41690349d8efb8f4017a6c5489b185f335b081ea5` |
 | `review-option-a-7553f40/check_group_snapshot.py` | Option A review evidence at 7553f40 (the reviewer's) | `3d6afb49cee4afe7d3047c15f1b076ea5cb47fa47abdabf6615ca1d6c2d5843b` |
 | `review-option-a-7553f40/check_keeper_umask.py` | Option A review evidence at 7553f40 (the reviewer's) | `aa3ad3f15caacd3e61603239d7be03d86defbd723b2ebfb7dd0cf03919dd858e` |

@@ -2480,15 +2480,26 @@ timeouts, and it qualifies neither the real USB path nor 1 kHz operation.
 - `tools/emulator_residency.py <timer run>.csv --experiment
   <experiment.record>` takes the emulator's identity from the record and
   its tasks from that lineage: its process (pid and start time) and its
-  descendants, every thread of each, with the threads the record names,
-  every task one of them is seen to create during the trace, and every task
-  the trace shows exiting before the lineage ended (the listing cannot have
-  seen it). The set only grows, so a reused ID counts as the emulator's (a
-  false failure at worst, never a false pass). A task created before the
-  trace and gone before the lineage cannot run in the window. The lineage
-  must be complete, list the emulator, begin after the trace's first event
-  and end before the window; otherwise the evidence is unreadable (exit 2).
-  Inside the probe's window it then requires:
+  descendants, every thread of each. To these it adds the threads the
+  record names and every task the trace shows exiting before the lineage
+  ended (the listing cannot have seen it), then every task any of them
+  created, through any number of generations, from all the trace's forks
+  up to the window's end: a parent known only by its exit still brings the
+  children it made before it, even one the lineage shows reparented. It
+  gathers every task's events first and judges them against that final set.
+  The set only grows, so a reused ID counts as the emulator's (a false
+  failure at worst, never a false pass). A task created before the trace
+  and gone before the lineage cannot run in the window. The lineage is read
+  strictly: its header, one taken line whose end is not before its start,
+  each row listed once, each thread in one process, one parent and start
+  time per process, and a last completeness line whose count is the
+  rows'. It must also list the emulator, begin after the trace's first
+  event and end before the window. Otherwise the evidence is unreadable
+  (exit 2). Not covered: a descendant process created before the trace
+  whose parent process (itself a descendant) ended before the lineage; the
+  lineage then shows it reparented, and no fork in the trace connects it
+  (the supervisor's records name the leader's threads only). Inside the
+  probe's window it then requires:
     - **occupancy:** CPU 3's tasks reconstructed from its switch chain,
       from the one running when the window began, with no stretch of an
       emulator task there overlapping the window (one carried into the
