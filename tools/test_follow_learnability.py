@@ -303,6 +303,18 @@ error = logged(track["q"] - track["qref"])  # the error{j}_rad column
 assert abs(result["aggregate"]["all"]["e_rms_rad"] - rms(error)) < 1e-15
 assert abs(result["aggregate"]["arm"]["e_rms_rad"]
            - rms(error[:, :ARM])) < 1e-15
+# Above the split: the RMS over joints of the per-joint RMS, which is the
+# RMS over all samples of the joints' above-split errors (equal lengths).
+above = np.column_stack([fl.band_split(error[:, j], DT, 3.0)[1]
+                         for j in range(DOF)])
+for label, selected in (("all", above), ("arm", above[:, :ARM])):
+    agg = result["aggregate"][label]
+    assert list(agg) == ["e_rms_rad", "e_rms_above_split_rad"], agg
+    assert abs(agg["e_rms_above_split_rad"] - rms(selected)) < 1e-15, label
+    count = DOF if label == "all" else ARM
+    assert agg["e_rms_above_split_rad"] == fl.aggregate_rms(
+        joint["e_rms_above_split_rad"] for joint in result["joints"][:count])
+assert result["aggregate"]["all"]["e_rms_above_split_rad"] > 0.0
 dqref, ddqref = logged(track["dqref"]), logged(track["ddqref"])
 tau = logged(track["tau"])
 u = logged(track["applied"]) - logged(track["q"])
@@ -371,6 +383,12 @@ out_json = ROOT / "anatomy.json"
 status, out, err = run_main("anatomy", plain, framed, "--json", out_json)
 assert status == 0 and err == "", err
 assert "e = q - qref" in out and "null" in out
+agg = result["aggregate"]
+assert (f"  aggregate RMS e: 8 joints {agg['all']['e_rms_rad'] * 1e3:.3f} mrad,"
+        f" arm 0-6 {agg['arm']['e_rms_rad'] * 1e3:.3f} mrad; above 3 Hz:"
+        f" 8 joints {agg['all']['e_rms_above_split_rad'] * 1e3:.3f} mrad,"
+        f" arm 0-6 {agg['arm']['e_rms_above_split_rad'] * 1e3:.3f} mrad\n"
+        in out), out
 loaded = json.loads(out_json.read_text())
 assert list(loaded) == ["format", "version", "command", "sign_convention",
                         "split_hz", "tau_rms_threshold_nm",

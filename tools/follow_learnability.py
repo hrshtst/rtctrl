@@ -403,11 +403,13 @@ def anatomy(run: Run, split_hz: float) -> dict:
         "duration_s": run.duration,
         "dt_s": run.dt,
         "command_mode": int(modes[0]),
+        # Over all 8 joints and over the 7 arm joints: the RMS over joints
+        # of each per-joint RMS (aggregate_rms); follow_learn_study.py
+        # reads e_rms_above_split_rad as its hf_rms_rad and hf_arm_rms_rad.
         "aggregate": {
-            "all": {"e_rms_rad": aggregate_rms(
-                joint["e_rms_rad"] for joint in joints)},
-            "arm": {"e_rms_rad": aggregate_rms(
-                joint["e_rms_rad"] for joint in joints[:ARM])},
+            label: {key: aggregate_rms(joint[key] for joint in selected)
+                    for key in ("e_rms_rad", "e_rms_above_split_rad")}
+            for label, selected in (("all", joints), ("arm", joints[:ARM]))
         },
         "joints": joints,
     }
@@ -820,7 +822,11 @@ def print_anatomy(result: dict) -> None:
               f"command mode {log['command_mode']}")
         agg = log["aggregate"]
         print(f"  aggregate RMS e: 8 joints {agg['all']['e_rms_rad'] * 1e3:.3f}"
-              f" mrad, arm 0-6 {agg['arm']['e_rms_rad'] * 1e3:.3f} mrad")
+              f" mrad, arm 0-6 {agg['arm']['e_rms_rad'] * 1e3:.3f} mrad;"
+              f" above {result['split_hz']:g} Hz: 8 joints"
+              f" {agg['all']['e_rms_above_split_rad'] * 1e3:.3f} mrad,"
+              f" arm 0-6 {agg['arm']['e_rms_above_split_rad'] * 1e3:.3f}"
+              f" mrad")
         print(f"   j  rms[mrad] max|e|  mean  >{result['split_hz']:g}Hz | "
               f"|dqref| peak first last [rad/s] | |ddqref| first last "
               f"[rad/s^2]")
@@ -1005,8 +1011,9 @@ Per joint j = 0..7: rms, max|e| and mean of e; rms of e above --split-hz
                                       tau = Ks*(applied - q) - Ds*dq + b
 Any other regressor whose RMS is below {_g(NEGLIGIBLE_RMS)} (its own units) is
 dropped and its term reported null; a fit whose remaining columns are
-linearly dependent reports every term null. Per log: aggregate RMS of e over
-all 8 joints and over the 7 arm joints, samples, duration, dt, command mode.
+linearly dependent reports every term null. Per log: aggregate RMS of e, and
+of e above --split-hz, over all 8 joints and over the 7 arm joints (the RMS
+over joints of the per-joint RMS), samples, duration, dt, command mode.
 
 Units: --json is SI: e in rad, dqref rad/s, ddqref rad/s^2, K and Ks Nm/rad,
 T s, c rad, Ds Nm s/rad, tau and b Nm, dt and duration s. The table shows e,

@@ -29,6 +29,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 sys.path.insert(0, os.path.abspath("tools"))
 
 import follow_learn_study as fls  # noqa: E402
+import follow_learnability as fl  # noqa: E402
 
 SCRATCH = tempfile.TemporaryDirectory(prefix="follow_learn_study_test-")
 ROOT = pathlib.Path(SCRATCH.name)
@@ -923,6 +924,18 @@ for trial in n1["trials"]:
         "follow simulation: success,")
     assert trial["offset"]["trial"] == trial["trial"]
     assert len(trial["log"]["rms_rad_by_joint"]) == 8
+    # The above-split RMS is follow_learnability's anatomy aggregate of the
+    # trial's log, the RMS over joints of the per-joint values.
+    anatomy = fl.anatomy(fl.load_tracking(trial["log"]["path"],
+                                          fl.ANATOMY_COLUMNS),
+                         summary["split_hz"])
+    assert trial["log"]["hf_rms_rad"] == \
+        anatomy["aggregate"]["all"]["e_rms_above_split_rad"]
+    assert trial["log"]["hf_arm_rms_rad"] == \
+        anatomy["aggregate"]["arm"]["e_rms_above_split_rad"]
+    by_joint = trial["log"]["hf_rms_rad_by_joint"]
+    assert trial["log"]["hf_rms_rad"] == fl.aggregate_rms(by_joint)
+    assert trial["log"]["hf_arm_rms_rad"] == fl.aggregate_rms(by_joint[:7])
 rms = [t["rms_rad"] for t in n1["trials"]]
 assert all(rms[k] < rms[k - 1] for k in range(1, 4)), rms
 assert n1["observations"]["monotone"] is True

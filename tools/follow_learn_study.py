@@ -140,7 +140,6 @@ SUMMARY_VERSION = 1
 BINARIES = ("x7_plan_ptp", "x7_follow_sim", "x7_follow_learn")
 METHODS = ("ilc", "fel")
 DOF = 8
-ARM = 7
 COMMAND_TIMEOUT_S = 900.0
 EDGE_S = 1.0          # the start and end windows of the edge RMS
 DEFAULT_SPLIT_HZ = 3.0
@@ -896,19 +895,21 @@ def analyse_log(path, split_hz: float) -> dict:
         return (float(np.sqrt(np.mean(np.square(error[mask]))))
                 if np.any(mask) else None)
 
-    above = [joint["e_rms_above_split_rad"] for joint in joints]
+    aggregate = anatomy["aggregate"]
     return {
         "path": str(path),
         "samples": run.samples,
         "duration_s": run.duration,
-        "rms_rad": anatomy["aggregate"]["all"]["e_rms_rad"],
-        "arm_rms_rad": anatomy["aggregate"]["arm"]["e_rms_rad"],
+        "rms_rad": aggregate["all"]["e_rms_rad"],
+        "arm_rms_rad": aggregate["arm"]["e_rms_rad"],
         "rms_rad_by_joint": [joint["e_rms_rad"] for joint in joints],
         "max_abs_rad_by_joint": [joint["e_max_abs_rad"] for joint in joints],
         "mean_rad_by_joint": [joint["e_mean_rad"] for joint in joints],
-        "hf_rms_rad": fl.aggregate_rms(above),
-        "hf_arm_rms_rad": fl.aggregate_rms(above[:ARM]),
-        "hf_rms_rad_by_joint": above,
+        # the anatomy's above-split aggregates, one definition for both
+        "hf_rms_rad": aggregate["all"]["e_rms_above_split_rad"],
+        "hf_arm_rms_rad": aggregate["arm"]["e_rms_above_split_rad"],
+        "hf_rms_rad_by_joint": [joint["e_rms_above_split_rad"]
+                                for joint in joints],
         "edge_rms_rad": {"first_s": window(start), "middle": window(middle),
                          "last_s": window(end), "window_s": EDGE_S},
         "dqref_first_abs_rad_s": [joint["dqref_first_abs_rad_s"]
