@@ -56,10 +56,13 @@ struct TrackingGrid {
 };
 
 // The tracking grid of a reference of the given duration at the given
-// control period, computed with the same floating-point expression as
-// FollowRun::trackReference (apps/follow/follow_run.hpp), so the two never
-// disagree. Throws std::runtime_error unless both arguments are finite and
-// > 0 and the interval count fits a long.
+// control period: intervals = max(1, ceil(duration / period)), step
+// duration / intervals. The one definition of the grid: the follower
+// (FollowRun::trackReference, apps/follow/follow_run.hpp) calls it for the
+// grid it commands, its preflight for the grid it validates and offsets
+// are checked on, and x7_follow_learn for the grid it learns on, so none of
+// them can disagree. Throws std::runtime_error unless both arguments are
+// finite and > 0 and the interval count fits a long.
 TrackingGrid trackingGrid(double reference_duration_s, double control_dt_s);
 
 // The offset of trial 0: method "zero", all zeros on the tracking grid,

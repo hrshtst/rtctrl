@@ -43,9 +43,11 @@ constexpr double kPeriod = 0.01;  // the follower's 100 Hz
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-// FollowRun::trackReference's grid (apps/follow/follow_run.hpp), copied
-// expression for expression. When the follower's expression changes, this
-// copy and learn::trackingGrid change with it.
+// The grid formula as written when the offset format was introduced (it was
+// then FollowRun::trackReference's inline expression; the follower now calls
+// learn::trackingGrid itself). The test below pins learn::trackingGrid to
+// it bit for bit: a change of the formula changes the grid of every offset
+// file already written, so it must be deliberate, not a refactoring.
 struct FollowerGrid {
   long intervals;
   double dt;
@@ -300,6 +302,7 @@ bool withFileSizeLimit(rlim_t bytes, Body body) {
 
 }  // namespace
 
+// Pins the formula (see FollowerGrid).
 TEST_CASE("command offset: the tracking grid is the follower's",
           "[learn][command_offset]") {
   for (const double period : {kPeriod, 0.005, kDyadicPeriod}) {

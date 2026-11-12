@@ -358,9 +358,11 @@ TrackingGrid trackingGrid(double reference_duration_s, double control_dt_s) {
                              " s over control period " + number(control_dt_s) +
                              " s is too many intervals");
   }
-  // FollowRun::trackReference (apps/follow/follow_run.hpp), expression for
-  // expression: the follower commands samples 0..intervals at step * dt.
-  // Keep the two identical, or an offset sample stops matching its command.
+  // The follower (FollowRun::trackReference, apps/follow/follow_run.hpp)
+  // takes its grid from this function and commands samples 0..intervals at
+  // min(duration, step * dt); so do its preflight and x7_follow_learn. A
+  // change here changes every one of them together, and every offset
+  // already written stops matching its grid.
   const long intervals = std::max(
       1L, static_cast<long>(std::ceil(reference_duration_s / control_dt_s)));
   const double dt = reference_duration_s / intervals;
