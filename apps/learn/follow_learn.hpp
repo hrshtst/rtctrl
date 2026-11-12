@@ -289,6 +289,14 @@ inline LearnConfig parseLearnConfig(std::string_view text,
                        "got " +
                        exactNumber(*value));
       }
+      if (*value < rl::kMinOffsetRateLimitRadS) {
+        configFail(source,
+                   "limits.max_offset_rate_rad_s must be at least " +
+                       exactNumber(rl::kMinOffsetRateLimitRadS) +
+                       " (the follower ramps to the offset at this rate), "
+                       "got " +
+                       exactNumber(*value));
+      }
       config.limits.max_rate_rad_s = *value;
     }
   }

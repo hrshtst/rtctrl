@@ -481,6 +481,11 @@ TEST_CASE("follow config reads an optional learned command offset",
     CHECK(config.learning.max_offset_rate_rad_s == 0.5);
   }
   std::remove(ceiling);
+  // The rate limit's floor itself is allowed.
+  const char* floor = "build/follow_offset_floor.toml";
+  writeConfig(floor, "[learning]\nmax_offset_rate_rad_s = 0.01\n");
+  CHECK(follow::loadConfig(floor).learning.max_offset_rate_rad_s == 0.01);
+  std::remove(floor);
 
   const auto refused = [](const std::string& table, const char* expected) {
     const char* path = "build/follow_offset_refused.toml";
@@ -502,6 +507,11 @@ TEST_CASE("follow config reads an optional learned command offset",
   refused("max_offset_rad = 0.0\n", "learning.max_offset_rad must be > 0");
   refused("max_offset_rate_rad_s = -0.1\n",
           "learning.max_offset_rate_rad_s must be > 0");
+  // A rate near zero would make the offset ramp arbitrarily long.
+  refused("max_offset_rate_rad_s = 0.009999999999999998\n",
+          "learning.max_offset_rate_rad_s must be at least 0.01 rad/s (the "
+          "offset ramp runs at this rate)");
+  refused("max_offset_rate_rad_s = 1e-300\n", "must be at least 0.01 rad/s");
   refused("max_offset_rad = nan\n", "learning.max_offset_rad must be finite");
   refused("max_offset_rad = \"0.1\"\n",
           "learning.max_offset_rad must be finite");

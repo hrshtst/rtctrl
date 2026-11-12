@@ -532,6 +532,27 @@ TEST_CASE("command offset: the run check names each problem",
                      OffsetLimits{0.15, value}, {"max_rate_rad_s"});
     }
   }
+  SECTION("the rate limit has a floor") {
+    // Even an offset that never moves: the limit is the follower's ramp
+    // rate, and a rate near zero makes that ramp arbitrarily long.
+    const CommandOffset zero =
+        learn::zeroOffset(1.0, kDyadicPeriod, kReferenceHash);
+    CHECK_NOTHROW(learn::checkOffsetForRun(
+        zero, 1.0, kDyadicPeriod, kReferenceHash,
+        OffsetLimits{0.15, learn::kMinOffsetRateLimitRadS}));
+    REQUIRE(std::nextafter(learn::kMinOffsetRateLimitRadS, 0.0) ==
+            0.009999999999999998);
+    for (const auto& [value, text] :
+         {std::pair<double, std::string>{0.009999999999999998,
+                                         "0.009999999999999998"},
+          {1e-3, "0.001"},
+          {1e-300, "1e-300"}}) {
+      expectRunError(zero, 1.0, kDyadicPeriod, kReferenceHash,
+                     OffsetLimits{0.15, value},
+                     {"command offset limits: max_rate_rad_s " + text +
+                      " is below the floor 0.01 rad/s"});
+    }
+  }
   SECTION("the structural check comes first") {
     expectRunError(
         changed(offset, [](CommandOffset& o) { o.method = "pid"; }), 1.0,

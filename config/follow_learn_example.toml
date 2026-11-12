@@ -16,7 +16,7 @@ version = 1
 # from the values shown (the follower's own ceilings).
 [limits]
 max_offset_rad = 0.15        # |delta| on every joint and sample
-max_offset_rate_rad_s = 0.5  # |delta[i+1] - delta[i]| / dt
+max_offset_rate_rad_s = 0.5  # |delta[i+1] - delta[i]| / dt, at least 0.01
 
 # Iterative learning control in position form:
 #   delta_{k+1}(t) = Q[delta_k(t) + phi e_k(t + advance) + psi edot_k(t + advance)]

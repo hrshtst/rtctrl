@@ -572,6 +572,19 @@ TEST_CASE("follow learn: the limits may only be lowered",
                ContainsSubstring("limits.max_offset_rate_rad_s must be > 0 "
                                  "and at most 0.5"));
   }
+  // The rate limit has a floor: the follower's offset ramp runs at it.
+  CHECK(parse("[limits]\nmax_offset_rate_rad_s = 0.01\n")
+            .limits.max_rate_rad_s == 0.01);
+  for (const std::string value : {"0.009999999999999998", "1e-300"}) {
+    INFO(value);
+    CHECK_THAT(refusal([&] {
+                 parse("[limits]\nmax_offset_rate_rad_s = " + value + "\n");
+               }),
+               ContainsSubstring("limits.max_offset_rate_rad_s must be at "
+                                 "least 0.01 (the follower ramps to the "
+                                 "offset at this rate), got " +
+                                 value));
+  }
 }
 
 TEST_CASE(
@@ -1015,7 +1028,8 @@ TEST_CASE(
   Setup s("ilc_gains");
   const rl::CommandOffset zero = rl::readCommandOffset(s.zero);
   Trial trial = plannedTrial(s.ref, zero);
-  // An error that grows along the reference: 0.01 rad/s on the arm.
+  // An error that grows along the reference: 0.02 rad/s on the arm, twice
+  // the lowest rate limit a learn config accepts.
   for (std::size_t k = 0; k < trial.cycles.size(); ++k) {
     const double t =
         k < trial.tracking_begin
@@ -1023,7 +1037,7 @@ TEST_CASE(
             : std::min(1.0,
                        static_cast<double>(k - trial.tracking_begin) * kDt);
     for (int j = 0; j < kArm; ++j) {
-      trial.cycles[k].q[j] = trial.cycles[k].qref[j] - 0.01 * t;
+      trial.cycles[k].q[j] = trial.cycles[k].qref[j] - 0.02 * t;
     }
   }
   const fs::path log = writeLog(s.files, "log.csv", trial.cycles);
@@ -1033,13 +1047,13 @@ TEST_CASE(
              ContainsSubstring("ilc.phi and ilc.psi_s are 0 on every joint"));
   CHECK_FALSE(fs::exists(in.output));
   in.config = writeLearnConfig(s.files, "slow.toml",
-                               "[limits]\nmax_offset_rate_rad_s = 0.005\n"
+                               "[limits]\nmax_offset_rate_rad_s = 0.01\n"
                                "[ilc]\nphi = 1.0\n");
   const std::string message = refusal([&] { fl::runIlc(in); });
   CHECK_THAT(message,
              ContainsSubstring("ilc: the updated offset is refused and "
                                "nothing was written"));
-  CHECK_THAT(message, ContainsSubstring("exceeds max_rate_rad_s 0.005"));
+  CHECK_THAT(message, ContainsSubstring("exceeds max_rate_rad_s 0.01"));
   CHECK_THAT(message, ContainsSubstring("lower [ilc] cutoff_hz or the gains"));
   CHECK_FALSE(fs::exists(in.output));
 }

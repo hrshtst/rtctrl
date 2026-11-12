@@ -108,7 +108,8 @@ struct OutputConfig {
 // A learned command offset (rtctrl/learn/command_offset.hpp), computed
 // offline between trials: tracking commands q_d + delta. The follower only
 // reads and checks it; it never computes or changes one. The limits can
-// only be lowered from learn::OffsetLimits' defaults.
+// only be lowered from learn::OffsetLimits' defaults, the rate limit not
+// below learn::kMinOffsetRateLimitRadS.
 struct LearningConfig {
   std::optional<fs::path> offset_path;
   double max_offset_rad = rtctrl::learn::OffsetLimits{}.max_abs_rad;
@@ -634,6 +635,15 @@ inline Config loadConfig(const fs::path& path) {
   requireLowered("max_offset_rate_rad_s",
                  config.learning.max_offset_rate_rad_s, ceiling.max_rate_rad_s,
                  "rad/s");
+  if (config.learning.max_offset_rate_rad_s <
+      rtctrl::learn::kMinOffsetRateLimitRadS) {
+    char text[200];
+    std::snprintf(text, sizeof text,
+                  "follow config: learning.max_offset_rate_rad_s must be at "
+                  "least %g rad/s (the offset ramp runs at this rate)",
+                  rtctrl::learn::kMinOffsetRateLimitRadS);
+    throw std::runtime_error(text);
+  }
   return config;
 }
 

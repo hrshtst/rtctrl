@@ -45,6 +45,13 @@ struct OffsetLimits {
   double max_rate_rad_s = 0.5;   // |delta[i+1] - delta[i]| / dt
 };
 
+// The lowest max_rate_rad_s accepted. The follower ramps to the first
+// offset sample at this rate: at 0.01 rad/s the widest ramp it can be
+// asked for (the 0.15 rad home-correction clamp plus a 0.15 rad offset) takes
+// 30 s, while a rate near zero would make the ramp arbitrarily long and
+// overflow its step count.
+inline constexpr double kMinOffsetRateLimitRadS = 0.01;
+
 // The grid the follower tracks a reference on: samples 0..intervals, sample
 // i commanded at t = i * dt_s.
 struct TrackingGrid {
@@ -81,8 +88,8 @@ CommandOffset zeroOffset(double reference_duration_s, double control_dt_s,
 // std::runtime_error naming the first problem.
 void checkOffsetStructure(const CommandOffset& offset);
 
-// The offset may be applied to this run: limits finite and > 0, the
-// structural check, the tracking grid of (reference_duration_s,
+// The offset may be applied to this run: limits finite and > 0 and
+// max_rate_rad_s at least kMinOffsetRateLimitRadS, the structural check, the tracking grid of (reference_duration_s,
 // control_dt_s) (same sample count, step within kOffsetGridStepToleranceS),
 // the reference hash, |delta| <= max_abs_rad and
 // |delta[i+1] - delta[i]| / dt_s <= max_rate_rad_s on every joint. Throws

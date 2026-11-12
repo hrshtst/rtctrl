@@ -393,6 +393,12 @@ void checkOffsetForRun(const CommandOffset& offset, double reference_duration_s,
                        const OffsetLimits& limits) {
   requireLimit(limits.max_abs_rad, "max_abs_rad");
   requireLimit(limits.max_rate_rad_s, "max_rate_rad_s");
+  if (limits.max_rate_rad_s < kMinOffsetRateLimitRadS) {
+    throw std::runtime_error("command offset limits: max_rate_rad_s " +
+                             exact(limits.max_rate_rad_s) +
+                             " is below the floor " +
+                             exact(kMinOffsetRateLimitRadS) + " rad/s");
+  }
   checkOffsetStructure(offset);
   const TrackingGrid grid = trackingGrid(reference_duration_s, control_dt_s);
   if (offset.delta_rad.size() != grid.samples()) {
