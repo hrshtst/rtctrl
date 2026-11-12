@@ -71,6 +71,15 @@ def exits(t: int, pid: int, comm: str = "gone") -> str:
     return line(t, 5, comm, pid, "sched_process_exit", f"comm={comm} pid={pid} prio=120 group_dead=true")
 
 
+def forked(t: int, parent: int, child: int, comm: str = "helper") -> str:
+    return line(t, 2, comm, parent, "sched_process_fork", f"comm={comm} pid={parent} child_comm={comm} child_pid={child}")
+
+
+def on3(t: int, pid: int, comm: str = "helper") -> list[str]:
+    """A task run on CPU 3 for 50 us in the worker's place."""
+    return [switch(t, 3, WORKER, (comm, pid)), switch(t + 50_000, 3, (comm, pid), WORKER)]
+
+
 def stamp(ln: str) -> int:
     s, ns = ln.split("] ")[1].split()[1].rstrip(":").split(".")
     return int(s) * S + int(ns)
@@ -176,6 +185,33 @@ def units() -> None:
     expect(r["ok"] and r["exited"] == 0, f"a task exited after the lineage ended: {r}")
     r = check(clean(), dict(EMU_REC, allowed_rt=[EMU]))
     expect(not r["ok"] and r["allowed_rt"] == 1, f"a lineage thread allowed on CPU 3: {r}")
+    # The reviewer's exited parent (review of b099e5c): an emulator subprocess 4300, unlisted, forks 4400 during the
+    # trace and exits before the lineage; 4400 is listed reparented (outside the emulator's tree) and runs on CPU 3.
+    r = check(clean() + [forked(T - 80 * MS, 4300, 4400), exits(T - 70 * MS, 4300)] + on3(T + 2 * MS, 4400))
+    expect(not r["ok"] and r["ran_rt"] == 1 and r["forks"] == 1 and r["exited"] == 1,
+           f"a child of a parent known only by its later exit, on CPU 3: {r}")
+    # A chain of fork-and-exit generations: 4301 and 4302 each fork and exit before the lineage; 4303 (alive, listed
+    # reparented) forks 4304 after the lineage, which forks 4305 inside the window; 4305 runs on CPU 3.
+    chain = [forked(T - 90 * MS, 4301, 4302), exits(T - 88 * MS, 4301), forked(T - 80 * MS, 4302, 4303), exits(T - 78 * MS, 4302),
+             forked(T - 20 * MS, 4303, 4304), forked(T + 1 * MS, 4304, 4305)]
+    r = check(clean() + chain + on3(T + 2 * MS, 4305))
+    expect(not r["ok"] and r["ran_rt"] == 1 and r["forks"] == 3 and r["exited"] == 2, f"a chain of generations, the last on CPU 3: {r}")
+    r = check(clean() + chain[::-1] + on3(T + 2 * MS, 4305))  # sorted by time in check(): the same trace
+    expect(not r["ok"] and r["forks"] == 3, f"the chain, given in reverse order: {r}")
+    # Forks outside the emulator's tasks stay out: a parent alive at the lineage and outside the emulator's tree, a
+    # parent that exited after the lineage, and their children on CPU 3.
+    r = check(clean() + [forked(T - 80 * MS, 5000, 5001), forked(T - 80 * MS, 5100, 5101), exits(T - 30 * MS, 5100)]
+              + on3(T + 2 * MS, 5001) + on3(T + 3 * MS, 5101))
+    expect(r["ok"] and r["forks"] == 0 and r["exited"] == 0, f"other tasks' children on CPU 3: {r}")
+    # A reused ID starts afresh at its fork: 4500 (the emulator's, by its exit before the lineage) was last queued on
+    # CPU 2; its ID, reused by a new task, is switched in on CPU 1 first: no contradiction.
+    r = check(clean() + [wakeup(T - 95 * MS, 2, 4500, "helper"), exits(T - 94 * MS, 4500), forked(T - 60 * MS, 4600, 4500),
+                         switch(T - 59 * MS, 1, ("swapper/1", 0), ("helper", 4500)), switch(T - 58 * MS, 1, ("helper", 4500), ("swapper/1", 0))])
+    expect(r["ok"] and r["exited"] == 1, f"a reused ID, afresh at its fork: {r}")
+    # The stated limit: 4400 forked BEFORE the trace by 4300, which exits before the lineage (the trace shows the exit,
+    # no fork), so nothing connects 4400 to the emulator: not covered (the docstring says so).
+    r = check(clean() + [exits(T - 70 * MS, 4300)] + on3(T + 2 * MS, 4400))
+    expect(r["ok"] and r["exited"] == 1 and r["forks"] == 0, f"the stated limit (a child forked before the trace): {r}")
     # Outside the window (pulled to CPU 3, run there and asleep before it; woken there after it), and another task on
     # CPU 3 inside it: no count.
     r = check(clean() + [migrate(T - 500_000, 2, 3), switch(T - 400_000, 3, WORKER, ("dxl_emu", EMU), "R+"),
@@ -252,7 +288,8 @@ def records() -> None:
                            ("an unreadable line", lineage_text(ROWS + ["4300 x"])),
                            ("no taken line", lineage_text().replace(f"taken monotonic_ns: {TAKEN[0]} {TAKEN[1]}\n", "")),
                            ("the emulator absent", lineage_text([r for r in ROWS if not r.startswith("4100 ")])),
-                           ("another process with the emulator's pid", lineage_text([r.replace(" 1234 ", " 1999 ") for r in ROWS]))):
+                           ("another process with the emulator's pid", lineage_text(
+                               [ROWS[0], "4100 4100 4000 1999 1999 0-2,4-31", "4100 4101 4000 1999 2000 0-2,4-31"] + ROWS[3:]))):
             lf.write_text(text)
             try:
                 g = er.lineage(lf, emu, 3)
@@ -264,6 +301,58 @@ def records() -> None:
             expect(False, "a missing lineage: read")
         except er.Unreadable:
             pass
+        # Read strictly (review of b099e5c): the reviewer's count mismatch and contradictory duplicate among them.
+        good = lineage_text().split("\n")
+        thread = "4100 4101 4000 1234 1300 0-2,4-31"
+        for what, text in (("a count above the rows", lineage_text(close=f"lineage complete: {len(ROWS) + 1} tasks")),
+                           ("a count below the rows", lineage_text(close=f"lineage complete: {len(ROWS) - 1} tasks")),
+                           ("a row twice, the first allowing CPU 3", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 0-31", thread] + ROWS[3:])),
+                           ("a row twice, the same", lineage_text(ROWS + [thread])),
+                           ("a row twice, counted once", lineage_text(ROWS + [thread], close=f"lineage complete: {len(ROWS)} tasks")),
+                           ("a wrong header", "\n".join(["--- task listing ---"] + good[1:])),
+                           ("a thread in two processes", lineage_text(ROWS + ["4242 4101 4000 1500 1600 0-31"])),
+                           ("a process with two parents", lineage_text(ROWS + ["4100 4102 4001 1234 1310 0-2,4-31"])),
+                           ("a process with two start times", lineage_text(ROWS + ["4100 4102 4000 1235 1310 0-2,4-31"])),
+                           ("a leader started apart from its process", lineage_text([r.replace("4100 4100 4000 1234 1234", "4100 4100 4000 1234 1240") for r in ROWS])),
+                           ("a thread started before its process", lineage_text(ROWS + ["4100 4102 4000 1234 1200 0-2,4-31"])),
+                           ("a lineage that ends before it began", lineage_text(taken=(TAKEN[1], TAKEN[0]))),
+                           ("two taken lines", "\n".join(good[:2] + [good[1]] + good[2:])),
+                           ("a malformed taken line", "\n".join(good[:1] + ["taken monotonic_ns: 1 x"] + good[2:])),
+                           ("a count without its unit", lineage_text(close=f"lineage complete: {len(ROWS)}")),
+                           ("a count in words", lineage_text(close="lineage complete: six tasks")),
+                           ("a line after the completeness line", lineage_text() + "4300 4300 1 1600 1600 0-31\n"),
+                           ("a blank line among the rows", lineage_text(ROWS[:3] + [""] + ROWS[3:], close=f"lineage complete: {len(ROWS)} tasks")),
+                           ("a second header", lineage_text([HEAD] + ROWS, close=f"lineage complete: {len(ROWS)} tasks")),
+                           ("a line before the header", "\n" + lineage_text()),
+                           ("a descending affinity", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 4-2"] + ROWS[3:])),
+                           ("a malformed affinity", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 0-2,x"] + ROWS[3:])),
+                           ("a row of seven fields", lineage_text(ROWS[:2] + [thread + " 9"] + ROWS[3:])),
+                           ("a row of five fields", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300"] + ROWS[3:]))):
+            lf.write_text(text)
+            try:
+                g = er.lineage(lf, emu, 3)
+                expect(False, f"{what}: read ({g})")
+            except er.Unreadable:
+                pass
+        lf.write_bytes(lineage_text().encode() + b"\xff\n")
+        try:
+            er.read_lineage(lf)
+            expect(False, "bytes that are no text: read")
+        except er.Unreadable:
+            pass
+        # The producer and this reader agree: a live listing of this host (observer_affinity.py tasks, read-only), when
+        # complete, reads strictly with its own count.
+        live = io.StringIO()
+        if er.observer_affinity.tasks(out=live) == 0:
+            lf.write_text(live.getvalue())
+            try:
+                rows, taken = er.read_lineage(lf)
+                expect(f"lineage complete: {len(rows)} tasks" in live.getvalue() and taken[0] <= taken[1] and len(rows) > 0,
+                       f"a live listing: {len(rows)} rows, {taken}")
+            except er.Unreadable as e:
+                expect(False, f"a live listing of this host does not read strictly: {e}")
+        else:
+            print("note: this host's live listing was incomplete; the producer agreement was not checked")
 
 
 def cli() -> None:
