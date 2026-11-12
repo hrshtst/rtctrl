@@ -749,6 +749,24 @@ set_tests_properties(x7_follow_posture_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "follow posture references OK"
   LABELS integration)
 
+# Hardware x7_follow with a learned command offset over the pty emulator:
+# zero and nonzero offset runs complete, x7_follow_learn learns from the
+# hardware log, and an over-limit offset is refused before the bus line.
+# x7_follow only ever gets --port with this script's emulator link.
+add_test(NAME x7_follow_offset_emulator_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/follow_offset_emulator_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_follow>
+          $<TARGET_FILE:x7_plan_ptp> $<TARGET_FILE:x7_follow_learn>
+          ${CMAKE_SOURCE_DIR}/config/ptp_example.toml
+          ${CMAKE_SOURCE_DIR}/models/crane_x7/crane_x7.ztk
+          ${CMAKE_SOURCE_DIR}/config/crane_x7.toml
+          ${CMAKE_BINARY_DIR}/follow_offset_emulator_smoke)
+set_tests_properties(x7_follow_offset_emulator_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "follow offset emulator smoke OK"
+  FAIL_REGULAR_EXPRESSION "ttyUSB"
+  LABELS integration)
+
 # Functional only: the benchmark runs and reports every controller. Its
 # timings describe the CI host and are never asserted.
 add_test(NAME x7_controller_bench_runs
