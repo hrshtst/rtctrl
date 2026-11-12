@@ -4,7 +4,8 @@
 Synthetic x7_follow logs (the FollowCsvLog header, transcribed) carry
 planted parameters. anatomy recovers a planted lag-stiffness law and servo
 law, reports null for what the data cannot identify, and ignores every row
-outside the tracking phase; repeat separates a planted repeatable trace
+outside the tracking phase except in its count of missed cycles (the
+feedback_seq gaps over all rows, by phase); repeat separates a planted repeatable trace
 from a planted noise level and refuses runs of different references;
 predict, with an injected torque provider, recovers planted feedforward
 weights, drops a zero column, and predicts a held-out run to its noise
@@ -147,6 +148,34 @@ def write_log(name, track, mode=5, pre=0, post=0, drop=(), phase_at=None,
         if truncate:
             stream.write(",".join(rows[-1][:20]) + "\n")
     return str(path)
+
+
+def write_gapped_log(name, segments, gaps=None):
+    """A follow log of `segments`, [(phase, rows), ...] in file order, with
+    every value zero. feedback_seq (and time_s with it, a cycle per step)
+    rises by one into each row except into the rows in `gaps`, {row: d}
+    with rows counted from 0 over the file, where it rises by d."""
+    gaps = gaps or {}
+    zero = {name: np.zeros(DOF) for name in QUANTITIES}
+    lines, seq, row = [",".join(HEADER)], 0, 0
+    for phase, count in segments:
+        for _ in range(count):
+            seq += gaps.get(row, 1)
+            lines.append(",".join(row_fields(seq * DT, 0.0, phase, 5, seq,
+                                             seq, zero)))
+            row += 1
+    path = ROOT / name
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def missed(gaps_by_phase, finalizing_first_200=0):
+    """The missed_cycles result of the given nonzero per-phase counts."""
+    by_phase = dict.fromkeys(fl.PHASES, 0)
+    by_phase.update(gaps_by_phase)
+    return {"by_phase": by_phase,
+            "finalizing_first_200": finalizing_first_200,
+            "total": sum(by_phase.values())}
 
 
 def run_main(*argv):
@@ -384,11 +413,20 @@ status, out, err = run_main("anatomy", plain, framed, "--json", out_json)
 assert status == 0 and err == "", err
 assert "e = q - qref" in out and "null" in out
 agg = result["aggregate"]
-assert (f"  aggregate RMS e: 8 joints {agg['all']['e_rms_rad'] * 1e3:.3f} mrad,"
-        f" arm 0-6 {agg['arm']['e_rms_rad'] * 1e3:.3f} mrad; above 3 Hz:"
-        f" 8 joints {agg['all']['e_rms_above_split_rad'] * 1e3:.3f} mrad,"
-        f" arm 0-6 {agg['arm']['e_rms_above_split_rad'] * 1e3:.3f} mrad\n"
-        in out), out
+aggregate_line = (
+    f"  aggregate RMS e: 8 joints {agg['all']['e_rms_rad'] * 1e3:.3f} mrad,"
+    f" arm 0-6 {agg['arm']['e_rms_rad'] * 1e3:.3f} mrad; above 3 Hz:"
+    f" 8 joints {agg['all']['e_rms_above_split_rad'] * 1e3:.3f} mrad,"
+    f" arm 0-6 {agg['arm']['e_rms_above_split_rad'] * 1e3:.3f} mrad\n")
+assert aggregate_line in out, out
+# Each log's aggregate line is followed by its missed cycles (none in these
+# logs), then by the joint table as before.
+NO_MISSED_LINE = ("  missed cycles (feedback_seq gaps): home 0, "
+                  "home_correction 0, offset_ramp 0, tracking 0, finalizing 0 "
+                  "(first 200 rows: 0), abort_hold 0; total 0\n")
+assert out.count("missed cycles") == 2, out
+assert out.count(aggregate_line + NO_MISSED_LINE + "   j  rms[mrad] max|e|") \
+    == 2, out
 loaded = json.loads(out_json.read_text())
 assert list(loaded) == ["format", "version", "command", "sign_convention",
                         "split_hz", "tau_rms_threshold_nm",
@@ -397,7 +435,14 @@ assert list(loaded) == ["format", "version", "command", "sign_convention",
 assert loaded["format"] == "rtctrl-follow-learnability"
 assert loaded["command"] == "anatomy" and loaded["split_hz"] == 3.0
 assert "e = q - qref" in loaded["sign_convention"]
-assert len(loaded["logs"]) == 2 and loaded["logs"][0] == result
+assert len(loaded["logs"]) == 2
+# A log's object is anatomy()'s, keys in their order, then missed_cycles.
+for log in loaded["logs"]:
+    assert list(log) == ["path", "samples", "duration_s", "dt_s",
+                         "command_mode", "aggregate", "joints",
+                         "missed_cycles"], list(log)
+    assert log.pop("missed_cycles") == missed({})
+assert loaded["logs"][0] == result
 assert set(loaded["logs"][0]) == {"path", "samples", "duration_s", "dt_s",
                                   "command_mode", "aggregate", "joints"}
 assert set(loaded["logs"][0]["joints"][0]) == {
@@ -423,11 +468,105 @@ for path, text in (
          "unknown phase 'offset_rampx'"),
         (write_log("truncated.csv", track, truncate=True), "fields"),
         (write_log("short.csv", head(track, 5)), "5 tracking samples"),
+        (write_log("no_seq.csv", track, drop=("feedback_seq",)),
+         "missing: feedback_seq"),
         (ROOT / "absent.csv", "cannot read")):
     status, out, err = run_main("anatomy", path)
     assert status == 1 and text in err and out == "", (path, status, err)
 status, _, err = run_main("anatomy", plain, "--split-hz", "0")
 assert status == 1 and "--split-hz" in err
+
+# ----------------------------------------------------------- missed cycles
+
+# Over all rows, consecutive rows d > 1 apart in feedback_seq count d - 1
+# missed cycles, on the phase of the earlier row. Without gaps (simulation
+# logs) every count is zero.
+for path in (plain, framed, ramped):
+    assert fl.missed_cycles(path) == missed({}), path
+zeros = fl.missed_cycles(framed)
+assert list(zeros) == ["by_phase", "finalizing_first_200", "total"]
+assert list(zeros["by_phase"]) == list(fl.PHASES)
+
+# The emulator's pattern: the home-error measurement after the settle,
+# between the last home_correction row (49) and the first offset_ramp row.
+emulator = write_gapped_log("gaps_emulator.csv", [
+    ("home", 30), ("home_correction", 20), ("offset_ramp", 15),
+    ("tracking", 40), ("finalizing", 30)], {50: 2})
+assert fl.missed_cycles(emulator) == missed({"home_correction": 1})
+# The archived hardware run's: three between home_correction rows (before
+# each correction) and one between the last home_correction row (109) and
+# the first tracking row.
+hardware = write_gapped_log("gaps_hardware.csv", [
+    ("home", 30), ("home_correction", 80), ("tracking", 40),
+    ("finalizing", 30)], {50: 2, 70: 2, 90: 2, 110: 2})
+assert fl.missed_cycles(hardware) == missed({"home_correction": 4})
+
+# A gap of 3 counts 2.
+gap3 = write_gapped_log("gaps_3.csv", [("tracking", 20)], {10: 3})
+assert fl.missed_cycles(gap3) == missed({"tracking": 2})
+# The first 200 finalizing rows (those an update reads) are counted again
+# on their own, by the earlier row: finalizing rows 0 and 199 are among
+# them, row 200 is not. A gap from the last tracking row into the first
+# finalizing row is tracking's.
+TRACK0, FINAL0 = 6, 26  # file rows of the first tracking and finalizing row
+hold = write_gapped_log("gaps_hold.csv", [
+    ("home", 3), ("home_correction", 3), ("tracking", 20),
+    ("finalizing", 260)],
+    {TRACK0 + 10: 3, FINAL0: 2, FINAL0 + 1: 2, FINAL0 + 200: 4,
+     FINAL0 + 201: 2})
+assert fl.missed_cycles(hold) == missed({"tracking": 2 + 1,
+                                         "finalizing": 1 + 3 + 1}, 1 + 3)
+# Every phase gets its own: a gap of k + 2 inside the k-th phase.
+every = write_gapped_log("gaps_every.csv", [(phase, 12)
+                                            for phase in fl.PHASES],
+                         {12 * k + 6: k + 2 for k in range(len(fl.PHASES))})
+EVERY = missed({phase: k + 1 for k, phase in enumerate(fl.PHASES)}, 5)
+assert fl.missed_cycles(every) == EVERY and EVERY["total"] == 21
+
+# anatomy prints one line per log after the aggregate line and adds
+# missed_cycles to the log's object; the rest is anatomy()'s own.
+out_json = ROOT / "anatomy_missed.json"
+status, out, err = run_main("anatomy", every, hardware, "--json", out_json)
+assert status == 0 and err == "", err
+assert ("  missed cycles (feedback_seq gaps): home 1, home_correction 2, "
+        "offset_ramp 3, tracking 4, finalizing 5 (first 200 rows: 5), "
+        "abort_hold 6; total 21\n" in out), out
+assert ("  missed cycles (feedback_seq gaps): home 0, home_correction 4, "
+        "offset_ramp 0, tracking 0, finalizing 0 (first 200 rows: 0), "
+        "abort_hold 0; total 4\n" in out), out
+loaded = json.loads(out_json.read_text())
+assert [log["missed_cycles"] for log in loaded["logs"]] == [
+    EVERY, missed({"home_correction": 4})]
+assert loaded["logs"][0]["missed_cycles"] == {
+    "by_phase": {"home": 1, "home_correction": 2, "offset_ramp": 3,
+                 "tracking": 4, "finalizing": 5, "abort_hold": 6},
+    "finalizing_first_200": 5, "total": 21}
+for path, log in zip((every, hardware), loaded["logs"]):
+    assert list(log)[-1] == "missed_cycles"
+    assert list(log.pop("missed_cycles")) == ["by_phase",
+                                              "finalizing_first_200", "total"]
+    assert log == fl.anatomy(fl.load_tracking(path, fl.ANATOMY_COLUMNS), 3.0)
+
+# A feedback_seq that does not rise (repeated or lower) is refused, naming
+# the row (file row 7 is line 9), by the function and by anatomy; so is one
+# that is not an integer.
+for d in (0, -1):
+    bad = write_gapped_log(f"gaps_bad{d}.csv", [
+        ("home", 5), ("home_correction", 5), ("tracking", 20)], {7: d})
+    raises(fl.missed_cycles, bad,
+           contains=(f"{bad}:9: feedback_seq", "does not increase"))
+    status, out, err = run_main("anatomy", bad)
+    assert status == 1 and out == "", (status, out)
+    assert f"{bad}:9: feedback_seq" in err and "does not increase" in err, err
+lines = pathlib.Path(emulator).read_text().splitlines()
+fields = lines[4].split(",")
+fields[HEADER.index("feedback_seq")] = "4.5"
+lines[4] = ",".join(fields)
+not_integer = ROOT / "gaps_not_integer.csv"
+not_integer.write_text("\n".join(lines) + "\n")
+raises(fl.missed_cycles, not_integer,
+       contains=(f"{not_integer}:5: feedback_seq '4.5' is not a nonnegative "
+                 f"integer",))
 
 # ------------------------------------------------------------------ repeat
 
@@ -829,6 +968,9 @@ for command in ("anatomy", "repeat", "predict"):
     assert "mrad" in out, command
     if command == "predict":
         assert "weights, is the result to read" in out, out
+    if command == "anatomy":
+        assert "one such cycle per home-error measurement" in out, out
+        assert '"deadline misses" count should equal the total' in out, out
 
 SCRATCH.cleanup()
 print("follow learnability regressions OK")

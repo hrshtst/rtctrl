@@ -47,7 +47,11 @@ SCHEMA_VERSION = 1
 PHASES = ("home", "home_correction", "offset_ramp", "tracking", "finalizing",
           "abort_hold")
 TRACKING = "tracking"
+FINALIZING = "finalizing"
 MIN_TRACKING_SAMPLES = 10
+FINALIZING_HEAD_ROWS = 200       # missed_cycles: the final-hold rows an
+                                 # update reads (kMaxTailRows in
+                                 # apps/learn/follow_learn.hpp)
 REFERENCE_TOLERANCE_RAD = 1e-9   # repeat: identical references
 LENGTH_TOLERANCE_SAMPLES = 1     # repeat: tracking lengths
 TAU_RMS_MIN_NM = 0.02            # anatomy: tau identifies a compliance
@@ -195,6 +199,83 @@ def load_tracking(path, required: Iterable[str]) -> Run:
                          f"the tracking rows")
     dt = float(np.median(np.diff(time)))
     return Run(path=path, time=time, dt=dt, data=data)
+
+
+def missed_cycles(path) -> dict:
+    """The control cycles of a follow log that passed without a command.
+
+    x7_follow writes a row per cycle in which it submitted a command, with
+    the feedback_seq of the feedback that row was computed from; a cycle
+    without a submission writes none (the follower spends one per
+    home-error measurement). Over ALL rows, each pair of consecutive rows
+    whose feedback_seq differ by d > 1 counts d - 1 missed cycles,
+    attributed to the phase of the earlier row (the phase that was running).
+    Returns {"by_phase": {phase: count} for every phase in PHASES,
+    "finalizing_first_200": the count whose earlier row is among the first
+    FINALIZING_HEAD_ROWS finalizing rows, "total": the sum over phases}.
+    Every row must have the header's field count, schema_version 1, a known
+    phase and a decimal integer feedback_seq above the previous row's.
+    """
+    path = str(path)
+    by_phase = dict.fromkeys(PHASES, 0)
+    head = 0
+    finalizing_rows = 0
+    previous = None  # (feedback_seq, phase, among the first finalizing rows)
+    try:
+        with open(path, newline="") as stream:
+            reader = csv.reader(stream)
+            header = next(reader, None)
+            if not header:
+                raise InputError(f"{path}: empty file (no header)")
+            index = {name: i for i, name in enumerate(header)}
+            missing = [name for name in ("schema_version", "phase",
+                                         "feedback_seq")
+                       if name not in index]
+            if missing:
+                raise InputError(f"{path}: not a follow log with the columns "
+                                 f"this analysis needs; missing: "
+                                 f"{', '.join(missing)}")
+            width = len(header)
+            for row in reader:
+                line = reader.line_num
+                if len(row) != width:
+                    raise InputError(f"{path}:{line}: expected {width} "
+                                     f"fields, found {len(row)}")
+                version = row[index["schema_version"]].strip()
+                if version != str(SCHEMA_VERSION):
+                    raise InputError(f"{path}:{line}: unsupported "
+                                     f"schema_version '{version}' (expected "
+                                     f"{SCHEMA_VERSION})")
+                phase = row[index["phase"]].strip()
+                if phase not in PHASES:
+                    raise InputError(f"{path}:{line}: unknown phase "
+                                     f"'{phase}'")
+                text = row[index["feedback_seq"]].strip()
+                if not (text.isascii() and text.isdigit()):
+                    raise InputError(f"{path}:{line}: feedback_seq '{text}' "
+                                     f"is not a nonnegative integer")
+                seq = int(text)
+                if previous is not None:
+                    gap = seq - previous[0]
+                    if gap <= 0:
+                        raise InputError(f"{path}:{line}: feedback_seq {seq} "
+                                         f"does not increase over the "
+                                         f"previous row's {previous[0]}")
+                    by_phase[previous[1]] += gap - 1
+                    if previous[2]:
+                        head += gap - 1
+                in_head = (phase == FINALIZING
+                           and finalizing_rows < FINALIZING_HEAD_ROWS)
+                if phase == FINALIZING:
+                    finalizing_rows += 1
+                previous = (seq, phase, in_head)
+    except OSError as error:
+        raise InputError(f"{path}: cannot read: {error.strerror}") from error
+    except (csv.Error, UnicodeDecodeError) as error:
+        raise InputError(f"{path}: not a readable CSV file: {error}") \
+            from error
+    return {"by_phase": by_phase, "finalizing_first_200": head,
+            "total": sum(by_phase.values())}
 
 
 # ---------------------------------------------------------------- numerics
@@ -827,6 +908,15 @@ def print_anatomy(result: dict) -> None:
               f" {agg['all']['e_rms_above_split_rad'] * 1e3:.3f} mrad,"
               f" arm 0-6 {agg['arm']['e_rms_above_split_rad'] * 1e3:.3f}"
               f" mrad")
+        missed = log["missed_cycles"]
+        counts = ", ".join(
+            f"{phase} {missed['by_phase'][phase]}"
+            + (f" (first {FINALIZING_HEAD_ROWS} rows: "
+               f"{missed['finalizing_first_200']})"
+               if phase == FINALIZING else "")
+            for phase in PHASES)
+        print(f"  missed cycles (feedback_seq gaps): {counts}; total "
+              f"{missed['total']}")
         print(f"   j  rms[mrad] max|e|  mean  >{result['split_hz']:g}Hz | "
               f"|dqref| peak first last [rad/s] | |ddqref| first last "
               f"[rad/s^2]")
@@ -1014,6 +1104,12 @@ dropped and its term reported null; a fit whose remaining columns are
 linearly dependent reports every term null. Per log: aggregate RMS of e, and
 of e above --split-hz, over all 8 joints and over the 7 arm joints (the RMS
 over joints of the per-joint RMS), samples, duration, dt, command mode.
+Per log also the missed cycles, over the rows of every phase: a control cycle
+that passed without a command writes no row, so consecutive rows whose
+feedback_seq differ by d > 1 count d - 1, attributed to the earlier row's
+phase (finalizing's also over its first {FINALIZING_HEAD_ROWS} rows); the follower
+spends one such cycle per home-error measurement, and the hardware layer's
+"deadline misses" count should equal the total.
 
 Units: --json is SI: e in rad, dqref rad/s, ddqref rad/s^2, K and Ks Nm/rad,
 T s, c rad, Ds Nm s/rad, tau and b Nm, dt and duration s. The table shows e,
@@ -1137,8 +1233,11 @@ def run_command(args: argparse.Namespace) -> tuple[dict, Callable]:
             raise InputError("--split-hz must be finite and positive")
         head["split_hz"] = args.split_hz
     if args.command == "anatomy":
-        logs = [anatomy(load_tracking(path, ANATOMY_COLUMNS), args.split_hz)
-                for path in args.logs]
+        logs = []
+        for path in args.logs:
+            log = anatomy(load_tracking(path, ANATOMY_COLUMNS), args.split_hz)
+            log["missed_cycles"] = missed_cycles(path)
+            logs.append(log)
         head.update({"tau_rms_threshold_nm": TAU_RMS_MIN_NM,
                      "compliance_zero_rad": COMPLIANCE_ZERO_RAD,
                      "negligible_column_rms": NEGLIGIBLE_RMS, "logs": logs})
