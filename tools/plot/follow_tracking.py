@@ -21,8 +21,15 @@ JOINT_LABELS = (
     "J6 wrist rotate",
     "J7 gripper",
 )
-PHASES = ("home", "home_correction", "tracking", "finalizing", "abort_hold")
-PHASE_COLORS = ("#dbeafe", "#ede9fe", "#dcfce7", "#fef3c7", "#fee2e2")
+PHASES = (
+    "home",
+    "home_correction",
+    "offset_ramp",
+    "tracking",
+    "finalizing",
+    "abort_hold",
+)
+PHASE_COLORS = ("#dbeafe", "#ede9fe", "#cffafe", "#dcfce7", "#fef3c7", "#fee2e2")
 
 
 def _required_columns() -> set[str]:

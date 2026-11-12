@@ -44,7 +44,8 @@ import numpy as np
 DOF = 8                      # canonical joints 0..7 (7 = gripper)
 ARM = 7                      # arm joints 0..6
 SCHEMA_VERSION = 1
-PHASES = ("home", "home_correction", "tracking", "finalizing", "abort_hold")
+PHASES = ("home", "home_correction", "offset_ramp", "tracking", "finalizing",
+          "abort_hold")
 TRACKING = "tracking"
 MIN_TRACKING_SAMPLES = 10
 REFERENCE_TOLERANCE_RAD = 1e-9   # repeat: identical references

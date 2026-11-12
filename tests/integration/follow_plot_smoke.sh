@@ -37,6 +37,25 @@ fi
 grep -q "missing columns" "$ROOT/malformed.log"
 test ! -e "$ROOT/malformed.png"
 
+# A learned command offset adds an offset_ramp phase between homing and
+# tracking (relabelled home-correction rows stand in for it here); a phase
+# the follower never writes is refused.
+awk 'BEGIN { FS=OFS="," } $3 == "home_correction" { $3="offset_ramp" }
+  { print }' "$ROOT/run/archive/simulation.csv" >"$ROOT/ramped.csv"
+python "$PLOTTER" "$ROOT/ramped.csv" \
+  --output "$ROOT/ramped.png" >"$ROOT/ramped.log" 2>&1
+test -s "$ROOT/ramped.png"
+grep -q "phase cycles: .*offset_ramp=[1-9]" "$ROOT/ramped.log"
+awk 'BEGIN { FS=OFS="," } $3 == "home_correction" { $3="offset_rmp" }
+  { print }' "$ROOT/run/archive/simulation.csv" >"$ROOT/typo.csv"
+if python "$PLOTTER" "$ROOT/typo.csv" \
+    --output "$ROOT/typo.png" >"$ROOT/typo.log" 2>&1; then
+  echo "an unknown follow phase was unexpectedly accepted"
+  exit 1
+fi
+grep -q "unknown phases: offset_rmp" "$ROOT/typo.log"
+test ! -e "$ROOT/typo.png"
+
 mkdir -p "$ROOT/comparison"
 cp "$ROOT/run/archive/simulation.csv" "$ROOT/comparison/position.csv"
 awk 'BEGIN { FS=OFS="," } NR > 1 { $4=5 } { print }' \

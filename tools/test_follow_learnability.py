@@ -107,9 +107,9 @@ def row_fields(t, t0, phase, mode, seq, applied_seq, values, nan_dq=False):
 
 
 def write_log(name, track, mode=5, pre=0, post=0, drop=(), phase_at=None,
-              truncate=False):
-    """A follow log whose tracking rows carry `track`. The pre (home) and
-    post (finalizing) rows are far from them: q off by 0.5 rad, tau by
+              truncate=False, pre_phase="home"):
+    """A follow log whose tracking rows carry `track`. The pre (pre_phase)
+    and post (finalizing) rows are far from them: q off by 0.5 rad, tau by
     50 Nm, another command mode, dq not even numeric."""
     n = len(track["t"])
     t0 = track["t"][0]
@@ -123,8 +123,8 @@ def write_log(name, track, mode=5, pre=0, post=0, drop=(), phase_at=None,
         values["q"] = values["q"] + 0.5
         values["tau"] = values["tau"] + 50.0
         seq += 1
-        rows.append(row_fields(t0 - (pre - i) * DT, t0 - pre * DT, "home", 3,
-                               seq, 0, values, nan_dq=True))
+        rows.append(row_fields(t0 - (pre - i) * DT, t0 - pre * DT, pre_phase,
+                               3, seq, 0, values, nan_dq=True))
     for k in range(n):
         seq += 1
         rows.append(row_fields(track["t"][k], t0,
@@ -287,6 +287,14 @@ other = fl.anatomy(fl.load_tracking(framed, fl.ANATOMY_COLUMNS), 3.0)
 assert other.pop("path") == framed and result["path"] == plain
 assert json.dumps(other) == json.dumps({k: v for k, v in result.items()
                                         if k != "path"})
+# A learned command offset adds an offset_ramp phase between homing and
+# tracking: a known phase, and its rows change nothing either.
+ramped = write_log("anatomy_ramped.csv", track, pre=20, post=15,
+                   pre_phase="offset_ramp")
+other = fl.anatomy(fl.load_tracking(ramped, fl.ANATOMY_COLUMNS), 3.0)
+assert other.pop("path") == ramped
+assert json.dumps(other) == json.dumps({k: v for k, v in result.items()
+                                        if k != "path"})
 assert result["samples"] == N_ANATOMY and result["command_mode"] == 5
 assert abs(result["dt_s"] - DT) < 1e-12
 assert abs(result["duration_s"] - (N_ANATOMY - 1) * DT) < 1e-9
@@ -393,6 +401,8 @@ for path, text in (
         (write_log("no_tau3.csv", track, drop=("tau3_nm",)), "tau3_nm"),
         (write_log("split.csv", track, phase_at={900: "home_correction"}),
          "contiguous"),
+        (write_log("ramp_typo.csv", track, pre=3, pre_phase="offset_rampx"),
+         "unknown phase 'offset_rampx'"),
         (write_log("truncated.csv", track, truncate=True), "fields"),
         (write_log("short.csv", head(track, 5)), "5 tracking samples"),
         (ROOT / "absent.csv", "cannot read")):
