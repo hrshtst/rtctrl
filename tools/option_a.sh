@@ -12,7 +12,8 @@
 # Before any host change it refuses (exit 2) unless: the kernel is the
 # audited one; the emulator's pty exists and is no serial device; exactly
 # one process (the emulator) holds that pty's master (a /dev/ptmx
-# descriptor whose fdinfo names its tty-index), and every one of its threads
+# descriptor whose fdinfo names its tty-index; among the descriptor tables
+# this user can read), and every one of its threads
 # has an affinity (Cpus_allowed_list, a well-formed list) without CPU 3; the
 # real-time priority limit allows the probe's 80; tools/wq_mask.sh and
 # tools/quiet_host.sh have no open record; the experiment's three
@@ -36,7 +37,9 @@
 # The emulator's identity and every thread's affinity are recorded before
 # the first step and by each emulator check (emulator_start=, emulator_A=,
 # emulator_B=), for tools/emulator_residency.py to check its residency in
-# the timer capture afterwards.
+# the timer capture afterwards (with its tasks from the timer run's lineage
+# listed right after the trace started: these three are affinity checks,
+# not a census of the emulator's tasks).
 # No step starts unless no stop is latched, the obligation it creates (steps
 # 1 and 2) is recorded, and its start is recorded; each step's end and status
 # are recorded once it returns. Any nonzero status, a failed record or a
@@ -157,8 +160,9 @@ rec() { printf '%s\n' "$1" >>"$E/experiment.record" 2>/dev/null || { record_fail
 # emulator_state: the process holding the master of PORT's pseudo-terminal, as one line "pid=P start=S comm=C
 # tids=T,... allowed=L;..." (each thread's Cpus_allowed_list, in tids' order). Status 0 if exactly one process holds it
 # and every thread's list is well formed, nonempty and without RT_CPU; 1 if a thread's list holds RT_CPU or nothing (the
-# line, then why); 2 if it cannot be established (why). Processes of other users are not looked into (their /proc fds
-# are unreadable): they cannot hold this user's pty master, and a root process is not looked for.
+# line, then why); 2 if it cannot be established (why). The search skips every /proc entry it cannot read (other users'
+# processes, root's among them): "exactly one" holds among the descriptor tables this user can read, not host-wide; a
+# process of another user that holds the master (inherited or passed to it) is not seen.
 emulator_state() {
   python3 -I -c '
 import os, sys

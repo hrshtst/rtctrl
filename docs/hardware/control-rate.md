@@ -2461,14 +2461,57 @@ timeouts, and it qualifies neither the real USB path nor 1 kHz operation.
   affinity before the first step (`emulator_start=`), and checks them again
   after each session (`emulator_A=`, `emulator_B=`): another process holding
   the pty, or a thread that may run on CPU 3, stops the experiment there, as
-  any failed step does.
+  any failed step does. These three records are affinity checks at three
+  moments, not a census of the emulator's tasks over the run.
+- The search for the pty's holder reads `/proc` as the operator and skips
+  every entry it cannot read (other users' processes, root's among them).
+  "Exactly one holder" therefore holds among the descriptor tables the
+  operator can read, not across the whole host: a process of another user
+  holding the master (inherited or passed to it) would not be seen. No
+  privileged search is added for this supervised experiment; the operator
+  starts the emulator in their own terminal and nothing else uses the pty.
+- Every timer run of `tools/trace_session.sh` (open ones included, not only
+  confined ones as before) lists every task's process, thread, parent,
+  start times and allowed CPUs right after its trace started
+  (`<log>.csv.lineage.txt`, `tools/observer_affinity.py tasks`, with the
+  monotonic times it began and ended and its completeness line), before the
+  run; a listing that cannot read a live task stops the session before the
+  probe (`verdict: not run (task lineage)`).
 - `tools/emulator_residency.py <timer run>.csv --experiment
-  <experiment.record>` reads the recorded emulator and its threads (and any
-  thread it is seen to create) and checks the timer capture inside the
-  probe's window: no switch to an emulator thread on CPU 3, no wakeup of one
-  onto CPU 3 and no migration of one onto CPU 3, and the emulator seen to
-  run. On attempt 15's capture, with its emulator allowed on every CPU, it
-  finds 139 runs, 42 wakeups and 57 migrations there, and fails.
+  <experiment.record>` takes the emulator's identity from the record and
+  its tasks from that lineage: its process (pid and start time) and its
+  descendants, every thread of each, with the threads the record names,
+  every task one of them is seen to create during the trace, and every task
+  the trace shows exiting before the lineage ended (the listing cannot have
+  seen it). The set only grows, so a reused ID counts as the emulator's (a
+  false failure at worst, never a false pass). A task created before the
+  trace and gone before the lineage cannot run in the window. The lineage
+  must be complete, list the emulator, begin after the trace's first event
+  and end before the window; otherwise the evidence is unreadable (exit 2).
+  Inside the probe's window it then requires:
+    - **occupancy:** CPU 3's tasks reconstructed from its switch chain,
+      from the one running when the window began, with no stretch of an
+      emulator task there overlapping the window (one carried into the
+      window counts). A chain that does not follow on, or no switch onto
+      CPU 3 before the window, is unreadable;
+    - **placement:** each emulator task's place from its own events since
+      the trace started (woken, migrated, switched in or preempted: on that
+      CPU; switched out asleep: on none), with no time queued or running on
+      CPU 3 overlapping the window (a task queued there when the window
+      began counts) and no migration of one off CPU 3 inside the window. An
+      event that does not follow from a task's known place is unreadable. A
+      task with no event from the trace's start to the window's end is
+      placed nowhere by the trace;
+    - **affinity:** no emulator thread in the lineage allowed on CPU 3;
+    - **seen:** the emulator switched in at least once in the window.
+- On attempt 15's capture, with a labelled synthetic record and lineage
+  (attempt 15 predates both; the lineage gives the emulator's real row from
+  that run's halfway snapshot, with times placed right after the trace
+  started), it finds the worker on CPU 3 when the window began, 139
+  stretches of the emulator on CPU 3, 99 spans queued or running there, 42
+  wakeups and 57 migrations onto CPU 3, 57 migrations off it, and its 0-31
+  affinity, and fails. It read the whole real capture without a chain or
+  placement contradiction.
 
 The operator, as before, on the emulator only, with the arm powered off:
 
@@ -2493,8 +2536,9 @@ The operator, as before, on the emulator only, with the arm powered off:
 
 The validation then passes only if, besides every criterion below, the
 experiment record holds the three emulator states (the same pid and start
-time, every thread without CPU 3) and `tools/emulator_residency.py` passes on
-the timer capture. Hardware and H2 stay paused.
+time, every thread without CPU 3), the timer run's lineage is complete, and
+`tools/emulator_residency.py` passes on the timer capture. Hardware and H2
+stay paused.
 
 Nothing is retried, and no budget, guard, rule or load changes. A signal sent
 to the supervisor alone lets the running session finish before it stops; a

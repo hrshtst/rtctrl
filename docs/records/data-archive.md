@@ -2341,11 +2341,14 @@ operator's terminal verbatim). `analysis-20261112/` holds the read-only residenc
 The acceptance review (`review-attempts14-15/`) accepted attempt 14 as the untraced component result and found attempt 15
 and the overall validation failed; `t3-diagnosis-15/` holds the developer's offline diagnosis of attempt 15's timeout
 (accepted: `review-t3-diagnosis-15/`); `option-a2-prep/` holds the offline evidence of the second run's proposal (the
-emulator kept off CPU 3), whose procedure is for review.
+emulator kept off CPU 3). Its review (`review-option-a2/`) found two false passes of the residency check (a thread
+absent from the supervisor's records; an emulator task carried into the window on CPU 3) and asked for the pty holder's
+visibility limit to be documented; `option-a2-prep2/` holds the corrections' offline evidence (tools at `9535ec5` and
+`6d06bf9`), for review.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis and the second run's proposal, the T3 wording correction | `248b46e42b6786060dcc949e4360910a03e741a0799082a34e24ffcdd75a1751` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal and its review, the T3 wording correction | `1e70156d49186b66292610515076359081fdcecf635ae640d72ae2357b3f5801` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2462,6 +2465,13 @@ emulator kept off CPU 3), whose procedure is for review.
 | `option-a2-prep/broken-copies.txt` | the new tool's and the supervisor checks' broken copies, each failing | `364a80d79f13523ede244fd012f48af2f13748c283e61e9e45c7c7f14dd3a1ad` |
 | `option-a2-prep/residency-15.txt` | emulator_residency.py on attempt 15's capture (FAIL, as it must) | `8da02357ee114e71588205325fe25c2229d22c9321abfe3404ef509da07c755e` |
 | `option-a2-prep/synthetic-attempt15.record` | a synthetic record for that demonstration (NOT a supervisor record) | `25b52e208a04f31d21aad4d3c1dd8656882f478102f5294bfc72faa54eb06b7c` |
+| `option-a2-prep2/PROVENANCE.txt` | Option A second run, the residency check's corrections' offline evidence: provenance | `964d7cdeebad2e253f5d9b7de670334c936503b5be764113327fbc71adb00f1d` |
+| `option-a2-prep2/SHA256SUMS` | folder ledger | `dda04debec5870d8fe375a1481eae7a4b9aa337966291ec5c84b8fa0a2698b45` |
+| `option-a2-prep2/broken-copies.txt` | the corrected residency check's sixteen broken copies, each failing its regressions | `8b845fbb2c634fe963d5696c86e8371b697c9616cc30f357abf0dddbdeec422f` |
+| `option-a2-prep2/residency-15.txt` | the corrected emulator_residency.py on attempt 15's capture (FAIL, as it must) | `17b5c1cca1f8b66a5e0b1a8b09891e2b8280cc40be5c62ed3db7e7fa20f61434` |
+| `option-a2-prep2/reviewer-reproducer.txt` | the review's two counterexamples on the corrected check (each refused or explained) | `4a02bb950ff9c74b1d0f375663cbecfa622177dd002e39bebe79fce78e12079e` |
+| `option-a2-prep2/session-smoke.txt` | trace_session_script_smoke at 9535ec5 (every timer run's lineage) | `a71eb71777950eb5e7d8de031f09cdc20af7cc94ecf5b3b8f9c0506259092e74` |
+| `option-a2-prep2/synthetic-attempt15.lineage.txt` | a synthetic lineage for that demonstration (NOT a session listing) | `345acfa9c28ec1a664a6fa476a86bc648632c395b94bb50c066ea570fb10cbcb` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2621,6 +2631,16 @@ emulator kept off CPU 3), whose procedure is for review.
 | `review-option-a-rereview/reviewed.diff` | Option A re-review evidence (the reviewer's) | `7c17460418a70a65b397169198f70bd111e797f881729834d347f75ea2854505` |
 | `review-option-a-rereview/supervisor-counterexamples.txt` | Option A re-review evidence (the reviewer's) | `76f7c4c8a9cad7a094966af63bf3e2717410c2a6b609de16b76cbe7f7e1752fa` |
 | `review-option-a-rereview/tests.txt` | Option A re-review evidence (the reviewer's) | `300a663618712f5442f882a16422fd4c72f9bd0e8055ab2caf068129b62c552d` |
+| `review-option-a2/SHA256SUMS` | Option A second-run review evidence (the reviewer's) | `27c914a8bd798e6b1d444dc9a0009e75f8e3cabbc0349b047b51bade2bab9a41` |
+| `review-option-a2/carried-in-occupant.out` | Option A second-run review evidence (the reviewer's) | `6f82e3ddbdbdeba8848c054cd38480d17dc3f4938d52c900c7788f601386af65` |
+| `review-option-a2/carried-in-occupant.report.txt` | Option A second-run review evidence (the reviewer's) | `8db413c9f5cf1b7c442104ccaa6e435ba3fd36fccb13691a8acc0017d44dd1cc` |
+| `review-option-a2/check_residency_edges.py` | Option A second-run review evidence (the reviewer's) | `be7753f51292c5f324f46f56b1e3cdf02b96c43daa40f62314e2b61728606eef` |
+| `review-option-a2/developer-ledger-check.txt` | Option A second-run review evidence (the reviewer's) | `d24b56a210c4435f95ea2131f3744a5214b4c8ea3aeed46a86b26914c4f02816` |
+| `review-option-a2/pre-existing-thread-truth.json` | Option A second-run review evidence (the reviewer's) | `ccce4d5ab9161f86d6bd484ee261f7d13e9f863b2b71172600f26afc83ea59f0` |
+| `review-option-a2/pre-existing-unseeded-thread.out` | Option A second-run review evidence (the reviewer's) | `6f82e3ddbdbdeba8848c054cd38480d17dc3f4938d52c900c7788f601386af65` |
+| `review-option-a2/pre-existing-unseeded-thread.report.txt` | Option A second-run review evidence (the reviewer's) | `6ebfc4c468c0ced9aa29d8b01162593541d0bc91cd705424392cdeeaa3536513` |
+| `review-option-a2/review.md` | the reviewer's review of the second run's proposal at 5c7cf67 (changes requested) | `3d595e193c5f11dc2b139c464bedce5e61725702a0a394d0450e403ec3524eac` |
+| `review-option-a2/verification.txt` | Option A second-run review evidence (the reviewer's) | `3c74baeef4a64a2599fb6886be73ccff0e5f5684a203c96efb231e837aa340f3` |
 | `review-option-a-7553f40/SHA256SUMS` | Option A review evidence at 7553f40 (the reviewer's) | `75d5c518afefaed5e980bbf41690349d8efb8f4017a6c5489b185f335b081ea5` |
 | `review-option-a-7553f40/check_group_snapshot.py` | Option A review evidence at 7553f40 (the reviewer's) | `3d6afb49cee4afe7d3047c15f1b076ea5cb47fa47abdabf6615ca1d6c2d5843b` |
 | `review-option-a-7553f40/check_keeper_umask.py` | Option A review evidence at 7553f40 (the reviewer's) | `aa3ad3f15caacd3e61603239d7be03d86defbd723b2ebfb7dd0cf03919dd858e` |
