@@ -36,6 +36,7 @@ add_library(rtctrl
   src/model/zvs_writer.cpp
   src/model/async_zvs_writer.cpp
   src/model/ik_solver.cpp
+  src/learn/command_offset.cpp
   src/arm/link_force_interval.cpp
   src/arm/link_force_log.cpp
   src/arm/sim_arm.cpp

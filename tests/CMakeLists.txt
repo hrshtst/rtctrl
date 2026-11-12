@@ -3,6 +3,7 @@ include(Catch)
 add_executable(unit_tests
   unit/smoke_test.cpp
   unit/attitude_test.cpp
+  unit/command_offset_test.cpp
   unit/model_test.cpp
   unit/link_force_test.cpp
   unit/force_budget_test.cpp
