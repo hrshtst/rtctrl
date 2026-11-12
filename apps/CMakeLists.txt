@@ -92,6 +92,11 @@ add_executable(x7_model_torque learn/x7_model_torque.cpp)
 target_link_libraries(x7_model_torque PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_model_torque PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Offline learning step between follow trials: never opens the bus.
+add_executable(x7_follow_learn learn/x7_follow_learn.cpp plan/ptp_bundle.cpp)
+target_link_libraries(x7_follow_learn PRIVATE rtctrl::rtctrl)
+target_include_directories(x7_follow_learn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 foreach(src bringup/x7_onoff bringup/x7_read bringup/x7_set_param
         bringup/x7_move_simple bringup/x7_pose gravity/x7_float
         gravity/x7_gravity_demo

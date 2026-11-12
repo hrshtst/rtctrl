@@ -1,0 +1,51 @@
+# Learning between follow trials (x7_follow_learn): the offset limits and
+# the gains of the two update laws. Every key is optional; an absent key
+# keeps the library default, which is the value shown here. Unknown keys are
+# errors. The update laws are described in docs/theory/learning-control.md.
+#
+#   x7_follow_learn init --follow-config F.toml --output offset0.csv
+#   (run trial 0 with offset0.csv, log trial0.csv)
+#   x7_follow_learn ilc --config follow_learn_example.toml \
+#     --follow-config F.toml --log trial0.csv --offset offset0.csv \
+#     --output offset1.csv --report report1.toml
+format = "rtctrl-x7-follow-learn"
+version = 1
+
+# Every offset written is checked against these limits; an update that
+# exceeds them is refused, never clipped to fit. They may only be lowered
+# from the values shown (the follower's own ceilings).
+[limits]
+max_offset_rad = 0.15        # |delta| on every joint and sample
+max_offset_rate_rad_s = 0.5  # |delta[i+1] - delta[i]| / dt
+
+# Iterative learning control in position form:
+#   delta_{k+1}(t) = Q[delta_k(t) + phi e_k(t + advance) + psi edot_k(t + advance)]
+# with e = qref - q and Q a zero-phase low-pass. phi and psi_s are one
+# number for the seven arm joints, or an array of all eight canonical joints
+# whose gripper entry (the last) is 0: the gripper is never learned. With
+# both 0 on every joint (the default) learning is off and `ilc` refuses to
+# run; choose the gains in simulation first (the library's convergence test
+# uses phi = 0.5, psi_s = 0 on a representative lagged plant).
+[ilc]
+phi = 0.0                 # position-error gain, dimensionless, >= 0
+psi_s = 0.0               # velocity-error gain [s], >= 0
+advance_s = 0.05          # Delta >= 0: dead time plus servo lag
+cutoff_hz = 2.0           # -3 dB point of Q, at most 0.8 of Nyquist
+max_trial_step_rad = 0.05 # clamp on |delta_{k+1} - delta_k| per sample
+# The clamp on |delta_{k+1}| is limits.max_offset_rad.
+
+# Feedback-error learning: delta_j(t) = sum_l w_jl phi_jl(t), the regressors
+# evaluated on the reference (g, tau_dyn, ddq, dq, coulomb, constant).
+[fel]
+step = "normalised-gradient"  # or "least-squares"
+gain = 0.2                    # in (0, 1]
+advance_s = 0.05              # pairs phi(t) with the error at t + advance
+error_lead_s = 0.0            # s = e + error_lead_s * edot, >= 0
+error_smooth_sigma_s = 0.04   # zero-phase Gaussian on the error (0 = none)
+ridge = 1e-6                  # least-squares penalty on normalised columns
+
+# The regressor options are stored in every weights file; `fel` and `synth`
+# refuse weights learned with different ones.
+[fel.regressors]
+smooth_sigma_s = 0.04    # zero-phase Gaussian on the reference (0 = none)
+coulomb_v0_rad_s = 0.05  # coulomb regressor tanh(dq / v0), v0 > 0

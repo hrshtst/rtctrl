@@ -12,6 +12,7 @@ add_executable(unit_tests
   unit/force_budget_config_test.cpp
   unit/model_torque_test.cpp
   unit/ilc_update_test.cpp
+  unit/follow_learn_test.cpp
   unit/link_force_substep_test.cpp
   unit/link_force_log_test.cpp
   unit/async_writer_test.cpp
