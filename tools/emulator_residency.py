@@ -37,8 +37,12 @@ main trace (trace-cmd report -t under tools/tk_record.py's launch, or a saved --
   one, switched in or preempted there: on that CPU, queued or running; switched out asleep: on none); no time on the
   real-time CPU may overlap the window (a task queued there when the window began counts), and no migration of one off
   that CPU may happen inside the window (its CPU was the real-time one, whatever the trace showed of it before). A task
-  with no event from the trace's start to the window's end is placed nowhere by the trace;
-- lineage affinity: no emulator thread in the lineage allowed on the real-time CPU;
+  with no event from the trace's start to the window's end is placed nowhere by the trace, except one the trace shows
+  created: its first queue (sched_wakeup_new) is not recorded, so one of the emulator's tasks created up to the
+  window's end must have an event of its own (switched in or out, woken, migrated, forking, exiting) by then, else the evidence is
+  unreadable. A fork that reuses the ID of a task still queued or running does not follow;
+- lineage affinity: no thread of the emulator's process tree in the lineage (its process and descendants by parent)
+  allowed on the real-time CPU; the tasks the record, the exits and the forks add are judged by their events only;
 - seen: at least one switch to an emulator task in the window, on any CPU (else nothing establishes where it ran).
 
 The evidence must be complete: every sched_switch, sched_wakeup, sched_migrate_task, sched_process_fork and
@@ -73,7 +77,7 @@ MIGRATE = re.compile(r"\bpid=(?P<pid>\d+) prio=-?\d+ orig_cpu=(?P<orig>\d+) dest
 FORK = re.compile(r"\bpid=(?P<pid>\d+) child_comm=.* child_pid=(?P<child>\d+)$")
 EXIT = re.compile(r"\bpid=(?P<pid>\d+) prio=-?\d+(?: group_dead=\w+)?$")
 RECORD = re.compile(r"^(?P<t>\S+) pid=(?P<pid>\d+) start=(?P<start>\d+) comm=(?P<comm>\S+) tids=(?P<tids>[\d,]+) "
-                    r"allowed=(?P<allowed>[\d,;-]+)$")
+                    r"allowed=(?P<allowed>[\d,;-]+)$", re.ASCII)
 EVENTS = {"sched_switch", "sched_wakeup", "sched_migrate_task", "sched_process_fork", "sched_process_exit"}
 PREEMPTED = re.compile(r"^R\+?$")  # a switch-out that leaves the task runnable where it was
 
@@ -87,7 +91,7 @@ def cpus(spec: str) -> set:
     out: set = set()
     for part in spec.split(","):
         a, sep, b = part.partition("-")
-        if not a.isdigit() or (sep and not b.isdigit()):
+        if not (a.isascii() and a.isdigit()) or (sep and not (b.isascii() and b.isdigit())):
             raise ValueError(spec)
         lo, hi = int(a), (int(b) if sep else int(a))
         if hi < lo:
@@ -132,9 +136,9 @@ def emulator(record: pathlib.Path, rt: int) -> dict:
     return dict(pid=pid, start=start, tids=set().union(*(t for _, _, t in seen.values())))
 
 
-TAKEN = re.compile(r"^taken monotonic_ns: (\d+) (\d+)$")
-ROW = re.compile(r"^(\d+) (\d+) (\d+) (\d+) (\d+) (\S+)$")
-FOOTER = re.compile(r"^lineage complete: (\d+) tasks$")
+TAKEN = re.compile(r"^taken monotonic_ns: (\d+) (\d+)$", re.ASCII)
+ROW = re.compile(r"^(\d+) (\d+) (\d+) (\d+) (\d+) (\S+)$", re.ASCII)
+FOOTER = re.compile(r"^lineage complete: (\d+) tasks$", re.ASCII)
 
 
 def read_lineage(path: pathlib.Path) -> tuple[dict, tuple[int, int]]:
@@ -245,6 +249,7 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
     inside_set = None           # the emulator's tasks, once the window began (for the descriptive waits)
     waits: list = []
     woken: dict = {}            # tid -> wakeup ts inside the window, awaiting its switch-in
+    born: dict = {}             # tid -> its fork's ts, until its first own event (its first queue is not recorded)
 
     def on(tid: int) -> int | None:
         """The CPU a task is known to be queued or running on (None: asleep or unknown)."""
@@ -286,7 +291,12 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
                 continue
             parent, child = int(f["pid"]), int(f["child"])
             forks.append((ts, parent, child))
+            born.pop(parent, None)  # it runs (the event is its own)
+            if on(child) is not None:  # the ID of a task still queued or running: it does not follow
+                contradicted[child] += 1
+            leave(child, ts)
             place.pop(child, None)  # a new task: a reused ID starts afresh
+            born[child] = ts
             woken.pop(child, None)
             if inside_set is not None and parent in inside_set:
                 inside_set.add(child)
@@ -295,6 +305,7 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
             if not x:
                 malformed += 1
                 continue
+            born.pop(int(x["pid"]), None)  # it ran
             if ts <= t1:
                 exited.add(int(x["pid"]))
         elif ev == "sched_switch":
@@ -311,6 +322,8 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
                 occupant = (s["next"], npid, ts)
                 if ts <= lo:
                     occupant_at_lo = occupant
+            born.pop(ppid, None)
+            born.pop(npid, None)
             if ppid != 0:  # it ran here: it was switched in here, unless its place is unknown
                 if ppid in place and on(ppid) != cpu:
                     contradicted[ppid] += 1
@@ -331,6 +344,7 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
                 malformed += 1
                 continue
             pid, to = int(w["pid"]), int(w["cpu"])
+            born.pop(pid, None)
             if pid != 0:
                 if on(pid) not in (None, to):  # a queued or running task is woken where it is
                     contradicted[pid] += 1
@@ -344,6 +358,7 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
                 malformed += 1
                 continue
             pid, orig, dest = int(g["pid"]), int(g["orig"]), int(g["dest"])
+            born.pop(pid, None)
             if pid != 0:
                 if on(pid) not in (None, orig):  # a queued task moves from where it is
                     contradicted[pid] += 1
@@ -374,6 +389,11 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
                          "follow from where they were")
     if occupant_at_lo is None:
         raise Unreadable(f"the task on CPU {rt} when the window began is unknown (no switch onto it recorded before the window)")
+    unplaced = sorted(c for c in born if c in tids)
+    if unplaced:
+        raise Unreadable(f"{len(unplaced)} of the emulator's tasks created in the trace with no event of their own before the "
+                         f"window's end ({', '.join(map(str, unplaced[:5]))}): a new task's first queue (sched_wakeup_new) is "
+                         "not recorded, so its place is unknown")
     ran_rt = [x for x in stretches if x[0] in tids]
     placed_rt = [x for x in spans if x[0] in tids]
     off = [x for x in moved_off if x[1] in tids]
@@ -399,7 +419,7 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
           + f"; inside the window, wakeups of it onto CPU {rt} {n_woken}, migrations of it onto CPU {rt} {n_moved}", file=out)
     print(f"  migrations of it off CPU {rt} inside the window: {len(off)}" + (" (" + ", ".join(
         f"{t} {(a - lo) / 1e6:+.3f} ms" for a, t in off[:5]) + ")" if off else ""), file=out)
-    print(f"  its threads in the lineage allowed on CPU {rt}: {len(emu['allowed_rt'])}"
+    print(f"  its process tree's threads in the lineage allowed on CPU {rt}: {len(emu['allowed_rt'])}"
           + (f" ({', '.join(map(str, emu['allowed_rt'][:10]))})" if emu["allowed_rt"] else ""), file=out)
     if waits:
         print(f"  wake to run (descriptive): {tk_cost.dist(sorted(waits))}", file=out)

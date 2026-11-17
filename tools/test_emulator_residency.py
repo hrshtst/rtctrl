@@ -203,11 +203,29 @@ def units() -> None:
     r = check(clean() + [forked(T - 80 * MS, 5000, 5001), forked(T - 80 * MS, 5100, 5101), exits(T - 30 * MS, 5100)]
               + on3(T + 2 * MS, 5001) + on3(T + 3 * MS, 5101))
     expect(r["ok"] and r["forks"] == 0 and r["exited"] == 0, f"other tasks' children on CPU 3: {r}")
-    # A reused ID starts afresh at its fork: 4500 (the emulator's, by its exit before the lineage) was last queued on
+    # A reused ID starts afresh at its fork: 4500 (the emulator's, by its exit before the lineage) ran and ended on
     # CPU 2; its ID, reused by a new task, is switched in on CPU 1 first: no contradiction.
-    r = check(clean() + [wakeup(T - 95 * MS, 2, 4500, "helper"), exits(T - 94 * MS, 4500), forked(T - 60 * MS, 4600, 4500),
+    idle2 = ("swapper/2", 0)
+    r = check(clean() + [wakeup(T - 95 * MS, 2, 4500, "helper"), switch(T - 94 * MS - 500_000, 2, idle2, ("helper", 4500)),
+                         exits(T - 94 * MS, 4500), switch(T - 94 * MS + 100_000, 2, ("helper", 4500), idle2, "X"),
+                         forked(T - 60 * MS, 4600, 4500),
                          switch(T - 59 * MS, 1, ("swapper/1", 0), ("helper", 4500)), switch(T - 58 * MS, 1, ("helper", 4500), ("swapper/1", 0))])
     expect(r["ok"] and r["exited"] == 1, f"a reused ID, afresh at its fork: {r}")
+    # A fork that reuses the ID of an emulator task still queued on CPU 3 (only a gap in the trace allows it) does not
+    # follow: unreadable, not a reset that drops its time on CPU 3.
+    unreadable(clean() + [wakeup(T - 500_000, 3, EMU + 1, by=WORKER), forked(T + MS, 5000, EMU + 1),
+                          switch(T + 2 * MS, 2, idle2, ("helper", EMU + 1)), switch(T + 2 * MS + 20_000, 2, ("helper", EMU + 1), idle2)],
+               "a fork reusing the ID of a task queued on CPU 3", dict(EMU_REC, seeds={EMU, EMU + 1}))
+    # A new task's first queue (sched_wakeup_new) is not recorded: one of the emulator's created up to the window's end
+    # needs an event of its own by then. Created inside the window, first switched in on CPU 3 after it: unreadable.
+    # Created before the window, first switched in on CPU 2 inside it, and created inside it and exiting there: read.
+    unreadable(clean() + [forked(T + 9 * MS + 500_000, EMU, 4700), switch(T + 10 * MS + 300_000, 3, WORKER, ("helper", 4700)),
+                          switch(T + 10 * MS + 350_000, 3, ("helper", 4700), WORKER)], "a new task with no event of its own in the window")
+    r = check(clean() + [forked(T - 2 * MS, EMU, 4700), switch(T + 3 * MS, 2, idle2, ("helper", 4700)),
+                         switch(T + 3 * MS + 20_000, 2, ("helper", 4700), idle2), forked(T + 4 * MS, EMU, 4701),
+                         switch(T + 4 * MS + 10_000, 2, idle2, ("helper", 4701)), exits(T + 4 * MS + 15_000, 4701),
+                         switch(T + 4 * MS + 20_000, 2, ("helper", 4701), idle2, "X")])
+    expect(r["ok"] and r["forks"] == 2, f"new tasks first switched in on CPU 2: {r}")
     # The stated limit: 4400 forked BEFORE the trace by 4300, which exits before the lineage (the trace shows the exit,
     # no fork), so nothing connects 4400 to the emulator: not covered (the docstring says so).
     r = check(clean() + [exits(T - 70 * MS, 4300)] + on3(T + 2 * MS, 4400))
@@ -265,7 +283,8 @@ def records() -> None:
                             ("a descending list", RECORD[:3] + ["emulator_B=t2 pid=4100 start=1234 comm=dxl_emu tids=4100 allowed=2-0"]),
                             ("lists not matching the threads", RECORD[:3] + ["emulator_B=t2 pid=4100 start=1234 comm=dxl_emu tids=4100,4101 allowed=0-2"]),
                             ("a missing line", RECORD[:3]),
-                            ("a line twice", RECORD + [f"emulator_A=t3 {GOOD}"])):
+                            ("a line twice", RECORD + [f"emulator_A=t3 {GOOD}"]),
+                            ("digits that are not ASCII", RECORD[:3] + ["emulator_B=t2 pid=\u0664\u0661\u0660\u0660 start=1234 comm=dxl_emu tids=4100 allowed=0-2,4-31"])):
             p.write_text("\n".join(lines) + "\n")
             try:
                 er.emulator(p, 3)
@@ -327,7 +346,9 @@ def records() -> None:
                            ("a descending affinity", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 4-2"] + ROWS[3:])),
                            ("a malformed affinity", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 0-2,x"] + ROWS[3:])),
                            ("a row of seven fields", lineage_text(ROWS[:2] + [thread + " 9"] + ROWS[3:])),
-                           ("a row of five fields", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300"] + ROWS[3:]))):
+                           ("a row of five fields", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300"] + ROWS[3:])),
+                           ("digits that are not ASCII", lineage_text(ROWS[:5] + ["\u0664\u0662\u0664\u0662 4243 4000 1500 1501 3"])),
+                           ("an affinity in digits that are not ASCII", lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 \u0660-\u0662"] + ROWS[3:]))):
             lf.write_text(text)
             try:
                 g = er.lineage(lf, emu, 3)

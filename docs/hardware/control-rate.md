@@ -2510,10 +2510,18 @@ timeouts, and it qualifies neither the real USB path nor 1 kHz operation.
       CPU; switched out asleep: on none), with no time queued or running on
       CPU 3 overlapping the window (a task queued there when the window
       began counts) and no migration of one off CPU 3 inside the window. An
-      event that does not follow from a task's known place is unreadable. A
-      task with no event from the trace's start to the window's end is
-      placed nowhere by the trace;
-    - **affinity:** no emulator thread in the lineage allowed on CPU 3;
+      event that does not follow from a task's known place is unreadable,
+      including a fork that reuses the ID of a task still queued or
+      running. A task with no event from the trace's start to the window's end
+      is placed nowhere by the trace, except a task the trace shows created:
+      its first queue (sched_wakeup_new) is not recorded, so each of the
+      emulator's tasks created up to the window's end must show an event of
+      its own by then (switched in or out, woken, migrated, forking or
+      exiting), or the evidence is unreadable;
+    - **affinity:** no thread of the emulator's process tree in the lineage
+      (its process and descendants by parent) allowed on CPU 3; the tasks
+      the record, the exits and the forks add are judged by their events
+      only;
     - **seen:** the emulator switched in at least once in the window.
 - On attempt 15's capture, with a labelled synthetic record and lineage
   (attempt 15 predates both; the lineage gives the emulator's real row from
