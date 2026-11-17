@@ -63,7 +63,9 @@ export QUIET_HOST_STATE=$ROOT/state/quiet.state
 export KEEPER_RUNDIR=$ROOT/run OPTION_A_GROUP_WAIT=2
 REAL_DATE=$(command -v date)
 REAL_PY=$(command -v python3)
-E=$ROOT/out/clock-validation-option-a2
+ATT_A=18  # tools/option_a.sh's attempts and experiment directory
+ATT_B=19
+E=$ROOT/out/clock-validation-option-a3
 
 cat >"$ROOT/cpus" <<'EOF'
 import sys
@@ -266,13 +268,13 @@ reset
 start; wait "$sup"; st=$?
 [ "$st" -eq 0 ] || fail "the normal experiment exited $st" "$ROOT/sup.out"
 grep -v '^dry ' "$ROOT/calls" >"$ROOT/calls.run"
-[ "$(sed -n 1p "$ROOT/calls.run")" = "session untraced 16 controls=0" ] && grep -q -- '--session A --record-state open' <(sed -n 2p "$ROOT/calls.run") &&
-  grep -q -- '--mode untraced' <(sed -n 2p "$ROOT/calls.run") && [ "$(sed -n 3p "$ROOT/calls.run")" = "session timer 17 controls=1" ] &&
-  grep -q -- '--mode timer --controls .*fs-controls-20261112-17.run.txt' <(sed -n 4p "$ROOT/calls.run") && [ "$(wc -l <"$ROOT/calls.run")" -eq 4 ] ||
+[ "$(sed -n 1p "$ROOT/calls.run")" = "session untraced $ATT_A controls=0" ] && grep -q -- '--session A --record-state open' <(sed -n 2p "$ROOT/calls.run") &&
+  grep -q -- '--mode untraced' <(sed -n 2p "$ROOT/calls.run") && [ "$(sed -n 3p "$ROOT/calls.run")" = "session timer $ATT_B controls=1" ] &&
+  grep -q -- "--mode timer --controls .*fs-controls-20261112-$ATT_B.run.txt" <(sed -n 4p "$ROOT/calls.run") && [ "$(wc -l <"$ROOT/calls.run")" -eq 4 ] ||
   fail "the steps' order" "$ROOT/calls"
 [ "$(grep -c '^dry ' "$ROOT/calls")" -eq 2 ] && grep -q '^dry .*--modes untraced' "$ROOT/calls" && grep -q '^dry .*--fs-controls 5 --modes timer' "$ROOT/calls" ||
   fail "the dry runs" "$ROOT/calls"
-[ "$(cat "$ROOT/mask-during-16")" = "$TARGET" ] && [ "$(cat "$ROOT/mask-during-17")" = "$TARGET" ] || fail "the sessions did not run under the target"
+[ "$(cat "$ROOT/mask-during-$ATT_A")" = "$TARGET" ] && [ "$(cat "$ROOT/mask-during-$ATT_B")" = "$TARGET" ] || fail "the sessions did not run under the target"
 restored || fail "the normal experiment's restorations" "$ROOT/sup.out"
 keys=$(sed 's/=.*//' "$E/experiment.record" | tr '\n' ' ')
 want="started directories emulator_start quiet_owed quiet_stop_start quiet_stop_end mask_owed mask_clear_start mask_clear_end session_A_start session_A_end check_A_start check_A_end emu_A_start emulator_A emu_A_end gate_A_start gate_A_end session_B_start session_B_end check_B_start check_B_end emu_B_start emulator_B emu_B_end gate_B_start gate_B_end mask_restore_start mask_restore_end quiet_restore_start quiet_restore_end keeper_finish_start keeper_finish_end finished "
@@ -293,7 +295,7 @@ st=$(cat "$ROOT/real.st"); scratch_rm "$ROOT/real-gate"
 [ "$st" -eq 0 ] && restored && grep -q 'gate_A_end=.* status=0' "$E/experiment.record" && grep -q 'gate_B_end=.* status=0' "$E/experiment.record" ||
   fail "the experiment with the real gate ($st)" "$E/supervisor.log"
 closed=$(ls "$WQ_MASK_RECORD".restored-* | head -n 1)
-for s in A:untraced:16 B:timer:17; do
+for s in A:untraced:$ATT_A B:timer:$ATT_B; do
   IFS=: read -r ses m a <<<"$s"
   csv=$(ls "$ROOT/out/clock-validation-$a"/*-"$m"-*-"$a".csv)
   extra=(); [ "$m" = timer ] && extra=(--controls "$ROOT/out/clock-validation-$a/fs-controls-20261112-$a.run.txt")
@@ -302,12 +304,12 @@ for s in A:untraced:16 B:timer:17; do
 done
 
 # Refusals: nothing changed.
-reset; mkdir -p "$ROOT/out/clock-validation-16"
+reset; mkdir -p "$ROOT/out/clock-validation-$ATT_A"
 start; wait "$sup"; st=$?
 [ "$st" -eq 2 ] && [ ! -e "$ROOT/calls" ] && [ ! -e "$E" ] && [ "$(masks)" = "$ORIG $ORIG" ] || fail "an existing directory did not refuse ($st)" "$ROOT/sup.out"
 reset; echo 2 >"$ROOT/dry.exit"
 start; wait "$sup"; st=$?
-[ "$st" -eq 2 ] && [ ! -e "$E" ] && [ ! -e "$ROOT/out/clock-validation-16" ] && [ ! -e "$QUIET_HOST_STATE" ] && [ ! -e "$WQ_MASK_RECORD" ] ||
+[ "$st" -eq 2 ] && [ ! -e "$E" ] && [ ! -e "$ROOT/out/clock-validation-$ATT_A" ] && [ ! -e "$QUIET_HOST_STATE" ] && [ ! -e "$WQ_MASK_RECORD" ] ||
   fail "a failing dry run did not refuse, or left directories ($st)" "$ROOT/sup.out"
 reset; echo "started=x" >"$WQ_MASK_RECORD"
 start; wait "$sup"; st=$?
@@ -329,26 +331,26 @@ for mode in all thread3 twice file; do
 done
 # The emulator during a session: its affinity widened to CPU 3, the process gone, or another one holding the port: the
 # check after that session stops the experiment (no further step), and everything is restored.
-reset; echo widen >"$ROOT/session.emu.16"
+reset; echo widen >"$ROOT/session.emu.$ATT_A"
 start; wait "$sup"; st=$?
 [ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && ! grep -q '^gate' "$ROOT/calls" && restored &&
   grep -q '^emulator_A=.* status=1 reason=pid=.*may run on CPU 3' "$E/experiment.record" &&
   grep -q 'outcome=STOPPED reason=the emulator changed, or may run on CPU 3, after the untraced session' "$E/experiment.record" ||
   fail "an emulator widened during the untraced session ($st)" "$ROOT/sup.out"
-reset; echo gone >"$ROOT/session.emu.17"
+reset; echo gone >"$ROOT/session.emu.$ATT_B"
 start; wait "$sup"; st=$?
 [ "$st" -eq 1 ] && grep -q '^session timer' "$ROOT/calls" && [ "$(grep -c '^gate' "$ROOT/calls")" -eq 1 ] && restored &&
   grep -q '^emulator_B=.* status=2 reason=0 processes hold the master' "$E/experiment.record" &&
   grep -q 'outcome=STOPPED reason=the emulator changed, or may run on CPU 3, after the timer session' "$E/experiment.record" ||
   fail "an emulator gone during the timer session ($st)" "$ROOT/sup.out"
-reset; emu_start "$ROOT/pty.spare" off3; echo swap >"$ROOT/session.emu.16"
+reset; emu_start "$ROOT/pty.spare" off3; echo swap >"$ROOT/session.emu.$ATT_A"
 start; wait "$sup"; st=$?
 [ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && restored &&
   grep -q "^emulator_A=.* status=3 reason=another process holds the pty: pid=$(cat "$ROOT/pty.spare.pid") " "$E/experiment.record" ||
   fail "another emulator holding the port after the untraced session ($st)" "$ROOT/sup.out"
 
 # A failed session, a failed gate: no further step, everything restored.
-reset; echo 1 >"$ROOT/session.exit.16"
+reset; echo 1 >"$ROOT/session.exit.$ATT_A"
 start; wait "$sup"; st=$?
 [ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && ! grep -q '^gate' "$ROOT/calls" && restored &&
   grep -q '^finished=.* outcome=STOPPED reason=the untraced session failed (status 1)$' "$E/experiment.record" || fail "a failed session ($st)" "$ROOT/sup.out"
@@ -359,7 +361,7 @@ start; wait "$sup"; st=$?
 
 # A hangup, and an interrupt, reaching the process group during a session: the session cleans up, then the supervisor
 # restores everything.
-for case in HUP:16 INT:17; do
+for case in HUP:$ATT_A INT:$ATT_B; do
   sig=${case%%:*}; at=${case#*:}
   reset; echo 3 >"$ROOT/session.secs"
   start
@@ -367,14 +369,14 @@ for case in HUP:16 INT:17; do
   kill -"$sig" -- -"$sup"; wait "$sup"; st=$?
   [ "$st" -eq 1 ] && [ -e "$ROOT/cleaned-$at" ] && restored && grep -q "^signal=.* $sig$" "$E/experiment.record" &&
     grep -q "outcome=STOPPED reason=signal $sig" "$E/experiment.record" || fail "$sig during session $at ($st)" "$ROOT/sup.out"
-  [ "$at" = 17 ] || ! grep -q '^session timer' "$ROOT/calls" || fail "a session after the hangup" "$ROOT/calls"
+  [ "$at" = $ATT_B ] || ! grep -q '^session timer' "$ROOT/calls" || fail "a session after the hangup" "$ROOT/calls"
 done
 # A TERM to the supervisor alone: the running session finishes, then nothing else runs.
 reset; echo 1.5 >"$ROOT/session.secs"
 start
-wait_file "$ROOT/running-16" || fail "session 16 did not start" "$ROOT/sup.out"
+wait_file "$ROOT/running-$ATT_A" || fail "session $ATT_A did not start" "$ROOT/sup.out"
 kill -TERM "$sup"; wait "$sup"; st=$?
-[ "$st" -eq 1 ] && [ ! -e "$ROOT/cleaned-16" ] && ! grep -q '^gate' "$ROOT/calls" && ! grep -q '^session timer' "$ROOT/calls" && restored &&
+[ "$st" -eq 1 ] && [ ! -e "$ROOT/cleaned-$ATT_A" ] && ! grep -q '^gate' "$ROOT/calls" && ! grep -q '^session timer' "$ROOT/calls" && restored &&
   grep -q 'session_A_end=.* status=0' "$E/experiment.record" || fail "a TERM to the supervisor alone ($st)" "$ROOT/sup.out"
 
 # A restoration that fails: unresolved, the record open.
@@ -389,7 +391,7 @@ keeper_gone || fail "the keeper stayed after a failed restoration"
 # records stay for the operator.
 reset; echo 2 >"$ROOT/session.secs"
 start
-wait_file "$ROOT/running-16" || fail "session 16 did not start" "$ROOT/sup.out"
+wait_file "$ROOT/running-$ATT_A" || fail "session $ATT_A did not start" "$ROOT/sup.out"
 kill -KILL "$sup"; wait "$sup" 2>/dev/null
 keeper_log=$(keeper_dir)/keeper.log
 keeper_gone; sleep 2.5  # the session ends too
@@ -442,7 +444,7 @@ st=$(cat "$ROOT/rec.st")
 
 # A process the session left running when the experiment ends (here the session's own background sleep): nothing is
 # restored (exit 3), and the released keeper ends without restoring, even once that process has ended.
-reset; : >"$ROOT/session.linger.16"
+reset; : >"$ROOT/session.linger.$ATT_A"
 start; wait "$sup"; st=$?
 [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && [ -e "$WQ_MASK_RECORD" ] && [ -e "$QUIET_HOST_STATE" ] &&
   ! grep -q '^mask_restore_start=' "$E/experiment.record" && grep -q '^descendants=.* children=1 unknown=0$' "$E/experiment.record" &&
@@ -454,7 +456,7 @@ kill "$(cat "$ROOT/linger.pid")"; sleep 1
 # A fork-exit chain, in the group and in a session of its own (outside the group): the supervisor, their subreaper,
 # always has a generation among its children.
 for how in group setsid; do
-  reset; echo "$how" >"$ROOT/session.chain.16"
+  reset; echo "$how" >"$ROOT/session.chain.$ATT_A"
   start; wait "$sup"; st=$?
   [ "$st" -eq 3 ] && [ "$(masks)" = "$TARGET $TARGET" ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&
     grep -Eq '^descendants=.* children=[1-9][0-9]* unknown=0$' "$E/experiment.record" && grep -q '^keeper_release=.* status=0 keeper=released$' "$E/experiment.record" &&
@@ -479,7 +481,7 @@ EOF
 chmod +x "$ROOT/keeper-shim"
 for mode in undelivered:98:running lost:97:released; do
   IFS=: read -r m code kst <<<"$mode"
-  reset; echo "$m" >"$ROOT/shim.mode"; : >"$ROOT/session.escaped.16"
+  reset; echo "$m" >"$ROOT/shim.mode"; : >"$ROOT/session.escaped.$ATT_A"
   (export OPTION_A_KEEPER=$ROOT/keeper-shim; start; wait "$sup"; echo $? >"$ROOT/rel.st")
   st=$(cat "$ROOT/rel.st")
   [ "$st" -eq 3 ] && ! grep -q '^mask_restore_start=' "$E/experiment.record" &&

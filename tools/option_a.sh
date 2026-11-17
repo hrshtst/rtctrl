@@ -2,8 +2,9 @@
 # The supervisor of the loaded emulator validation's Option A
 # (docs/hardware/control-rate.md): one process that owns the experiment from
 # its first host change to the last verified restoration, run by the
-# operator from the repository root. This is its second run (attempts 16 and
-# 17, after attempt 15's emulator starvation on CPU 3): the emulator is
+# operator from the repository root. This is its third run (attempts 18 and
+# 19, with ede876d's event-driven emulator; the second run, attempts 16 and
+# 17, followed attempt 15's emulator starvation on CPU 3): the emulator is
 # launched with an affinity that excludes CPU 3, and the supervisor verifies
 # it for every emulator thread before the experiment and after each session.
 #
@@ -26,12 +27,12 @@
 # Then the experiment's steps, in order:
 #   1. tools/quiet_host.sh stop;
 #   2. tools/wq_mask.sh clear 3;
-#   3. the untraced session (attempt 16), without the controls;
+#   3. the untraced session (attempt 18), without the controls;
 #   4. tools/wq_mask.sh check; the emulator check (the same process, by its
 #      pid and start time, every thread still without CPU 3); then
 #      tools/validation_gate.py on the untraced run (its T3 above all): the
 #      timer session starts only if all pass;
-#   5. the controls and the timer session (attempt 17);
+#   5. the controls and the timer session (attempt 19);
 #   6. tools/wq_mask.sh check, the emulator check, then the gate on the timer
 #      run, with the controls.
 # The emulator's identity and every thread's affinity are recorded before
@@ -136,11 +137,11 @@ KRUN=/run
 [ "${ROOT_KEEPER_TEST:-0}" = 1 ] && KRUN=${KEEPER_RUNDIR:-/run}
 GROUP_WAIT=${OPTION_A_GROUP_WAIT:-120}
 RT_CPU=3
-ATT_A=16
-ATT_B=17
+ATT_A=18
+ATT_B=19
 D_A=$OUT/clock-validation-$ATT_A
 D_B=$OUT/clock-validation-$ATT_B
-E=$OUT/clock-validation-option-a2
+E=$OUT/clock-validation-option-a3
 COMMON=(--port "$PORT" --usb-device /sys/bus/usb/devices/1-9 --placements open
         --runs current:1000:rt-loaded-excl:fast-motion --duration 20)
 SESSION_A=(--modes untraced --attempt "$ATT_A" --outdir "$D_A")
