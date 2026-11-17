@@ -71,7 +71,11 @@ fail() { echo "$1"; [ -n "${2:-}" ] && cat "$2"; exit 1; }
 # Stand-ins. Each logs its arguments; the recorders run until SIGINT and
 # then write their file, as the real ones do. Like the real trace-cmd on a
 # pipe, the trace-cmd stand-in holds its readiness line until it exits
-# unless stdbuf made its output line-buffered.
+# unless stdbuf made its output line-buffered. Once their SIGINT trap is
+# set, the recorders read the clock from EPOCHSECONDS, never a command
+# substitution: bash drops a trapped SIGINT sent to its PID alone that
+# arrives while it reaps a command substitution's child, so a stop could
+# be lost.
 cat >"$FAKE/trace-cmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG.trace-cmd"
@@ -170,8 +174,8 @@ else
 fi
 echo "trace-ready" >>"$FAKE_LOG.events"
 # FAKE_TRACE_LIFE: end on its own after that many seconds, successfully.
-end=$(( $(date +%s) + ${FAKE_TRACE_LIFE:-100000} ))
-while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
+end=$(( EPOCHSECONDS + ${FAKE_TRACE_LIFE:-100000} ))
+while [ "$stop" -eq 0 ] && [ "$EPOCHSECONDS" -lt "$end" ]; do sleep 0.05; done
 . "$RTCTRL_SCRATCH_LIB"; scratch_rm "$tdir/$(basename "$out").cpu0"
 if [ "${FAKE_TRACE_ENOSPC:-0}" = 1 ]; then
   echo "partial stand-in trace" >"$out"
@@ -197,8 +201,8 @@ stop=0
 trap 'stop=1' INT
 echo "tcpdump: listening on $iface, link-type USB_LINUX_MMAPPED (stand-in)" >&2
 echo "usbmon-ready" >>"$FAKE_LOG.events"
-end=$(( $(date +%s) + ${FAKE_USBMON_LIFE:-100000} ))
-while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
+end=$(( EPOCHSECONDS + ${FAKE_USBMON_LIFE:-100000} ))
+while [ "$stop" -eq 0 ] && [ "$EPOCHSECONDS" -lt "$end" ]; do sleep 0.05; done
 python3 -c 'import struct, sys; open(sys.argv[1], "wb").write(struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 262144, 220))' "$out"
 echo "0 packets captured" >&2
 exit 0
@@ -274,8 +278,8 @@ case "$1" in
     echo "PERFILE2 stand-in header" >"$out"
     stop=0
     trap 'stop=1' INT
-    end=$(( $(date +%s) + ${FAKE_PERF_LIFE:-100000} ))
-    while [ "$stop" -eq 0 ] && [ "$(date +%s)" -lt "$end" ]; do sleep 0.05; done
+    end=$(( EPOCHSECONDS + ${FAKE_PERF_LIFE:-100000} ))
+    while [ "$stop" -eq 0 ] && [ "$EPOCHSECONDS" -lt "$end" ]; do sleep 0.05; done
     echo "stand-in samples" >>"$out"
     echo "[ perf record: Captured and wrote 0.010 MB $out (12 samples) ]" >&2
     if [ "$stop" -eq 1 ]; then trap - INT; kill -INT $$; fi
