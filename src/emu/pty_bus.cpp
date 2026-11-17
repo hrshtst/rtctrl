@@ -94,23 +94,45 @@ PtyBus::~PtyBus() {
 }
 
 bool PtyBus::poll(double dt) {
+  if (!serviceIo().ok) return false;
+  bus_.tick(dt);
+  return true;
+}
+
+PtyBus::Serviced PtyBus::serviceIo(std::size_t max_read_bytes) {
+  Serviced result;
   sendDueReplies();
   std::uint8_t buf[512];
   while (true) {
-    const ssize_t n = ::read(master_fd_, buf, sizeof(buf));
+    const std::size_t room = max_read_bytes - result.bytes_read;
+    if (room == 0) {
+      result.limited = true;
+      break;
+    }
+    const ssize_t n =
+        ::read(master_fd_, buf, std::min<std::size_t>(sizeof(buf), room));
     if (n > 0) {
       rx_.insert(rx_.end(), buf, buf + n);
+      result.bytes_read += static_cast<std::size_t>(n);
       continue;
     }
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
-    if (n < 0 && errno == EIO) break;  // no client attached yet
+    if (n < 0 && errno == EIO) break;  // no client attached (or detached)
     if (n == 0) break;
-    if (n < 0) return false;
+    if (n < 0) {
+      result.ok = false;
+      return result;
+    }
   }
   extractFrames();
   sendDueReplies();
-  bus_.tick(dt);
-  return true;
+  return result;
+}
+
+std::optional<std::chrono::steady_clock::time_point> PtyBus::nextReplyDue()
+    const {
+  if (pending_.empty()) return std::nullopt;
+  return pending_.front().due;  // kept in due order
 }
 
 void PtyBus::scriptSyncReadFaults(const std::vector<ReplyFault>& faults) {

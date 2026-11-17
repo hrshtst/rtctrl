@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,12 +43,21 @@ struct Arrival {
 // Handles Ping (incl. broadcast), Read, Write, SyncRead, FastSyncRead
 // (firmware v45 and later), SyncWrite.
 //
-// Single-threaded ownership: whoever calls poll() owns the MotorBus;
-// clients on the other end of the pty interact only through the fd. The
-// fault script and the arrival record are the exception: other threads
-// may use them while poll() runs.
+// Single-threaded ownership: whoever calls poll() (or serviceIo()) owns
+// the MotorBus; clients on the other end of the pty interact only through
+// the fd. The fault script and the arrival record are the exception:
+// other threads may use them while poll() runs.
 class PtyBus {
  public:
+  // What one serviceIo() call did.
+  struct Serviced {
+    bool ok = true;              // false: an unrecoverable pty error
+    std::size_t bytes_read = 0;  // input bytes read from the pty
+    bool limited = false;        // stopped at max_read_bytes (input may remain)
+  };
+  static constexpr std::size_t kNoReadLimit =
+      std::numeric_limits<std::size_t>::max();
+
   explicit PtyBus(MotorBus& bus);
   ~PtyBus();
 
@@ -57,8 +68,23 @@ class PtyBus {
 
   // Service pending frames, send delayed replies that are due, then
   // advance simulated time by dt. Returns false on an unrecoverable pty
-  // error.
+  // error. Exactly serviceIo() (unbounded) then MotorBus::tick(dt).
   bool poll(double dt);
+
+  // The I/O half of poll(), without advancing simulated time: send the
+  // delayed replies that are due, read the input (at most max_read_bytes;
+  // by default until the pty has none), answer every complete frame read
+  // so far (a partial frame waits for its rest), then send the delayed
+  // replies that are due again.
+  Serviced serviceIo(std::size_t max_read_bytes = kNoReadLimit);
+
+  // The earliest due time of a delayed reply still to be sent (scripted
+  // kDelay faults only), or none.
+  std::optional<std::chrono::steady_clock::time_point> nextReplyDue() const;
+
+  // The pseudo-terminal's master, for readiness waits (poll/ppoll) only:
+  // reading or writing it bypasses the emulator.
+  int masterFd() const { return master_fd_; }
 
   // Faults for the next grouped reads (sync or fast), one each, in order;
   // later ones reply normally. Appends to any faults still pending.

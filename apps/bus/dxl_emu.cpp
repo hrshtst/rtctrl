@@ -7,9 +7,19 @@
 //
 // --firmware sets every motor's Firmware Version (default 44); 45 and
 // later enable Drive Mode's Torque On by Goal Update.
+//
+// Timing (emu::StandaloneLoop): input is read when it arrives, not on a
+// polling sleep; the motor model ticks every 1 ms of wall time (steady
+// clock), each step running its due ticks before the commands it reads.
+// If the loop falls more than kMaxCatchUpTicks ticks behind (it was kept
+// from running for longer than that), model time cannot be kept on wall
+// time: dxl_emu says so and exits with status 3. SIGINT or SIGTERM stops
+// it (status 0); a pty failure exits with status 1. At exit it prints its
+// model time against the wall time since it started serving.
 
 #include <unistd.h>
 
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +30,7 @@
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/emu/motor_emulator.hpp"
 #include "rtctrl/emu/pty_bus.hpp"
+#include "rtctrl/emu/standalone_loop.hpp"
 
 namespace {
 volatile std::sig_atomic_t g_stop = 0;
@@ -79,13 +90,58 @@ int main(int argc, char* argv[]) {
   }
   std::fflush(stdout);
 
-  std::signal(SIGINT, onSignal);
-  std::signal(SIGTERM, onSignal);
-  constexpr double kDt = 0.001;
-  while (g_stop == 0) {
-    if (!pty.poll(kDt)) break;
-    usleep(1000);
-  }
+  // No SA_RESTART: a signal ends the loop's wait at once (EINTR).
+  struct sigaction action {};
+  action.sa_handler = onSignal;
+  sigemptyset(&action.sa_mask);
+  sigaction(SIGINT, &action, nullptr);
+  sigaction(SIGTERM, &action, nullptr);
+
+  constexpr std::uint64_t kMaxCatchUpTicks = 50;  // 50 ms of model time
+  rtctrl::emu::StandaloneLoop::Config loop_config;
+  loop_config.tick = std::chrono::milliseconds(1);
+  loop_config.max_catch_up_ticks = kMaxCatchUpTicks;
+  loop_config.max_read_bytes = 4096;
+  const auto start = rtctrl::emu::StandaloneLoop::Clock::now();
+  rtctrl::emu::StandaloneLoop loop(pty, bus, loop_config, start);
+  const auto status = loop.run([] { return g_stop != 0; });
+  const double wall_s = std::chrono::duration<double>(
+                            rtctrl::emu::StandaloneLoop::Clock::now() - start)
+                            .count();
   if (!link_path.empty()) unlink(link_path.c_str());
-  return 0;
+
+  const auto& st = loop.stats();
+  const double tick_s =
+      std::chrono::duration<double>(loop_config.tick).count();
+  std::printf(
+      "dxl_emu: model time %.3f s (%llu ticks of %.3f ms) over %.3f s of "
+      "wall time; steps %llu, of them late (more than one tick) %llu, most "
+      "ticks at once %llu; reads at the %zu-byte bound %llu; waits by time "
+      "alone (no client) %llu\n",
+      static_cast<double>(st.ticks) * tick_s,
+      static_cast<unsigned long long>(st.ticks), tick_s * 1e3, wall_s,
+      static_cast<unsigned long long>(st.steps),
+      static_cast<unsigned long long>(st.late_steps),
+      static_cast<unsigned long long>(st.max_ticks_in_step),
+      loop_config.max_read_bytes,
+      static_cast<unsigned long long>(st.limited_reads),
+      static_cast<unsigned long long>(st.hangup_waits));
+  std::fflush(stdout);
+  switch (status) {
+    case rtctrl::emu::StandaloneLoop::Status::kOk:
+      return 0;
+    case rtctrl::emu::StandaloneLoop::Status::kOverrun:
+      std::fprintf(stderr,
+                   "dxl_emu: %llu model ticks were due at once, more than "
+                   "the cap of %llu (%.0f ms): it was kept from running too "
+                   "long to keep model time on wall time; stopping\n",
+                   static_cast<unsigned long long>(st.overrun_due),
+                   static_cast<unsigned long long>(kMaxCatchUpTicks),
+                   static_cast<double>(kMaxCatchUpTicks) * tick_s * 1e3);
+      return 3;
+    case rtctrl::emu::StandaloneLoop::Status::kIoError:
+      std::fprintf(stderr, "dxl_emu: the pseudo-terminal failed; stopping\n");
+      return 1;
+  }
+  return 1;
 }

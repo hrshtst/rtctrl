@@ -247,7 +247,8 @@ add_executable(integration_tests
   integration/tracking_sim_test.cpp
   integration/ident_sim_test.cpp
   integration/quiesce_pty_test.cpp
-  integration/bounded_read_pty_test.cpp)
+  integration/bounded_read_pty_test.cpp
+  integration/standalone_loop_test.cpp)
 target_link_libraries(integration_tests PRIVATE rtctrl::rtctrl
   Catch2::Catch2WithMain)
 # ident_sim_test drives the app-layer IdentRun and TwoMassArm fixture.
@@ -889,6 +890,19 @@ add_test(NAME sudo_refresh_test
 set_tests_properties(sudo_refresh_test PROPERTIES
   PASS_REGULAR_EXPRESSION "sudo refresh OK"
   LABELS integration)
+
+# dxl_emu as a process (its standalone loop): no spin with no client or after
+# one detaches, partial frames, reattachment, model time on wall time, SIGINT
+# and SIGTERM while waiting, detached and busy, and the catch-up cap's exit.
+add_test(NAME dxl_emu_process_check
+  COMMAND ${CMAKE_COMMAND} -E env UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tests/integration/dxl_emu_process_check.py
+      --emulator $<TARGET_FILE:dxl_emu>
+      --dir ${CMAKE_BINARY_DIR}/dxl_emu_process_check
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(dxl_emu_process_check PROPERTIES
+  PASS_REGULAR_EXPRESSION "dxl_emu process checks OK"
+  LABELS integration TIMEOUT 120)
 
 # The traced torque-off session (tools/trace_session.sh) over the emulator,
 # with stand-in tracers and no sudo.

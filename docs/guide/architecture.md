@@ -127,7 +127,12 @@ flowchart TB
   transports. Everything ships in the single `rtctrl` library for
   build simplicity, so the emulator is *linked* everywhere, but no
   controller or production header ever *includes* it; only tests and
-  the standalone `dxl_emu` do.
+  the standalone `dxl_emu` do. `dxl_emu` serves its pseudo-terminal
+  through `StandaloneLoop`: it reads input when it arrives (not on a
+  polling sleep), ticks the motor model every 1 ms of wall time
+  (the ticks due before the commands it reads), and exits with status 3
+  if it falls more than 50 ticks behind, rather than drop model time.
+  The in-process fixtures keep driving `PtyBus::poll(dt)` themselves.
 
 Include-dependency rule (what may `#include` what; the build is one
 library, so this, not linkage, is the real boundary): `dxl` and

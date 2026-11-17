@@ -45,6 +45,7 @@ add_library(rtctrl
   src/emu/motor_emulator.cpp
   src/emu/fake_packet_io.cpp
   src/emu/pty_bus.cpp
+  src/emu/standalone_loop.cpp
   src/hw/config.cpp
   src/hw/bus_profile.cpp
   src/hw/crane_x7.cpp
