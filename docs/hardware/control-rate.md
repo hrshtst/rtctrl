@@ -2648,6 +2648,69 @@ transactions to the instruction flush's queueing, the emulator's wake to run
 and the reply's delivery, as leads rather than established causes. Hardware
 and H2 stay paused.
 
+**Option A, third run: the event-driven emulator at the accepted placement
+(procedure for review; not yet executed).** Attempt 17's trace showed every
+read waiting for the emulator's next 1 ms poll and its model time running
+about 6 percent slow; `ede876d` replaced that loop (the emulator reads its
+input on readiness, ticks its model every 1 ms of wall time, and exits with
+status 3 rather than drop model time when more than 50 ticks are due at
+once). The third run validates that changed rig under the second run's
+placement and load, unchanged: the emulator launched off CPU 3, CPU 3
+cleared from the unbound workqueue mask, `rt-loaded-excl`, observers open,
+20 s runs, the controls on CPU 5 before the timer run, the 35 ms budget and
+guard, the gates, the acceptance rules and the stop without retry. Its runs
+are attempts 18 (untraced) and 19 (timer), into `clock-validation-18`,
+`clock-validation-19` and `clock-validation-option-a3`. A pass would not
+qualify a control rate, the USB path or the hardware: the quiet-host
+latency improvement measured before it does not establish loaded 1 kHz
+performance, and the runs are new acquisitions under their own declared
+environment, not attempts 16 and 17 with only the emulator changed.
+
+What changes besides the emulator:
+
+- **The servos' state, checked outside the timed runs.** The supervisor runs
+  `tools/servo_state.py` before any host change, after the untraced session
+  and after the timer session: every servo's Torque Enable, Bus Watchdog and
+  Hardware Error Status, read with `dxl_inspect`, must be 0, with a complete
+  record (`servo-state-start.txt`, `-A.txt`, `-B.txt`): exactly the 24
+  expected reads, each successful, the record written, synced and read back.
+  A failure at the start stops it before any host change; after the
+  untraced session, before the timer session. The probe already rechecks
+  Torque Enable and Drive Mode after its run; the Bus Watchdog and Hardware
+  Error Status evidence are the additions, and the all-zero Bus Watchdog is a
+  declared baseline, not an inference that every nonzero value is an expiry.
+  The probe runs torque-off, and the emulated watchdog counts only with
+  torque on.
+- **The candidate.** A fresh checkout of the procedure's commit with its own
+  build, its binaries' and libraries' identities recorded, and a launch
+  guard that, in the supervisor's shell, also identifies the process holding
+  the master of the emulator's pty (as the supervisor does) and ties that
+  process, by its pid and start time, to the candidate's executable, its
+  hash, working directory, command line and every thread's affinity. The
+  supervisor's three emulator records must name the same process.
+- **The emulator's log.** Everything `dxl_emu` prints goes to its own log,
+  and its block records its exit status there. At exit the emulator prints
+  its model time against wall time and its stall statistics (late steps, the
+  most ticks due at once, reads at the input bound): aggregates over its
+  whole life, which show that a stall occurred, never why a failure did.
+- **The terminal.** The supervisor's block runs inside tmux, as a bash
+  heredoc; the emulator's block in its own terminal, also as a bash heredoc.
+
+The exact operator blocks, with the candidate's commit and the guard, come
+to review with their stand-in checks before use. The emulator serves until
+after the supervisor has ended (its last servo reading included); then the
+operator stops it and its block records its exit status.
+
+The validation then passes only if, besides the second run's criteria
+(above, unchanged), the launch guard's records are OK in both shells and
+name the serving process as the candidate's emulator, the experiment
+record's three servo-state steps passed with complete records, and the
+emulator's log ends with its exit line and an exit status of 0 recorded
+after the supervisor ended. A cap exit, a servo-state anomaly, a timeout or
+a read failure is a failure, whatever the stall statistics show; nothing is
+retried, and no emulator is restarted to continue the pair. The recovery
+limits are the second run's. Hardware and H2 stay paused.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
