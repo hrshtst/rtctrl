@@ -934,6 +934,36 @@ with its own verdict.
 The details are in the
 [control-rate qualification](../hardware/control-rate.md).
 
+## Control-rate Option A emulator validation (2026-11-12 to 2026-11-17)
+
+After the clock-alignment work, the reviewer chose a loaded emulator
+validation with CPU 3 cleared from the kernel's unbound workqueue mask
+(Option A), run by one supervised command. Its first run (2026-11-12, at
+`87d39d8`) acquired attempt 14 (untraced, gate passed) and stopped at
+attempt 15's gate: one bounded-read timeout, which the accepted diagnosis
+traced to the emulator starving on CPU 3 behind the busy-polling worker
+(34.22 ms runnable there). The second run launched the emulator with an
+affinity excluding CPU 3 and added a residency check over the timer capture,
+corrected through three reviews (`6d06bf9`, `0399672`, `43ae4e6`). The final
+preflight at `43ae4e6` failed on the session smoke's stand-in (closed below),
+fixed by `4dd5bc7`; a later full rerun was withdrawn as duplicate work and
+stays a partial run. The acquisition identity review found that a shell in
+the investigation worktree would load another mi-lib build for the probe,
+so the acquisition shells were pinned to the lock-pinned libraries, and
+accepted libc6 2.43-2ubuntu2.7 (upgraded 2026-11-14) as the new runs'
+baseline. Attempts 16 and 17 (2026-11-17, at `4dd5bc7`) were acquired and
+accepted as the emulator validation: no read failure or timeout, both gates
+passed, the controls, the certificate (U 1682 ns) and every wake accounted,
+and the emulator and unbound work kept off CPU 3. The 1 kHz timing
+requirement remains unmet: 923.346 and 885.994 Hz mean, 1,533 and 2,280
+skipped cycles, host work p99.9 3.554 and 4.215 ms. The runs are new
+acquisitions under their own declared environment, not attempt 15 with only
+the affinity changed, and their execution deviations (a bash heredoc, no
+tmux, an interrupted first paste) were accepted for these runs only. All
+are archived in `clock_validation/`; hardware and H2 stay paused. The
+details are in the
+[control-rate qualification](../hardware/control-rate.md).
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
@@ -967,7 +997,7 @@ support load sensitivity, but eight parallel tests still contend without
 the sweep, and the isolated passes do not settle the cause. No limit is
 changed for it.
 
-## `trace_session_script_smoke` stand-in stop failure (open, 2026-11-09)
+## `trace_session_script_smoke` stand-in stop failure (closed 2026-11-17)
 
 In one full `ctest -j8` run (about 13:13, no sweep), the session smoke test
 failed at its attempt 28: the stand-in `tcpdump` (a test script, not the real
@@ -985,6 +1015,19 @@ rehearsals, and no bound is changed for it.
 | 2026-11-09 | the stand-in alone, 150 SIGINTs at random delays | stopped promptly, each |
 | 2026-11-09 | a full `ctest -j8` at about 13:26, no sweep | passed |
 | 2026-11-09 | full `ctest -j8` runs at about 14:57, 18:19, 18:38, 18:48, 19:23, 19:32, 20:03, 20:18 and 20:36, no sweep | passed, each |
+| 2026-11-17 | the integrated preflight at `43ae4e6` | failed, 554/555: the stand-in `trace-cmd` ignored its one SIGINT for 120 s; that preflight stays failed |
+| 2026-11-17 | the stand-in's loop alone, through the session's launch chain | one SIGINT lost in 1,400 |
+| 2026-11-17 | a SIGINT to the PID while bash waits for a command substitution's child that has closed its output | lost, 20 of 20; a foreground child, a substitution still being read, a process-group SIGINT and SIGTERM: acted on, each |
+| 2026-11-17 | the stand-ins with that window held open (a lingering `date`), through the launch chain | lost at `43ae4e6` (30 of 30, 30 of 30, 2 of 30); none at `4dd5bc7` (0 of 90) |
+
+Closed on 2026-11-17: the stand-ins read the clock with `$(date +%s)` in their
+stop loops, after their SIGINT trap was set, and bash drops a trapped SIGINT
+sent to its PID alone that arrives while it waits for a command
+substitution's child. The stand-ins now read `EPOCHSECONDS` (`4dd5bc7`, test
+only, reviewed and accepted); the session's `stop_tracer`, its timeouts and
+exit checks are unchanged, and in a session the SIGINT goes to the compiled
+tracers themselves. The earlier failures match this mechanism's signature;
+none was instrumented.
 
 ## `gravity_demo_smoke` silent failure (open, 2026-11-09)
 

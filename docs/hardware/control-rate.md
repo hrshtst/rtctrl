@@ -2447,7 +2447,12 @@ CPU 3, everything else as in the first run: the workqueue exclusion, the
 stress placement, the durations, the 35 ms budget and guard, the recorders,
 the gate and the acceptance rules, and the stop without retry. The changed
 experimental conditions are the unbound workqueue mask and the emulator's
-affinity, both recorded. Keeping the emulator off CPU 3 is a testable
+affinity, both recorded. The host did not otherwise stay as at attempt 15:
+by the second run libc6 was 2.43-2ubuntu2.7 (upgraded 2026-11-14), and the
+probe's mi-lib was pinned (below) while attempt 15's probe libraries were
+never recorded. The second run is therefore a new acquisition under its own
+declared environment, not attempt 15 with only the emulator's affinity
+changed. Keeping the emulator off CPU 3 is a testable
 prevention of the co-location attempt 15 showed; it does not guarantee zero
 timeouts, and it qualifies neither the real USB path nor 1 kHz operation.
 
@@ -2532,7 +2537,18 @@ timeouts, and it qualifies neither the real USB path nor 1 kHz operation.
   affinity, and fails. It read the whole real capture without a chain or
   placement contradiction.
 
-The operator, as before, on the emulator only, with the arm powered off:
+The operator, as before, on the emulator only, with the arm powered off.
+Every shell of the procedure (the emulator's and the supervisor's) first
+changes to the checkout whose build is used and sets the library path to the
+lock-pinned mi-lib prefix alone, replacing any inherited value
+(`export LD_LIBRARY_PATH=<checkout>/.local/lib`; from a git worktree, which has
+no `.envrc`, the main checkout's `.local/lib`). The probe links zeda, zm, zeo
+and roki, and a library path inherited from the user's profile can name
+another build first, which the loader would then take in place of the
+pinned one. The acquisition of 2026-11-17 also ran a launch guard in each
+shell that recorded the directory, the library path, the commit, a clean
+tree and every resolved library's hash, and refused any difference from the
+accepted listing (its records are in the acquisition's archived evidence):
 
 0. Stop any running emulator (Ctrl-C), then launch a new one with CPU 3
    excluded from the start, and give its servos their return delay:
@@ -2592,6 +2608,45 @@ evidence is the mask's read-back and the kernel's documented policy; the
 residency is observed in the timer run. Hardware and H2 stay paused until
 the outcome is reviewed and their revised plan accepted, and no failed
 historical slot is promoted. This qualifies no control rate.
+
+**Attempts 16 and 17 (2026-11-17, at `4dd5bc7`): acquired; the emulator
+validation accepted, the 1 kHz timing requirement unmet.** On the emulator
+only, actuator power off, the emulator launched off CPU 3 and the shells
+pinned to the accepted libraries, the supervisor ran the untraced run
+(attempt 16) and, its gate passed, the controls and the timer run (attempt
+17). Both gates passed (14 of 14 and 15 of 15, also against the closed
+records); neither run had a read failure or a bounded-read timeout; the
+controls passed; the timer capture had no loss; the certificate was
+CERTIFIED and the full-window conversion validated (U 1682 ns); every timer
+wake was explained; `tools/unbound_work.py` and `tools/emulator_residency.py`
+passed (the emulator neither ran nor queued on CPU 3 inside the window);
+every stage was published, verified and released, and every restoration
+verified. The only failures were the allowed T1, T2 and T6a and the
+analysis's PTY USB association (`tools/trace_correlate.py` exits 1 for it).
+The review accepted the acquisitions and this emulator validation. The loop
+still does not keep its period at 1 kHz:
+
+| Run | Mean rate | Skipped cycles | Host work p99.9 |
+|---|---:|---:|---:|
+| 16, untraced | 923.346 Hz | 1,533 | 3.554 ms |
+| 17, timer | 885.994 Hz | 2,280 | 4.215 ms |
+
+The review accepted three execution deviations for these completed runs:
+the supervisor block ran inside a bash heredoc instead of being pasted into
+the shell (the supervisor then shared that bash's process group; its
+confirmation still came from the terminal), in panes of another terminal
+multiplexer instead of tmux (no equivalent protection from a closed
+terminal is established); and an earlier pasted attempt stopped at the
+block's own real-time-limit check, before its dry run, because zsh's
+`ulimit` builtin reports the limits zsh cached rather than the kernel's
+(the external `prlimit` had taken effect). The absence of attempt 15's
+timeout is not attributed to the affinity alone, since libc changed and
+attempt 15's probe libraries were not recorded; nor does the run show that
+fair-server interference or timeouts cannot recur under other conditions.
+The next work is offline, on attempt 17's trace: relating its long host
+transactions to the instruction flush's queueing, the emulator's wake to run
+and the reply's delivery, as leads rather than established causes. Hardware
+and H2 stay paused.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

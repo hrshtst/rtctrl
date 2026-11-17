@@ -2358,10 +2358,24 @@ diagnostic rerun of that test (PASS) and the fresh identities for acquisition re
 (`review-final-preflight-43ae4e6/`) accepted the code, did not accept the preflight as clean (a reviewed test-only fix
 of the stand-ins, then a clean preflight, before acquisition), and read the fresh timekeeping status's `STA_MODE` as a
 read-only indicator, not the `STA_FLL` selection.
+`standin-sigint-fix/` holds that fix (`4dd5bc7`) and its focused checks; its review (`review-standin-sigint/`) accepted
+it with `5b56a51`. `final-preflight-4dd5bc7/` holds a full run at `4dd5bc7` that the reviewer withdrew and that was
+stopped after test 541: a partial run, not a pass. The accumulated validation was accepted
+(`review-acquisition-candidate/`). `option-a2-identity/` holds the acquisition identity; its review
+(`review-acquisition-environment/`) accepted a pinned library environment for the acquisition shells and libc6
+2.43-2ubuntu2.7 as the new runs' baseline. The next review (`review-acquisition-identity/`) found two defects in the
+operator blocks and launch guard, corrected in `option-a2-identity-r2/` (its three launch-guard records were written at
+the acquisition, after it was sealed, outside its ledger) and accepted with the go (`review-acquisition-identity-r2/`).
+Attempts 16 (`clock-validation-16/`, untraced) and 17 (`clock-validation-17/`, the controls and the timer run), with the
+supervisor's `clock-validation-option-a2/`, 2026-11-17 at `4dd5bc7`: both acquired, every acceptance criterion held,
+with the allowed T1, T2 and T6a failures and the PTY USB association only; `option-a2-acquisition-20261117/` holds the
+developer's verification, the operator's terminal and the execution deviations. Their review
+(`review-option-a2-acquisition/`) accepted the acquisitions and the emulator validation; the 1 kHz timing requirement
+remains unmet. The three capture folders' `SHA256SUMS` were written at archiving, as for attempt 15.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews through the corrections committed at 43ae4e6 and its failed final preflight, the T3 wording correction | `61d46d681e94e860e22e4e53f3ffce59503753b7e83067a8bbe41993a2b9727f` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the T3 wording correction | `fc7bfac61e90d0e6892790d703fe3ed3f5f75ae4aacfebaa703024c83e145656` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2684,6 +2698,118 @@ read-only indicator, not the `STA_FLL` selection.
 | `final-preflight-43ae4e6/tk-state-now.json` | fresh timekeeping state (status 0x6001: STA_MODE, a read-only indicator) | `49bf1138ec89af99a79d969172c5aaf4dc5f4c6aeab839706f6c266ea38cd973` |
 | `final-preflight-43ae4e6/tk-tool-now.json` | fresh trace-cmd identity (93 fields, equal to attempt 15's audited record) | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
 | `final-preflight-43ae4e6/trace_session_script_smoke-failure.txt` | the failing test's output (the stand-in trace-cmd ignored the one SIGINT for 120 s; exit 137) | `ccc7fa181901a2389ce31e85d25ce61433bdc3548193cae52f0b5721fa66942f` |
+| `standin-sigint-fix/README.md` | the developer's packet for 4dd5bc7: the mechanism, the test-only fix, the focused checks | `8d7b51edf1191a7841a74fdbd08b0714d5588c4898666a12b78f59906148eefc` |
+| `standin-sigint-fix/SHA256SUMS` | folder ledger | `f7cff0448083760345847856a4632f192817c36a96caa9afc3720f67a04f8a39` |
+| `standin-sigint-fix/amplified-perf-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `1487c6210f4a7d99b86747a84a738a461c664819ca82f7320a550ec0552b115a` |
+| `standin-sigint-fix/amplified-perf-43ae4e6.txt.stderr` | the stand-in SIGINT fix's evidence (the developer's) | `e987c4a998911d9bec6863263e2c212ecbdeb52ab2a0d1551812cc0f718937a0` |
+| `standin-sigint-fix/amplified-perf-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `24e2b0b1c10f277c4ed8a2a276c3adc3650a2e6d4af9f6911c35391af2e6a273` |
+| `standin-sigint-fix/amplified-trace-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `43c14ba1e409a6a7cdb05c188677be2d564f1f7174da328ba72a921db580e0fc` |
+| `standin-sigint-fix/amplified-trace-43ae4e6.txt.stderr` | the stand-in SIGINT fix's evidence (the developer's) | `6e443809d146535211e2f7cbcf63c463026f3de2851ed108af14347690fdbeb4` |
+| `standin-sigint-fix/amplified-trace-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `6328881a51c6057eed670fe9a7622e406e0232b2636eb74b250f0fc969a89027` |
+| `standin-sigint-fix/amplified-usbmon-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `84864f6db408710535da7ed482d6a85fdabd0711bc5f7d497665052343406d7d` |
+| `standin-sigint-fix/amplified-usbmon-43ae4e6.txt.stderr` | the stand-in SIGINT fix's evidence (the developer's) | `c8dfc057b456a1dd098da70583a981f9718da6a9ce93157f99901144b319e50c` |
+| `standin-sigint-fix/amplified-usbmon-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `a7d0160ebde469723d9b1488302158c53822aaec8688e9b6f32c7b8806fde25d` |
+| `standin-sigint-fix/check_standins.sh` | the stand-in SIGINT fix's evidence (the developer's) | `f33b25baedd69938c2038e12250003515ace06d5117cca063f4f3a25abcc6ecd` |
+| `standin-sigint-fix/functional-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `e7d4882558e2537f5cdc0074b19ac27c6c4207923451644b8743702c45603075` |
+| `standin-sigint-fix/functional-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `65a4f6740ee6cf4eca9636c62fcf17221bd40d2ed29eb669ec28211184d55db0` |
+| `standin-sigint-fix/mechanism/comsub_date.sh` | the stand-in SIGINT fix's evidence (the developer's) | `a07d2689b75891ab1ad31517743585f624dc694728a40c6650f7e8f086fecb1c` |
+| `standin-sigint-fix/mechanism/comsub_read.sh` | the stand-in SIGINT fix's evidence (the developer's) | `ac6844aca18b9507badc433490662ccdf415fc079a5dc42e53e23a789425f03d` |
+| `standin-sigint-fix/mechanism/comsub_wait.sh` | the stand-in SIGINT fix's evidence (the developer's) | `675fb6d577d88a315834d0120dfeb38f28ea868ea34b9cb44a1b0f6445db4318` |
+| `standin-sigint-fix/mechanism/comsub_wait_term.sh` | the stand-in SIGINT fix's evidence (the developer's) | `16fd6e47102958f1460d91ab31a35c0364c0410494bf372418b438e907a867a7` |
+| `standin-sigint-fix/mechanism/drive_sig.py` | the stand-in SIGINT fix's evidence (the developer's) | `4cb8a7294de3e9cdd12c28857784a16ecdcad4989b65eb004057ac95806fedf2` |
+| `standin-sigint-fix/mechanism/epochseconds.sh` | the stand-in SIGINT fix's evidence (the developer's) | `96aba27cdf43ae9b496bec3a6116f860af27fb8034c272998dee9e1ffa04834b` |
+| `standin-sigint-fix/mechanism/fg.sh` | the stand-in SIGINT fix's evidence (the developer's) | `b0130f7c36944cdbf27deaaf4e34714d384460d71f39eeada5c3e273a0d36da9` |
+| `standin-sigint-fix/mechanism/perf_phase.sh` | the stand-in SIGINT fix's evidence (the developer's) | `08c2c054bca26a1427288c471e3953488245d4bf3949f5c51ee6f5c5ced4a69f` |
+| `standin-sigint-fix/mechanism/pos_arith_assign.sh` | the stand-in SIGINT fix's evidence (the developer's) | `13b5bb5e45ad78e4e25e52575a3bc15b09ec0d6409f4761fc640b1f7f5256fe1` |
+| `standin-sigint-fix/mechanism/pos_assign.sh` | the stand-in SIGINT fix's evidence (the developer's) | `b81cf82c73e84a93de62d959acbb44385d1db31cf10244b38523356078268dc2` |
+| `standin-sigint-fix/mechanism/pos_colon_arg.sh` | the stand-in SIGINT fix's evidence (the developer's) | `c4c5308ba19218021c21d5f23d6ad24e44bb95901a7586c873f44593340fb07c` |
+| `standin-sigint-fix/mechanism/pos_external_arg.sh` | the stand-in SIGINT fix's evidence (the developer's) | `22dae8763f6cf27e24d96b2fed4ffcaf196a490d292885291112d25a25762927` |
+| `standin-sigint-fix/mechanism/pos_in_case.sh` | the stand-in SIGINT fix's evidence (the developer's) | `81d6207d360693293c611b31c27a0717e7a6b2971f8f636e14ac8aac0eadacaa` |
+| `standin-sigint-fix/mechanism/pos_test_cond.sh` | the stand-in SIGINT fix's evidence (the developer's) | `31befdb552119c0e699dba99b47430f260d3122ca63280f730e8179ed922be03` |
+| `standin-sigint-fix/mechanism/results.txt` | the mechanism: a trapped SIGINT to the PID is dropped while bash waits for a command substitution's child | `916b537c03a8504d1d73cd82002cbe6fea70e911362f0edd537637a91696de47` |
+| `standin-sigint-fix/session-smoke-4dd5bc7.log` | trace_session_script_smoke at 4dd5bc7, once (PASS, 637.9 s) | `9fe92d0eb607dc09945cfbcbbf6aee434151cb445570bc5a441b10cf49f4f02f` |
+| `standin-sigint-fix/stat-perf-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `7b3f8756276a910252600f6f42409f12542b219a1c5937fa686f59c7b1441030` |
+| `standin-sigint-fix/stat-perf-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `e410c2f3c556bcaa49e854f7509cd572c5f9960bafcc406d5e01d4953cae3c57` |
+| `standin-sigint-fix/stat-trace-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `254b6743c9f4dd3f458d1f1f32bdd135e783ffe3dbad0af0a604a5fa34a95a57` |
+| `standin-sigint-fix/stat-trace-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `71aed59c31cbedd968dad3d4e4a5301990f4393e0d6aa9b43d1bde8901fb3c25` |
+| `standin-sigint-fix/stat-usbmon-43ae4e6.txt` | the stand-in SIGINT fix's evidence (the developer's) | `7f56b2c5698a0b825c090de3d4a125adbe99232c4046a974e77c86f4de9061c4` |
+| `standin-sigint-fix/stat-usbmon-4dd5bc7.txt` | the stand-in SIGINT fix's evidence (the developer's) | `c9bf1793c7a15753bead5c3fbd1289df0a15c6647fdb0d66714d593abdd945a5` |
+| `final-preflight-4dd5bc7/README.md` | the candidate 4dd5bc7: the withdrawn full run (PARTIAL), its accumulated validation, fresh identities | `88938bdd81e4e0f7e4c348e540dd0aac533fe959bf6f73f79be713b198a1cd59` |
+| `final-preflight-4dd5bc7/SHA256SUMS` | folder ledger | `4e42311e144cbbd3befe8ef9b72f31473e50c0f9f5dada1ee3124e7abc422fed` |
+| `final-preflight-4dd5bc7/artifact-identity.txt` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `a3f791050a3ebb2ded7848a06e5b05275a4ec493545d539552601ea82a256b50` |
+| `final-preflight-4dd5bc7/build.log` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `83196ad82f2d19b53d287de439e0c1a6686112e67a7996e2faf0e1e11f364dcb` |
+| `final-preflight-4dd5bc7/ctest.log` | the partial ctest at 4dd5bc7: tests 1 to 540 passed, stopped in 541 (exit 137: the deliberate kill) | `c413245d2aec42af0bb7af1d12f2bee991d4303317234453bd10d0e7ac47ad49` |
+| `final-preflight-4dd5bc7/docs-5b56a51.log` | the strict docs check for 5b56a51 (PASS) | `8f45c44ee7f30a869602f83b05c4c7dccadf17170094fb5f238e270662d31bbf` |
+| `final-preflight-4dd5bc7/host-identity.txt` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `397d6d840d0cfc2e23eda4d466d7d832897fb4b1984baba67f7d59aa219a65d1` |
+| `final-preflight-4dd5bc7/milib-identity.txt` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `2908f33e407aaae9b706eb2d16f405f81d21963606f4163a5e6a16c40029d159` |
+| `final-preflight-4dd5bc7/names-and-archive.txt` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `abe9698904cd55112963bc4c53562016779d8279f24bf82f165ca9f82013692d` |
+| `final-preflight-4dd5bc7/partial-run-stop.txt` | how the withdrawn run was stopped after test 541 (its exit status 0, read from the paused ctest) | `8777bb4ee788a941d83bc257b183bef7b260471020863f0c7a20727574ecca26` |
+| `final-preflight-4dd5bc7/test541-output.txt` | test 541's output, read from ctest's unread pipe (its pass line) | `3141e71de3d2caf642e8278e1b274bd481eabe8e333085174691d5bae8b7eea2` |
+| `final-preflight-4dd5bc7/tk-comparison.txt` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `8533e4012effa8c9e9e17e8b89f10000fccfc887fe885250a56df385cc977287` |
+| `final-preflight-4dd5bc7/tk-state-now.json` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `7ceb86303af2846674144e256719b0f310ec59f8f6118cc0e72aaac463208eb6` |
+| `final-preflight-4dd5bc7/tk-tool-now.json` | the withdrawn full run at 4dd5bc7 and the fresh identities (the developer's) | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `option-a2-identity/README.md` | the acquisition identity packet, revision 1 (layout, root reads, library hazard, libc baseline) | `ce6cccd601ed7152b00bf5360e8f6a416b64c4a698b2417872cc735af83b4b26` |
+| `option-a2-identity/SHA256SUMS` | folder ledger | `0d763cdda205cc79b17b2439169ce4c9f4395a6bd32b62041764693ca01f96ca` |
+| `option-a2-identity/launch_env_check.sh` | acquisition identity evidence, revision 1 (the developer's) | `74574d0296a650735dc49159d2a68ea9da625b20ff9ca5b57feaea03e4d4c613` |
+| `option-a2-identity/libc-baseline.txt` | acquisition identity evidence, revision 1 (the developer's) | `70851328ca9dae1c5e6431ab74d1c6153870bce83a928e8b19f4ee09bd8bc6aa` |
+| `option-a2-identity/library-resolution.txt` | the library hazard: in a worktree shell the probe would load another mi-lib build | `1bbf25236f92a0f5b033f763bfb8eb1b135a14fd6d97b26e7eeff4eede6069d5` |
+| `option-a2-identity/package-changes-since-attempt15.txt` | acquisition identity evidence, revision 1 (the developer's) | `bcdc2df7de2d2caab79bdf82e2e648538957cbbbe6a87dc08d7489b1fa56648f` |
+| `option-a2-identity/pinned-libraries.expected` | acquisition identity evidence, revision 1 (the developer's) | `c8384a13a1dfc188f5d46ee850f16ddfac8f020ec7117f28c775cf5bd34eb067` |
+| `option-a2-identity/pinned-libraries.txt` | acquisition identity evidence, revision 1 (the developer's) | `2e542af2db4d57c169dbafb70617cf3f59d1e6144a086dea42bef44fa4bc2b93` |
+| `option-a2-identity/root-reads.txt` | the operator's read-only root reads (sudo, sudo paths, probe prechecks, services) | `07264a68f77e32c408c760f7d4096684a6f5b42ef9d1c736f7ea4734c2ee186e` |
+| `option-a2-identity/root_reads.sh` | acquisition identity evidence, revision 1 (the developer's) | `c5ce31dc1be2acf16858d119466b9472164c8547ea671a4d2507eb06bb10dc44` |
+| `option-a2-identity/unprivileged-reads.txt` | acquisition identity evidence, revision 1 (the developer's) | `eb28f84b55a64d417587d925138fc69b9ab130aa3dcd81dbbef6d51636bc3c98` |
+| `option-a2-identity-r2/README.md` | revision 2: the corrected launch guard and one-list operator blocks, with their focused checks | `a25878cea78d226222a325031ca365771ee978284067ccda86802b0005b0a7ea` |
+| `option-a2-identity-r2/SHA256SUMS` | folder ledger | `1d84fdf6fa3e439c7e0140eca398f11e22f6defa819609d4f2cad8988cf471da` |
+| `option-a2-identity-r2/block-checks.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `2ecbe1446930c9fac5a29e383d90c9b75925e2035079be5ddbb01dacbc446de3` |
+| `option-a2-identity-r2/block-pty/E1-bash.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `4bb548b3b65f38677d7570888bf648de9f0d9cb8d902004e2ec457e6b7b48cd1` |
+| `option-a2-identity-r2/block-pty/E1-zsh-rc.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `1f33bd40068a0be024c8be99b9ea6241b50e5d83e1a95cc37c351c260264427b` |
+| `option-a2-identity-r2/block-pty/E1-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `8bae3f5386f59014fdf517829c1affe85b1fb9a95fcd8fd6b3a4577e704478bf` |
+| `option-a2-identity-r2/block-pty/E2-bash.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `74ed73a847128396d633b27767ef9ccc5d5a70353f312dcfbb81db26a9807217` |
+| `option-a2-identity-r2/block-pty/E2-zsh-rc.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `2b4c2d0a149d50f293752120fec19800f5d580921cf897e5b9a3c0ef8951667c` |
+| `option-a2-identity-r2/block-pty/E2-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `a7c8bce718fec75b2394d46e2223f0e0c3abf9f7c2efad84e2ef2c6e19d09266` |
+| `option-a2-identity-r2/block-pty/S1-bash.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `0bc43177b41fe011e0d391908d0b710f093bfc7791af64acbf20d08807c3dd3b` |
+| `option-a2-identity-r2/block-pty/S1-zsh-rc.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `287940882bce8e33f0aa6056f6633741bb5bcc7e3fe5e45ede8542922d9785c8` |
+| `option-a2-identity-r2/block-pty/S1-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `7d28dbad78be6619e51955f77125c54aece92e5b717732b2241cecb14e8f1be7` |
+| `option-a2-identity-r2/block-pty/S10-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `ad75d01d40d991576c9e757837f96efb84151a9b532f0b54451f0eb76262c116` |
+| `option-a2-identity-r2/block-pty/S2-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `7a34ede392875e428b52d37be67a799030581cfe450be7bde6bfa1a55390b97f` |
+| `option-a2-identity-r2/block-pty/S3-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `953eb252b6f7aced8c32a1b686e29eb0d24988190c57e293767edf6ce61d2559` |
+| `option-a2-identity-r2/block-pty/S4-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `2fd8b03a77fdc227c361488c2debe57bcfe5e65feb7e4b2ce21e5839db22046f` |
+| `option-a2-identity-r2/block-pty/S5-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `853488b8acad80d039b6cd6a7fc2ae1c6d7811343b3ed25c3ebec7aafe1936a9` |
+| `option-a2-identity-r2/block-pty/S6-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `06a913c25eca715f652ebb1fc8e0f2100090780fe16b880a9fe0dcb9a8ac18f7` |
+| `option-a2-identity-r2/block-pty/S7-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `ad6750e5a8c14efa7feab2beea9250543cdbebf81198b712a1b58dcde3617524` |
+| `option-a2-identity-r2/block-pty/S8-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `686e9ab0eb5ff2cb03f4394b60e0b335c6588d84f92503996e6e9e64d2329da0` |
+| `option-a2-identity-r2/block-pty/S9-bash.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `c8e2d6d721eb04c5329bc5bf5da3287e2ee936999121143bf854cad4fe16d6eb` |
+| `option-a2-identity-r2/block-pty/S9-zsh-rc.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `ae4dac0e99ac94fa69dc1033e49f704e9091ed1f29433e7b249db10a8bfe0f02` |
+| `option-a2-identity-r2/block-pty/S9-zsh.pty.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `3a9ac82ab774b9947934e5f476e5a4ec86d7e76aabc58f2aead5613fb2bb2f2a` |
+| `option-a2-identity-r2/check_blocks.py` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `140d37a29eb4cb547b578e993204fdf3ccc2ff0efbc8d6d6adaacb3ae371dcfa` |
+| `option-a2-identity-r2/check_guard.sh` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `210dd8276020c42112d6340833fbd4b02e3092c5dced9a3226f55f97348af734` |
+| `option-a2-identity-r2/guard-checks-run1-harness-defect.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `3fb6c2b27718cf8da5bbbd2093dfd787feec11753672c870e7f93db5c3822dc4` |
+| `option-a2-identity-r2/guard-checks-run2-harness-defect.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `ed5e669b4ec7b496739a8b39d3570e9290120e1deac0cfa4476fa165964a7f66` |
+| `option-a2-identity-r2/guard-checks.txt` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `049873e96d5dd5e4e5bcef70dc7f3c090a847b3052130bda6c932cedfc3514e6` |
+| `option-a2-identity-r2/launch-env-emulator-20261117T170545.txt` | a launch-guard record of the acquisition (emulator; written after the folder was sealed, outside its ledger) | `035496b2623c54a924bed52f2a5f66943d1fa381d1fc18cbef2684470aa861e7` |
+| `option-a2-identity-r2/launch-env-supervisor-20261117T170701.txt` | a launch-guard record of the acquisition (the interrupted 17:07 attempt; outside the folder ledger) | `0873aa2e4198d210c8c2261c2bb26b43f72ba523cd771a3b20b4c7ab5c771cf9` |
+| `option-a2-identity-r2/launch-env-supervisor-20261117T170902.txt` | a launch-guard record of the acquisition (supervisor; outside the folder ledger) | `7414d25bbb864a0a0105100694c2f017e94b3439cf5d1710c1fcb9713edaba40` |
+| `option-a2-identity-r2/launch_env_check.sh` | the launch guard, revision 2 (accepted) | `98c6854154e3d7a05cdbfbf8550b616f7ba0ff072d0fde36e4a27fc4f6c617fa` |
+| `option-a2-identity-r2/pinned-libraries.expected` | acquisition identity, revision 2: the guard and operator blocks (the developer's) | `c8384a13a1dfc188f5d46ee850f16ddfac8f020ec7117f28c775cf5bd34eb067` |
+| `option-a2-acquisition-20261117/README.md` | the developer's verification of attempts 16, 17: criteria, deviations, limits | `86343410d204e9b78bfff3c48ffad9c20c41b5cde16697aed3f206a5177d1923` |
+| `option-a2-acquisition-20261117/SHA256SUMS` | folder ledger | `aadddeacd342e184906eaf95151dbddde839e75f214a7ada9fd49507967e944e` |
+| `option-a2-acquisition-20261117/allocation-check.txt` | Option A second run, the developer's acquisition evidence | `a5d178929b79f05bd1c8009c37538149a4015419b5e618092e3d3d28f600ada2` |
+| `option-a2-acquisition-20261117/analysis/correlate-17.txt` | trace_correlate.py on attempt 17 (CERTIFIED, U 1682 ns; exit 1: the PTY USB association) | `1bf1586ad81ff218a9eaec5573f098f28b1b9852a22e98462a32bfb0d4f417ce` |
+| `option-a2-acquisition-20261117/analysis/cost-17.txt` | tk_cost.py on attempt 17 (descriptive) | `db549be0620d93927b3407ba692b670c5e5cbd7e258c7e5c1005fa243f4b649e` |
+| `option-a2-acquisition-20261117/analysis/gate-closed-16.txt` | the gate on attempt 16, closed records (PASS, 14 of 14) | `ea67952ae491d740612de3b119bb639c3b06134470ce63d8acb4851909c4742f` |
+| `option-a2-acquisition-20261117/analysis/gate-closed-17.txt` | the gate on attempt 17, closed records (PASS, 15 of 15) | `15e5edc5723aecddc681a4ad56b1bd903972122a18fec0b10672cb6823d09551` |
+| `option-a2-acquisition-20261117/analysis/residency-17.txt` | emulator_residency.py on attempt 17 (PASS) | `6260afc98e3931d78ec690eaf920c5d7f5fb118d9e2575a25773dd40d5223029` |
+| `option-a2-acquisition-20261117/analysis/run_analysis.sh` | Option A second run, the developer's acquisition evidence | `8b85fb07d5b836fd2033a51014315c24876c6e741882850eec135300e99c52ea` |
+| `option-a2-acquisition-20261117/analysis/unbound-17.txt` | unbound_work.py on attempt 17 (PASS) | `57f3854727bd56c733efba3a33ac6e5b66b8c0b15ba82423b89eab735e162f8d` |
+| `option-a2-acquisition-20261117/captures.SHA256SUMS` | the 40 captured files' hashes, taken before any analysis | `ee6b529012af2c4b40f46c898e06f45a5eaba0f6b7a4ca4be3d2c16cc3260e55` |
+| `option-a2-acquisition-20261117/execution-context-evidence.txt` | Option A second run, the developer's acquisition evidence | `dc947d0e39a8d9f5fdcfe653fd46ece39251d6404a4688aaffc4dc088a668a1f` |
+| `option-a2-acquisition-20261117/first-attempt-account.txt` | the interrupted 17:07 attempt: the operator's terminal and its cause (zsh's cached ulimit) | `f12b83d03d17a34755e3d7c28b454ec5d3cd7a2bbe94c7281837932638c90ddf` |
+| `option-a2-acquisition-20261117/launch-guard-records/launch-env-emulator-20261117T170545.txt` | Option A second run, the developer's acquisition evidence | `035496b2623c54a924bed52f2a5f66943d1fa381d1fc18cbef2684470aa861e7` |
+| `option-a2-acquisition-20261117/launch-guard-records/launch-env-supervisor-20261117T170701.txt` | Option A second run, the developer's acquisition evidence | `0873aa2e4198d210c8c2261c2bb26b43f72ba523cd771a3b20b4c7ab5c771cf9` |
+| `option-a2-acquisition-20261117/launch-guard-records/launch-env-supervisor-20261117T170902.txt` | Option A second run, the developer's acquisition evidence | `7414d25bbb864a0a0105100694c2f017e94b3439cf5d1710c1fcb9713edaba40` |
+| `option-a2-acquisition-20261117/operator-terminal-supervisor.txt` | the operator's terminal (the supervisor block in a bash heredoc), as pasted | `0263c87b24125d02d82ad6cbc35e6b993377c7a99e8eefb00cf64f8b11ba4dde` |
+| `option-a2-acquisition-20261117/post-run-host-state.txt` | Option A second run, the developer's acquisition evidence | `b669dd8a99dbf78c0e732a5167244baac54afc26caceca91f7083465c20868ad` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2795,6 +2921,49 @@ read-only indicator, not the `STA_FLL` selection.
 | `clock-validation-option-a/experiment.record` | Option A (attempts 14, 15), the supervisor's experiment record (outcome STOPPED) | `5b965398da35d824e4621e1b83a3354e089887551499fea44b29088934ecac62` |
 | `clock-validation-option-a/keeper.log` | Option A (attempts 14, 15), the keeper's log (the supervisor's copy) | `119d5a3f38f88afb83aaecbe7eb19a079f09be5576167557c401ff6a340ce568` |
 | `clock-validation-option-a/supervisor.log` | Option A (attempts 14, 15), the supervisor's log | `fc3cd81f30d731fa74eb98bc61aed117fb956a5c2477a6eb1e9c7a0cf869439d` |
+| `clock-validation-16/SHA256SUMS` | clock validation (attempt 16), folder ledger | `774582026dea87f891fec59e72cc5e255f0e5a0bf97c0dfd2c9b2f88f11f2b62` |
+| `clock-validation-16/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261117-16.csv` | clock validation (attempt 16, untraced run), per-cycle log | `c8b22022a042a6a502b7ae9275876342b88404932ef7bfa2a2c994c954d866fb` |
+| `clock-validation-16/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261117-16.csv.run.txt` | clock validation (attempt 16, untraced run), session record | `8b9b3b545aca79d806c4109395213a833511e58cc227131c31972134fe776e76` |
+| `clock-validation-16/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261117-16.csv.staging.inventory.json` | clock validation (attempt 16, untraced run), staging inventory | `bd8719b40e89abe4b17f2a1195b4ccd20d0788d24b7e8ee1af03308bce13603a` |
+| `clock-validation-16/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261117-16.csv.staging.sha256` | clock validation (attempt 16, untraced run), staging ledger | `35f1f1d8f9c7cbad3fc44b9e0d07d47d8ac8aeb171a945dff8ec5f00ff0a1a78` |
+| `clock-validation-16/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261117-16.csv.summary.toml` | clock validation (attempt 16, untraced run), probe summary | `bd7ff06e1507da0105c967fa0c55371b12631b89dd61de028f8e5d922033b963` |
+| `clock-validation-16/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261117-16.csv.tasks.txt` | clock validation (attempt 16, untraced run), task snapshot | `4b05a7c048ee5e20d70f13524cda60040b9852bb0e6fcf3e977acf67ca3836b6` |
+| `clock-validation-17/SHA256SUMS` | clock validation (attempt 17), folder ledger | `09a6d293a60f74e3325b9555fd0be8b2e760a244dc28f6fa6f488bb3d411b21d` |
+| `clock-validation-17/fs-controls-20261117-17.controls.txt` | clock validation (attempt 17, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `50dc38cbee4593aa4196ffe64c0bb5c4b8b3f9fe0dfd1ba4e185a0e60e566c9d` |
+| `clock-validation-17/fs-controls-20261117-17.run.txt` | clock validation (attempt 17, probe controls), session record | `aae1f7161a1352f5930b7fba002db48630b9a510776662ee4e77690a0a42f9b0` |
+| `clock-validation-17/fs-controls-20261117-17.staging.inventory.json` | clock validation (attempt 17, probe controls), staging inventory | `a926b047ca12215830a971a2faa00e8f72de9def14ff429c0aeabcb2637f1f76` |
+| `clock-validation-17/fs-controls-20261117-17.staging.sha256` | clock validation (attempt 17, probe controls), staging ledger | `4cb2cbd091d6c9bb389809896f095ff236e2abea8385388611c9df9be50206c0` |
+| `clock-validation-17/fs-controls-20261117-17.trace.dat` | clock validation (attempt 17, probe controls), controls trace with the fair server's probe events (trace-cmd, mono clock) | `6ded88209e6da3841d27910ac837ee15878ab489184b90a073172db2ab361017` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv` | clock validation (attempt 17, timer run), per-cycle log | `6d6fb1dc8708655e52157a1f43fbb6a243532c922e9c5fc0b557f08b49e68159` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.lineage.txt` | clock validation (attempt 17, timer run), task lineage listed after the trace started (4243 tasks) | `aac1cf164274cecfef13523a24e1bc9b3527662e455b1919c7a592aef536ce35` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.procs.txt` | clock validation (attempt 17, timer run), process listing at the run's start | `ad3190ad72d6a72c87385ef504700a4e726bd16e73d1c7e71982e30b221d3b36` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.run.txt` | clock validation (attempt 17, timer run), session record | `15dbbdda139f3332c2aa02f0f761b4437baf0cb817e93b5fccc84a86f4ec67d2` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.smi.csv` | clock validation (attempt 17, timer run), CPU 3 SMI counts (perf stat -I 10) | `67f04421c7c5f08dd1093dfc89934ee0f09b2dfd1166fab3f77c80b0393ae744` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.staging.inventory.json` | clock validation (attempt 17, timer run), staging inventory | `f5c1f5ddce9c7630db3e9caee2243d54aa76a238cecf046ccc38fe6a805d65c6` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.staging.sha256` | clock validation (attempt 17, timer run), staging ledger | `ce8c4f4391b5f5ed57a1da7d6d1a503efa87eda94f03cadd268c6cdefb5e86b7` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.summary.toml` | clock validation (attempt 17, timer run), probe summary | `d07717e78494deac63946dd0636423ec9211c1c99f3332353131cf750efa52b0` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tasks.txt` | clock validation (attempt 17, timer run), task snapshot | `edfa285144753191277e4c89b397990e2b14f0ac787140e75b2515444ed42916` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-after.json` | clock validation (attempt 17, timer run), timekeeping state read after the capture | `a867e62a0881fefa7477b189f5de340e74cad010c3d8131bbf67a3431669db38` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-before.json` | clock validation (attempt 17, timer run), timekeeping state read before the capture | `377f078ce6ef695de31b7e38568a40bbe09d5792e67ce840f1c3e867ddf24459` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-enable-after.txt` | clock validation (attempt 17, timer run), the recorder's probe enable states after | `75c666d56b4df6a15e9982629c20fa2202f63ba66a50cdef713c8243b47930f2` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-enable-before.txt` | clock validation (attempt 17, timer run), the recorder's probe enable states before | `75c666d56b4df6a15e9982629c20fa2202f63ba66a50cdef713c8243b47930f2` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-journal.txt` | clock validation (attempt 17, timer run), the kernel log (journalctl -k) | `d4fef850f8a9618afdb759bbb4fc5e34410d486b90d42ed54f54c3cbcad2d88a` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-log.json` | clock validation (attempt 17, timer run), the kernel log's scan over the recorder's interval | `0bb7335861196b47e3eedbd3b3fdbbf3a0dcd34cbba1d1561af2388ccf92c815` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-profile.txt` | clock validation (attempt 17, timer run), the recorder's probe hits and misses (kprobe_profile) | `1011bae35914955e4a40d0a4f00faf48cca47a03689c39f7ab6cc64aa7239b8d` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-stats.txt` | clock validation (attempt 17, timer run), the recorder's buffer stats per CPU | `a10cbd9c0f0757334de5b6c118d82357f3a55f4a18cc41558bd02800c3c856a5` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-times.txt` | clock validation (attempt 17, timer run), the recorder's arming and confirmation times | `fb7f4f9a4f5c586fb59d75885bf2db2b8e3a6286b45336eeea95a409b276407a` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-tool-after.json` | clock validation (attempt 17, timer run), trace-cmd's identity and runtime after the recorder's report | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk-tool-before.json` | clock validation (attempt 17, timer run), trace-cmd's identity and runtime before the main trace | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk.dat` | clock validation (attempt 17, timer run), the recorder's instance, extracted (trace-cmd extract -B) | `0746e9b7471b70f9230433a52e7cd1dfa288dadf66bf87f9a59d913ce63807a5` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tk.txt` | clock validation (attempt 17, timer run), the recorder's report (trace-cmd report -t) | `e09395e9e1a0f6411e94ad143371bf150c0897db8e2b57dbe1f34f6ba72b32f5` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.trace.dat` | clock validation (attempt 17, timer run), timer-mode trace with the fair server's probe events (trace-cmd, mono clock) | `940af825484592a110b6c97e0259887edffad81e1f844a4b27cca4443e633558` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tsc-pairs.csv` | clock validation (attempt 17, timer run), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `2b7114a8cdafe780b9de7933ab54922e8f84486bdf87bb22aa21617081c0b160` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.tsc.txt` | clock validation (attempt 17, timer run), TSC-clock trace instance (CPU 3 local timer entries) | `5342852f772994c141b015de865bc8b0595cbcc362c7afe9e77d1622467f805b` |
+| `clock-validation-17/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261117-17.csv.usbmon.pcap` | clock validation (attempt 17, timer run), usbmon capture (empty: no USB adapter behind the emulator's pty) | `2f10f54fd32d6ceff27f2c2e3936cd0e47c5c8f6f5d4466c965192edfd94e8ae` |
+| `clock-validation-option-a2/SHA256SUMS` | Option A second run (attempts 16, 17), folder ledger | `085474c136bcba456742e798d178af65911df430aff190c71e4cb1e6f16aa09c` |
+| `clock-validation-option-a2/experiment.record` | Option A second run (attempts 16, 17), the supervisor's experiment record (outcome ACQUIRED) | `0f5207c28dd3538402494623f51318352d150338ad3812b10a6dc7259da3a7de` |
+| `clock-validation-option-a2/keeper.log` | Option A second run (attempts 16, 17), the keeper's log (the supervisor's copy) | `964109c4e18ae2435c89310109393b5439ce2a2b4d259f483f9af6f9090151ed` |
+| `clock-validation-option-a2/supervisor.log` | Option A second run (attempts 16, 17), the supervisor's log | `b2f7c8032df72d1e4b406ea19f9d4001f74d69ba993b773a1432ebd501cd5231` |
 | `operator-terminal-20261111.txt` | the operator's terminal output of both sessions, verbatim | `04b8da043ec0db319b222387fc16d8d409039738abb0d3ad207186def904d06b` |
 | `review/README.txt` | validation review evidence (the reviewer's) | `19e0c5e3ce62889994ab2690e05debff3412ce80b95593031b5c6cdb7f5b9d2e` |
 | `review/SHA256SUMS` | validation review evidence (the reviewer's) | `0c314c11fef27c5cdc86371c13017a0a36749090678f0367b6dda65a22ee2ce7` |
@@ -3042,6 +3211,49 @@ read-only indicator, not the `STA_FLL` selection.
 | `review-option-a2-8bc7990/tested-patch.diff` | the exact patch the reviewer applied and tested (byte-identical to option-a2-prep4/proposed-corrections.diff) | `d275549843dd9e8e4fb48b5319ce9ebb39e9776f69a6fb97376fba87270544a4` |
 | `review-final-preflight-43ae4e6/SHA256SUMS` | folder ledger | `80604443c3f54364b0b23486f121a736d69bdd4e4e941c408e9718486cddefdd` |
 | `review-final-preflight-43ae4e6/review.md` | the reviewer's review of 43ae4e6 and its failed preflight: code accepted, preflight not clean (a reviewed test-only fix, then a clean preflight); push and archive approved; STA_MODE read-only | `177aa400432a5f764bcff8431f9d8616c2fe99d10fb6e3a28cec19b3d1d85692` |
+| `review-standin-sigint/SHA256SUMS` | folder ledger | `38f5ae09ec7434822720dc497f2e289a68d02a013bebc13047879272e0f8481e` |
+| `review-standin-sigint/functional.txt` | the stand-in fix's review evidence (the reviewer's) | `39710cc9228ff2cd9a220ca801cb1d36a05bdcb9872ff65add19ab7641cc50a7` |
+| `review-standin-sigint/manifest-check.txt` | the stand-in fix's review evidence (the reviewer's) | `2723342d229df783dad240d67ff30655ae45eaa50e8caab03155bd49bc836c5d` |
+| `review-standin-sigint/mechanism-check.txt` | the stand-in fix's review evidence (the reviewer's) | `8909ecd55cc26cf014a384c71c46421e23870707f8eb4f4cf5caa5b404831c85` |
+| `review-standin-sigint/review.md` | the reviewer's acceptance of 4dd5bc7 and 5b56a51 (push approved) | `d50d5eafa864c4c69da63b567bf0bc4e8e5874f573db31d10a5981d26bae8f5d` |
+| `review-acquisition-candidate/SHA256SUMS` | folder ledger | `ad69b376893feec9108717ea2a147fd0f1c833da054ce673d388b76c8a832039` |
+| `review-acquisition-candidate/review.md` | the reviewer's acceptance of 4dd5bc7's accumulated validation (the run stays PARTIAL) | `a74a4d99b1ecdd6038b144156220d72a31296fbffd5cf3fb424189990c8407d3` |
+| `review-acquisition-environment/SHA256SUMS` | folder ledger | `43284c36b2d5691de6cea2dd847af4a01c3c34f0f45d531ef9090676ef7d025c` |
+| `review-acquisition-environment/review.md` | the reviewer's decisions: the pinned library environment, the libc baseline, the root reads | `df45292184a13c665cd63a15209514ac7d8eba316c43a2a94e5fe430437aeb43` |
+| `review-acquisition-identity/SHA256SUMS` | folder ledger | `e042fa35f963875442c175fc77a3a4fbedd33be76245b291f05498cf362841fd` |
+| `review-acquisition-identity/check_record_failure.py` | acquisition identity review evidence (the reviewer's) | `e978b70798dffee37dc6b9c86210d419e44f621a082c9dbe25a381c81aaff9e7` |
+| `review-acquisition-identity/record-failure.txt` | acquisition identity review evidence (the reviewer's) | `128a37e9d5287ac858afade61e674ce7cce9a8fec7b21e2aee641d46ff76bcf3` |
+| `review-acquisition-identity/review.md` | the reviewer's review of revision 1: two findings (continuing blocks, OK after a failed record write) | `7f385933aa190ab93cbe12c8d13a702f45d751790eed9cbfa6029090e90a4c8c` |
+| `review-acquisition-identity-r2/SHA256SUMS` | folder ledger | `2b2530cc1c491a6e0833a46252bb4d618995726d13f95915b652d2d57b1c0319` |
+| `review-acquisition-identity-r2/block-checks.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `8fe5342b112defe89c805bf1fc450da5234afcd91c879df4adbb1439c532859f` |
+| `review-acquisition-identity-r2/block-pty/E1-bash.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `c020998b6c4eb0daf1c816d5e9890ce68e505afafc3156954012e79c21950e0e` |
+| `review-acquisition-identity-r2/block-pty/E1-zsh-rc.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `4b2d08669be3e7b5a616f544c7e842695d577a9ecd5162c3c6c5b6f97d91c405` |
+| `review-acquisition-identity-r2/block-pty/E1-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `95b6fc5d8f51f1f2d83afde1f5ea0204fa808c65bbb02dd186272cb432a30458` |
+| `review-acquisition-identity-r2/block-pty/E2-bash.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `275ccb376562797c68bd7b318d679a440a3e8e86a5e44ddf1c32630297e5b0f0` |
+| `review-acquisition-identity-r2/block-pty/E2-zsh-rc.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `8a4acaf3ea8c0411630f7fee8743fba4fca083369fb52c286f677561d6a79e69` |
+| `review-acquisition-identity-r2/block-pty/E2-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `61b9c1413c426b27c1521d17d4d84f7357517d10a2df2d939eb6cb4951890395` |
+| `review-acquisition-identity-r2/block-pty/S1-bash.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `d773bfb42a97cf437a75be218975f2f211c3da8618b177b02c500a3f7585e3d7` |
+| `review-acquisition-identity-r2/block-pty/S1-zsh-rc.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `5b84d01562ba6e8935df750f9af738b888248b9515500f88a94845f5d484e5d9` |
+| `review-acquisition-identity-r2/block-pty/S1-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `cbc8a4cc3f558b4bc2af11889b9dd0893f48a85bb3bf54c2e0426a6347038684` |
+| `review-acquisition-identity-r2/block-pty/S10-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `1a7c131ec22a1327c9954be44a0d99c34ce65228f778734889e48ddd5dd47d66` |
+| `review-acquisition-identity-r2/block-pty/S2-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `5ff367bfe5a3c4277f5c34498b64800bfc338ddd1273acb403e7ff898c9f63cb` |
+| `review-acquisition-identity-r2/block-pty/S3-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `a4ee073cee4131fe30f3dbec0250359eee6d0e8f29ec0f1e5bfd6d6b65ef0a20` |
+| `review-acquisition-identity-r2/block-pty/S4-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `66e9a36ab1b9322435b4ffb0bd72d87492ba78c110509dc0be9b6a88df758029` |
+| `review-acquisition-identity-r2/block-pty/S5-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `0e72ce704a12535c9781443991dd9c927288fb098ca54d52b3d56b90c83648ee` |
+| `review-acquisition-identity-r2/block-pty/S6-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `e1cc2ca0e668d7a6db374460e4b2fd861422800d88f388853d70c4557d3a197c` |
+| `review-acquisition-identity-r2/block-pty/S7-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `7e57bd6931ed8d7b3683687d2954887f667fc5ab1b53f128b0de15a1080da5b7` |
+| `review-acquisition-identity-r2/block-pty/S8-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `ecdb65e82c5a8182d2b81329023cd2d1d433d847dea91e4194fd70bf8bda1e99` |
+| `review-acquisition-identity-r2/block-pty/S9-bash.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `871fd4dea0a96c617339e676abb44f7e659b5c16e1d3361c197d34c16ee21c5d` |
+| `review-acquisition-identity-r2/block-pty/S9-zsh-rc.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `bb53185a12c3599a49c4730b719ee46838b12917529b2faa034c1129908d170a` |
+| `review-acquisition-identity-r2/block-pty/S9-zsh.pty.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `0624e6e76d6dac86783b5c26404721f4f487d34e5bd9e677fa13ced66ef1937e` |
+| `review-acquisition-identity-r2/guard-checks.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `8219d3632618602dd9c0e0b91d72fa0b1f7a6d41884a3a2da7a2d11c7d38bef4` |
+| `review-acquisition-identity-r2/record-failure.txt` | acquisition identity revision 2 review evidence (the reviewer's) | `e23f2bc78f2fb462be91986fb945e89d50241b62602a41474e8e1a9772169608` |
+| `review-acquisition-identity-r2/review.md` | the reviewer's acceptance of revision 2 and the go for attempts 16, 17 | `8039e2759abc912d7a6f984fb35ca6f0943428d7266b203397a2380cc2026e31` |
+| `review-option-a2-acquisition/SHA256SUMS` | folder ledger | `ddff5652ffe6a701026bfc6bef81fbf09f5862e1fa6ed6e655ce05edd0436531` |
+| `review-option-a2-acquisition/gate-16.txt` | Option A second-run acceptance evidence (the reviewer's) | `c35ed44f3cc33c36f693ce5ca3e2690c9f0bf562801648be0d874947dc0aee6a` |
+| `review-option-a2-acquisition/gate-17.txt` | Option A second-run acceptance evidence (the reviewer's) | `57ee023756555f0d5601adfd5eb06c949a70a9fe33a69b5034a4301162f191dc` |
+| `review-option-a2-acquisition/residency-17.txt` | Option A second-run acceptance evidence (the reviewer's) | `669309683759a31ad2ce82f09ebf842b3a353a864d50f46d4d6c8c8cbc41e5e9` |
+| `review-option-a2-acquisition/review.md` | the reviewer's acceptance of attempts 16, 17 (emulator validation accepted; 1 kHz timing unmet) | `2b8018222b501f4c4e9b7b4e02e3e2c85303a35d51045f25b41a88f5ebe4d123` |
 | `review-option-a-7553f40/SHA256SUMS` | Option A review evidence at 7553f40 (the reviewer's) | `75d5c518afefaed5e980bbf41690349d8efb8f4017a6c5489b185f335b081ea5` |
 | `review-option-a-7553f40/check_group_snapshot.py` | Option A review evidence at 7553f40 (the reviewer's) | `3d6afb49cee4afe7d3047c15f1b076ea5cb47fa47abdabf6615ca1d6c2d5843b` |
 | `review-option-a-7553f40/check_keeper_umask.py` | Option A review evidence at 7553f40 (the reviewer's) | `aa3ad3f15caacd3e61603239d7be03d86defbd723b2ebfb7dd0cf03919dd858e` |
