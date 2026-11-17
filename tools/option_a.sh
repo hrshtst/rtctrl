@@ -16,7 +16,8 @@
 # descriptor whose fdinfo names its tty-index; among the descriptor tables
 # this user can read), and every one of its threads
 # has an affinity (Cpus_allowed_list, a well-formed list) without CPU 3; the
-# real-time priority limit allows the probe's 80; tools/wq_mask.sh and
+# real-time priority limit allows the probe's 80; the servos' reader
+# (./build/apps/dxl_inspect) is executable; tools/wq_mask.sh and
 # tools/quiet_host.sh have no open record; the experiment's three
 # directories do not exist (it then creates them, fresh); both session
 # commands pass trace_session.sh's dry run; the operator confirms; sudo
@@ -25,16 +26,22 @@
 # runs, with scratch directories and nothing changed.
 #
 # Then the experiment's steps, in order:
+#   0. the servos' starting state (tools/servo_state.py, label start): every
+#      servo's Torque Enable, Bus Watchdog and Hardware Error Status read
+#      and required to be 0, with a complete record, before any host change;
 #   1. tools/quiet_host.sh stop;
 #   2. tools/wq_mask.sh clear 3;
 #   3. the untraced session (attempt 18), without the controls;
 #   4. tools/wq_mask.sh check; the emulator check (the same process, by its
-#      pid and start time, every thread still without CPU 3); then
-#      tools/validation_gate.py on the untraced run (its T3 above all): the
-#      timer session starts only if all pass;
+#      pid and start time, every thread still without CPU 3); the servos'
+#      state (label A); then tools/validation_gate.py on the untraced run (its
+#      T3 above all): the timer session starts only if all pass;
 #   5. the controls and the timer session (attempt 19);
-#   6. tools/wq_mask.sh check, the emulator check, then the gate on the timer
-#      run, with the controls.
+#   6. tools/wq_mask.sh check, the emulator check, the servos' state (label
+#      B), then the gate on the timer run, with the controls.
+# The servos' records (servo-state-start.txt, -A.txt, -B.txt in the
+# experiment's directory) are read outside the timed runs, between the
+# sessions; the emulator must still serve during the last of them.
 # The emulator's identity and every thread's affinity are recorded before
 # the first step and by each emulator check (emulator_start=, emulator_A=,
 # emulator_B=), for tools/emulator_residency.py to check its residency in
@@ -89,9 +96,10 @@
 # while it can, to the terminal.
 #
 # The experiment record (<dir>/experiment.record): started=TIME, then
-# NAME_start=TIME and NAME_end=TIME status=N for each step (quiet_stop,
-# mask_clear, session_A, check_A, gate_A, session_B, check_B, gate_B,
-# mask_restore, quiet_restore, keeper_finish), quiet_owed=TIME and
+# NAME_start=TIME and NAME_end=TIME status=N for each step (state_start,
+# quiet_stop, mask_clear, session_A, check_A, emu_A, state_A, gate_A,
+# session_B, check_B, emu_B, state_B, gate_B, mask_restore, quiet_restore,
+# keeper_finish), quiet_owed=TIME and
 # mask_owed=TIME before those changes, signal=TIME NAME,
 # descendants=TIME children=N unknown=0|1 and keeper_release=TIME status=N
 # keeper=released|ended|running|unknown for an unconfirmed end, and last
@@ -105,7 +113,8 @@
 #
 # For tests: OPTION_A_OUT replaces ~/rtctrl-hw, OPTION_A_PORT the emulator's
 # pty, OPTION_A_KERNEL the audited kernel, OPTION_A_TRACE_SESSION,
-# OPTION_A_GATE, OPTION_A_QUIET, OPTION_A_WQ and OPTION_A_KEEPER the tools,
+# OPTION_A_GATE, OPTION_A_QUIET, OPTION_A_WQ, OPTION_A_KEEPER and
+# OPTION_A_SERVO_STATE the tools, OPTION_A_INSPECT the servos' reader,
 # OPTION_A_SUDO sudo (none: directly), OPTION_A_YES=1 the confirmation,
 # OPTION_A_RTLIMIT the real-time priority limit read, OPTION_A_GROUP_WAIT the
 # group's wait in seconds, QUIET_HOST_STATE and WQ_MASK_RECORD the two
@@ -128,6 +137,8 @@ KERNEL=${OPTION_A_KERNEL:-7.0.0-42-generic}
 TRACE_SESSION=${OPTION_A_TRACE_SESSION:-tools/trace_session.sh}
 read -ra GATE <<<"${OPTION_A_GATE:-uv run --project tools tools/validation_gate.py}"
 QUIET=${OPTION_A_QUIET:-tools/quiet_host.sh}
+read -ra SERVO <<<"${OPTION_A_SERVO_STATE:-python3 -I tools/servo_state.py}"
+INSPECT=${OPTION_A_INSPECT:-./build/apps/dxl_inspect}
 WQ=${OPTION_A_WQ:-tools/wq_mask.sh}
 KEEPER=$(readlink -f "${OPTION_A_KEEPER:-tools/root_keeper.sh}")
 case "${OPTION_A_SUDO:-sudo}" in none) SUDO=() ;; *) SUDO=("${OPTION_A_SUDO:-sudo}") ;; esac
@@ -253,6 +264,7 @@ case $? in
   *) refuse "the emulator cannot be established: ${emu//$'\n'/; }" ;;
 esac
 rtl=${OPTION_A_RTLIMIT:-$(ulimit -r)}
+[ -x "$INSPECT" ] || refuse "the servos' reader $INSPECT is not executable (cmake --build build --target dxl_inspect)"
 [ "$rtl" = unlimited ] || [ "$rtl" -ge 80 ] || refuse "the real-time priority limit is $rtl, below the probe's 80 (sudo prlimit --pid \$\$ --rtprio=90:90)"
 [ ! -e "$WREC" ] || refuse "a workqueue mask record is open ($WREC): tools/wq_mask.sh restore first"
 [ ! -e "$QSTATE" ] || refuse "a quiet_host record is open ($QSTATE): tools/quiet_host.sh restore first"
@@ -497,11 +509,20 @@ emulator_check() {  # A|B: the emulator recorded at the start, every thread stil
   fi
   return "$st"
 }
+servo_check() {  # LABEL: the servos' state, its record servo-state-LABEL.txt, its output logged; its status
+  local out st
+  out=$("${SERVO[@]}" --port "$PORT" --inspect "$INSPECT" --ids 2-9 --label "$1" --out "$E/servo-state-$1.txt" 2>&1)
+  st=$?
+  log "${out:-servo_state $1: no output (status $st)}"
+  return "$st"
+}
 ok() {  # STATUS WHAT: halts unless the step succeeded, no signal came and the record holds
   [ "$1" -eq 0 ] || halt "$2 (status $1)"
   ready
 }
 
+SERVO_WHAT="(Torque Enable, Bus Watchdog and Hardware Error Status 0 for ids 2-9, with a complete record)"
+step state_start servo_check start; ok $? "the servos' starting state is not as declared $SERVO_WHAT"
 owe quiet; quiet_owed=1
 step quiet_stop env "${KENV[@]}" "$QUIET" stop; ok $? "tools/quiet_host.sh stop failed"
 owe mask; mask_owed=1
@@ -509,12 +530,14 @@ step mask_clear env "${KENV[@]}" "$WQ" clear "$RT_CPU"; ok $? "tools/wq_mask.sh 
 step session_A "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_A[@]}"; ok $? "the untraced session failed"
 step check_A "$WQ" check; ok $? "the mask was not in effect after the untraced session"
 step emu_A emulator_check A; ok $? "the emulator changed, or may run on CPU $RT_CPU, after the untraced session"
+step state_A servo_check A; ok $? "the servos' state after the untraced session is not as declared $SERVO_WHAT: no timer run"
 csv_a=$(one "$D_A" "*-untraced-*-$ATT_A.csv") || halt "no single untraced probe log in $D_A"
 step gate_A "${GATE[@]}" "$csv_a" --mode untraced --wq-record "$WREC" --experiment "$E/experiment.record" --session A --record-state open
 ok $? "the gate on the untraced run failed: no timer run"
 step session_B "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_B[@]}"; ok $? "the controls or the timer session failed"
 step check_B "$WQ" check; ok $? "the mask was not in effect after the timer session"
 step emu_B emulator_check B; ok $? "the emulator changed, or may run on CPU $RT_CPU, after the timer session"
+step state_B servo_check B; ok $? "the servos' state after the timer session is not as declared $SERVO_WHAT"
 csv_b=$(one "$D_B" "*-timer-*-$ATT_B.csv") || halt "no single timer probe log in $D_B"
 ctl=$(one "$D_B" "fs-controls-*-$ATT_B.run.txt") || halt "no single controls record in $D_B"
 step gate_B "${GATE[@]}" "$csv_b" --mode timer --controls "$ctl" --wq-record "$WREC" --experiment "$E/experiment.record" --session B --record-state open

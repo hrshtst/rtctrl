@@ -2,11 +2,12 @@
 # Smoke test of tools/option_a.sh and tools/root_keeper.sh: the real
 # supervisor, keeper (its unprivileged test mode) and tools/wq_mask.sh, with
 # stand-ins for the kernel's mask files and workers, systemctl, the session,
-# the gate and tools/quiet_host.sh.
+# the gate, tools/quiet_host.sh, tools/servo_state.py and dxl_inspect.
 #
-# A normal experiment runs, in order, the quieting, the mask's clear, the
-# untraced session (without the controls), the check and gate, the controls
-# with the timer session, the check and gate, then restores and verifies
+# A normal experiment runs, in order, the servos' starting state, the
+# quieting, the mask's clear, the untraced session (without the controls),
+# the check, the servos' state and the gate, the controls with the timer
+# session, the check, the servos' state and the gate, then restores and verifies
 # everything and ends the keeper (exit 0); the real gate passes on its
 # records, open and closed; the emulator (a stand-in holding a real pty's
 # master, all CPUs but 3) is recorded at the start and after each session.
@@ -16,7 +17,11 @@
 # no pseudo-terminal; the last four in the dry run too). The emulator's
 # affinity widened to CPU 3, the emulator gone, or another process holding
 # the port, during a session, stop it after that session. A failed session,
-# a failed gate, a hangup or an interrupt reaching the process group during
+# a failed gate, a servos' state failing at the start (before any host
+# change), after the untraced session or after the timer session (also with
+# the real tools/servo_state.py on a stand-in reader: a normal experiment's
+# three complete records, and a Bus Watchdog of 5 after the untraced
+# session), a hangup or an interrupt reaching the process group during
 # a session, a TERM to the supervisor alone during a session, and a TERM
 # latched just before a session starts each stop it with no further step
 # (the latched one before that session) and every restoration verified
@@ -61,6 +66,7 @@ export ROOT_KEEPER_TEST=1 KEEPER_SYSFS=$ROOT/sys KEEPER_WRITE=$ROOT/kernel KEEPE
 export WQ_MASK_SYSFS=$ROOT/sys WQ_MASK_PROC=$ROOT/proc WQ_MASK_RECORD=$ROOT/state/wq.rec WQ_MASK_WAIT=1
 export QUIET_HOST_STATE=$ROOT/state/quiet.state
 export KEEPER_RUNDIR=$ROOT/run OPTION_A_GROUP_WAIT=2
+export OPTION_A_SERVO_STATE=$ROOT/servo OPTION_A_INSPECT=$ROOT/inspect
 REAL_DATE=$(command -v date)
 REAL_PY=$(command -v python3)
 ATT_A=18  # tools/option_a.sh's attempts and experiment directory
@@ -140,6 +146,7 @@ case "$(cat "$ROOT/session.emu.$attempt" 2>/dev/null)" in
   gone) kill "$(cat "$ROOT/pty.pid")" ;;
   swap) ln -sfn "$(readlink "$ROOT/pty.spare")" "$ROOT/pty" ;;
 esac
+[ -e "$ROOT/session.servo.$attempt" ] && : >"$ROOT/inspect.watchdog"
 case "$(cat "$ROOT/session.chain.$attempt" 2>/dev/null)" in
   group) "$ROOT/chain" & ;;
   setsid) setsid "$ROOT/chain" & ;;
@@ -197,7 +204,23 @@ os.replace(link + ".new", link)
 open(link + ".pid", "w").write(str(os.getpid()))
 time.sleep(3600)
 EOF
-chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate" "$ROOT/chain"
+# tools/servo_state.py's stand-in: notes its label, writes its record and exits with $ROOT/servo.exit.<label> (0).
+cat >"$ROOT/servo" <<'EOF'
+#!/usr/bin/env bash
+label=; out=
+while [ $# -gt 0 ]; do case "$1" in --label) label=$2; shift ;; --out) out=$2; shift ;; esac; shift; done
+echo "servo $label" >>"$ROOT/calls"
+echo "result=stand-in" >"$out"
+exit "$(cat "$ROOT/servo.exit.$label" 2>/dev/null || echo 0)"
+EOF
+# dxl_inspect's stand-in, for the real tools/servo_state.py: every register reads 0, except servo 4's Bus Watchdog,
+# 5 once $ROOT/inspect.watchdog exists (the session stand-in creates it when $ROOT/session.servo.<attempt> exists).
+cat >"$ROOT/inspect" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = --port ] && [ "$3" = read ] || exit 2
+if [ "$4 $5" = "4 bus_watchdog" ] && [ -e "$ROOT/inspect.watchdog" ]; then echo 5; else echo 0; fi
+EOF
+chmod +x "$ROOT/kernel" "$ROOT/systemctl" "$ROOT/quiet" "$ROOT/session" "$ROOT/gate" "$ROOT/chain" "$ROOT/servo" "$ROOT/inspect"
 
 chain_stop() {  # stops a running fork-exit chain: status 0 once its latest generation has ended
   local i p q
@@ -229,7 +252,8 @@ reset() {  # the host as it starts, with a fresh stand-in emulator (EMU_MODE, de
   scratch_rm "$ROOT/out" "$ROOT/state" "$ROOT/proc" "$ROOT/sys" "$ROOT/run" "$ROOT/bin" "$ROOT"/calls \
          "$ROOT"/cleaned-* "$ROOT"/mask-during-* "$ROOT"/running-* "$ROOT"/session.* "$ROOT"/gate.exit.* \
          "$ROOT/dry.exit" "$ROOT/kernel.mode" "$ROOT/uu.log" "$ROOT/sup.out" "$ROOT"/trigger.* "$ROOT/linger.pid" \
-         "$ROOT/hook.bash" "$ROOT"/hide.* "$ROOT"/chain.* "$ROOT/escaped.pid" "$ROOT/shim.mode" "$ROOT/rel.st"
+         "$ROOT/hook.bash" "$ROOT"/hide.* "$ROOT"/chain.* "$ROOT/escaped.pid" "$ROOT/shim.mode" "$ROOT/rel.st" \
+         "$ROOT"/servo.exit.* "$ROOT/inspect.watchdog" "$ROOT/servo.st"
   mkdir -p "$ROOT/sys" "$ROOT/state" "$ROOT/proc" "$ROOT/run"
   printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask"; printf '%s\n' "$ORIG" >"$ROOT/sys/cpumask_requested"
   printf '00000000\n' >"$ROOT/sys/cpumask_isolated"
@@ -268,16 +292,18 @@ reset
 start; wait "$sup"; st=$?
 [ "$st" -eq 0 ] || fail "the normal experiment exited $st" "$ROOT/sup.out"
 grep -v '^dry ' "$ROOT/calls" >"$ROOT/calls.run"
-[ "$(sed -n 1p "$ROOT/calls.run")" = "session untraced $ATT_A controls=0" ] && grep -q -- '--session A --record-state open' <(sed -n 2p "$ROOT/calls.run") &&
-  grep -q -- '--mode untraced' <(sed -n 2p "$ROOT/calls.run") && [ "$(sed -n 3p "$ROOT/calls.run")" = "session timer $ATT_B controls=1" ] &&
-  grep -q -- "--mode timer --controls .*fs-controls-20261112-$ATT_B.run.txt" <(sed -n 4p "$ROOT/calls.run") && [ "$(wc -l <"$ROOT/calls.run")" -eq 4 ] ||
+[ "$(sed -n 1p "$ROOT/calls.run")" = "servo start" ] && [ "$(sed -n 2p "$ROOT/calls.run")" = "session untraced $ATT_A controls=0" ] &&
+  [ "$(sed -n 3p "$ROOT/calls.run")" = "servo A" ] && grep -q -- '--session A --record-state open' <(sed -n 4p "$ROOT/calls.run") &&
+  grep -q -- '--mode untraced' <(sed -n 4p "$ROOT/calls.run") && [ "$(sed -n 5p "$ROOT/calls.run")" = "session timer $ATT_B controls=1" ] &&
+  [ "$(sed -n 6p "$ROOT/calls.run")" = "servo B" ] &&
+  grep -q -- "--mode timer --controls .*fs-controls-20261112-$ATT_B.run.txt" <(sed -n 7p "$ROOT/calls.run") && [ "$(wc -l <"$ROOT/calls.run")" -eq 7 ] ||
   fail "the steps' order" "$ROOT/calls"
 [ "$(grep -c '^dry ' "$ROOT/calls")" -eq 2 ] && grep -q '^dry .*--modes untraced' "$ROOT/calls" && grep -q '^dry .*--fs-controls 5 --modes timer' "$ROOT/calls" ||
   fail "the dry runs" "$ROOT/calls"
 [ "$(cat "$ROOT/mask-during-$ATT_A")" = "$TARGET" ] && [ "$(cat "$ROOT/mask-during-$ATT_B")" = "$TARGET" ] || fail "the sessions did not run under the target"
 restored || fail "the normal experiment's restorations" "$ROOT/sup.out"
 keys=$(sed 's/=.*//' "$E/experiment.record" | tr '\n' ' ')
-want="started directories emulator_start quiet_owed quiet_stop_start quiet_stop_end mask_owed mask_clear_start mask_clear_end session_A_start session_A_end check_A_start check_A_end emu_A_start emulator_A emu_A_end gate_A_start gate_A_end session_B_start session_B_end check_B_start check_B_end emu_B_start emulator_B emu_B_end gate_B_start gate_B_end mask_restore_start mask_restore_end quiet_restore_start quiet_restore_end keeper_finish_start keeper_finish_end finished "
+want="started directories emulator_start state_start_start state_start_end quiet_owed quiet_stop_start quiet_stop_end mask_owed mask_clear_start mask_clear_end session_A_start session_A_end check_A_start check_A_end emu_A_start emulator_A emu_A_end state_A_start state_A_end gate_A_start gate_A_end session_B_start session_B_end check_B_start check_B_end emu_B_start emulator_B emu_B_end state_B_start state_B_end gate_B_start gate_B_end mask_restore_start mask_restore_end quiet_restore_start quiet_restore_end keeper_finish_start keeper_finish_end finished "
 [ "$keys" = "$want" ] && grep -q '^finished=.* outcome=ACQUIRED reason=none$' "$E/experiment.record" || fail "the experiment record: $keys" "$E/experiment.record"
 emu_pid=$(cat "$ROOT/pty.pid")
 [ "$(grep -c -E "^emulator_(start|A|B)=\S+ pid=$emu_pid start=[0-9]+ comm=python3 tids=$emu_pid allowed=0-2,4-[0-9]+\$" "$E/experiment.record")" -eq 3 ] ||
@@ -358,6 +384,43 @@ reset; echo 1 >"$ROOT/gate.exit.A"
 start; wait "$sup"; st=$?
 [ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && restored &&
   grep -q 'outcome=STOPPED reason=the gate on the untraced run failed: no timer run' "$E/experiment.record" || fail "a failed gate ($st)" "$ROOT/sup.out"
+
+# The servos' state: failing at the start (before any host change: no session, nothing changed or owed), after the
+# untraced session (no timer session, no gate after it) and after the timer session (no gate on it); each stops it with
+# every restoration verified. Then the real tools/servo_state.py on the stand-in reader: a normal experiment with its
+# three complete records, and a Bus Watchdog reading 5 after the untraced session stopping it before the timer session.
+reset; echo 1 >"$ROOT/servo.exit.start"
+start; wait "$sup"; st=$?
+[ "$st" -eq 1 ] && [ "$(grep -v '^dry ' "$ROOT/calls")" = "servo start" ] && ! grep -q '^quiet_owed=\|^mask_owed=' "$E/experiment.record" &&
+  [ "$(masks)" = "$ORIG $ORIG" ] && [ ! -e "$WQ_MASK_RECORD" ] && [ ! -e "$QUIET_HOST_STATE" ] && keeper_gone &&
+  grep -q "^finished=.* outcome=STOPPED reason=the servos' starting state is not as declared .* (status 1)$" "$E/experiment.record" ||
+  fail "a servo state failing at the start ($st)" "$ROOT/sup.out"
+reset; echo 1 >"$ROOT/servo.exit.A"
+start; wait "$sup"; st=$?
+[ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && ! grep -q '^gate' "$ROOT/calls" && restored &&
+  grep -q "outcome=STOPPED reason=the servos' state after the untraced session is not as declared .*: no timer run (status 1)$" "$E/experiment.record" ||
+  fail "a servo state failing after the untraced session ($st)" "$ROOT/sup.out"
+reset; echo 1 >"$ROOT/servo.exit.B"
+start; wait "$sup"; st=$?
+[ "$st" -eq 1 ] && grep -q '^session timer' "$ROOT/calls" && [ "$(grep -c '^gate' "$ROOT/calls")" -eq 1 ] && restored &&
+  grep -q "outcome=STOPPED reason=the servos' state after the timer session is not as declared .* (status 1)$" "$E/experiment.record" ||
+  fail "a servo state failing after the timer session ($st)" "$ROOT/sup.out"
+reset
+(unset OPTION_A_SERVO_STATE; start; wait "$sup"; echo $? >"$ROOT/servo.st")
+st=$(cat "$ROOT/servo.st")
+servo_records_ok() {  # the three records complete and passing
+  local l
+  for l in start A B; do [ "$(tail -n 2 "$E/servo-state-$l.txt" 2>/dev/null | tr '\n' ' ')" = "rows=24 expected=24 result=OK " ] || return 1; done
+}
+[ "$st" -eq 0 ] && restored && servo_records_ok &&
+  [ "$(grep -c "servo_state .*: OK (24 reads, all 0" "$E/supervisor.log")" -eq 3 ] ||
+  fail "the real servo state tool in a normal experiment ($st)" "$E/supervisor.log"
+reset; : >"$ROOT/session.servo.$ATT_A"
+(unset OPTION_A_SERVO_STATE; start; wait "$sup"; echo $? >"$ROOT/servo.st")
+st=$(cat "$ROOT/servo.st")
+[ "$st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && restored &&
+  grep -q '^result=OK$' "$E/servo-state-start.txt" && grep -q '^result=FAIL reason=not 0: id 4 bus_watchdog = 5$' "$E/servo-state-A.txt" &&
+  [ ! -e "$E/servo-state-B.txt" ] || fail "the real servo state tool, a Bus Watchdog of 5 after the untraced session ($st)" "$E/supervisor.log"
 
 # A hangup, and an interrupt, reaching the process group during a session: the session cleans up, then the supervisor
 # restores everything.

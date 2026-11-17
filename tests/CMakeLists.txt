@@ -874,6 +874,15 @@ set_tests_properties(wq_mask_smoke PROPERTIES
 # with the real mask tool and gate and stand-in sessions, kernel and
 # systemctl: the order, refusals, stops, signals, a failed restoration, a
 # killed supervisor and the keeper's list.
+# The servos' state reader of Option A's third run (tools/servo_state.py),
+# with a stand-in dxl_inspect: complete records, every failure path.
+add_test(NAME servo_state_regressions
+  COMMAND python3 -B tools/test_servo_state.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(servo_state_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "servo state regressions OK"
+  LABELS unit)
+
 add_test(NAME option_a_smoke
   COMMAND ${CMAKE_COMMAND} -E env UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
     bash ${CMAKE_SOURCE_DIR}/tests/integration/option_a_smoke.sh ${CMAKE_BINARY_DIR}/option_a_smoke
