@@ -934,7 +934,7 @@ with its own verdict.
 The details are in the
 [control-rate qualification](../hardware/control-rate.md).
 
-## Control-rate Option A emulator validation (2026-11-12 to 2026-11-17)
+## Control-rate Option A emulator validation (2026-11-12 to 2026-11-18)
 
 After the clock-alignment work, the reviewer chose a loaded emulator
 validation with CPU 3 cleared from the kernel's unbound workqueue mask
@@ -959,9 +959,28 @@ requirement remains unmet: 923.346 and 885.994 Hz mean, 1,533 and 2,280
 skipped cycles, host work p99.9 3.554 and 4.215 ms. The runs are new
 acquisitions under their own declared environment, not attempt 15 with only
 the affinity changed, and their execution deviations (a bash heredoc, no
-tmux, an interrupted first paste) were accepted for these runs only. All
-are archived in `clock_validation/`; hardware and H2 stay paused. The
-details are in the
+tmux, an interrupted first paste) were accepted for these runs only.
+
+Attempt 17's trace then showed every read waiting for the emulator's next
+1 ms poll and its model time running about 6 percent slow, so `ede876d`
+made the emulator event-driven (reads on readiness, model time on wall
+time, an explicit exit when more than 50 ticks fall due). Option A's third
+run validated that rig at the same placement, with the servos' state
+checked before any host change and after each session, and a launch guard
+binding the process that actually holds the emulator's pty. Attempts 18
+and 19 (2026-11-18, at `2fb3b24`) were acquired with both record gates
+passing, zero read failures/timeouts, matching emulator identity, passing
+servo-state and residency checks, and verified restoration. A3 validation
+did not pass: attempt 19's clock certificate was UNSUPPORTED after an
+in-window NTP adjustment (`systemd-timesyncd`, kept unchanged by the clock
+design review), leaving conversion and timer-service attribution
+unvalidated. The supervisor's missing tmux was a recorded execution
+deviation accepted for the completed data; the reviewer has since made tmux
+optional. The 1 kHz timing requirement remains unmet: 941.444 and
+943.897 Hz mean, 1,173 and 1,122 skipped cycles, host work p99.9 3.306 and
+3.934 ms. All are archived in `clock_validation/`; the L1 placement
+rehearsal's offline tools may now be implemented, while placement changes,
+new acquisitions, hardware and H2 stay paused. The details are in the
 [control-rate qualification](../hardware/control-rate.md).
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)

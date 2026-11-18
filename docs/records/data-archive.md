@@ -2372,10 +2372,23 @@ with the allowed T1, T2 and T6a failures and the PTY USB association only; `opti
 developer's verification, the operator's terminal and the execution deviations. Their review
 (`review-option-a2-acquisition/`) accepted the acquisitions and the emulator validation; the 1 kHz timing requirement
 remains unmet. The three capture folders' `SHA256SUMS` were written at archiving, as for attempt 15.
+Option A's third run, 2026-11-18 at `2fb3b24` (`ede876d`'s event-driven emulator): `option-a3-candidate/` holds the
+candidate (the servos' state checks, guard revision 3 binding the pty master's holder, the exact operator blocks and
+their checks, the corrected plans A3 and L1; its two launch-guard records were written at the acquisition, outside its
+ledger), accepted with the go (`review-a3-candidate/`). Attempts 18 (`clock-validation-18/`, untraced) and 19
+(`clock-validation-19/`, the controls and the timer run), with the supervisor's `clock-validation-option-a3/` (with
+the three servo-state records) and the emulator's log `option-a3-emulator.log`; `option-a3-acquisition-20261118/` holds
+the developer's verification. Their review (`review-option-a3-acquisition/`) gave a split verdict: the attempts were
+acquired with both record gates passing, zero read failures and timeouts, matching emulator identity, passing
+servo-state and residency checks, and verified restoration; the A3 validation did not pass, because attempt 19's
+clock certificate was UNSUPPORTED after an in-window NTP adjustment, leaving the conversion and the timer-service
+attribution unvalidated; the supervisor's missing tmux was an execution deviation accepted for the completed data;
+the 1 kHz timing requirement remains unmet. The terminal clarification (`review-terminal-clarification/`) made tmux
+optional for the reviewed blocks. The three capture folders' `SHA256SUMS` were written at archiving.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the T3 wording correction | `fc7bfac61e90d0e6892790d703fe3ed3f5f75ae4aacfebaa703024c83e145656` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the third run's candidate and attempts 18 and 19 (acquired; the validation not passed: the certificate UNSUPPORTED), the terminal clarification, the T3 wording correction | `58d2eb9c6da0454731a72fd3e794434f37c4033bcc047979ae6779f86a8fabbd` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -2810,6 +2823,64 @@ remains unmet. The three capture folders' `SHA256SUMS` were written at archiving
 | `option-a2-acquisition-20261117/launch-guard-records/launch-env-supervisor-20261117T170902.txt` | Option A second run, the developer's acquisition evidence | `7414d25bbb864a0a0105100694c2f017e94b3439cf5d1710c1fcb9713edaba40` |
 | `option-a2-acquisition-20261117/operator-terminal-supervisor.txt` | the operator's terminal (the supervisor block in a bash heredoc), as pasted | `0263c87b24125d02d82ad6cbc35e6b993377c7a99e8eefb00cf64f8b11ba4dde` |
 | `option-a2-acquisition-20261117/post-run-host-state.txt` | Option A second run, the developer's acquisition evidence | `b669dd8a99dbf78c0e732a5167244baac54afc26caceca91f7083465c20868ad` |
+| `option-a3-candidate/BLOCKS.md` | the exact operator blocks of attempts 18, 19 (accepted) | `8e5823bc19a3c0a4cfe118f7b977c283eea3d89fbe670bfd5def52ffd186a9dd` |
+| `option-a3-candidate/PLAN-a3-validation-r2.md` | plan A3, revision 2 (accepted with the candidate) | `2d4300c5470acd762a80eea4e2c7ee0841c758383bced0cc9efe6f58600169da` |
+| `option-a3-candidate/PLAN-l1-rehearsal-r2.md` | plan L1, revision 2: the observer-tree exemptions (design accepted; not implemented) | `783a28c7a84656179c37a561181e5c296f78f4adf2eb751207daf04fc4a11a7c` |
+| `option-a3-candidate/README.md` | the A3 candidate 2fb3b24: the tool changes, the build, its identities, guard revision 3 and the tested operator blocks | `9b097b4068f185609c836778e7629a4d2f13ae9f9822e90f301e00286759b9c3` |
+| `option-a3-candidate/SHA256SUMS` | folder ledger | `e8ce7a889d5d01015b2570c2293a604133eddf4c402a2c55b35906a23b30cac6` |
+| `option-a3-candidate/binding-checks.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `b6e6f08f4b81ed1f55354b6175de2970d24bf248eb274c1d3e574ad7da7c0029` |
+| `option-a3-candidate/block-checks-run1-harness-defect.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `3682493ed449168b1f7cacfad9da6175eba275f91cca2070837eafb2b54369ed` |
+| `option-a3-candidate/block-checks.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `36ce449e448ea8c3f4124da835987c0e93d87c0518be9acdc1f64b577e546aa1` |
+| `option-a3-candidate/block-pty/E1-zsh-rc.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `a41a5f63189d8ed01c84b5fbad0c40b2558ce6aab0a924a691ae2a56fef3a39b` |
+| `option-a3-candidate/block-pty/E1-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `fd31764a3b7e52e5fbb13d98bb50e91c56db463accb3bcb741b2fcceaa8371f2` |
+| `option-a3-candidate/block-pty/E2-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `6c9fe032a6a2868f166c70ff2760e1d902a20d2c1f6a6069ec7e778a320f19e5` |
+| `option-a3-candidate/block-pty/E3-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `e1557f844a68bbf4845e5410a2e732ebb4ddd5edbb1d23c24c13daa86651f4e8` |
+| `option-a3-candidate/block-pty/E4-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `198cc1f0c7a84082a058f88edc48766ef6c03497cbdccf7057d022bedd3c3a7c` |
+| `option-a3-candidate/block-pty/E5-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `19b202237cad22f8361dd3b06d3047bf562ed86ccc308dd011a3bfb782849c15` |
+| `option-a3-candidate/block-pty/E6-zsh-rc.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `b7ca9369a01388133c3aa7052fe87ae8e0509c6b9c2b714f399158c6a87ed7e8` |
+| `option-a3-candidate/block-pty/E6-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `8d226e3a91c29ac1110f60a7fe79a4b8fec586a7b47a23c21a227263cd21ebc6` |
+| `option-a3-candidate/block-pty/E7-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `5a0b4b2d0ae7d70bbc76b76f940a535b4b1ef4bc74351182055897955e9a337b` |
+| `option-a3-candidate/block-pty/S1-zsh-rc.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `0bdd2733e79fa0974bf4481ae9f1eca77c8e9032906b5445deb421b9fe07cc6c` |
+| `option-a3-candidate/block-pty/S1-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `c4fddbeaadf69b410bc88e3256250a8b9e1600f2ee4e2026baf598b65c6b8d3e` |
+| `option-a3-candidate/block-pty/S2-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `abf41b2c791a1f2c67856a35ef243df90ed6a91a9974557f6e3ecda1821427a3` |
+| `option-a3-candidate/block-pty/S3-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `9e37f7c1cf3053bb328c31a80e1b9083d836532cd3ba6c8ff936aadd821a10e0` |
+| `option-a3-candidate/block-pty/S4-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `f3eaa5e66076d7c03ce6117508c51df2ba285bdf0ec10496d00e798b60a621a4` |
+| `option-a3-candidate/block-pty/S5-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `61ce2ffbcd1f087a34552392b2a6ddc8c9af43bf2751a90dd5532b442a9d254f` |
+| `option-a3-candidate/block-pty/S6-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `1c35bba38c30885a478f2d685e380c4646510b0c1f556ffb20b5b86db15ffc95` |
+| `option-a3-candidate/block-pty/S7-zsh-rc.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `db7df7cfca7509370667cba32514e23c660ffda1e151cf06966b58db66c8eafa` |
+| `option-a3-candidate/block-pty/S7-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `a8ccf085d3051108a867ae0190bf2db6d88ea38a60d90cf8beb1416a30c1c65c` |
+| `option-a3-candidate/block-pty/S8-zsh.pty.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `49b71ad8a808c31344a3fc3232b4ead6cfbb8d08b8971cfbd41086e4d13125cc` |
+| `option-a3-candidate/build.log` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `cd19a4d4ff87b92dc928b393c4bc3a408445511ba1afb8128e13d140d4f5fd28` |
+| `option-a3-candidate/candidate-ctest-LastTest.log` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `04ca39c5feea8e2780524dd80667427b9b7fe896decf226baa36d0ab7929ee24` |
+| `option-a3-candidate/candidate-focused.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `d93f95a89ca918f9d3bfd7dbd1fd6e1656f1877e8256d0a857bc98c3da419596` |
+| `option-a3-candidate/check_binding.py` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `6eaec6c8888eaaeb655d8d02011ab4b2b8c6ff1ab180857a99564d5e09630eec` |
+| `option-a3-candidate/check_blocks.py` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `ea3b5a6c04e4e9307a278ffc30130c18a051bcc42e4784d0cb5c4d4d92d342ec` |
+| `option-a3-candidate/check_guard.sh` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `ade435e9f3a9b140899d113a3ef1b06e948320f458fd903db2639e8a7e553158` |
+| `option-a3-candidate/emulator_binding.py` | the launch guard's binding of the pty master's holder, revision 3 (accepted) | `7dae51f2983d504c02649fd47e2d08a09e00a299c534a47ad36286b5d9a14c0f` |
+| `option-a3-candidate/guard-checks.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `cc47344d2511db01299c032c2c1beb83a850692a1889e097785e581ed92db955` |
+| `option-a3-candidate/identity.txt` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `3116cbc2d184362e237c4123f2755007faadca0b6a431012608193e88632f358` |
+| `option-a3-candidate/identity_reads.py` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `a3f4bbd95c61a0728790593643adf153b5b345b5924e10d35fdc12464e51ec03` |
+| `option-a3-candidate/launch-env-emulator-20261118T092504.txt` | a launch-guard record of the acquisition (emulator; written after the folder was sealed, outside its ledger) | `be10267e7da9630a74d0700c20cb2a317be34d12c2b2721841f30a07b4687dc0` |
+| `option-a3-candidate/launch-env-supervisor-20261118T092525.txt` | a launch-guard record of the acquisition (supervisor, the binding; outside the folder ledger) | `8bbeae106e1835a6995545c395101d489ab66c827c0c6b5fee6cc37bc433ed49` |
+| `option-a3-candidate/launch_env_check.sh` | the launch guard, revision 3 (accepted) | `58296fa70cfec7db9ed86ea12c44cb19ab882787933873d6e8beb3a883448700` |
+| `option-a3-candidate/pinned-libraries.expected` | A3 candidate 2fb3b24: identity, guard and block checks (the developer's) | `d539e486ec560a04396dab13413c5c2264bdf86409797894a4be817bfc2a8c98` |
+| `option-a3-acquisition-20261118/README.md` | the developer's verification of attempts 18, 19: criteria, the unsupported certificate, the deviation, limits | `5982e69f167f3f7d7e93112a624f846b57ede076b252ff07aee6c1f4efe4f3cf` |
+| `option-a3-acquisition-20261118/SHA256SUMS` | folder ledger | `6c08b2921b668d04533ee64146d532847c37bc44f030826250e4b0e4783f3dc8` |
+| `option-a3-acquisition-20261118/allocation-check.txt` | Option A third run, the developer's acquisition evidence | `48c81c7d8d8ac9437d9c55da69e4e54e7fcdf1024e1af1c6a598fb65048ee83a` |
+| `option-a3-acquisition-20261118/analysis/correlate-19.txt` | trace_correlate.py on attempt 19 (certificate UNSUPPORTED: an in-window adjtimex; exit 1) | `4a525f7cade82501d48eb13de540afbbf63f4bfe48247297d8432587d557b353` |
+| `option-a3-acquisition-20261118/analysis/cost-19.txt` | tk_cost.py on attempt 19 (descriptive) | `f7d6eafb0b891fcef4e0790f14bf4ab17774cb159459475a5f2838c1527dd512` |
+| `option-a3-acquisition-20261118/analysis/gate-closed-18.txt` | the gate on attempt 18, closed records (PASS, 14 of 14) | `b46ccb30b39212a4833abef261ffdd0750d0010bf5904dc4485bda67e7a813e0` |
+| `option-a3-acquisition-20261118/analysis/gate-closed-19.txt` | the gate on attempt 19, closed records (PASS, 15 of 15) | `81a574aec1541656454f5706abaad53b048d9b48da1b9a59afdd41059499d66a` |
+| `option-a3-acquisition-20261118/analysis/residency-19.txt` | emulator_residency.py on attempt 19 (PASS) | `510c333c03949361f31f6de95a9eecb1e7820b98f08397d0ff2a138d6aa6b262` |
+| `option-a3-acquisition-20261118/analysis/run_analysis.sh` | Option A third run, the developer's acquisition evidence | `00c124504dd98cd65fbc453cbd50d931b9e8e7723f961bca39968eee2d7dab87` |
+| `option-a3-acquisition-20261118/analysis/unbound-19.txt` | unbound_work.py on attempt 19 (PASS) | `01e1b5ddbd04a9d0df35f0cc1fab72848f15e309e9a0a0e027d52123ce2b84fe` |
+| `option-a3-acquisition-20261118/captures.SHA256SUMS` | the 44 captured files' hashes (with the emulator's log), taken before any analysis | `c1a334359e8de003fa49f586d898dfd8988df48e55983a7818ca86d90befe1fc` |
+| `option-a3-acquisition-20261118/execution-context-evidence.txt` | Option A third run, the developer's acquisition evidence | `9b563559a63d179b5e79a82253d3e2d0dc0ab3c84c3f189debfe40587d4047a2` |
+| `option-a3-acquisition-20261118/launch-guard-records/launch-env-emulator-20261118T092504.txt` | Option A third run, the developer's acquisition evidence | `be10267e7da9630a74d0700c20cb2a317be34d12c2b2721841f30a07b4687dc0` |
+| `option-a3-acquisition-20261118/launch-guard-records/launch-env-supervisor-20261118T092525.txt` | Option A third run, the developer's acquisition evidence | `8bbeae106e1835a6995545c395101d489ab66c827c0c6b5fee6cc37bc433ed49` |
+| `option-a3-acquisition-20261118/operator-terminal-emulator.txt` | the operator's terminal (the emulator block), as pasted | `dd43aab97b2411524c9e3b53af581b0c29663812e3d9eeb66c9a2a8c2233c2c3` |
+| `option-a3-acquisition-20261118/operator-terminal-supervisor.txt` | the operator's terminal (the supervisor block in a bash heredoc, a herdr pane), as pasted | `0bee91b570012cc155201fc6020dfef7d2250c2b90f6183a9c130e26e6359174` |
+| `option-a3-acquisition-20261118/post-run-host-state.txt` | Option A third run, the developer's acquisition evidence | `76c88b2502c984abb6a69bd8c3237e2172df11297906f285500fc68c88fc92da` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |
@@ -2964,6 +3035,53 @@ remains unmet. The three capture folders' `SHA256SUMS` were written at archiving
 | `clock-validation-option-a2/experiment.record` | Option A second run (attempts 16, 17), the supervisor's experiment record (outcome ACQUIRED) | `0f5207c28dd3538402494623f51318352d150338ad3812b10a6dc7259da3a7de` |
 | `clock-validation-option-a2/keeper.log` | Option A second run (attempts 16, 17), the keeper's log (the supervisor's copy) | `964109c4e18ae2435c89310109393b5439ce2a2b4d259f483f9af6f9090151ed` |
 | `clock-validation-option-a2/supervisor.log` | Option A second run (attempts 16, 17), the supervisor's log | `b2f7c8032df72d1e4b406ea19f9d4001f74d69ba993b773a1432ebd501cd5231` |
+| `clock-validation-18/SHA256SUMS` | clock validation (attempt 18), folder ledger | `24ac4db0b51ab73b4b41e5b0c0081e154769a97bae5a38439e90edad061c8620` |
+| `clock-validation-18/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261118-18.csv` | clock validation (attempt 18, untraced run), per-cycle log | `a92e34b1b115f158d3fd8c98f4e2412c50c42e137271ade23fa68fd595ff5454` |
+| `clock-validation-18/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261118-18.csv.run.txt` | clock validation (attempt 18, untraced run), session record | `f4193b60382fdca77847fb4520b8844b805cf6b2251c4a2e8173acf29da46f8a` |
+| `clock-validation-18/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261118-18.csv.staging.inventory.json` | clock validation (attempt 18, untraced run), staging inventory | `01d3674309c7641de2a422f0d0255232107aa8a0be9ece1914124ab54ddb489a` |
+| `clock-validation-18/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261118-18.csv.staging.sha256` | clock validation (attempt 18, untraced run), staging ledger | `cd9c08707ca2f7dfdd209e75b86fa003a5f0aca4c0b702815f08324baa1125b9` |
+| `clock-validation-18/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261118-18.csv.summary.toml` | clock validation (attempt 18, untraced run), probe summary | `838f010eb3dd160931b3349848f53de129fb04605f003744deb922f877e83a2d` |
+| `clock-validation-18/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-untraced-20261118-18.csv.tasks.txt` | clock validation (attempt 18, untraced run), task snapshot | `5b2565f4cc3ee9ca175ef596b43ff96d99d8446021cb7cc8586aab59fa9a2c37` |
+| `clock-validation-19/SHA256SUMS` | clock validation (attempt 19), folder ledger | `da9bd5b81850169d51cadb66427be184950122ec1cfff7fde347834842731b45` |
+| `clock-validation-19/fs-controls-20261118-19.controls.txt` | clock validation (attempt 19, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `69c9eb3996ca3fa644b115bca47ea035f791d246edf3c64c2296116fa5386030` |
+| `clock-validation-19/fs-controls-20261118-19.run.txt` | clock validation (attempt 19, probe controls), session record | `a4af62bb6be0cc40753eafc02aa49ba056bdd01725ff011aa73653710d8a5c6d` |
+| `clock-validation-19/fs-controls-20261118-19.staging.inventory.json` | clock validation (attempt 19, probe controls), staging inventory | `80f45f4cab6de796173d35def80b7c8768c3c6e7df5c43449f8a06bc3c00470a` |
+| `clock-validation-19/fs-controls-20261118-19.staging.sha256` | clock validation (attempt 19, probe controls), staging ledger | `507d52147d44a22d415a1ee66674a3bb5469c1ddad513505262a2f57fb75e34e` |
+| `clock-validation-19/fs-controls-20261118-19.trace.dat` | clock validation (attempt 19, probe controls), controls trace with the fair server's probe events (trace-cmd, mono clock) | `16943eca4f8dc6fb01e2ceb50b44b4a49275d865d7dc44d945c120f305a3b38f` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv` | clock validation (attempt 19, timer run), per-cycle log | `12d9add0f0f43ae5563650e72e1f5f4a08648648fdf3ad35020032b56bb39a18` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.lineage.txt` | clock validation (attempt 19, timer run), task lineage listed after the trace started (4550 tasks) | `00353bce63be5d00fc8e2b98dba3d49cc366a6699b827ff9f0dfc2f198086c77` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.procs.txt` | clock validation (attempt 19, timer run), process listing at the run's start | `7502c5c9cf4824f0b8f333df41fa5674e8906867d6a47b4a733042c1bd2fe1cc` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.run.txt` | clock validation (attempt 19, timer run), session record | `519759710608b4a0cf4880bd74d480dd5118da29e5fe11ef39f0a8fcfb5f1c83` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.smi.csv` | clock validation (attempt 19, timer run), CPU 3 SMI counts (perf stat -I 10) | `aa993d8a134f4fb8e591aebd865b862af8cf9c4031d7918df9ce5e610466bab5` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.staging.inventory.json` | clock validation (attempt 19, timer run), staging inventory | `e9d9f44782d46559505ab3550c07bd776b7dcbbe026634b7c14b4791e0afe0d5` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.staging.sha256` | clock validation (attempt 19, timer run), staging ledger | `7d7f620e4ac65f61cb31b63182590d13224dd12a1270fc6688b94ea2aed46869` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.summary.toml` | clock validation (attempt 19, timer run), probe summary | `f3d9e32fd9a91be4b67271fedd73bd53f54f4d1ed4a0276b3ae173bc90b37376` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tasks.txt` | clock validation (attempt 19, timer run), task snapshot | `9d7d77221fd9269219f12cb4d9672d535fca2138756d1b6c5fec38a893fed1a3` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-after.json` | clock validation (attempt 19, timer run), timekeeping state read after the capture | `7d24f9ae284f7e4f205f6eadafcf0acdab60b007e166285a88cd43080305e52e` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-before.json` | clock validation (attempt 19, timer run), timekeeping state read before the capture | `2022168bd3a7bda7a07344ce9b2707a3c9cf8f78e40e3bfc2b7cacd6134cac01` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-enable-after.txt` | clock validation (attempt 19, timer run), the recorder's probe enable states after | `75c666d56b4df6a15e9982629c20fa2202f63ba66a50cdef713c8243b47930f2` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-enable-before.txt` | clock validation (attempt 19, timer run), the recorder's probe enable states before | `75c666d56b4df6a15e9982629c20fa2202f63ba66a50cdef713c8243b47930f2` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-journal.txt` | clock validation (attempt 19, timer run), the kernel log (journalctl -k) | `a56bda476e95eceb252f668cb33b6f43c2b5455778c8fb1afabbd9d53c858ad7` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-log.json` | clock validation (attempt 19, timer run), the kernel log's scan over the recorder's interval | `f6f19e7a35408954518ddfe69678b3d377443762555358fb3c5b5b84d61dca32` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-profile.txt` | clock validation (attempt 19, timer run), the recorder's probe hits and misses (kprobe_profile) | `bbfa415ecdd14fe51ff49733146ad6f41526359b3aecb5e1c18e140d37eec02f` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-stats.txt` | clock validation (attempt 19, timer run), the recorder's buffer stats per CPU | `ca81417193e7cd84058ea51fa909ff2b42430e9bb11ad8db67f9b4072632a5d8` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-times.txt` | clock validation (attempt 19, timer run), the recorder's arming and confirmation times | `e79713af4ae6740e70a81bc846357818f50fa41c7cdb42e44170becd6976c2b5` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-tool-after.json` | clock validation (attempt 19, timer run), trace-cmd's identity and runtime after the recorder's report | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk-tool-before.json` | clock validation (attempt 19, timer run), trace-cmd's identity and runtime before the main trace | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk.dat` | clock validation (attempt 19, timer run), the recorder's instance, extracted (trace-cmd extract -B) | `7788cbf159ff85b00ecdce10e0f318eee7e483b210dcf0e2f9513f45edfda555` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tk.txt` | clock validation (attempt 19, timer run), the recorder's report (trace-cmd report -t) | `4a4589ce727ccb63fbf78c801b4f775ea6553bcaa7492f16f642383a017be6e2` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.trace.dat` | clock validation (attempt 19, timer run), timer-mode trace with the fair server's probe events (trace-cmd, mono clock) | `ba82484d75e7d92b179c7d5e0ae9a400e1fd6a54f4f639829e43681a888eccd9` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tsc-pairs.csv` | clock validation (attempt 19, timer run), bracketed TSC and CLOCK_MONOTONIC sampler pairs | `97ebcbeb40725fa8cd011eacf609440608893b438a92ae0b14e87c4047fa880c` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.tsc.txt` | clock validation (attempt 19, timer run), TSC-clock trace instance (CPU 3 local timer entries) | `a8ea4e003d0323a3443445184c09cf342d1cfb9e50ac86a089d994314b1b8fe0` |
+| `clock-validation-19/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-timer-20261118-19.csv.usbmon.pcap` | clock validation (attempt 19, timer run), usbmon capture (empty: no USB adapter behind the emulator's pty) | `fca0040a8ca54b72ebe06475a89853bcad11ad5c080f6ac743549a79908e6c0b` |
+| `clock-validation-option-a3/SHA256SUMS` | Option A third run (attempts 18, 19), folder ledger | `035d055e6b84363ef54a5674913846ebd66ff52cbecbebe6719ac9654d41d4b2` |
+| `clock-validation-option-a3/experiment.record` | Option A third run (attempts 18, 19), the supervisor's experiment record (outcome ACQUIRED) | `bdbd9d1458ebff08ce2ea03222a67927cfe5cccc4ae563be1c2b1465aa958c0b` |
+| `clock-validation-option-a3/keeper.log` | Option A third run (attempts 18, 19), the keeper's log (the supervisor's copy) | `5a9b0cc4287c35bd3e4d597fc4d6c652389652e7a432dff030f64a043de65080` |
+| `clock-validation-option-a3/servo-state-A.txt` | Option A third run (attempts 18, 19), the servos' state after the untraced session (24 reads, OK) | `44cb795af7715e468f6281f9c31002cb5289a517a66a21332a543a3caf426d83` |
+| `clock-validation-option-a3/servo-state-B.txt` | Option A third run (attempts 18, 19), the servos' state after the timer session (24 reads, OK) | `cccc2905d308efbab4f730154937d71f81126a1c4bb6498ded4de2ab83a41443` |
+| `clock-validation-option-a3/servo-state-start.txt` | Option A third run (attempts 18, 19), the servos' state before any host change (Torque Enable, Bus Watchdog, Hardware Error Status of ids 2-9; 24 reads, OK) | `a22dab8cca9ba90d3be4d89f381882944c7403a68db8dd982c52093ef3a5f84e` |
+| `clock-validation-option-a3/supervisor.log` | Option A third run (attempts 18, 19), the supervisor's log | `7822a825b0ff5f1384a067376934bc42beca010712bd162dcc9d65cfa527a51b` |
+| `option-a3-emulator.log` | Option A third run (attempts 18, 19), the emulator's log: its statistics and its exit status (0), recorded after the supervisor ended | `673590c0f3e5446fb9c2890602ce1d01e3958a4b1ba7dbfd8b2b71f383c09859` |
 | `operator-terminal-20261111.txt` | the operator's terminal output of both sessions, verbatim | `04b8da043ec0db319b222387fc16d8d409039738abb0d3ad207186def904d06b` |
 | `review/README.txt` | validation review evidence (the reviewer's) | `19e0c5e3ce62889994ab2690e05debff3412ce80b95593031b5c6cdb7f5b9d2e` |
 | `review/SHA256SUMS` | validation review evidence (the reviewer's) | `0c314c11fef27c5cdc86371c13017a0a36749090678f0367b6dda65a22ee2ce7` |
@@ -3254,6 +3372,38 @@ remains unmet. The three capture folders' `SHA256SUMS` were written at archiving
 | `review-option-a2-acquisition/gate-17.txt` | Option A second-run acceptance evidence (the reviewer's) | `57ee023756555f0d5601adfd5eb06c949a70a9fe33a69b5034a4301162f191dc` |
 | `review-option-a2-acquisition/residency-17.txt` | Option A second-run acceptance evidence (the reviewer's) | `669309683759a31ad2ce82f09ebf842b3a353a864d50f46d4d6c8c8cbc41e5e9` |
 | `review-option-a2-acquisition/review.md` | the reviewer's acceptance of attempts 16, 17 (emulator validation accepted; 1 kHz timing unmet) | `2b8018222b501f4c4e9b7b4e02e3e2c85303a35d51045f25b41a88f5ebe4d123` |
+| `review-a3-candidate/SHA256SUMS` | folder ledger | `1eabdf57d9016cf6e2a5e33764ba4c1180252f6e8a0f47646c67717a6647706c` |
+| `review-a3-candidate/binding-checks.txt` | A3 candidate review evidence (the reviewer's) | `9a48230d5f37b8c0794e53ed31dede33821634eac5df6726fc3c34d7ca5a8db2` |
+| `review-a3-candidate/block-checks.txt` | A3 candidate review evidence (the reviewer's) | `36ce449e448ea8c3f4124da835987c0e93d87c0518be9acdc1f64b577e546aa1` |
+| `review-a3-candidate/block-pty/E1-zsh-rc.pty.txt` | A3 candidate review evidence (the reviewer's) | `def67c7e56b5b6769f6f49d3a56a1cf01129ff14153599fb236003bc0dd2a598` |
+| `review-a3-candidate/block-pty/E1-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `22ba3b9c93c602a81e164170a8e3e4e038ba64de2bb22a3a8237a10cd8079f0d` |
+| `review-a3-candidate/block-pty/E2-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `286e8cfc15fcf7eb55edbca89d06ffa570887be3fe8b44ae2326da0227b3c3cd` |
+| `review-a3-candidate/block-pty/E3-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `39ad820af1e53f7327fbfb212b5a9652922fdbda1ac10453ebf9de5fbd23caa4` |
+| `review-a3-candidate/block-pty/E4-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `a3f6d308f3f02fe9c8e9ffab52955b9d05c0c4725a80604cc212321af299be6d` |
+| `review-a3-candidate/block-pty/E5-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `08060a8ea97459226860a757f10f11feafd250de90b76df18b3d10c591c51b84` |
+| `review-a3-candidate/block-pty/E6-zsh-rc.pty.txt` | A3 candidate review evidence (the reviewer's) | `726233f81c7e185dba3ea8743439eda5a80137c76bb28107aa982384486ab856` |
+| `review-a3-candidate/block-pty/E6-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `72cdc0dbc64ac5a1615727c1fa25d5756c87bb79a8b0134ddc5ff762dcd9896b` |
+| `review-a3-candidate/block-pty/E7-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `7f8eff825a800026914b50a55b5f5acb7ca648e789825b8519c0efd449ebaf86` |
+| `review-a3-candidate/block-pty/S1-zsh-rc.pty.txt` | A3 candidate review evidence (the reviewer's) | `3dbcfa9811cd93276bcb77ab4ddfb31f924508e8393416d537270f8cac5d042a` |
+| `review-a3-candidate/block-pty/S1-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `24d6f0bea9155db33ee644c792cf051f3b11d09932273a29e5ddb446ab627ecb` |
+| `review-a3-candidate/block-pty/S2-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `c4c56970711e215d1af01411e5fa9d22820d23e983d0ded0ab2f31b2ee370abb` |
+| `review-a3-candidate/block-pty/S3-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `7ee29a5cf65e8eee3f35aa2e2e0882977622cef22f038a2ab365ad9c208aef15` |
+| `review-a3-candidate/block-pty/S4-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `e62bd1acac439916b790d7b063b100342198c805c4b6351762a9673e53ce37bf` |
+| `review-a3-candidate/block-pty/S5-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `28872143e2667f53e210568a57275f0970a603e3f00145ae0006be64dc2406c0` |
+| `review-a3-candidate/block-pty/S6-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `fb34ac17143113b3924e39e9f7924ab412256c142b84df3e5d67518519f3fd2f` |
+| `review-a3-candidate/block-pty/S7-zsh-rc.pty.txt` | A3 candidate review evidence (the reviewer's) | `3c8ece252dc9c651feddbbf928aa8208127c50cb59876a7b54f30303b3922c43` |
+| `review-a3-candidate/block-pty/S7-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `97a8d0fd1b4d4f40d32dd68d19c6be9e6c61a37635c5755c60a67e17d4c1b963` |
+| `review-a3-candidate/block-pty/S8-zsh.pty.txt` | A3 candidate review evidence (the reviewer's) | `09285c6a262cd4ba13d6e2156798eee745aa9dcba9b2d491e40bc19092877f81` |
+| `review-a3-candidate/guard-emulator.txt` | A3 candidate review evidence (the reviewer's) | `3730f30175637ed5897a4177174f7484cd92c4b991663c29b065b3a540b98a34` |
+| `review-a3-candidate/review.md` | the reviewer's acceptance of candidate 2fb3b24 and the go for attempts 18, 19 | `cbac061f8abdde337a2552cb28eb5bfd21c3a8197d3ced47883a7d209e3fee3c` |
+| `review-a3-candidate/servo-tests.txt` | A3 candidate review evidence (the reviewer's) | `f2f75034525d7e13a42e0b55047bf70815ccebffa2f51b96bc5e863a219ab4d8` |
+| `review-option-a3-acquisition/SHA256SUMS` | folder ledger | `30890efa3fc0e8586785133e4373a6140b302bb8add37db29bb3d3808c381cad` |
+| `review-option-a3-acquisition/gate-18.txt` | Option A third-run acceptance evidence (the reviewer's) | `8fd68d2abb08d6d1c762744ea97684db95d149b89987d2301a2472ff4b67876d` |
+| `review-option-a3-acquisition/gate-19.txt` | Option A third-run acceptance evidence (the reviewer's) | `20ceedf4361c413319e8ffd52ab0089fbe58eb5441cc39284f0d38e8b33ccaf0` |
+| `review-option-a3-acquisition/review.md` | the reviewer's split verdict on attempts 18, 19 (acquired; A3 validation not passed: the certificate UNSUPPORTED) | `12305fa9c6a849c0687f5d5e56fcbb23bf372b1656f21e64419fabd138419fd1` |
+| `review-option-a3-acquisition/state-clock-checks.txt` | Option A third-run acceptance evidence (the reviewer's) | `48646808e9378e9f91e715eba0871444a9928e1ecc2ec55b2cbf7456de66e639` |
+| `review-terminal-clarification/SHA256SUMS` | folder ledger | `b81e3b37321521447b6d908b1b020d8a2e0a7e94a862a390acbad31a6f310802` |
+| `review-terminal-clarification/clarification.md` | the reviewer's clarification: tmux optional for the reviewed blocks (supersedes the earlier prerequisite; no verdict changed) | `0105752b2cd331d6c5a5c13672c9f6efdcc730e14f60ba10cd456074be8e1001` |
 | `review-option-a-7553f40/SHA256SUMS` | Option A review evidence at 7553f40 (the reviewer's) | `75d5c518afefaed5e980bbf41690349d8efb8f4017a6c5489b185f335b081ea5` |
 | `review-option-a-7553f40/check_group_snapshot.py` | Option A review evidence at 7553f40 (the reviewer's) | `3d6afb49cee4afe7d3047c15f1b076ea5cb47fa47abdabf6615ca1d6c2d5843b` |
 | `review-option-a-7553f40/check_keeper_umask.py` | Option A review evidence at 7553f40 (the reviewer's) | `aa3ad3f15caacd3e61603239d7be03d86defbd723b2ebfb7dd0cf03919dd858e` |

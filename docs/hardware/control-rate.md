@@ -2363,7 +2363,10 @@ to it:
    (`./build/apps/dxl_inspect --port /tmp/rtctrl-rehearsal-tty write <id>
    return_delay_time 0` for ids 2 to 9); `sudo prlimit --pid $$
    --rtprio=90:90` in the shell that runs the supervisor. Running it inside
-   `tmux` keeps a closed terminal window from hanging it up.
+   `tmux` keeps a closed terminal window from hanging it up; tmux is an
+   optional convenience (reviewer's clarification, 2026-11-18): a herdr pane
+   or an ordinary terminal is acceptable, kept open until the supervisor
+   returns.
 1. `tools/option_a.sh --dry-run`, then `echo "exit $?"`: exit 0 shows both
    session commands accepted, with nothing changed.
 2. `tools/option_a.sh`, then `echo "exit $?"`. It asks for the confirmation
@@ -2649,7 +2652,8 @@ and the reply's delivery, as leads rather than established causes. Hardware
 and H2 stay paused.
 
 **Option A, third run: the event-driven emulator at the accepted placement
-(procedure for review; not yet executed).** Attempt 17's trace showed every
+(the procedure; executed 2026-11-18 as attempts 18 and 19, recorded
+below).** Attempt 17's trace showed every
 read waiting for the emulator's next 1 ms poll and its model time running
 about 6 percent slow; `ede876d` replaced that loop (the emulator reads its
 input on readiness, ticks its model every 1 ms of wall time, and exits with
@@ -2693,8 +2697,13 @@ What changes besides the emulator:
   its model time against wall time and its stall statistics (late steps, the
   most ticks due at once, reads at the input bound): aggregates over its
   whole life, which show that a stall occurred, never why a failure did.
-- **The terminal.** The supervisor's block runs inside tmux, as a bash
-  heredoc; the emulator's block in its own terminal, also as a bash heredoc.
+- **The terminal.** The supervisor's block runs as a bash heredoc, and the
+  emulator's block in its own terminal, also as a bash heredoc. The go asked
+  for the supervisor inside tmux; the reviewer's later clarification
+  (2026-11-18) made tmux optional for the reviewed blocks: a herdr pane or an
+  ordinary terminal is acceptable, kept open until the supervisor returns,
+  with no tmux check or extra confirmation. The existing interruption and
+  recovery rules apply.
 
 The exact operator blocks, with the candidate's commit and the guard, come
 to review with their stand-in checks before use. The emulator serves until
@@ -2710,6 +2719,52 @@ after the supervisor ended. A cap exit, a servo-state anomaly, a timeout or
 a read failure is a failure, whatever the stall statistics show; nothing is
 retried, and no emulator is restarted to continue the pair. The recovery
 limits are the second run's. Hardware and H2 stay paused.
+
+**Attempts 18 and 19 (2026-11-18, at `2fb3b24`): acquired; the A3
+validation not passed.** On the emulator only, actuator power off, the
+emulator launched off CPU 3 and both shells pinned to the accepted
+libraries, the supervisor ran the untraced run (attempt 18), the servos'
+state check and its gate, then the controls and the timer run (attempt 19).
+The review's split verdict: attempts 18 and 19 were acquired with both
+record gates passing (14 of 14 and 15 of 15, also against the closed
+records), zero read failures and timeouts, matching emulator identity (the
+guard's binding and the supervisor's three emulator records name one
+process), passing servo-state and residency checks, and verified
+restoration. The A3 validation did not pass: attempt 19's clock certificate
+was UNSUPPORTED after an in-window NTP adjustment, leaving the conversion and
+the timer-service attribution unvalidated. The supervisor's missing tmux was
+a recorded execution deviation accepted for the completed data. The 1 kHz
+timing requirement remains unmet.
+
+The adjustment was `systemd-timesyncd`'s `adjtimex` call (modes 8253),
+15.2 s into the 20 s run, which moved the kernel's frequency from 25.070 to
+24.559 ppm. The certificate rejects any modifying timekeeping call between
+the recorder's arming and its last state read, and the clock design review
+kept `systemd-timesyncd` unchanged, accepting that such a poll makes an
+acquisition unsupported: the tools refused as designed. The unsupported
+certificate cannot be waived; the 12 late sleeps it would have judged stay
+undetermined, and no other run's bound is borrowed. The same-clock results
+remain usable (the probe's timing on the host's monotonic clock, the wake
+pairing by event order, the emulator's residency off CPU 3, the unbound
+work's queueing and execution), with their coverage limits. The frequency
+update explains the certificate's refusal, not the lost cycles:
+
+| Run | Mean rate | Skipped cycles | Host work p99.9 |
+|---|---:|---:|---:|
+| 18, untraced | 941.444 Hz | 1,173 | 3.306 ms |
+| 19, timer | 943.897 Hz | 1,122 | 3.934 ms |
+
+Comparisons with attempts 16 and 17 are descriptive (two runs per pair, one
+day each). The emulator's exit statistics (914 late steps, at most 13 ticks
+due at once, below the 50-tick cap) cover its whole 36.6-minute life, about
+34 minutes of it after the acquisition, so they are not per-run stall
+measurements and are not attributed to either run. No retry or new
+acquisition is authorized; `systemd-timesyncd` stays unchanged, and a new
+timer capture would need fresh names and a separately reviewed scope and
+attempt budget. L1's offline tool implementation may proceed under its
+corrected design, carrying A3's unsupported verdict forward rather than
+treating attempt 19 as a certified timer baseline; no placement change,
+acquisition, hardware work or H2 is authorized.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
