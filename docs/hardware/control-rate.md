@@ -2805,8 +2805,11 @@ add, each beside the existing path, whose meaning is unchanged:
   outside 4-5. It follows each execution across its task's switches, so an
   execution is judged on every CPU it ran on from its start to its end, not
   only where it began and ended (a move within 4-5 passes; an excursion to
-  another CPU between a start and an end on CPU 4 fails). Both keep every
-  existing check.
+  another CPU between a start and an end on CPU 4 fails); and any unbound
+  worker or rescuer the scheduler shows running outside 4-5 inside the
+  window fails from its switches alone, even with no execution boundary in
+  the trace (per-CPU workers stay outside the mask's policy). Both keep
+  every existing check.
 - **The rig exempt from the confinement, by identity.** The emulator and the
   supervisor are launched from panes of the terminal the observers include,
   so the confinement would otherwise select them, and the keeper with them.

@@ -25,7 +25,13 @@ judged once it overlaps the window) and passes on 5; one begun before the report
 passes on 5 then 4; one still running on CPU 6 when the report ends fails; without --allowed, a flush that moves onto
 CPU 3 mid-execution counts as run there; an end where its task was not running, an executing task switched in twice,
 a start while its last execution is open, an end with no start after its last end, and an end with no start whose
-earlier switches did not follow on are unreadable."""
+earlier switches did not follow on are unreadable.
+
+Residency outside the allowed set (the re-review's finding): an unbound worker or a rescuer on CPU 6 throughout the
+window with no execution boundary, one carried into the window and switched out inside it, one running since before
+the report (named by CPU 6's first switch, inside the window), and one named by a missed switch each fail; one there
+only outside the window passes; a per-CPU worker on CPU 6, an unbound worker on CPU 4, and one on CPU 6 without
+--allowed pass; CPUs outside the set with events but no switch are counted."""
 
 from __future__ import annotations
 
@@ -353,6 +359,46 @@ def followed_units() -> None:
             pass
 
 
+def residency_units() -> None:
+    """Residency outside the allowed set (the re-review's finding): an unbound worker or a rescuer running on a CPU
+    outside 4-5 inside the window fails from its switches alone, with no execution boundary in the report (a callback
+    begun before the trace and ending after it); per-CPU workers stay outside the mask's policy."""
+    def chk(lines: list[str], allowed: str | None = "4-5") -> dict:
+        return uw.analyse(sorted(lines, key=stamp), Cap(), 3, io.StringIO(), allowed, EMU_REC)
+    idle6, idle4 = ("swapper/6", 0), ("swapper/4", 0)
+    u9, resc, pc6 = ("kworker/u128:9", 88), ("kworker/R-writeback", 66), ("kworker/6:1", 92)
+    for who, what in ((u9, "an unbound worker"), (resc, "a rescuer")):
+        r = chk(l1() + [swc(T - 90 * MS, 6, idle6, who)])
+        expect(not r["ok"] and r["resident_off"] == 1 and r["outside"] == 0,
+               f"residency: {what} on CPU 6 throughout the window, no execution boundary: {r}")
+    # Carried into the window: switched in before it, out inside it.
+    r = chk(l1() + [swc(T - 90 * MS, 6, idle6, u9), swc(T + 2 * MS, 6, u9, idle6)])
+    expect(not r["ok"] and r["resident_off"] == 1, f"residency: carried into the window, out inside it: {r}")
+    # Running since before the report: the CPU's first switch, inside the window, names it as the previous task.
+    r = chk(l1() + [swc(T + 2 * MS, 6, u9, idle6)])
+    expect(not r["ok"] and r["resident_off"] == 1, f"residency: since before the report, its first switch inside the window: {r}")
+    # A switch missed: the previous task named is not the occupant; it counts over the stretch since the last switch.
+    r = chk(l1() + [swc(T - 90 * MS, 6, ("x", 1), idle6), swc(T + 2 * MS, 6, u9, idle6)])
+    expect(not r["ok"] and r["resident_off"] == 1, f"residency: a missed switch naming an unbound worker: {r}")
+    # Only outside the window: before it and after it.
+    r = chk(l1() + [swc(T - 90 * MS, 6, idle6, u9), swc(T - 80 * MS, 6, u9, idle6),
+                    swc(T + 10 * MS + 500_000, 6, idle6, u9), swc(T + 10 * MS + 600_000, 6, u9, idle6)])
+    expect(r["ok"] and r["resident_off"] == 0, f"residency: an unbound worker on CPU 6 only outside the window: {r}")
+    # Controls: a per-CPU worker on CPU 6 (not governed by the mask), an unbound worker inside the set, and an unbound
+    # worker on CPU 6 without --allowed (Option A's checks only).
+    r = chk(l1() + [swc(T - 90 * MS, 6, idle6, pc6)])
+    expect(r["ok"] and r["resident_off"] == 0, f"residency: a per-CPU worker on CPU 6 throughout: {r}")
+    r = chk(l1() + [swc(T - 90 * MS, 4, idle4, u9)])
+    expect(r["ok"] and r["resident_off"] == 0, f"residency: an unbound worker on CPU 4 throughout: {r}")
+    r = chk(l1() + [swc(T - 90 * MS, 6, idle6, u9)], None)
+    expect(r["ok"] and r["resident_off"] == 0, f"residency: an unbound worker on CPU 6 without --allowed: {r}")
+    # Coverage, descriptive: CPUs outside the set with events but no switch.
+    r = chk(l1())
+    expect(r["ok"] and r["unswitched"] == [], f"residency: l1's CPUs outside the set all switch or have no event: {r}")
+    r = chk(l1() + [line(T + 2 * MS, 7, "x", 1, "irq_handler_entry", "irq=9 name=acpi")])
+    expect(r["ok"] and r["unswitched"] == [7], f"residency: a CPU outside the set with an event but no switch: {r}")
+
+
 def cli() -> None:
     with tempfile.TemporaryDirectory() as d:
         base = pathlib.Path(d, "run.csv")
@@ -400,6 +446,7 @@ def main() -> int:
     units()
     allowed_units()
     followed_units()
+    residency_units()
     cli()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED")

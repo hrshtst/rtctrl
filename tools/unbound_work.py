@@ -34,9 +34,14 @@ main trace (trace-cmd report -t under tools/tk_record.py's launch, or a saved --
 - with --allowed LIST (plan L1: the unbound mask set to exactly those CPUs; it needs --experiment, so that both tty
   directions are judged), besides every check above: any execution by an unbound worker or a rescuer that overlaps
   the window and ran on a CPU outside LIST at any point of it (a move within LIST passes), and any flush of either
-  direction, by whatever task, that ran outside LIST at any point of its execution, fails. LIST is a canonical CPU
-  list without the real-time CPU. Per-CPU workers' executions other than the flushes stay outside these checks (the
-  mask does not govern them).
+  direction, by whatever task, that ran outside LIST at any point of its execution, fails. And residency outside
+  LIST, from every other CPU's switches (the real-time CPU keeps its own check): any stretch of an unbound worker or a
+  rescuer on a CPU outside LIST that overlaps the window fails, whether or not an execution of it is in the report
+  (a callback begun before the trace and ending after it has neither boundary). A CPU's first switch shows its
+  previous task running there since before the report; a switch whose previous task is not the occupant (one missed)
+  counts both over the stretch since the last switch. CPUs outside LIST with events but no switch have no residency
+  recorded (counted, descriptive). LIST is a canonical CPU list without the real-time CPU. Per-CPU workers stay
+  outside these checks (the mask does not govern them), save for the flushes'.
 
 The evidence must be complete: every sched_switch (of every CPU) and every workqueue event must parse (with
 --experiment, every sched_process_fork and sched_process_exit too, and the lineage must begin after the trace's first
@@ -151,6 +156,11 @@ def analyse(lines, cap, rt: int, out, allowed: str | None = None, emu: dict | No
     forks: list = []            # (ts, parent, child) every fork up to the window's end (with emu)
     exited: set = set()         # every task seen exiting before the lineage ended (with emu)
     now = None                  # the last event judged
+    occ_off: dict = {}          # cpu -> (comm, pid, since) the task running on a CPU outside the allowed set (with allowed)
+    resident_off = 0            # unbound or rescuer stretches on CPUs outside the allowed set overlapping the window
+    resident_off_ex: list = []  # the first five of them: (comm, class, cpu, from, to)
+    seen_cpus: set = set()      # the CPUs with any event (with allowed)
+    switched_cpus: set = set()  # the CPUs with a switch (with allowed)
 
     def stretch(comm: str, pid: int, a: int, b: int) -> None:
         nonlocal own
@@ -161,6 +171,18 @@ def analyse(lines, cap, rt: int, out, allowed: str | None = None, emu: dict | No
             resident.append((comm, pid, c, a, b))
         elif c == "own":
             own += 1
+
+    def stretch_off(cpu: int, comm: str, pid: int, a: int, b: int) -> None:
+        """A task's stretch on a CPU outside the allowed set (not the real-time CPU, which has its own check): an
+        unbound worker or a rescuer there inside the window fails, whether or not an execution of it was seen."""
+        nonlocal resident_off
+        if b < lo or a > hi:
+            return
+        c = classify(comm, rt)
+        if c in ("unbound", "rescuer"):
+            resident_off += 1
+            if len(resident_off_ex) < 5:
+                resident_off_ex.append((comm, c, cpu, max(a, lo), min(b, hi)))
 
     def judged(cpu: int) -> bool:
         return cpu == rt or (allowed_set is not None and cpu not in allowed_set)
@@ -239,11 +261,26 @@ def analyse(lines, cap, rt: int, out, allowed: str | None = None, emu: dict | No
             continue  # read to the end, judged no more
         now = ts
         ev, rest, cpu, pid, comm = m["ev"], m["rest"], int(m["cpu"]), int(m["pid"]), m["comm"].strip()
+        if allowed_set is not None:
+            seen_cpus.add(cpu)
         if ev == "sched_switch":
             s = trace_correlate.SWITCH.match(rest)
             if not s:
                 malformed += 1
                 continue
+            if allowed_set is not None and cpu != rt and cpu not in allowed_set:
+                # Residency outside the set, from the CPU's switches. Its first switch's previous task ran there since
+                # before the report; a switch whose previous task is not the occupant (one missed) counts both, over
+                # the stretch since the last switch.
+                switched_cpus.add(cpu)
+                cur = occ_off.get(cpu)
+                if cur is None:
+                    stretch_off(cpu, s["prev"], int(s["ppid"]), first, ts)
+                else:
+                    stretch_off(cpu, cur[0], cur[1], cur[2], ts)
+                    if cur[1] != int(s["ppid"]):
+                        stretch_off(cpu, s["prev"], int(s["ppid"]), cur[2], ts)
+                occ_off[cpu] = (s["next"], int(s["npid"]), ts)
             if cpu == rt:
                 if occupant is not None and int(s["ppid"]) != occupant[1]:
                     inconsistent += 1
@@ -335,6 +372,9 @@ def analyse(lines, cap, rt: int, out, allowed: str | None = None, emu: dict | No
     if occupant is not None:
         stretch(occupant[0], occupant[1], occupant[2], hi)
     stop = hi if now is None else now
+    for c, cur in occ_off.items():  # still running when the report ends
+        stretch_off(c, cur[0], cur[1], cur[2], hi)
+    unswitched = sorted(c for c in seen_cpus - switched_cpus if allowed_set is not None and c != rt and c not in allowed_set)
     for e in open_exec.values():  # still open at the report's end (or the horizon): followed to there
         if e.on is not None:
             credit(e, e.on, e.since, stop)
@@ -391,14 +431,20 @@ def analyse(lines, cap, rt: int, out, allowed: str | None = None, emu: dict | No
         print(f"  outside the allowed CPUs {allowed}: unbound or rescuer executions in the window {outside_n}" + (" (" + ", ".join(
             f"{f} by {c} ({k}) on CPU {','.join(map(str, u))}" for c, k, f, u in outside_ex) + (", ..." if outside_n > 5 else "") + ")" if outside_n else "")
               + f"; the worker's flushes run there {off_instr}; the emulator's {emu_off}", file=out)
+        print(f"  unbound or rescuer workers resident outside the allowed CPUs in the window (their switches, with or without an "
+              f"execution seen): {resident_off}" + (" (" + ", ".join(
+                  f"{c} ({k}) on CPU {u} {(a - lo) / 1e6:+.3f}..{(b - lo) / 1e6:+.3f} ms" for c, k, u, a, b in resident_off_ex)
+                  + (", ..." if resident_off > 5 else "") + ")" if resident_off else ""), file=out)
+        print(f"  CPUs outside the allowed set with events but no switch in the report (no residency recorded; descriptive): "
+              f"{len(unswitched)}" + (f" ({','.join(map(str, unswitched))})" if unswitched else ""), file=out)
     ok = (known and not resident and not executed and on_rt == 0 and unmatched == 0 and bool(queued)
           and (emu is None or (bool(emu_idx) and emu_unmatched == 0 and emu_on_rt == 0))
-          and (allowed_set is None or (outside_n == 0 and off_instr == 0 and emu_off == 0)))
+          and (allowed_set is None or (outside_n == 0 and off_instr == 0 and emu_off == 0 and resident_off == 0)))
     print(f"unbound work: {'PASS' if ok else 'FAIL'}", file=out)
     return dict(ok=ok, known=known, resident=len(resident), executed=len(executed), own=own, queued=len(queued), ran=len(ran),
                 on_rt=on_rt, unmatched=unmatched, cpus=dict(cpus), delays=delays, emu_queued=len(emu_idx), emu_ran=len(emu_ran),
                 emu_unmatched=emu_unmatched, emu_on_rt=emu_on_rt, outside=outside_n, off_instr=off_instr, emu_off=emu_off,
-                moved=moved, instr_moved=instr_moved, emu_moved=emu_moved)
+                moved=moved, instr_moved=instr_moved, emu_moved=emu_moved, resident_off=resident_off, unswitched=unswitched)
 
 
 def run_report(csv_path: pathlib.Path, cap, rt: int, out, allowed: str | None = None, emu: dict | None = None) -> dict:
