@@ -2766,6 +2766,79 @@ corrected design, carrying A3's unsupported verdict forward rather than
 treating attempt 19 as a certified timer baseline; no placement change,
 acquisition, hardware work or H2 is authorized.
 
+**Plan L1: a placement rehearsal on CPUs 4-5 (tools in place, for review;
+not executed).** L1 moves the emulator and every unbound workqueue onto one
+P-core's two threads, 4 and 5, and keeps CPU 2 (CPU 3's SMT sibling) free of
+everything the rig places. It is a declared bundle, never combined with A3,
+so an improvement under it is the bundle's, not any single element's: the
+emulator launched with `taskset -c 4,5`; the unbound mask set to exactly
+4-5; CPUs 2-5 excluded (28 stress workers instead of 30, the tracers off
+them); the listed observers confined off 2-5 during each run; the
+fair-server controls on CPU 7 instead of 5 (5 holds the emulator and the
+unbound work, and the session refuses controls on an excluded CPU); the
+supervisor's shell pinned to 0-1,6-31. It carries A3's unsupported
+certificate forward: attempt 19 is no certified timer baseline. The tools
+add, each beside the existing path, whose meaning is unchanged:
+
+- **The mask set to a list.** `tools/wq_mask.sh set 4-5 --rt-cpu 3` writes
+  exactly that list's mask, through the keeper's target form
+  (`tools/root_keeper.sh serve ... --target 4-5 --rt-cpu 3`). Both compute
+  the target with `tools/wq_target.py`, which refuses a list that is not
+  canonical, an offline or isolated CPU, a CPU outside the original mask,
+  and the named real-time CPU or one of its SMT siblings (read from its
+  `thread_siblings_list`; neither tool infers the real-time CPU). The
+  verification needs every unbound worker and rescuer allowed only within
+  the list; the restoration, no more workers narrowed than at the start.
+  The keeper now also runs `tools/wq_target.py` as root, one more file for
+  the candidate's identities. `tools/validation_gate.py --mask-target 4-5
+  --rt-cpu 3` reads such a record under its own rules; a record of the other
+  kind is unreadable under either option.
+- **Residency on the allowed set.** `tools/emulator_residency.py --allowed
+  4-5` fails any time of an emulator task, queued or running, on a CPU
+  outside 4-5 inside the window, and any thread of its tree in the lineage
+  allowed outside them. `tools/unbound_work.py --experiment FILE --allowed
+  4-5` also follows the other tty direction (the flushes queued by the
+  emulator's tasks, identified as the residency check identifies them) and
+  fails any unbound or rescuer execution, and any flush of either direction,
+  outside 4-5. Both keep every existing check.
+- **The rig exempt from the confinement, by identity.** The emulator and the
+  supervisor are launched from panes of the terminal the observers include,
+  so the confinement would otherwise select them, and the keeper with them.
+  `tools/trace_session.sh --exempt PID:START` (twice: the supervisor's
+  process and the emulator's) adds those trees to the session's own
+  exemption; `tools/observer_affinity.py` refuses a confinement whose exempt
+  roots do not hold those identities, at its start and at every later pass
+  (a pass used to drop such an exemption silently); the halfway snapshot's
+  check and `tools/trace_correlate.py`'s observer time read the same record
+  and treat a missing or replaced exempt root as no evidence; the
+  restoration never touches an exempt tree. The terminal, the multiplexer,
+  the panes' shells and every other observer stay confined.
+- **The supervisor's layout.** `tools/option_a.sh` takes a layout constant
+  of the committed run, as it takes its attempt numbers. Layout `l1` needs
+  `--observers PIDS`, checks that its own affinity is exactly 0-1,6-31 and
+  that every emulator thread is allowed exactly 4-5 (before the experiment
+  and after each session), and records the bundle before any change; then
+  the steps are A3's, with the mask set to 4-5, the sessions confined off
+  2-5 with the two exemptions and the controls on CPU 7, and the gates
+  reading the set record.
+
+Not part of these tools: the descriptive accounting of the time on CPUs 2,
+4 and 5 inside the window by class (the emulator, the tty flush workers,
+other unbound work, per-CPU kernel threads, observers, unlisted tasks,
+interrupts, idle), which the occupancy analysis of attempt 17 would provide
+offline after a rehearsal. The confinement excludes nothing it does not
+name: unlisted tasks, system services, per-CPU kernel threads and interrupts
+may still run on 2, 4 and 5, and no CPU is claimed exclusive. The recovery
+limits weigh more than A3's: after a killed supervisor the mask stays 4-5
+(all of the host's unbound work on two CPUs) until `tools/wq_mask.sh
+restore` or a reboot, and observers confined by a session that ended
+between its confinement and its restoration stay so until
+`tools/observer_affinity.py restore` reads that session's record. Before a
+rehearsal come a candidate checkout and build with its identities, a guard
+revision whose emulator check requires exactly 4-5, operator blocks naming
+the observers at the time, their checks, and a separate go with fresh
+attempt names.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

@@ -36,7 +36,17 @@
 # without restoring; a release never delivered, or one whose answer is lost
 # after the keeper acted on it, restores nothing either (the record tells
 # them apart). A supervisor killed with SIGKILL restores nothing: the keeper
-# ends without restoring and logs the group's state. The keeper: its list; its modes under
+# ends without restoring and logs the group's state. Plan L1's layout
+# (OPTION_A_LAYOUT=l1, the emulator stand-in on exactly CPUs 4-5): the bundle
+# recorded before any change, the mask set to 4-5 during both sessions
+# through the keeper's target form, the sessions confined off 2-5 with the
+# observers named and the supervisor and the emulator exempt by pid and start
+# time, the controls on CPU 7, the gates (stand-in, then real, open and
+# closed) reading the set record, every restoration verified; refused with
+# nothing changed: no or a malformed --observers, another supervisor
+# affinity, an emulator not on exactly 4-5 (0-2,4-31 or 4-6), --observers
+# under a3, an unknown layout; an emulator widened to CPU 6 during the
+# untraced session stops it. The keeper: its list; its modes under
 # umask 077 (the files the client reads stay 0644); a directory of its own,
 # created exclusively; links planted in its replies (temporary or final
 # names, or in place of the directory) redirect nothing; its target form
@@ -71,6 +81,9 @@ export WQ_MASK_SYSFS=$ROOT/sys WQ_MASK_PROC=$ROOT/proc WQ_MASK_RECORD=$ROOT/stat
 export QUIET_HOST_STATE=$ROOT/state/quiet.state
 export KEEPER_RUNDIR=$ROOT/run OPTION_A_GROUP_WAIT=2
 export OPTION_A_SERVO_STATE=$ROOT/servo OPTION_A_INSPECT=$ROOT/inspect
+mkdir -p "$ROOT/cpusys/cpu3/topology"  # the stand-in CPU sysfs (plan L1's set mode): CPUs 0-31, CPU 3's siblings 2-3
+printf '0-31\n' >"$ROOT/cpusys/online"; printf '2-3\n' >"$ROOT/cpusys/cpu3/topology/thread_siblings_list"
+export WQ_MASK_CPUSYS=$ROOT/cpusys KEEPER_CPUSYS=$ROOT/cpusys
 REAL_DATE=$(command -v date)
 REAL_PY=$(command -v python3)
 ATT_A=18  # tools/option_a.sh's attempts and experiment directory
@@ -127,6 +140,7 @@ while [ $# -gt 0 ]; do
 done
 if [ "$dry" -eq 1 ]; then echo "dry $args" >>"$ROOT/calls"; exit "$(cat "$ROOT/dry.exit" 2>/dev/null || echo 0)"; fi
 echo "session $mode $attempt controls=$ctl" >>"$ROOT/calls"
+echo "$args" >"$ROOT/session.args.$attempt"
 trap 'echo cleaned >"$ROOT/cleaned-$attempt"; exit 130' INT TERM HUP
 cat "$ROOT/sys/cpumask" >"$ROOT/mask-during-$attempt"
 : >"$outdir/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-open-$mode-20261112-$attempt.csv"
@@ -147,6 +161,7 @@ fi
 [ -e "$ROOT/session.escaped.$attempt" ] && { setsid sleep 30 & echo $! >"$ROOT/escaped.pid"; }
 case "$(cat "$ROOT/session.emu.$attempt" 2>/dev/null)" in
   widen) python3 -c 'import os, sys; p = int(sys.argv[1]); os.sched_setaffinity(p, os.sched_getaffinity(p) | {3})' "$(cat "$ROOT/pty.pid")" ;;
+  widen6) python3 -c 'import os, sys; p = int(sys.argv[1]); os.sched_setaffinity(p, os.sched_getaffinity(p) | {6})' "$(cat "$ROOT/pty.pid")" ;;
   gone) kill "$(cat "$ROOT/pty.pid")" ;;
   swap) ln -sfn "$(readlink "$ROOT/pty.spare")" "$ROOT/pty" ;;
 esac
@@ -179,7 +194,8 @@ exit 0
 EOF
 # The emulator's stand-in: a process holding a pseudo-terminal's master, its slave linked at LINK; its pid in LINK.pid.
 # MODE off3 (all CPUs but 3, as the emulator is launched), all (CPU 3 allowed), thread3 (a second thread allowed on
-# CPU 3), twice (a forked child holding the master too, its pid in LINK.pid2).
+# CPU 3), twice (a forked child holding the master too, its pid in LINK.pid2), l1 (exactly CPUs 4-5, plan L1), l1wide
+# (CPUs 4-6).
 cat >"$ROOT/emu.py" <<'EOF'
 import os, sys, threading, time
 link, mode = sys.argv[1], sys.argv[2]
@@ -188,6 +204,8 @@ if 3 not in mine:
     sys.exit("option_a_smoke: CPU 3 is not in this test's affinity")
 if mode != "all":
     os.sched_setaffinity(0, mine - {3})
+if mode in ("l1", "l1wide"):
+    os.sched_setaffinity(0, {4, 5} | ({6} if mode == "l1wide" else set()))
 m, s = os.openpty()
 if mode == "thread3":
     ready = threading.Event()
@@ -286,7 +304,7 @@ start() {  # the supervisor in its own session and process group, INT and QUIT a
            # shell starts background commands with both ignored, which no trap could undo); its pid in sup
   python3 -c 'import os, signal, sys
 signal.signal(signal.SIGINT, signal.SIG_DFL); signal.signal(signal.SIGQUIT, signal.SIG_DFL)
-os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' tools/option_a.sh >"$ROOT/sup.out" 2>&1 &
+os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' tools/option_a.sh "$@" >"$ROOT/sup.out" 2>&1 &
   sup=$!
 }
 wait_file() { local i; for ((i = 0; i < 100; i++)); do [ -e "$1" ] && return 0; sleep 0.1; done; return 1; }
@@ -561,6 +579,86 @@ for mode in undelivered:98:running lost:97:released; do
   kill "$(cat "$ROOT/escaped.pid")"
 done
 
+# Plan L1's layout (OPTION_A_LAYOUT=l1, the test's override of the committed constant), with the real mask tool and
+# keeper, the stand-in sessions and gate, then the real gate: the bundle recorded before any change; the mask set to
+# 4-5 during both sessions; the sessions confined off 2-5 with the observers named, the supervisor and the emulator
+# exempt by pid and start time, the controls on CPU 7; the gates reading the set record; every restoration verified.
+sleep 600 >/dev/null 2>&1 &
+l1_obs=$!  # the stand-in observer: no output inherited, ended on any exit (a failing case leaves none behind)
+trap 'emu_stop >/dev/null 2>&1; kill "$l1_obs" 2>/dev/null' EXIT
+SUP_SET=$(python3 -c 'import os, sys
+s, out, i = sorted(os.sched_getaffinity(0)), [], 0
+while i < len(s):
+    j = i
+    while j + 1 < len(s) and s[j + 1] == s[j] + 1:
+        j += 1
+    out.append(str(s[i]) if i == j else f"{s[i]}-{s[j]}")
+    i = j + 1
+print(",".join(out))')  # this test's own affinity, as the supervisor's expected one
+l1_run() {  # ARGS...: the supervisor under layout l1, waited for; its status in l1_st
+  (export OPTION_A_LAYOUT=l1 OPTION_A_SUP_CPUS=${L1_SUP:-$SUP_SET}; start "$@"; wait "$sup"; echo $? >"$ROOT/l1.st")
+  l1_st=$(cat "$ROOT/l1.st")
+}
+EMU_MODE=l1 reset
+l1_run --observers "$l1_obs"
+emu_pid=$(cat "$ROOT/pty.pid"); emu_start=$(sed 's/.*) //' "/proc/$emu_pid/stat" | cut -d ' ' -f 20)
+sup_pid=$(sed -n 's/^started=.* supervisor=\([0-9]*\) .*/\1/p' "$E/experiment.record")
+[ "$l1_st" -eq 0 ] && restored || fail "the L1 experiment ($l1_st)" "$ROOT/sup.out"
+keys=$(sed 's/=.*//' "$E/experiment.record" | tr '\n' ' ')
+[ "$keys" = "$(sed 's/directories emulator_start/directories layout emulator_start/; s/mask_clear_/mask_set_/g' <<<"$want")" ] &&
+  grep -q "^layout=l1 supervisor_affinity=$SUP_SET observers=$l1_obs excluded=2-5 mask_target=4-5 emulator_cpus=4-5 controls_cpu=7\$" "$E/experiment.record" &&
+  grep -q '^finished=.* outcome=ACQUIRED reason=none$' "$E/experiment.record" || fail "the L1 experiment record: $keys" "$E/experiment.record"
+[ "$(grep -c -E "^emulator_(start|A|B)=\S+ pid=$emu_pid start=$emu_start comm=python3 tids=$emu_pid allowed=4-5\$" "$E/experiment.record")" -eq 3 ] ||
+  fail "the L1 emulator's records" "$E/experiment.record"
+[ "$(cat "$ROOT/mask-during-$ATT_A")" = 00000030 ] && [ "$(cat "$ROOT/mask-during-$ATT_B")" = 00000030 ] || fail "the L1 sessions did not run under 4-5"
+for a in "$ATT_A" "$ATT_B"; do
+  grep -q -- "--exclude-cpus 2-5 --placements confined --observers $l1_obs --exempt $sup_pid:[0-9]* --exempt $emu_pid:$emu_start --runs " "$ROOT/session.args.$a" ||
+    fail "the L1 session $a's arguments" "$ROOT/session.args.$a"
+done
+grep -q -- '--fs-controls 7 --modes timer' "$ROOT/session.args.$ATT_B" && [ "$(grep -c '^dry .*--exclude-cpus 2-5 --placements confined' "$ROOT/calls")" -eq 2 ] &&
+  [ "$(grep -c '^gate .* --mask-target 4-5 --rt-cpu 3$' "$ROOT/calls")" -eq 2 ] || fail "the L1 controls, dry runs or gates" "$ROOT/calls"
+grep -q 'request .*: mask 00000030: status 0' "$E/keeper.log" && grep -q 'target 00000030 (target_list=4-5, rt_cpu=3, rt_siblings=2-3)$' "$E/keeper.log" &&
+  grep -q '^mode=set$' "$(ls "$WQ_MASK_RECORD".restored-* | tail -n 1)" || fail "the L1 keeper's log or mask record" "$E/keeper.log"
+# The same with the real gate (the set record read under --mask-target), then against the closed record.
+EMU_MODE=l1 reset; : >"$ROOT/real-gate"
+(unset OPTION_A_GATE; l1_run --observers "$l1_obs"; exit "$l1_st"); st=$?
+scratch_rm "$ROOT/real-gate"
+[ "$st" -eq 0 ] && restored && grep -q 'gate_A_end=.* status=0' "$E/experiment.record" && grep -q 'gate_B_end=.* status=0' "$E/experiment.record" ||
+  fail "the L1 experiment with the real gate ($st)" "$E/supervisor.log"
+closed=$(ls "$WQ_MASK_RECORD".restored-* | tail -n 1)
+for sp in A:untraced:$ATT_A B:timer:$ATT_B; do
+  IFS=: read -r ses m a <<<"$sp"
+  csv=$(ls "$ROOT/out/clock-validation-$a"/*-"$m"-*-"$a".csv)
+  extra=(); [ "$m" = timer ] && extra=(--controls "$ROOT/out/clock-validation-$a/fs-controls-20261112-$a.run.txt")
+  uv run --project tools tools/validation_gate.py "$csv" --mode "$m" "${extra[@]}" --wq-record "$closed" --experiment "$E/experiment.record" \
+    --session "$ses" --record-state closed --mask-target 4-5 --rt-cpu 3 >"$ROOT/closed-$ses.txt" 2>&1 ||
+    fail "the L1 closed-record gate on session $ses" "$ROOT/closed-$ses.txt"
+done
+# Refusals under l1, nothing changed: no --observers, a malformed list, another supervisor affinity, an emulator not on
+# exactly 4-5; --observers under a3; an unknown layout.
+l1_refused() {  # WHAT WANT: the last run refused, nothing changed
+  [ "$l1_st" -eq 2 ] && [ ! -e "$ROOT/calls" ] && [ ! -e "$E" ] && [ "$(masks)" = "$ORIG $ORIG" ] && [ ! -e "$WQ_MASK_RECORD" ] &&
+    grep -q -- "$2" "$ROOT/sup.out" || fail "L1: $1 was not refused ($l1_st)" "$ROOT/sup.out"
+}
+EMU_MODE=l1 reset; l1_run; l1_refused "no --observers" "layout l1 needs --observers PIDS"
+EMU_MODE=l1 reset; l1_run --observers "1,x"; l1_refused "a malformed observer list" "layout l1 needs --observers PIDS"
+EMU_MODE=l1 reset; L1_SUP=0-1 l1_run --observers "$l1_obs"; l1_refused "another supervisor affinity" "the supervisor's affinity is $SUP_SET, not 0-1"
+for m in off3 l1wide; do
+  EMU_MODE=$m reset; l1_run --observers "$l1_obs"; l1_refused "an emulator ($m) not on exactly 4-5" "the emulator is not allowed exactly CPUs 4-5"
+done
+reset; start --observers "$l1_obs"; wait "$sup"; l1_st=$?; l1_refused "--observers under a3" "--observers is layout l1's"
+reset; (export OPTION_A_LAYOUT=l2; start; wait "$sup"; echo $? >"$ROOT/l1.st"); l1_st=$(cat "$ROOT/l1.st")
+[ "$l1_st" -eq 2 ] && grep -q 'unknown layout l2' "$ROOT/sup.out" || fail "an unknown layout ($l1_st)" "$ROOT/sup.out"
+# The emulator widened to CPU 6 during the untraced session: the check after it stops the experiment, restored.
+EMU_MODE=l1 reset; echo widen6 >"$ROOT/session.emu.$ATT_A"
+l1_run --observers "$l1_obs"
+[ "$l1_st" -eq 1 ] && ! grep -q '^session timer' "$ROOT/calls" && restored &&
+  grep -q '^emulator_A=.* status=1 reason=pid=.*not allowed exactly CPUs 4-5' "$E/experiment.record" &&
+  grep -q 'outcome=STOPPED reason=the emulator changed, or is not allowed exactly CPUs 4-5, after the untraced session' "$E/experiment.record" ||
+  fail "an L1 emulator widened during the untraced session ($l1_st)" "$ROOT/sup.out"
+kill "$l1_obs" 2>/dev/null; wait "$l1_obs" 2>/dev/null
+trap 'emu_stop >/dev/null 2>&1' EXIT
+
 # The keeper alone: its list, its own directory, links planted in it, an owner or a group member that cannot be read.
 owner_start() { sed 's/.*) //' "/proc/$1/stat" | cut -d ' ' -f 20; }
 keeper() {  # OWNER PGID [env...]: starts a keeper for OWNER, its directory in K
@@ -611,8 +709,6 @@ kill "$owner"
 # The keeper's target form (plan L1): the original and LIST's mask, fixed under tools/wq_target.py's bounds with the
 # real-time CPU named, listed in its ready file; it writes only those two, and a list outside the bounds, or a malformed
 # invocation, is refused before its directory exists.
-mkdir -p "$ROOT/cpusys/cpu3/topology"
-printf '0-31\n' >"$ROOT/cpusys/online"; printf '2-3\n' >"$ROOT/cpusys/cpu3/topology/thread_siblings_list"
 reset
 sleep 60 &
 owner=$!

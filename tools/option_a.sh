@@ -8,7 +8,22 @@
 # launched with an affinity that excludes CPU 3, and the supervisor verifies
 # it for every emulator thread before the experiment and after each session.
 #
-# usage: tools/option_a.sh [--dry-run]
+# usage: tools/option_a.sh [--dry-run] [--observers PIDS]
+#
+# Its layout is a constant of the committed run (LAYOUT, below), as its
+# attempt numbers are: a3, the accepted placement above (the emulator off
+# CPU 3, CPU 3 cleared from the unbound mask, observers open, the controls
+# on CPU 5); or l1, plan L1's placement rehearsal, a declared bundle: the
+# supervisor's own affinity exactly 0-1,6-31 (checked and recorded before
+# the first step); every emulator thread allowed exactly CPUs 4-5; the
+# unbound mask set to exactly 4-5 (tools/wq_mask.sh set 4-5 --rt-cpu 3,
+# through the keeper's target form); the sessions with CPUs 2-5 excluded
+# (two stress workers fewer, the tracers off them), the confined placement
+# of the observers named by --observers (required, and recorded before any
+# change), the supervisor's and the emulator's trees exempt by their pid and
+# start time (--exempt, verified at every confinement pass), and the
+# controls on CPU 7; the gates read the set record (--mask-target 4-5
+# --rt-cpu 3). --observers is refused under a3.
 #
 # Before any host change it refuses (exit 2) unless: the kernel is the
 # audited one; the emulator's pty exists and is no serial device; exactly
@@ -117,8 +132,9 @@
 # OPTION_A_SERVO_STATE the tools, OPTION_A_INSPECT the servos' reader,
 # OPTION_A_SUDO sudo (none: directly), OPTION_A_YES=1 the confirmation,
 # OPTION_A_RTLIMIT the real-time priority limit read, OPTION_A_GROUP_WAIT the
-# group's wait in seconds, QUIET_HOST_STATE and WQ_MASK_RECORD the two
-# records, and with ROOT_KEEPER_TEST=1 KEEPER_RUNDIR the keeper's /run.
+# group's wait in seconds, OPTION_A_LAYOUT the layout and OPTION_A_SUP_CPUS
+# l1's expected supervisor affinity, QUIET_HOST_STATE and WQ_MASK_RECORD the
+# two records, and with ROOT_KEEPER_TEST=1 KEEPER_RUNDIR the keeper's /run.
 set -u
 if [ "${OPTION_A_SUBREAPER:-}" != "$$" ]; then  # the same process, now a child subreaper (an exec keeps the pid)
   shopt -s execfail
@@ -153,10 +169,17 @@ ATT_B=19
 D_A=$OUT/clock-validation-$ATT_A
 D_B=$OUT/clock-validation-$ATT_B
 E=$OUT/clock-validation-option-a3
-COMMON=(--port "$PORT" --usb-device /sys/bus/usb/devices/1-9 --placements open
-        --runs current:1000:rt-loaded-excl:fast-motion --duration 20)
+LAYOUT=${OPTION_A_LAYOUT:-a3}  # the committed run's layout: a3 or l1 (see above)
+case "$LAYOUT" in
+  a3) EMU_CPUS=; MASK_ARGS=(clear "$RT_CPU"); MASK_STEP=mask_clear; KEEPER_ARGS=("$RT_CPU"); GATE_MASK=(); CTL_CPU=5
+      EMU_WHAT="may run on CPU $RT_CPU"; EMU_HINT="taskset -c 0-2,4-31" ;;
+  l1) EMU_CPUS=4-5; MASK_ARGS=(set 4-5 --rt-cpu "$RT_CPU"); MASK_STEP=mask_set; KEEPER_ARGS=(--target 4-5 --rt-cpu "$RT_CPU")
+      GATE_MASK=(--mask-target 4-5 --rt-cpu "$RT_CPU"); CTL_CPU=7; EXCLUDED=2-5; SUP_CPUS=${OPTION_A_SUP_CPUS:-0-1,6-31}
+      EMU_WHAT="is not allowed exactly CPUs 4-5"; EMU_HINT="taskset -c 4,5" ;;
+  *) echo "option_a: unknown layout $LAYOUT" >&2; exit 2 ;;
+esac
 SESSION_A=(--modes untraced --attempt "$ATT_A" --outdir "$D_A")
-SESSION_B=(--fs-controls 5 --modes timer --attempt "$ATT_B" --outdir "$D_B")
+SESSION_B=(--fs-controls "$CTL_CPU" --modes timer --attempt "$ATT_B" --outdir "$D_B")
 
 now() { date +%Y-%m-%dT%H:%M:%S.%N%z; }
 LOG=
@@ -171,14 +194,14 @@ record_failed=0
 rec() { printf '%s\n' "$1" >>"$E/experiment.record" 2>/dev/null || { record_failed=1; log "cannot append to $E/experiment.record"; return 1; }; }
 # emulator_state: the process holding the master of PORT's pseudo-terminal, as one line "pid=P start=S comm=C
 # tids=T,... allowed=L;..." (each thread's Cpus_allowed_list, in tids' order). Status 0 if exactly one process holds it
-# and every thread's list is well formed, nonempty and without RT_CPU; 1 if a thread's list holds RT_CPU or nothing (the
-# line, then why); 2 if it cannot be established (why). The search skips every /proc entry it cannot read (other users'
+# and every thread's list is well formed, nonempty and without RT_CPU (l1: exactly EMU_CPUS); 1 if a thread's list holds
+# RT_CPU or nothing, or (l1) is not exactly EMU_CPUS (the line, then why); 2 if it cannot be established (why). The search skips every /proc entry it cannot read (other users'
 # processes, root's among them): "exactly one" holds among the descriptor tables this user can read, not host-wide; a
 # process of another user that holds the master (inherited or passed to it) is not seen.
 emulator_state() {
   python3 -I -c '
 import os, sys
-port, rt = sys.argv[1], int(sys.argv[2])
+port, rt, want = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 def cpus(spec):
     out = set()
     for part in spec.split(","):
@@ -238,7 +261,13 @@ if bad:
     named = ",".join(bad)
     print(f"thread(s) {named} may run on CPU {rt} (or on no CPU)")
     sys.exit(1)
-' "$PORT" "$RT_CPU"
+if want:
+    bad = [t for t, c in zip(tids, sets) if c != cpus(want)]
+    if bad:
+        named = ",".join(bad)
+        print(f"thread(s) {named} are not allowed exactly CPUs {want}")
+        sys.exit(1)
+' "$PORT" "$RT_CPU" "$EMU_CPUS"
 }
 emu_id() { sed -E 's/^(pid=[0-9]+ start=[0-9]+) .*/\1/' <<<"$1"; }
 one() {  # DIR PATTERN: the one file matching, or status 1
@@ -248,9 +277,15 @@ one() {  # DIR PATTERN: the one file matching, or status 1
   printf '%s\n' "${f[0]}"
 }
 
-dry=0
-case "${1:-}" in --dry-run) dry=1 ;; '') ;; *) echo "usage: $0 [--dry-run]" >&2; exit 2 ;; esac
-[ $# -le 1 ] || { echo "usage: $0 [--dry-run]" >&2; exit 2; }
+dry=0; OBSERVERS=
+usage() { echo "usage: $0 [--dry-run] [--observers PIDS]" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry=1; shift ;;
+    --observers) [ $# -ge 2 ] || usage; OBSERVERS=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
 
 # --- Before any host change: refusals only. ---
 [ "$(uname -r)" = "$KERNEL" ] || refuse "the kernel is $(uname -r), not $KERNEL"
@@ -260,9 +295,23 @@ pty=$(basename "$(readlink -f "$PORT")")
 emu=$(emulator_state 2>&1)
 case $? in
   0) ;;
-  1) refuse "the emulator may run on CPU $RT_CPU: ${emu//$'\n'/; } (launch it with taskset -c 0-2,4-31)" ;;
+  1) refuse "the emulator $EMU_WHAT: ${emu//$'\n'/; } (launch it with $EMU_HINT)" ;;
   *) refuse "the emulator cannot be established: ${emu//$'\n'/; }" ;;
 esac
+me_start=$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 20)
+COMMON=(--port "$PORT" --usb-device /sys/bus/usb/devices/1-9)
+if [ "$LAYOUT" = l1 ]; then
+  [[ $OBSERVERS =~ ^[123456789][0123456789]*(,[123456789][0123456789]*)*$ ]] ||
+    refuse "layout l1 needs --observers PIDS, the observer applications' processes (a list of PIDs)"
+  sup_cpus=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "/proc/$$/status")
+  [ "$sup_cpus" = "$SUP_CPUS" ] || refuse "the supervisor's affinity is $sup_cpus, not $SUP_CPUS (start its shell with taskset -c $SUP_CPUS)"
+  COMMON+=(--exclude-cpus "$EXCLUDED" --placements confined --observers "$OBSERVERS"
+           --exempt "$$:$me_start" --exempt "$(sed -E 's/^pid=([0-9]+) start=([0-9]+) .*/\1:\2/' <<<"$emu")")
+else
+  [ -z "$OBSERVERS" ] || refuse "--observers is layout l1's (this run's layout is $LAYOUT)"
+  COMMON+=(--placements open)
+fi
+COMMON+=(--runs current:1000:rt-loaded-excl:fast-motion --duration 20)
 rtl=${OPTION_A_RTLIMIT:-$(ulimit -r)}
 [ -x "$INSPECT" ] || refuse "the servos' reader $INSPECT is not executable (cmake --build build --target dxl_inspect)"
 [ "$rtl" = unlimited ] || [ "$rtl" -ge 80 ] || refuse "the real-time priority limit is $rtl, below the probe's 80 (sudo prlimit --pid \$\$ --rtprio=90:90)"
@@ -274,7 +323,7 @@ if [ "$dry" -eq 1 ]; then
   mkdir "$s/$ATT_A" "$s/$ATT_B"
   st=0
   "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --modes untraced --attempt "$ATT_A" --outdir "$s/$ATT_A" || st=$?
-  [ "$st" -eq 0 ] && { "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --fs-controls 5 --modes timer --attempt "$ATT_B" --outdir "$s/$ATT_B" || st=$?; }
+  [ "$st" -eq 0 ] && { "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" --fs-controls "$CTL_CPU" --modes timer --attempt "$ATT_B" --outdir "$s/$ATT_B" || st=$?; }
   rm -rf -- "${s:?}"
   [ "$st" -eq 0 ] || refuse "a session's dry run failed (status $st)"
   log "option_a: the emulator: $emu"
@@ -287,15 +336,25 @@ LOG=$E/supervisor.log
 undo_dirs() { rmdir "$D_A" "$D_B" 2>/dev/null; rm -f "$LOG" "$E/experiment.record"; rmdir "$E" 2>/dev/null; }
 for spec in "untraced $ATT_A $D_A" "timer $ATT_B $D_B"; do
   read -r m a d <<<"$spec"
-  extra=(); [ "$m" = timer ] && extra=(--fs-controls 5)
+  extra=(); [ "$m" = timer ] && extra=(--fs-controls "$CTL_CPU")
   if ! "$TRACE_SESSION" --dry-run --yes "${COMMON[@]}" "${extra[@]}" --modes "$m" --attempt "$a" --outdir "$d" >>"$LOG" 2>&1; then
     cat "$LOG" 2>/dev/null; undo_dirs; refuse "the $m session's dry run failed"
   fi
 done
 if [ "${OPTION_A_YES:-0}" != 1 ]; then
-  cat <<EOF
+  if [ "$LAYOUT" = l1 ]; then
+    cat <<EOF
+Plan L1's placement rehearsal: an untraced and a timer run on $PORT (attempts $ATT_A and $ATT_B), with the kernel's
+mask for unbound workqueues set to CPUs 4-5, the emulator on 4-5, the observers $OBSERVERS confined off CPUs 2-5 during
+each run, and the controls on CPU 7 (changed host conditions, restored at the end).
+EOF
+  else
+    cat <<EOF
 The loaded emulator validation, Option A: an untraced and a timer run on $PORT (attempts $ATT_A and $ATT_B),
 with CPU $RT_CPU removed from the kernel's mask for unbound workqueues (a changed host condition, restored at the end).
+EOF
+  fi
+  cat <<EOF
 Check that:
   - the arm is powered off, or torque-off and supported; nothing is sent to it;
   - the power cutoff is within reach;
@@ -306,11 +365,10 @@ EOF
   [ "$answer" = yes ] || { undo_dirs; refuse "not confirmed"; }
 fi
 if [ ${#SUDO[@]} -gt 0 ]; then "${SUDO[@]}" -v || { undo_dirs; refuse "sudo did not authenticate"; }; fi
-me_start=$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 20)
 me_pgid=$(sed 's/.*) //' "/proc/$$/stat" | cut -d ' ' -f 3)
 K=$KRUN/rtctrl-keeper-$$-$me_start
 [ ! -e "$K" ] || { undo_dirs; refuse "the keeper's directory $K exists"; }
-"${SUDO[@]}" "$KEEPER" serve "$$" "$me_start" "$me_pgid" "$RT_CPU" || { undo_dirs; refuse "the root keeper did not start"; }
+"${SUDO[@]}" "$KEEPER" serve "$$" "$me_start" "$me_pgid" "${KEEPER_ARGS[@]}" || { undo_dirs; refuse "the root keeper did not start"; }
 for ((i = 0; i < 100; i++)); do [ -e "$K/keeper.ready" ] && break; sleep 0.1; done
 kpid=$(sed -n 's/^pid=//p' "$K/keeper.ready" 2>/dev/null)
 kstart=$(sed 's/.*) //' "/proc/$kpid/stat" 2>/dev/null | cut -d ' ' -f 20)
@@ -321,6 +379,10 @@ KENV=(WQ_MASK_SUDO="$KEEPER" QUIET_HOST_SUDO="$KEEPER" ROOT_KEEPER_DIR="$K")
 rec "started=$(now) kernel=$(uname -r) supervisor=$$ group=$me_pgid keeper=$kpid keeper_start=$kstart keeper_dir=$K" ||
   { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
 rec "directories=$D_A $D_B $E" || { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
+if [ "$LAYOUT" = l1 ]; then  # the bundle's declared parts, before any change
+  rec "layout=l1 supervisor_affinity=$sup_cpus observers=$OBSERVERS excluded=$EXCLUDED mask_target=4-5 emulator_cpus=$EMU_CPUS controls_cpu=$CTL_CPU" ||
+    { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "cannot write the experiment record"; }
+fi
 s=$(emulator_state 2>&1) && [ "$(emu_id "$s")" = "$(emu_id "$emu")" ] && rec "emulator_start=$(now) $s" ||
   { env ROOT_KEEPER_DIR="$K" "$KEEPER" finish >/dev/null 2>&1; refuse "the emulator changed before the experiment, or its record failed: ${s//$'\n'/; }"; }
 quiet_owed=0; mask_owed=0; keeper_up=1; stopped=; finished=0
@@ -493,7 +555,7 @@ step() {  # NAME CMD...: an experiment step, started only once ready and its sta
   rec "${name}_end=$(now) status=$st"
   return "$st"
 }
-emulator_check() {  # A|B: the emulator recorded at the start, every thread still without RT_CPU; recorded as emulator_A|B
+emulator_check() {  # A|B: the emulator recorded at the start, every thread still placed as the layout needs; emulator_A|B
   local s st
   s=$(emulator_state 2>&1)
   st=$?
@@ -526,20 +588,20 @@ step state_start servo_check start; ok $? "the servos' starting state is not as 
 owe quiet; quiet_owed=1
 step quiet_stop env "${KENV[@]}" "$QUIET" stop; ok $? "tools/quiet_host.sh stop failed"
 owe mask; mask_owed=1
-step mask_clear env "${KENV[@]}" "$WQ" clear "$RT_CPU"; ok $? "tools/wq_mask.sh clear $RT_CPU failed"
+step "$MASK_STEP" env "${KENV[@]}" "$WQ" "${MASK_ARGS[@]}"; ok $? "tools/wq_mask.sh ${MASK_ARGS[*]} failed"
 step session_A "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_A[@]}"; ok $? "the untraced session failed"
 step check_A "$WQ" check; ok $? "the mask was not in effect after the untraced session"
-step emu_A emulator_check A; ok $? "the emulator changed, or may run on CPU $RT_CPU, after the untraced session"
+step emu_A emulator_check A; ok $? "the emulator changed, or $EMU_WHAT, after the untraced session"
 step state_A servo_check A; ok $? "the servos' state after the untraced session is not as declared $SERVO_WHAT: no timer run"
 csv_a=$(one "$D_A" "*-untraced-*-$ATT_A.csv") || halt "no single untraced probe log in $D_A"
-step gate_A "${GATE[@]}" "$csv_a" --mode untraced --wq-record "$WREC" --experiment "$E/experiment.record" --session A --record-state open
+step gate_A "${GATE[@]}" "$csv_a" --mode untraced --wq-record "$WREC" --experiment "$E/experiment.record" --session A --record-state open "${GATE_MASK[@]}"
 ok $? "the gate on the untraced run failed: no timer run"
 step session_B "$TRACE_SESSION" --yes "${COMMON[@]}" "${SESSION_B[@]}"; ok $? "the controls or the timer session failed"
 step check_B "$WQ" check; ok $? "the mask was not in effect after the timer session"
-step emu_B emulator_check B; ok $? "the emulator changed, or may run on CPU $RT_CPU, after the timer session"
+step emu_B emulator_check B; ok $? "the emulator changed, or $EMU_WHAT, after the timer session"
 step state_B servo_check B; ok $? "the servos' state after the timer session is not as declared $SERVO_WHAT"
 csv_b=$(one "$D_B" "*-timer-*-$ATT_B.csv") || halt "no single timer probe log in $D_B"
 ctl=$(one "$D_B" "fs-controls-*-$ATT_B.run.txt") || halt "no single controls record in $D_B"
-step gate_B "${GATE[@]}" "$csv_b" --mode timer --controls "$ctl" --wq-record "$WREC" --experiment "$E/experiment.record" --session B --record-state open
+step gate_B "${GATE[@]}" "$csv_b" --mode timer --controls "$ctl" --wq-record "$WREC" --experiment "$E/experiment.record" --session B --record-state open "${GATE_MASK[@]}"
 ok $? "the gate on the timer run failed"
 finish
