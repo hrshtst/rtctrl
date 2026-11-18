@@ -45,7 +45,8 @@
 # closed) reading the set record, every restoration verified; refused with
 # nothing changed: no or a malformed --observers, another supervisor
 # affinity, an emulator not on exactly 4-5 (0-2,4-31 or 4-6), --observers
-# under a3, an unknown layout; an emulator widened to CPU 6 during the
+# under a3, an unknown layout, and the committed layout (l1, with no override)
+# without --observers; an emulator widened to CPU 6 during the
 # untraced session stops it. The keeper: its list; its modes under
 # umask 077 (the files the client reads stay 0644); a directory of its own,
 # created exclusively; links planted in its replies (temporary or final
@@ -81,14 +82,15 @@ export WQ_MASK_SYSFS=$ROOT/sys WQ_MASK_PROC=$ROOT/proc WQ_MASK_RECORD=$ROOT/stat
 export QUIET_HOST_STATE=$ROOT/state/quiet.state
 export KEEPER_RUNDIR=$ROOT/run OPTION_A_GROUP_WAIT=2
 export OPTION_A_SERVO_STATE=$ROOT/servo OPTION_A_INSPECT=$ROOT/inspect
+export OPTION_A_LAYOUT=a3  # the cases below run a3 unless they say l1; one checks the committed layout (l1)
 mkdir -p "$ROOT/cpusys/cpu3/topology"  # the stand-in CPU sysfs (plan L1's set mode): CPUs 0-31, CPU 3's siblings 2-3
 printf '0-31\n' >"$ROOT/cpusys/online"; printf '2-3\n' >"$ROOT/cpusys/cpu3/topology/thread_siblings_list"
 export WQ_MASK_CPUSYS=$ROOT/cpusys KEEPER_CPUSYS=$ROOT/cpusys
 REAL_DATE=$(command -v date)
 REAL_PY=$(command -v python3)
-ATT_A=18  # tools/option_a.sh's attempts and experiment directory
-ATT_B=19
-E=$ROOT/out/clock-validation-option-a3
+ATT_A=20  # tools/option_a.sh's attempts and experiment directory
+ATT_B=21
+E=$ROOT/out/clock-validation-option-l1
 
 cat >"$ROOT/cpus" <<'EOF'
 import sys
@@ -649,6 +651,8 @@ done
 reset; start --observers "$l1_obs"; wait "$sup"; l1_st=$?; l1_refused "--observers under a3" "--observers is layout l1's"
 reset; (export OPTION_A_LAYOUT=l2; start; wait "$sup"; echo $? >"$ROOT/l1.st"); l1_st=$(cat "$ROOT/l1.st")
 [ "$l1_st" -eq 2 ] && grep -q 'unknown layout l2' "$ROOT/sup.out" || fail "an unknown layout ($l1_st)" "$ROOT/sup.out"
+EMU_MODE=l1 reset; (unset OPTION_A_LAYOUT; export OPTION_A_SUP_CPUS=$SUP_SET; start; wait "$sup"; echo $? >"$ROOT/l1.st")
+l1_st=$(cat "$ROOT/l1.st"); l1_refused "the committed layout (no override) without --observers" "layout l1 needs --observers PIDS"
 # The emulator widened to CPU 6 during the untraced session: the check after it stops the experiment, restored.
 EMU_MODE=l1 reset; echo widen6 >"$ROOT/session.emu.$ATT_A"
 l1_run --observers "$l1_obs"

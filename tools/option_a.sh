@@ -11,10 +11,11 @@
 # usage: tools/option_a.sh [--dry-run] [--observers PIDS]
 #
 # Its layout is a constant of the committed run (LAYOUT, below), as its
-# attempt numbers are: a3, the accepted placement above (the emulator off
-# CPU 3, CPU 3 cleared from the unbound mask, observers open, the controls
-# on CPU 5); or l1, plan L1's placement rehearsal, a declared bundle: the
-# supervisor's own affinity exactly 0-1,6-31 (checked and recorded before
+# attempt numbers and experiment directory are (this commit: l1, attempts
+# 20 and 21, clock-validation-option-l1): a3, the accepted placement above
+# (the emulator off CPU 3, CPU 3 cleared from the unbound mask, observers
+# open, the controls on CPU 5); or l1, plan L1's placement rehearsal, a
+# declared bundle: the supervisor's own affinity exactly 0-1,6-31 (checked and recorded before
 # the first step); every emulator thread allowed exactly CPUs 4-5; the
 # unbound mask set to exactly 4-5 (tools/wq_mask.sh set 4-5 --rt-cpu 3,
 # through the keeper's target form); the sessions with CPUs 2-5 excluded
@@ -164,12 +165,12 @@ KRUN=/run
 [ "${ROOT_KEEPER_TEST:-0}" = 1 ] && KRUN=${KEEPER_RUNDIR:-/run}
 GROUP_WAIT=${OPTION_A_GROUP_WAIT:-120}
 RT_CPU=3
-ATT_A=18
-ATT_B=19
+ATT_A=20
+ATT_B=21
 D_A=$OUT/clock-validation-$ATT_A
 D_B=$OUT/clock-validation-$ATT_B
-E=$OUT/clock-validation-option-a3
-LAYOUT=${OPTION_A_LAYOUT:-a3}  # the committed run's layout: a3 or l1 (see above)
+E=$OUT/clock-validation-option-l1
+LAYOUT=${OPTION_A_LAYOUT:-l1}  # the committed run's layout: a3 or l1 (see above)
 case "$LAYOUT" in
   a3) EMU_CPUS=; MASK_ARGS=(clear "$RT_CPU"); MASK_STEP=mask_clear; KEEPER_ARGS=("$RT_CPU"); GATE_MASK=(); CTL_CPU=5
       EMU_WHAT="may run on CPU $RT_CPU"; EMU_HINT="taskset -c 0-2,4-31" ;;
