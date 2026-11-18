@@ -39,7 +39,11 @@
 # ends without restoring and logs the group's state. The keeper: its list; its modes under
 # umask 077 (the files the client reads stay 0644); a directory of its own,
 # created exclusively; links planted in its replies (temporary or final
-# names, or in place of the directory) redirect nothing; an owner that
+# names, or in place of the directory) redirect nothing; its target form
+# (plan L1: --target 4-5 --rt-cpu 3) lists the list, the real-time CPU and
+# its siblings in its ready file, writes only the original or that list's
+# mask, and refuses the real-time CPU's sibling, a non-canonical list and
+# malformed invocations before its directory exists; an owner that
 # cannot be read is not taken as ended; its owner killed, it ends at once
 # without restoring, logging the group "present" (a member that a /proc scan
 # cannot read named as unknown) or "ended". Its group test, on the
@@ -603,6 +607,32 @@ c finish && [ "$(masks)" = "$ORIG $ORIG" ] || fail "the keeper's finish" "$K/kee
 # Its directory exists already (an earlier keeper's, for this owner): refused.
 tools/root_keeper.sh serve "$owner" "$(owner_start "$owner")" 999999 3 2>/dev/null; st=$?
 [ "$st" -eq 2 ] || fail "a keeper whose directory exists ($st)"
+kill "$owner"
+# The keeper's target form (plan L1): the original and LIST's mask, fixed under tools/wq_target.py's bounds with the
+# real-time CPU named, listed in its ready file; it writes only those two, and a list outside the bounds, or a malformed
+# invocation, is refused before its directory exists.
+mkdir -p "$ROOT/cpusys/cpu3/topology"
+printf '0-31\n' >"$ROOT/cpusys/online"; printf '2-3\n' >"$ROOT/cpusys/cpu3/topology/thread_siblings_list"
+reset
+sleep 60 &
+owner=$!
+K=$ROOT/run/rtctrl-keeper-$owner-$(owner_start "$owner")
+scratch_within "$K" || fail "the target-form keeper's directory"
+for bad in "--target 2-5 --rt-cpu 3:the real-time CPU 3 or its SMT siblings" "--target 4,5 --rt-cpu 3:not a canonical CPU list" \
+           "--target 4-5:usage" "--target 4-5 --cpu 3:usage" "--rt-cpu 3 --target 4-5:usage"; do
+  read -ra a <<<"${bad%%:*}"
+  KEEPER_CPUSYS=$ROOT/cpusys tools/root_keeper.sh serve "$owner" "$(owner_start "$owner")" 999999 "${a[@]}" 2>"$ROOT/k.err"; st=$?
+  [ "$st" -eq 2 ] && [ ! -e "$K" ] && grep -q -- "${bad#*:}" "$ROOT/k.err" || fail "the keeper's target form, ${bad%%:*} ($st)" "$ROOT/k.err"
+done
+KEEPER_CPUSYS=$ROOT/cpusys tools/root_keeper.sh serve "$owner" "$(owner_start "$owner")" 999999 --target 4-5 --rt-cpu 3 &&
+  wait_file "$K/keeper.ready" || fail "the keeper's target form did not start" "$K/keeper.log"
+[ "$(sed 1d "$K/keeper.ready")" = "$(printf 'original=ffffffff\ntarget=00000030\ntarget_list=4-5\nrt_cpu=3\nrt_siblings=2-3')" ] &&
+  grep -q 'original ffffffff, target 00000030 (target_list=4-5, rt_cpu=3, rt_siblings=2-3)$' "$K/keeper.log" ||
+  fail "the target-form keeper's ready file or log" "$K/keeper.ready"
+echo "$TARGET" | c tee "$ROOT/sys/cpumask"; st1=$?  # clear's target: not this keeper's
+[ "$st1" -eq 99 ] && [ "$(masks)" = "$ORIG $ORIG" ] || fail "the target-form keeper wrote another value ($st1)" "$K/keeper.log"
+echo 00000030 | c tee "$ROOT/sys/cpumask" && [ "$(masks)" = "00000030 00000030" ] || fail "the target-form keeper's write" "$K/keeper.log"
+c finish && [ "$(masks)" = "$ORIG $ORIG" ] || fail "the target-form keeper's finish" "$K/keeper.log"
 kill "$owner"
 
 # Fault injection for the keeper alone: a cat that cannot read one owner's stat, a python3 that cannot read one

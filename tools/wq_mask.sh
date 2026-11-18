@@ -2,11 +2,13 @@
 # The reversible removal of one CPU from the kernel's global mask for unbound
 # workqueues (/sys/devices/virtual/workqueue/cpumask), for the loaded
 # emulator validation's Option A (docs/hardware/control-rate.md), run by its
-# supervisor (tools/option_a.sh). The mask limits every unbound workqueue,
-# not only the tty layer's flush work: a changed host condition, recorded as
-# such. tools/validation_gate.py checks a run against this tool's record.
+# supervisor (tools/option_a.sh), or the reversible setting of that mask to a
+# list of CPUs (plan L1's placement). The mask limits every unbound
+# workqueue, not only the tty layer's flush work: a changed host condition,
+# recorded as such. tools/validation_gate.py checks a run against this
+# tool's record.
 #
-# usage: tools/wq_mask.sh clear CPU | check | restore | status
+# usage: tools/wq_mask.sh clear CPU | set LIST --rt-cpu N | check | restore | status
 #
 # clear CPU reads the effective mask (cpumask), the requested one
 #   (cpumask_requested) and the isolated one strictly, and refuses with
@@ -21,6 +23,20 @@
 #   or unconfirmed write, a failed verification or an interruption restores
 #   at once, as restore does; a restoration that is not verified keeps the
 #   record open and the tool fails (unresolved: run restore).
+# set LIST --rt-cpu N sets the mask to exactly LIST's CPUs. It refuses, with
+#   nothing changed, on clear's grounds (an open record, a value that cannot
+#   be read, requested and effective masks that differ, an incomplete
+#   census) and unless tools/wq_target.py accepts the target: LIST a
+#   canonical list (4-5) of online CPUs inside the original mask, none
+#   isolated, none the named real-time CPU N or one of its SMT siblings
+#   (read from N's thread_siblings_list; never inferred). It records the
+#   real-time CPU, its siblings, the list, the originals and the target,
+#   then the restoration owed, before it writes; it writes the target
+#   through sudo and verifies both masks and, within the wait, a complete
+#   census in which every unbound kernel worker and rescuer is allowed only
+#   within LIST. Its failures, and an interruption, restore at once, as
+#   clear's do; its restoration's census needs no more workers allowed on
+#   less than every original CPU than at the start.
 # check compares both masks with the record's target, appends the
 #   observation and succeeds only if both equal it.
 # restore writes the original requested mask and verifies that both masks
@@ -44,7 +60,12 @@
 # stops the tool before the next change):
 #   started=TIME, cpu=N, original_cpumask=M, original_requested=M,
 #   original_isolated=M, original_census=workers=N allowed=N unknown=0,
-#   target=M (each once, in this order), then restore_owed=TIME,
+#   target=M (each once, in this order) (a set record: started, mode=set,
+#   rt_cpu=N, rt_siblings=L, target_list=LIST, the three original masks,
+#   original_census=workers=N within=N full=N unknown=0, target=M; its
+#   set_verified counts within=N where clear's has allowed=0, and its
+#   restored full=N where clear's has allowed=N, context=restore|failed-set),
+#   then restore_owed=TIME,
 #   set_write=TIME status=N, set_verified=TIME cpumask=M requested=M
 #   workers=N allowed=0 unknown=0 or set_failed=TIME reason=TEXT;
 #   observed=TIME cpumask=M requested=M result=matches|differs (or
@@ -57,17 +78,19 @@
 # record is kept for restore); 2 refused, nothing changed.
 #
 # For tests: WQ_MASK_SYSFS replaces /sys/devices/virtual/workqueue,
-# WQ_MASK_PROC /proc, WQ_MASK_SUDO sudo (none: directly; the supervisor
+# WQ_MASK_CPUSYS /sys/devices/system/cpu, WQ_MASK_PROC /proc, WQ_MASK_SUDO sudo (none: directly; the supervisor
 # passes tools/root_keeper.sh), WQ_MASK_RECORD the record and WQ_MASK_WAIT
 # the workers' wait in seconds (default 5).
 set -u
 SYSFS=${WQ_MASK_SYSFS:-/sys/devices/virtual/workqueue}
+CPUSYS=${WQ_MASK_CPUSYS:-/sys/devices/system/cpu}
 PROC=${WQ_MASK_PROC:-/proc}
+TARGET_TOOL=$(dirname "$(readlink -f "$0")")/wq_target.py
 case "${WQ_MASK_SUDO:-sudo}" in none) SUDO=() ;; *) SUDO=("${WQ_MASK_SUDO:-sudo}") ;; esac
 rec=${WQ_MASK_RECORD:-${XDG_STATE_HOME:-$HOME/.local/state}/rtctrl-wq-mask.record}
 WAIT_S=${WQ_MASK_WAIT:-5}
 
-usage() { echo "usage: $0 clear CPU | check | restore | status" >&2; exit 2; }
+usage() { echo "usage: $0 clear CPU | set LIST --rt-cpu N | check | restore | status" >&2; exit 2; }
 refuse() { echo "wq_mask: $*: nothing changed" >&2; exit 2; }
 now() { date +%Y-%m-%dT%H:%M:%S.%N%z; }
 note() {  # append one record line, checked
@@ -153,38 +176,57 @@ for pid in os.listdir(proc):
 print(n, on, unknown)
 ' "$PROC" "$1"
 }
+# census_set LIST ORIGINAL: "<workers> <within LIST> <allowed on every CPU of ORIGINAL> <unknown>" (tools/wq_target.py).
+census_set() {
+  python3 -I "$TARGET_TOOL" census "$PROC" "$1" "$2"
+}
 write_mask() {  # VALUE: through sudo; the status of the write itself
   printf '%s\n' "$1" | "${SUDO[@]}" tee "$SYSFS/cpumask" >/dev/null 2>&1
   return "${PIPESTATUS[1]}"
 }
 
-r_cpu=; r_cpumask=; r_requested=; r_isolated=; r_target=; r_workers=; r_allowed=
-load() {  # the record's fixed values, each exactly once and well formed
-  local k v seen=" "
+r_mode='clear'; r_cpu=; r_cpumask=; r_requested=; r_isolated=; r_target=; r_workers=; r_allowed=
+r_rt_cpu=; r_rt_siblings=; r_target_list=; r_full=
+load() {  # the record's fixed values, each exactly once and well formed; a clear record has no mode line
+  local k v seen=" " census=
   [ -r "$rec" ] || return 1
-  local mask='^[0-9a-f]+(,[0-9a-f]+)*$'
+  local mask='^[0-9a-f]+(,[0-9a-f]+)*$' list='^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$'
   while IFS='=' read -r k v; do
     [[ $v =~ ^[[:print:]]*$ ]] || { echo "wq_mask: unreadable record line: $k" >&2; return 1; }
     case "$k" in
       # The steps' lines are checked by tools/validation_gate.py; restore and check use the fixed values below.
       started | restore_owed | set_write | set_verified | set_failed | observed | restore_write | restore_failed | restored) continue ;;
-      cpu | original_cpumask | original_requested | original_isolated | original_census | target)
+      cpu | mode | rt_cpu | rt_siblings | target_list | original_cpumask | original_requested | original_isolated | original_census | target)
         case "$seen" in *" $k "*) echo "wq_mask: $k twice in $rec" >&2; return 1 ;; esac
         seen+="$k " ;;
       *) echo "wq_mask: unknown record line: $k" >&2; return 1 ;;
     esac
     case "$k" in
       cpu) r_cpu=$v ;;
+      mode) [ "$v" = set ] || { echo "wq_mask: unknown mode: $v" >&2; return 1; }; r_mode='set' ;;
+      rt_cpu) r_rt_cpu=$v ;;
+      rt_siblings) r_rt_siblings=$v ;;
+      target_list) r_target_list=$v ;;
       original_cpumask) r_cpumask=$v ;;
       original_requested) r_requested=$v ;;
       original_isolated) r_isolated=$v ;;
-      original_census) [[ $v =~ ^workers=([0-9]+)\ allowed=([0-9]+)\ unknown=0$ ]] || { echo "wq_mask: original_census: $v" >&2; return 1; }
-                       r_workers=${BASH_REMATCH[1]}; r_allowed=${BASH_REMATCH[2]} ;;
+      original_census) census=$v ;;
       target) r_target=$v ;;
     esac
   done <"$rec" || return 1
-  [[ $r_cpu =~ ^[0-9]+$ ]] && [[ $r_cpumask =~ $mask ]] && [[ $r_requested =~ $mask ]] && [[ $r_isolated =~ $mask ]] &&
-    [[ $r_target =~ $mask ]] && [ -n "$r_workers" ] || { echo "wq_mask: incomplete record $rec" >&2; return 1; }
+  [[ $r_cpumask =~ $mask ]] && [[ $r_requested =~ $mask ]] && [[ $r_isolated =~ $mask ]] && [[ $r_target =~ $mask ]] ||
+    { echo "wq_mask: incomplete record $rec" >&2; return 1; }
+  if [ "$r_mode" = set ]; then  # a set record: no cpu line, its census within and full
+    [ -z "$r_cpu" ] && [[ $r_rt_cpu =~ ^[0-9]+$ ]] && [[ $r_rt_siblings =~ $list ]] && [[ $r_target_list =~ $list ]] &&
+      [[ $census =~ ^workers=([0-9]+)\ within=([0-9]+)\ full=([0-9]+)\ unknown=0$ ]] ||
+      { echo "wq_mask: incomplete set record $rec" >&2; return 1; }
+    r_workers=${BASH_REMATCH[1]}; r_full=${BASH_REMATCH[3]}
+  else  # a clear record: its cpu, its census allowed on it, none of set's lines
+    [[ $r_cpu =~ ^[0-9]+$ ]] && [ -z "$r_rt_cpu$r_rt_siblings$r_target_list" ] &&
+      [[ $census =~ ^workers=([0-9]+)\ allowed=([0-9]+)\ unknown=0$ ]] ||
+      { echo "wq_mask: incomplete record $rec" >&2; return 1; }
+    r_workers=${BASH_REMATCH[1]}; r_allowed=${BASH_REMATCH[2]}
+  fi
 }
 
 # undo CONTEXT: write the original requested mask back and verify it; closes the record on success. Status 0 if restored.
@@ -199,6 +241,28 @@ undo() {
   if ! mask_math same "$cm" "$r_cpumask" || ! mask_math same "$rq" "$r_requested"; then
     note "restore_failed=$(now) reason=the masks read back as $cm (requested $rq)"
     echo "wq_mask: the masks read back as $cm (requested $rq), not $r_cpumask ($r_requested)" >&2; return 1
+  fi
+  if [ "$r_mode" = set ]; then
+    # Restored: a complete census with no more workers allowed on less than every original CPU than at the start.
+    local full narrowed0=$((r_workers - r_full))
+    for ((i = 0; i <= WAIT_S * 10; i++)); do
+      if c=$(census_set "$r_target_list" "$r_cpumask"); then
+        read -r n _ full unk <<<"$c"
+        [ "$unk" -eq 0 ] && [ "$n" -ge 1 ] && [ $((n - full)) -le "$narrowed0" ] && break
+      fi
+      c=
+      [ "$i" -lt $((WAIT_S * 10)) ] && sleep 0.1
+    done
+    if [ -z "$c" ]; then
+      note "restore_failed=$(now) reason=the masks are restored but the workers' census is incomplete or shows more workers narrowed than at the start"
+      echo "wq_mask: the masks are restored but the workers are not shown restored (a complete census with at most $narrowed0 allowed on less than every original CPU)" >&2
+      return 1
+    fi
+    note "restored=$(now) cpumask=$cm requested=$rq workers=$n full=$full unknown=$unk context=$1" ||
+      { echo "wq_mask: cannot append to $rec" >&2; return 1; }
+    mv "$rec" "$rec.restored-$(date +%Y%m%dT%H%M%S)" || { echo "wq_mask: restored, but cannot close $rec" >&2; return 1; }
+    echo "wq_mask: restored: cpumask $cm (requested $rq), workers $n, $full allowed on every original CPU (record closed)"
+    return 0
   fi
   barred0=$((r_workers - r_allowed))
   for ((i = 0; i <= WAIT_S * 10; i++)); do
@@ -273,6 +337,61 @@ case "$cmd" in
     note "set_verified=$(now) cpumask=$c_m requested=$c_r workers=$n allowed=0 unknown=0" || failed "cannot append to $rec"
     trap - INT TERM HUP
     echo "wq_mask: CPU $cpu cleared: cpumask $cm -> $c_m (requested $c_r); $n unbound workers and rescuers, none allowed on CPU $cpu"
+    echo "  record: $rec (open: restore with tools/wq_mask.sh restore)"
+    ;;
+  set)
+    [ $# -eq 4 ] && [ "$3" = --rt-cpu ] || usage
+    list=$2 rt=$4
+    [ ! -e "$rec" ] || refuse "a record is open ($rec): run tools/wq_mask.sh restore first"
+    cm=$(read_mask cpumask) || refuse "cannot read $SYSFS/cpumask"
+    rq=$(read_mask cpumask_requested) || refuse "cannot read $SYSFS/cpumask_requested"
+    iso=$(read_mask cpumask_isolated) || refuse "cannot read $SYSFS/cpumask_isolated"
+    mask_math same "$cm" "$rq" || refuse "the requested mask ($rq) differs from the effective one ($cm)"
+    tgt=$(python3 -I "$TARGET_TOOL" target "$cm" "$iso" "$list" "$rt" --cpu-sysfs "$CPUSYS" 2>&1) || refuse "${tgt#wq_target: }"
+    target=$(sed -n 's/^target=//p' <<<"$tgt"); sib=$(sed -n 's/^rt_siblings=//p' <<<"$tgt")
+    [ -n "$target" ] && [ -n "$sib" ] && [ "$(sed -n 's/^target_list=//p' <<<"$tgt")" = "$list" ] &&
+      [ "$(sed -n 's/^rt_cpu=//p' <<<"$tgt")" = "$rt" ] || refuse "tools/wq_target.py's answer is not understood"
+    c0=$(census_set "$list" "$cm") || refuse "cannot take the unbound kernel workers' census under $PROC"
+    read -r n0 w0 f0 unk0 <<<"$c0"
+    [ "$unk0" -eq 0 ] || refuse "the workers' census is incomplete ($unk0 entries under $PROC cannot be read)"
+    [ "$n0" -ge 1 ] || refuse "no unbound kernel worker or rescuer under $PROC"
+    mkdir -p "$(dirname "$rec")" 2>/dev/null
+    { printf '%s\n' "started=$(now)" "mode=set" "rt_cpu=$rt" "rt_siblings=$sib" "target_list=$list" "original_cpumask=$cm" \
+        "original_requested=$rq" "original_isolated=$iso" "original_census=workers=$n0 within=$w0 full=$f0 unknown=0" \
+        "target=$target" >"$rec"; } 2>/dev/null || { rm -f "$rec"; refuse "cannot write $rec"; }
+    r_mode='set'; r_rt_cpu=$rt; r_rt_siblings=$sib; r_target_list=$list; r_cpumask=$cm; r_requested=$rq; r_isolated=$iso
+    r_workers=$n0; r_full=$f0; r_target=$target
+    note "restore_owed=$(now)" || { rm -f "$rec"; refuse "cannot write $rec"; }
+    # From here the restoration is owed: every failure, and an interruption, undoes the change.
+    failed() {
+      trap '' INT TERM HUP
+      note "set_failed=$(now) reason=$1"
+      echo "wq_mask: $1; restoring" >&2
+      if undo failed-set; then exit 1; fi
+      echo "wq_mask: the restoration is not verified: the record $rec stays open; run tools/wq_mask.sh restore" >&2
+      exit 1
+    }
+    trap 'failed interrupted' INT TERM HUP
+    write_mask "$target"
+    st=$?
+    note "set_write=$(now) status=$st" || failed "cannot append to $rec"
+    [ "$st" -eq 0 ] || failed "the write of $target failed (status $st)"
+    c_m=$(read_mask cpumask) || failed "cpumask cannot be read back"
+    c_r=$(read_mask cpumask_requested) || failed "cpumask_requested cannot be read back"
+    mask_math same "$c_m" "$target" && mask_math same "$c_r" "$target" ||
+      failed "the masks read back as $c_m (requested $c_r), not $target"
+    ok=0
+    for ((i = 0; i <= WAIT_S * 10; i++)); do
+      if c=$(census_set "$list" "$cm"); then
+        read -r n w _ unk <<<"$c"
+        [ "$unk" -eq 0 ] && [ "$n" -ge 1 ] && [ "$w" -eq "$n" ] && { ok=1; break; }
+      fi
+      [ "$i" -lt $((WAIT_S * 10)) ] && sleep 0.1
+    done
+    [ "$ok" -eq 1 ] || failed "after ${WAIT_S} s, no complete census shows every unbound kernel worker allowed only within $list (last: ${c:-none})"
+    note "set_verified=$(now) cpumask=$c_m requested=$c_r workers=$n within=$n unknown=0" || failed "cannot append to $rec"
+    trap - INT TERM HUP
+    echo "wq_mask: the mask set to CPUs $list: cpumask $cm -> $c_m (requested $c_r); $n unbound workers and rescuers, all allowed only within $list"
     echo "  record: $rec (open: restore with tools/wq_mask.sh restore)"
     ;;
   check)

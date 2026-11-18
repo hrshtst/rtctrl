@@ -247,6 +247,89 @@ def units() -> None:
         experiment(d)
 
 
+GOOD_SET = [f"started={TS.format('09:59:00')}", "mode=set", "rt_cpu=3", "rt_siblings=2-3", "target_list=4-5",
+            "original_cpumask=ffffffff", "original_requested=ffffffff", "original_isolated=00000000",
+            "original_census=workers=49 within=0 full=49 unknown=0", "target=00000030",
+            f"restore_owed={TS.format('09:59:01')}", f"set_write={TS.format('09:59:02')} status=0",
+            f"set_verified={TS.format('09:59:03')} cpumask=00000030 requested=00000030 workers=49 within=49 unknown=0",
+            f"observed={TS.format('10:00:40')} cpumask=00000030 requested=00000030 result=matches",
+            f"observed={TS.format('10:04:10')} cpumask=00000030 requested=00000030 result=matches"]
+CLOSED_SET = [f"restore_write={TS.format('10:05:00')} status=0",
+              f"restored={TS.format('10:05:01')} cpumask=ffffffff requested=ffffffff workers=49 full=49 unknown=0 context=restore"]
+
+
+def set_units() -> None:
+    """--mask-target LIST --rt-cpu N (plan L1): tools/wq_mask.sh set's record, read under its own rules only."""
+    with tempfile.TemporaryDirectory() as t:
+        d = pathlib.Path(t)
+        allow = {"T1", "T2", "T6a"}
+        ctl, exp = controls(d), experiment(d)
+        run = write_run(d, mask="00000030")
+
+        def g(lines, state="open", target="4-5", rt=3, run_=run):
+            return vg.gate(run_, ctl, record(d, lines), allow, "untraced", exp, "A", state, mask_target=target, rt_cpu=rt)
+
+        def at(lines: list[str], key: str, new: str) -> list[str]:
+            return [new if ln.startswith(key + "=") else ln for ln in lines]
+        got = failing(g(GOOD_SET))
+        expect(got == [], f"a set record, open: {got}")
+        got = failing(g(GOOD_SET + CLOSED_SET, state="closed"))
+        expect(got == [], f"a set record, closed: {got}")
+        verified = GOOD_SET[12]
+        for what, kw, want in [
+            ("another list than the record's", dict(lines=GOOD_SET, target="4-6"), {FIX}),
+            ("another real-time CPU than the record's", dict(lines=at(GOOD_SET, "rt_cpu", "rt_cpu=2")), {FIX}),
+            ("siblings that do not hold the real-time CPU", dict(lines=at(GOOD_SET, "rt_siblings", "rt_siblings=4-5")), {FIX}),
+            ("a list meeting the real-time CPU's siblings", dict(lines=at(GOOD_SET, "rt_siblings", "rt_siblings=3-5")), {FIX}),
+            ("a list meeting the isolated CPUs", dict(lines=at(GOOD_SET, "original_isolated", "original_isolated=00000010")), {FIX}),
+            ("a list outside the original", dict(lines=at(at(GOOD_SET, "original_cpumask", "original_cpumask=ffffffcf"),
+                                                         "original_requested", "original_requested=ffffffcf")), {FIX}),
+            ("a target other than the list's mask", dict(lines=[ln.replace("00000030", "00000070") for ln in GOOD_SET],
+                                                         run_=write_run(d, "s70", mask="00000070")), {FIX}),
+            ("an incomplete original census", dict(lines=at(GOOD_SET, "original_census", "original_census=workers=49 within=0 full=49 unknown=1")), {FIX}),
+            ("a verification with a worker outside the list", dict(lines=at(GOOD_SET, "set_verified", verified.replace("within=49", "within=48"))), {SET}),
+            ("a failed set", dict(lines=GOOD_SET[:12] + [f"set_failed={TS.format('09:59:02')} reason=x"] + GOOD_SET[12:]), {SET, OBS, OPEN}),
+            ("an observation reading another mask, worded matches",
+             dict(lines=at(GOOD_SET, "observed", f"observed={TS.format('10:00:40')} cpumask=0000ffff requested=0000ffff result=matches")), {OBS}),
+            ("a restoration with workers still narrowed",
+             dict(lines=GOOD_SET + [CLOSED_SET[0], CLOSED_SET[1].replace("full=49", "full=40")], state="closed"), {REST}),
+            ("a restoration in the failed set's context",
+             dict(lines=GOOD_SET + [CLOSED_SET[0], CLOSED_SET[1].replace("context=restore", "context=failed-set")], state="closed"), {REST}),
+        ]:
+            got = set(failing(g(**kw)))
+            expect(got == want, f"set: {what}: {sorted(got)}")
+        got = set(failing(vg.gate(write_run(d, "s0", mask="ffffffff"), ctl, record(d, GOOD_SET), allow, "untraced", exp, "A", "open",
+                                  mask_target="4-5", rt_cpu=3)))
+        expect(got == {"the run's recorded mask is the target"}, f"set: a run under another mask: {sorted(got)}")
+        # Neither meaning is weakened: a clear record under --mask-target, a set record under --cpu, mixed fields.
+        for what, lines, kw in (
+            ("a clear record under --mask-target", GOOD_RECORD, dict(mask_target="4-5", rt_cpu=3)),
+            ("a set record under --cpu", GOOD_SET, dict()),
+            ("a set record whose verification counts clear's allowed=0",
+             at(GOOD_SET, "set_verified", verified.replace("within=49", "allowed=0")), dict(mask_target="4-5", rt_cpu=3)),
+            ("a set record whose verification counts within twice",
+             at(GOOD_SET, "set_verified", verified.replace("within=49", "within=0 within=49")), dict(mask_target="4-5", rt_cpu=3)),
+            ("a set record whose restoration counts clear's allowed=",
+             GOOD_SET + [CLOSED_SET[0], CLOSED_SET[1].replace("full=49", "allowed=49")], dict(mask_target="4-5", rt_cpu=3)),
+            ("a set record with a cpu line", GOOD_SET[:1] + ["cpu=3"] + GOOD_SET[1:], dict(mask_target="4-5", rt_cpu=3)),
+            ("a set record with its mode twice", GOOD_SET + ["mode=set"], dict(mask_target="4-5", rt_cpu=3)),
+            ("--mask-target without the real-time CPU", GOOD_SET, dict(mask_target="4-5")),
+        ):
+            try:
+                vg.gate(run, ctl, record(d, lines), allow, "untraced", exp, "A", "open", **kw)
+                expect(False, f"set: {what}: read")
+            except vg.Unreadable:
+                pass
+        rec = record(d, GOOD_SET)
+        base = [sys.executable, "tools/validation_gate.py", "--wq-record", str(rec), "--controls", str(ctl), "--mode", "untraced",
+                "--experiment", str(exp), "--session", "A", "--record-state", "open", str(run)]
+        p = subprocess.run(base + ["--mask-target", "4-5", "--rt-cpu", "3"], capture_output=True, text=True)
+        expect(p.returncode == 0 and "gate: PASS (run.csv: 15 of 15 checks)" in p.stdout, f"the CLI on a set record: {p.returncode} {p.stdout}")
+        for args in (["--mask-target", "4-5", "--rt-cpu", "3", "--cpu", "3"], ["--mask-target", "4-5"], ["--rt-cpu", "3"], []):
+            p = subprocess.run(base + args, capture_output=True, text=True)
+            expect(p.returncode == 2, f"the CLI with {args or 'no mask option'} on a set record: {p.returncode} {p.stdout}")
+
+
 def cli() -> None:
     with tempfile.TemporaryDirectory() as t:
         d = pathlib.Path(t)
@@ -267,6 +350,7 @@ def cli() -> None:
 
 def main() -> int:
     units()
+    set_units()
     cli()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED")

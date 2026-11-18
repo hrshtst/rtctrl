@@ -6,7 +6,7 @@ after the experiment, on the closed records. Read-only.
 
     validation_gate.py <run>.csv --wq-record FILE --experiment FILE --session A|B --record-state open|closed
                        [--controls fs-controls-<date>-<attempt>.run.txt] [--allow T1,T2,T6a] [--mode untraced|timer]
-                       [--cpu 3]
+                       [--cpu 3 | --mask-target LIST --rt-cpu N]
 
 It passes only if every check passes:
 
@@ -31,6 +31,13 @@ It passes only if every check passes:
     0), after the last session recorded ended, and the restoration (both masks their originals, a complete census, no
     more workers barred from the CPU than at the start), with no failed restoration; times never going back;
   - the run record's unbound-workqueue mask equal to the target;
+  - with --mask-target LIST --rt-cpu N (plan L1, exclusive with --cpu), the record is tools/wq_mask.sh set's and is read
+    under these rules only (a clear record, or a set record under --cpu, is unreadable: neither meaning is weakened):
+    its fixed values (started, mode=set, rt_cpu, rt_siblings, target_list, the three original masks, the census, the
+    target, each once and in order) name N, siblings that hold N, LIST exactly, and a target equal to LIST's CPUs, none
+    of them N, a sibling or isolated, all inside the equal effective and requested originals; its verification finds
+    every worker allowed only within LIST; its restoration no more workers allowed on less than every original CPU
+    than at the start; the observations and the run record's mask are checked against that target as above;
 - with --controls, the fair-server controls' record holds one verdict, and it is "controls pass".
 
 Exit: 0 every check passed; 1 a check failed (stop); 2 the evidence could not be read (stop).
@@ -52,6 +59,7 @@ except ImportError:  # Python < 3.11
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import timing_summary  # noqa: E402
+import wq_target  # noqa: E402
 
 BOUNDED_ZERO = ("timeouts", "malformed", "servo_errors", "recoveries", "guard_waits", "inhibited")
 RESULT_ZERO = ("read_failures", "write_failures", "ring_drops")
@@ -82,6 +90,8 @@ def wq_time(v: str) -> float:
 
 
 FIXED = ("started", "cpu", "original_cpumask", "original_requested", "original_isolated", "original_census", "target")
+FIXED_SET = ("started", "mode", "rt_cpu", "rt_siblings", "target_list", "original_cpumask", "original_requested",
+             "original_isolated", "original_census", "target")
 STEPS = ("restore_owed", "set_write", "set_verified", "set_failed", "observed", "restore_write", "restore_failed", "restored")
 
 
@@ -100,10 +110,16 @@ SCHEMA = {
     "session_start": [set()],
     "session_end": [{"status"}],
 }
+# A set record's steps: its verification counts the workers within the list, its restoration those allowed on every
+# original CPU; the other steps as clear's.
+SCHEMA_SET = SCHEMA | {
+    "set_verified": [{"cpumask", "requested", "workers", "within", "unknown"}],
+    "restored": [{"cpumask", "requested", "workers", "full", "unknown", "context"}],
+}
 
 
-def fields(v: str, kind: str) -> tuple[float, dict]:
-    """A line's time and its key=value fields, checked against SCHEMA[kind]: a field twice, or a set of fields other
+def fields(v: str, kind: str, schema: dict = SCHEMA) -> tuple[float, dict]:
+    """A line's time and its key=value fields, checked against schema[kind]: a field twice, or a set of fields other
     than the kind's, is unreadable (contradictory or unexpected evidence, never the last value)."""
     t = wq_time(v)
     rest = v.split(None, 1)[1] if " " in v else ""
@@ -121,13 +137,14 @@ def fields(v: str, kind: str) -> tuple[float, dict]:
             if not val:
                 raise Unreadable(f"an empty field {k} in {v!r}")
             out[k] = val
-    if set(out) not in SCHEMA[kind]:
+    if set(out) not in schema[kind]:
         raise Unreadable(f"unexpected fields for {kind}: {sorted(out)} in {v!r}")
     return t, out
 
 
-def read_wq(path: pathlib.Path) -> dict:
-    """tools/wq_mask.sh's record: its fixed values (each once, in order, at the top) and its steps in order."""
+def read_wq(path: pathlib.Path, fixed_keys: tuple = FIXED, schema: dict = SCHEMA) -> dict:
+    """tools/wq_mask.sh's record: its fixed values (each once, in order, at the top: FIXED for a clear record,
+    FIXED_SET for a set record) and its steps in order, under that kind's schema."""
     try:
         lines = path.read_text().splitlines()
     except OSError as e:
@@ -135,13 +152,14 @@ def read_wq(path: pathlib.Path) -> dict:
     keys = [ln.partition("=")[0] for ln in lines]
     if any("=" not in ln for ln in lines):
         raise Unreadable(f"{path}: a line that is not key=value")
-    if tuple(keys[:len(FIXED)]) != FIXED or any(k in FIXED for k in keys[len(FIXED):]):
+    if tuple(keys[:len(fixed_keys)]) != fixed_keys or any(k in FIXED + FIXED_SET for k in keys[len(fixed_keys):]):
         raise Unreadable(f"{path}: the fixed values are not each once, in order, at the top")
-    if any(k not in STEPS for k in keys[len(FIXED):]):
+    if any(k not in STEPS for k in keys[len(fixed_keys):]):
         raise Unreadable(f"{path}: an unknown record line")
-    fixed = {k: ln.partition("=")[2] for k, ln in zip(FIXED, lines)}
-    steps = [(ln.partition("=")[0], *fields(ln.partition("=")[2], ln.partition("=")[0])) for ln in lines[len(FIXED):]]
-    return {"fixed": fixed, "started": fields(fixed["started"], "started")[0], "steps": steps}
+    fixed = {k: ln.partition("=")[2] for k, ln in zip(fixed_keys, lines)}
+    steps = [(ln.partition("=")[0], *fields(ln.partition("=")[2], ln.partition("=")[0], schema))
+             for ln in lines[len(fixed_keys):]]
+    return {"fixed": fixed, "started": fields(fixed["started"], "started", schema)[0], "steps": steps}
 
 
 def read_experiment(path: pathlib.Path) -> dict:
@@ -220,8 +238,70 @@ def mask_checks(rec: dict, cpu: int, bounds: tuple, last_end: float, state: str)
     return out
 
 
+def mask_checks_set(rec: dict, target_list: str, rt_cpu: int, bounds: tuple, last_end: float, state: str) -> list:
+    """The checked sequence of tools/wq_mask.sh set's record (plan L1) against the run's bounds; (check, ok, detail)
+    each, under the same names as mask_checks."""
+    out: list = []
+    fx = rec["fixed"]
+    try:
+        orig, req, target = mask_value(fx["original_cpumask"]), mask_value(fx["original_requested"]), mask_value(fx["target"])
+        iso = mask_value(fx["original_isolated"])
+        census = re.fullmatch(r"workers=(\d+) within=(\d+) full=(\d+) unknown=0", fx["original_census"], re.ASCII)
+        want = wq_target.canonical_list(target_list)
+        siblings = wq_target.kernel_list(fx["rt_siblings"])
+    except (Unreadable, wq_target.Refused, ValueError) as e:
+        out.append(("the mask record's fixed values", False, str(e)))
+        return out
+    want_mask = sum(1 << c for c in want)
+    n0, f0 = (int(census[1]), int(census[3])) if census else (0, 0)
+    ok = (fx["mode"] == "set" and fx["rt_cpu"] == str(rt_cpu) and rt_cpu in siblings and fx["target_list"] == target_list
+          and target == want_mask and orig == req and want_mask & ~orig == 0 and want_mask & iso == 0
+          and not any(c in siblings for c in want) and census is not None and n0 >= 1 and int(census[2]) <= n0 and f0 <= n0)
+    out.append(("the mask record's fixed values", ok,
+                f"mode {fx['mode']}, rt_cpu {fx['rt_cpu']} (expected {rt_cpu}), siblings {fx['rt_siblings']}, target_list "
+                f"{fx['target_list']} (expected {target_list}), original {fx['original_cpumask']} (requested "
+                f"{fx['original_requested']}), target {fx['target']}, census {fx['original_census']}"))
+    steps = rec["steps"]
+    times = [rec["started"]] + [s[1] for s in steps]
+    out.append(("the mask record's times never go back", all(a <= b for a, b in zip(times, times[1:])), f"{len(steps)} steps"))
+    start, end = bounds
+    head = [s[0] for s in steps[:3]]
+    ok = head == ["restore_owed", "set_write", "set_verified"] and not any(s[0] == "set_failed" for s in steps)
+    if ok:
+        w, v = steps[1][2], steps[2][2]
+        ok = (w.get("status") == "0" and mask_value(v["cpumask"]) == target and mask_value(v["requested"]) == target
+              and v["workers"].isdigit() and int(v["workers"]) >= 1 and v["within"] == v["workers"] and v["unknown"] == "0"
+              and steps[2][1] < start)
+    out.append(("the mask set and verified before the session started, never failed", ok,
+                " ".join(f"{k}{(' ' + ' '.join(f'{a}={b}' for a, b in f.items())) if f else ''}" for k, _, f in steps[:3])))
+    rest = steps[3:]
+    obs = []
+    while rest and rest[0][0] == "observed":
+        obs.append(rest.pop(0))
+
+    def matches(f: dict) -> bool:
+        return (f.get("result") == "matches" and "cpumask" in f and "requested" in f
+                and mask_value(f["cpumask"]) == target and mask_value(f["requested"]) == target)
+    out.append(("the target observed in effect after the session ended, never otherwise",
+                bool(obs) and all(matches(f) for _, _, f in obs) and any(t >= end for _, t, _ in obs),
+                f"{len(obs)} observations, {sum(not matches(f) for _, _, f in obs)} not of the target"))
+    if state == "open":
+        out.append(("the record open, no restoration begun", not rest, ", ".join(s[0] for s in rest) or "nothing after the observations"))
+    else:
+        ok = [s[0] for s in rest] == ["restore_write", "restored"]
+        if ok:
+            w, r = rest[0], rest[1]
+            ok = (w[2].get("status") == "0" and w[1] >= last_end and mask_value(r[2]["cpumask"]) == orig
+                  and mask_value(r[2]["requested"]) == req and r[2]["unknown"] == "0" and r[2]["workers"].isdigit()
+                  and r[2]["full"].isdigit() and int(r[2]["workers"]) >= 1
+                  and int(r[2]["workers"]) - int(r[2]["full"]) <= n0 - f0 and r[2]["context"] == "restore")
+        out.append(("restored after the last session, verified", ok, ", ".join(s[0] for s in rest) or "no restoration"))
+    return out
+
+
 def gate(csv_path: pathlib.Path, controls: pathlib.Path | None, wq: pathlib.Path, allow: set, mode: str | None,
-         experiment: pathlib.Path, session: str, state: str, cpu: int = 3) -> list:
+         experiment: pathlib.Path, session: str, state: str, cpu: int = 3, mask_target: str | None = None,
+         rt_cpu: int | None = None) -> list:
     """(check, ok, detail) for each check; raises Unreadable for evidence that cannot be read."""
     out: list = []
     note = pathlib.Path(str(csv_path) + ".run.txt")
@@ -296,8 +376,14 @@ def gate(csv_path: pathlib.Path, controls: pathlib.Path | None, wq: pathlib.Path
     last_end = max((v[0] for k, v in exp.items() if k.endswith("_end")), default=float("inf"))
 
     # The declared host condition.
-    rec = read_wq(wq)
-    out += mask_checks(rec, cpu, bounds, last_end, state)
+    if mask_target is not None:
+        if rt_cpu is None:
+            raise Unreadable("--mask-target needs the real-time CPU (--rt-cpu)")
+        rec = read_wq(wq, FIXED_SET, SCHEMA_SET)
+        out += mask_checks_set(rec, mask_target, rt_cpu, bounds, last_end, state)
+    else:
+        rec = read_wq(wq)
+        out += mask_checks(rec, cpu, bounds, last_end, state)
     line = re.search(r"^unbound workqueues: cpumask (\S+?),", text, re.M)
     out.append(("the run's recorded mask is the target", bool(line) and mask_value(line[1]) == mask_value(rec["fixed"]["target"]),
                 f"{line[1] if line else 'none'} (target {rec['fixed']['target']})"))
@@ -320,14 +406,21 @@ def main() -> int:
     p.add_argument("--experiment", type=pathlib.Path, required=True, help="the supervisor's experiment record")
     p.add_argument("--session", choices=("A", "B"), required=True, help="the run's session in the experiment record")
     p.add_argument("--record-state", choices=("open", "closed"), required=True, help="open between the runs, closed after")
-    p.add_argument("--cpu", type=int, default=3, help="the CPU cleared from the mask (default: 3)")
+    p.add_argument("--cpu", type=int, help="the CPU cleared from the mask (default: 3; not with --mask-target)")
+    p.add_argument("--mask-target", help="the CPU list the mask was set to (tools/wq_mask.sh set; with --rt-cpu)")
+    p.add_argument("--rt-cpu", type=int, help="the real-time CPU named to tools/wq_mask.sh set (with --mask-target)")
     p.add_argument("--allow", default="T1,T2,T6a", help="criteria the session may fail (default: T1,T2,T6a)")
     p.add_argument("--mode", choices=("untraced", "timer"), help="the run's expected mode")
     a = p.parse_args()
+    if a.mask_target is not None and (a.cpu is not None or a.rt_cpu is None):
+        p.error("--mask-target takes --rt-cpu, and not --cpu")
+    if a.mask_target is None and a.rt_cpu is not None:
+        p.error("--rt-cpu goes with --mask-target")
     wq = a.wq_record or pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")) / "rtctrl-wq-mask.record"
     allow = {x for x in a.allow.split(",") if x}
     try:
-        checks = gate(a.csv, a.controls, wq, allow, a.mode, a.experiment, a.session, a.record_state, a.cpu)
+        checks = gate(a.csv, a.controls, wq, allow, a.mode, a.experiment, a.session, a.record_state,
+                      3 if a.cpu is None else a.cpu, a.mask_target, a.rt_cpu)
     except Unreadable as e:
         print(f"gate: UNREADABLE: {e}")
         return 2

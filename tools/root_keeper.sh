@@ -9,11 +9,18 @@
 # through it, or the operator's.
 #
 # usage: sudo tools/root_keeper.sh serve OWNER_PID OWNER_START PGID CPU
+#        sudo tools/root_keeper.sh serve OWNER_PID OWNER_START PGID --target LIST --rt-cpu N
 #        ROOT_KEEPER_DIR=DIR tools/root_keeper.sh REQUEST...   (the client)
 #
 # serve reads the unbound workqueues' masks (the effective and the requested
 # one equal, CPU in them) and fixes the only two values it will ever write:
-# that mask (the original) and that mask less CPU (the target). It then
+# that mask (the original) and that mask less CPU (the target). Its target
+# form (plan L1) fixes instead the original and LIST's CPUs as a mask, under
+# the bounds tools/wq_mask.sh set applies, computed by the same
+# tools/wq_target.py: LIST canonical, online, inside the original, not
+# isolated, neither the named real-time CPU N nor one of its SMT siblings
+# (never inferred); its ready file adds target_list, rt_cpu and
+# rt_siblings. Everything else is the same in both forms. It then
 # creates its own directory, /run/rtctrl-keeper-OWNER_PID-OWNER_START,
 # exclusively (it refuses if the name exists): a root-owned directory (mode
 # 0755) in root-owned /run, so that no other user, the invoking one included,
@@ -68,18 +75,21 @@
 #
 # For tests only, with ROOT_KEEPER_TEST=1 and never as root: the keeper runs
 # unprivileged, KEEPER_RUNDIR replaces /run, KEEPER_SYSFS
-# /sys/devices/virtual/workqueue, KEEPER_WRITE a program that receives each
-# value written (in place of the write to the mask file) and KEEPER_SYSTEMCTL
-# systemctl.
+# /sys/devices/virtual/workqueue, KEEPER_CPUSYS /sys/devices/system/cpu,
+# KEEPER_WRITE a program that receives each value written (in place of the
+# write to the mask file) and KEEPER_SYSTEMCTL systemctl.
 set -u
 RUNDIR=/run
 SYSFS=/sys/devices/virtual/workqueue
+CPUSYS=/sys/devices/system/cpu
 WRITE=
 SYSTEMCTL=systemctl
 if [ "${ROOT_KEEPER_TEST:-0}" = 1 ]; then
   [ "$(id -u)" -ne 0 ] || { echo "root_keeper: the test mode never runs as root" >&2; exit 2; }
-  RUNDIR=${KEEPER_RUNDIR:-$RUNDIR}; SYSFS=${KEEPER_SYSFS:-$SYSFS}; WRITE=${KEEPER_WRITE:-}; SYSTEMCTL=${KEEPER_SYSTEMCTL:-systemctl}
+  RUNDIR=${KEEPER_RUNDIR:-$RUNDIR}; SYSFS=${KEEPER_SYSFS:-$SYSFS}; CPUSYS=${KEEPER_CPUSYS:-$CPUSYS}
+  WRITE=${KEEPER_WRITE:-}; SYSTEMCTL=${KEEPER_SYSTEMCTL:-systemctl}
 fi
+TARGET_TOOL=$(dirname "$(readlink -f "$0")")/wq_target.py
 UU=unattended-upgrades.service
 now() { date +%Y-%m-%dT%H:%M:%S.%N%z; }
 
@@ -185,16 +195,28 @@ finally:
 ' "$1" "$2" "$3"
 }
 
-serve() {
-  local owner=$1 owner_start=$2 pgid=$3 cpu=$4 uid dir orig rq target
+serve() {  # OWNER_PID OWNER_START PGID CPU, or OWNER_PID OWNER_START PGID LIST RT_CPU target
+  local owner=$1 owner_start=$2 pgid=$3 form=cpu cpu=$4 list='' rt='' uid dir orig rq iso target tgt extra=''
+  if [ $# -eq 6 ] && [ "$6" = target ]; then form=target; cpu=; list=$4; rt=$5; fi
   uid=${SUDO_UID:-$(id -u)}
   [ "${ROOT_KEEPER_TEST:-0}" = 1 ] || [ "$(id -u)" -eq 0 ] || { echo "root_keeper: serve runs as root (through sudo)" >&2; exit 2; }
-  [[ $owner =~ ^[0-9]+$ && $owner_start =~ ^[0-9]+$ && $pgid =~ ^[0-9]+$ && $cpu =~ ^[0-9]+$ && $uid =~ ^[0-9]+$ ]] &&
+  [[ $owner =~ ^[0-9]+$ && $owner_start =~ ^[0-9]+$ && $pgid =~ ^[0-9]+$ && $uid =~ ^[0-9]+$ ]] &&
+    { [ "$form" = target ] || [[ $cpu =~ ^[0-9]+$ ]]; } &&
     [ "$pgid" -gt 1 ] || { echo "root_keeper: bad arguments" >&2; exit 2; }  # kill(-1, 0) would mean every process
   [ "$(owner_state "$owner" "$owner_start")" = alive ] || { echo "root_keeper: the owner $owner is not running" >&2; exit 2; }
   orig=$(read_mask cpumask) && rq=$(read_mask cpumask_requested) && [ "$orig" = "$rq" ] ||
     { echo "root_keeper: the masks cannot be read, or the requested one differs" >&2; exit 2; }
-  target=$(mask_clear "$orig" "$cpu") || { echo "root_keeper: CPU $cpu cannot be cleared from $orig" >&2; exit 2; }
+  if [ "$form" = target ]; then
+    iso=$(read_mask cpumask_isolated) || { echo "root_keeper: the isolated mask cannot be read" >&2; exit 2; }
+    tgt=$(python3 -I "$TARGET_TOOL" target "$orig" "$iso" "$list" "$rt" --cpu-sysfs "$CPUSYS" 2>&1) ||
+      { echo "root_keeper: ${tgt#wq_target: }" >&2; exit 2; }
+    target=$(sed -n 's/^target=//p' <<<"$tgt")
+    [ -n "$target" ] && [ "$(sed -n 's/^target_list=//p' <<<"$tgt")" = "$list" ] && [ "$(sed -n 's/^rt_cpu=//p' <<<"$tgt")" = "$rt" ] ||
+      { echo "root_keeper: tools/wq_target.py's answer is not understood" >&2; exit 2; }
+    extra=$(printf 'target_list=%s\nrt_cpu=%s\nrt_siblings=%s' "$list" "$rt" "$(sed -n 's/^rt_siblings=//p' <<<"$tgt")")
+  else
+    target=$(mask_clear "$orig" "$cpu") || { echo "root_keeper: CPU $cpu cannot be cleared from $orig" >&2; exit 2; }
+  fi
   dir=$RUNDIR/rtctrl-keeper-$owner-$owner_start
   mkdir -m 0755 "$dir" 2>/dev/null || { echo "root_keeper: $dir exists or cannot be created" >&2; exit 2; }
   mkdir -m 0755 "$dir/replies" && mkfifo -m 0600 "$dir/requests" && put "$dir" keeper.log "" ||
@@ -204,11 +226,11 @@ serve() {
   fi
   # Detach: a new session, nothing on the caller's terminal; the caller returns at once.
   ROOT_KEEPER_DETACHED=1 setsid -f "$(readlink -f "$0")" __run "$dir" "$owner" "$owner_start" "$pgid" "$orig" "$target" \
-    </dev/null >>"$dir/keeper.log" 2>&1
+    "$extra" </dev/null >>"$dir/keeper.log" 2>&1
 }
 
-run() {
-  local dir=$1 owner=$2 owner_start=$3 pgid=$4 orig=$5 target=$6
+run() {  # DIR OWNER OWNER_START PGID ORIGINAL TARGET EXTRA (the target form's ready lines, or nothing)
+  local dir=$1 owner=$2 owner_start=$3 pgid=$4 orig=$5 target=$6 extra=$7
   [ "${ROOT_KEEPER_DETACHED:-}" = 1 ] || { echo "root_keeper: __run is the detached keeper's own" >&2; exit 2; }
   trap '' HUP INT TERM QUIT
   log() { echo "[$(now)] $*"; }
@@ -234,8 +256,9 @@ run() {
     rm -f "$dir/requests"
   }
   exec 3<>"$dir/requests" || { log "cannot open the request FIFO"; exit 1; }
-  put "$dir" keeper.ready "$(printf 'pid=%s\noriginal=%s\ntarget=%s\n' "$$" "$orig" "$target")" || { log "cannot write keeper.ready"; ending; exit 1; }
-  log "keeper $$ for owner $owner (group $pgid): original $orig, target $target"
+  put "$dir" keeper.ready "$(printf 'pid=%s\noriginal=%s\ntarget=%s\n' "$$" "$orig" "$target")${extra:+$'\n'$extra}" ||
+    { log "cannot write keeper.ready"; ending; exit 1; }
+  log "keeper $$ for owner $owner (group $pgid): original $orig, target $target${extra:+ (${extra//$'\n'/, })}"
   local id verb value st told_unknown=0 g=''
   while :; do
     if IFS=' ' read -r -t 0.5 id verb value <&3; then
@@ -300,7 +323,11 @@ client() {
 }
 
 case "${1:-}" in
-  serve) [ $# -eq 5 ] || { echo "usage: $0 serve OWNER_PID OWNER_START PGID CPU" >&2; exit 2; }; shift; serve "$@" ;;
-  __run) [ $# -eq 7 ] || exit 2; shift; run "$@" ;;
+  serve)
+    if [ $# -eq 5 ]; then shift; serve "$@"
+    elif [ $# -eq 8 ] && [ "$5" = --target ] && [ "$7" = --rt-cpu ]; then serve "$2" "$3" "$4" "$6" "$8" target
+    else echo "usage: $0 serve OWNER_PID OWNER_START PGID CPU | serve OWNER_PID OWNER_START PGID --target LIST --rt-cpu N" >&2; exit 2
+    fi ;;
+  __run) [ $# -eq 8 ] || exit 2; shift; run "$@" ;;
   *) client "$@" ;;
 esac

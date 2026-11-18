@@ -860,14 +860,25 @@ set_tests_properties(scratch_dir_test PROPERTIES
   LABELS integration)
 
 # The operator's reversible removal of a CPU from the unbound workqueues'
-# mask (tools/wq_mask.sh) with a stand-in sysfs, /proc and sudo: refusals,
-# verification, failure and interruption paths, restoration and its failure.
+# mask, or its setting to a CPU list (tools/wq_mask.sh clear and set) with a
+# stand-in sysfs, CPU sysfs, /proc and sudo: refusals, verification, failure
+# and interruption paths, restoration and its failure.
 add_test(NAME wq_mask_smoke
   COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/wq_mask_smoke.sh ${CMAKE_BINARY_DIR}/wq_mask_smoke
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(wq_mask_smoke PROPERTIES
   PASS_REGULAR_EXPRESSION "wq_mask smoke OK"
   LABELS integration)
+
+# The bounded target of the unbound workqueues' mask set to a CPU list
+# (tools/wq_target.py, shared by tools/wq_mask.sh set and the keeper's target
+# form) on a stand-in CPU sysfs and /proc: the bounds and the census.
+add_test(NAME wq_target_regressions
+  COMMAND python3 -B tools/test_wq_target.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(wq_target_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "wq target regressions OK"
+  LABELS unit)
 
 # The loaded emulator validation's supervisor and its root keeper
 # (tools/option_a.sh, tools/root_keeper.sh in its unprivileged test mode)
