@@ -33,6 +33,22 @@ forked after the trace started). Exempt process trees (the session's own, with t
 probe and the tracers) are never touched. Kernel threads are never in a named
 tree.
 
+The exempt trees are named by their roots' identities: --exempt-pid P (the
+session's own shell: its start time read at the start) and --exempt PID:START
+(plan L1: the emulator's and the supervisor's processes, by the identity the
+caller verified and recorded), each recorded with its start time in the
+header (exempt_ids; the given ones also as exempt_given). Each must name a
+live process with that start time when confine starts (else it refuses,
+nothing changed), and again at every later pass: an exempt root that has
+gone, or whose ID another process now holds, fails the confinement (status 1)
+rather than being dropped, which would leave its tree, or the new process's,
+among the targets. The check and the analyses that read this record keep
+the same identities (observers_in): a recorded exempt root absent from their
+lineage with its start time is no evidence (the check fails); restore never
+touches an exempt tree, and when a recorded exempt root has gone or been
+replaced it leaves the threads created after the last pass as found, and
+says so, rather than judge which tree they belong to.
+
 Each thread's record keeps the mask it was found with and that mask's origin:
 "inventory", the first pass's listing before any change, the thread's
 original mask; "unconfined", a thread found by a later pass still holding
@@ -77,7 +93,7 @@ evidence (status 1); a snapshot without one (before 2026-11-09) is checked
 against the recorded processes alone, and the check says so. A snapshot is one moment, not the
 whole run.
 
-usage: observer_affinity.py confine --pids P[,P...] --exclude-cpus L --record FILE [--exempt-pid P]...
+usage: observer_affinity.py confine --pids P[,P...] --exclude-cpus L --record FILE [--exempt-pid P]... [--exempt PID:START]...
        observer_affinity.py restore --record FILE
        observer_affinity.py tasks
        observer_affinity.py check --record FILE --tasks FILE --worker-tid TID
@@ -90,6 +106,7 @@ import errno
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 
@@ -127,6 +144,18 @@ def cpu_list(mask) -> str:
 class Unreadable(Exception):
     """A live task's /proc entry (or mask) that cannot be read. Never
     evidence of its exit: only a missing entry (ENOENT, ESRCH) is that."""
+
+
+class ExemptMissing(Exception):
+    """A recorded exempt root (by ID and start time) absent from a lineage:
+    the exempt trees are no longer known there, so nothing read against it
+    is evidence."""
+
+
+def exempt_entries(head: dict) -> list[dict]:
+    """A record's exempt roots: {pid, start} each (start None in a record
+    written before identities were kept)."""
+    return head.get("exempt_ids") or [{"pid": p, "start": None} for p in head.get("exempt", [])]
 
 
 def gone(e: OSError) -> bool:
@@ -233,7 +262,9 @@ class Record:
         os.fsync(self.f.fileno())
 
 
-def confine(pids: list[int], exclude: set[int], record: pathlib.Path, exempt: list[int]) -> int:
+def confine(pids: list[int], exclude: set[int], record: pathlib.Path, exempt: list[int],
+            given: list[tuple[int, int]] | None = None) -> int:
+    given = given or []
     online = cpus((pathlib.Path("/sys/devices/system/cpu/online")).read_text().strip())
     allowed = online - exclude
     if not allowed:
@@ -251,22 +282,37 @@ def confine(pids: list[int], exclude: set[int], record: pathlib.Path, exempt: li
     if missing:
         print(f"observer_affinity: no process {', '.join(map(str, missing))}", file=sys.stderr)
         return 2
-    spared = tree(set(exempt), parents)
+    spared = tree(set(exempt) | {p for p, _ in given}, parents)
     named = [p for p in pids if p in spared]
     if named:
-        print(f"observer_affinity: {', '.join(map(str, named))} in an exempt tree (the session's own)",
+        print(f"observer_affinity: {', '.join(map(str, named))} in an exempt tree (the session's own, or a given one)",
               file=sys.stderr)
         return 2
     try:
         roots = {p: start_time(p) for p in pids}
         exempt_ids = {p: start_time(p) for p in sorted(set(exempt))}
+        current = {p: start_time(p) for p, _ in given}
     except Unreadable as e:
         print(f"observer_affinity: a named or exempt process cannot be read: {e}", file=sys.stderr)
         return 2
+    for p, s in given:
+        if p in exempt_ids and exempt_ids[p] != s:
+            print(f"observer_affinity: the exempt process {p} named with two start times", file=sys.stderr)
+            return 2
+        if current[p] != s:
+            print(f"observer_affinity: the exempt process {p} (start {s}) is not running"
+                  + (f" (pid {p} has start {current[p]})" if current[p] is not None else ""), file=sys.stderr)
+            return 2
+        exempt_ids[p] = s
+    gone_ex = sorted(p for p, s in exempt_ids.items() if s is None)
+    if gone_ex:
+        print(f"observer_affinity: the exempt processes {', '.join(map(str, gone_ex))} are not running", file=sys.stderr)
+        return 2
     rec = Record(record, "x")
     rec.write(kind="header", version=VERSION, created_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC),
-              exclude=sorted(exclude), allowed=sorted(allowed), exempt=sorted(set(exempt)),
-              exempt_ids=[{"pid": p, "start": s} for p, s in exempt_ids.items()],
+              exclude=sorted(exclude), allowed=sorted(allowed), exempt=sorted(exempt_ids),
+              exempt_ids=[{"pid": p, "start": s} for p, s in sorted(exempt_ids.items())],
+              exempt_given=[{"pid": p, "start": s} for p, s in given],
               roots=[{"pid": p, "start": roots[p], "comm": comm(p)} for p in pids], max_passes=MAX_PASSES)
     found_procs: set[tuple[int, int]] = set()  # (pid, start)
     known: dict[tuple[int, int], dict] = {}   # (tid, start) -> pid, mask found, off (confined or found off)
@@ -276,11 +322,19 @@ def confine(pids: list[int], exclude: set[int], record: pathlib.Path, exempt: li
     n = 0
     for n in range(1, MAX_PASSES + 1):
         # The trees afresh: the roots and every process found before, by
-        # identity, with their descendants, less the exempt trees. A process
-        # or thread that cannot be read is a failure, never an exit.
+        # identity, with their descendants, less the exempt trees, whose roots
+        # must all hold their identities still (one gone or replaced fails:
+        # dropping it would widen the targets). A process or thread that
+        # cannot be read is a failure, never an exit.
         try:
             parents = processes()
-            spared = tree({p for p, s in exempt_ids.items() if start_time(p) == s}, parents)
+            lost = sorted(p for p, s in exempt_ids.items() if p not in parents or start_time(p) != s)
+            if lost:
+                rec.write(kind="failed", why=f"the exempt processes {', '.join(map(str, lost))} are gone or replaced: "
+                          "the exempt trees are no longer known")
+                failed += 1
+                break
+            spared = tree(set(exempt_ids), parents)
             live = {p for p, s in roots.items() if p in parents and start_time(p) == s}
             live |= {p for p, s in found_procs if p in parents and start_time(p) == s}
         except Unreadable as e:
@@ -572,14 +626,20 @@ def restore(record: pathlib.Path) -> int:
             n["inherited left"] += 1
     # Threads created after the last pass, in recorded processes and new
     # processes in their trees (the exempt trees left out).
+    skipped_new = ""
     try:
         parents = processes()
-        ex = head.get("exempt_ids") or [{"pid": p, "start": None} for p in head.get("exempt", [])]
+        ex = exempt_entries(head)
+        lost = sorted(e["pid"] for e in ex if e["start"] is not None and (e["pid"] not in parents or start_time(e["pid"]) != e["start"]))
         spared = tree({e["pid"] for e in ex if e["pid"] in parents and e["start"] in (None, start_time(e["pid"]))},
                       parents)
         live = {pk for pk in procs if pk[0] in parents and start_time(pk[0]) == pk[1]}
     except Unreadable as e:
         fail(None, f"the trees cannot be listed for the threads created during the session: {e}")
+        parents, spared, live, lost = {}, set(), set(), []
+    if lost:  # the exempt trees are no longer known: the threads created after the last pass are left as found
+        skipped_new = f"the exempt processes {', '.join(map(str, lost))} are gone or replaced"
+        rec.write(kind="new skipped", why=skipped_new + ": the threads created after the last pass are left as found")
         parents, spared, live = {}, set(), set()
     live_pid = {p: pk for pk in live for p in [pk[0]]}
     newp = tree(set(live_pid), parents) - set(live_pid)
@@ -615,6 +675,7 @@ def restore(record: pathlib.Path) -> int:
     print("observer placement restored: " + ", ".join(f"{k} {v}" for k, v in n.items())
           + (f"; {left} threads left at their current masks (no justified original, or changed during the "
              "session; see the record)" if left else "")
+          + (f"; {skipped_new}: the threads created after the last pass were left as found" if skipped_new else "")
           + ("" if done else "; INCOMPLETE: the record stays, retry the restore"))
     return 0 if done else 1
 
@@ -701,12 +762,17 @@ def parse_lineage(lines: list[str]) -> tuple[dict | None, tuple[int, int] | None
 def observers_in(entries: list[dict], lineage: dict) -> tuple[set[int], set[int]]:
     """The observer processes in a lineage: the recorded processes (by ID and
     start time) and their descendants by its parents, less the exempt trees;
-    and those of them absent from the record."""
+    and those of them absent from the record. ExemptMissing when a recorded
+    exempt root is not in the lineage with its start time."""
     head = next((x for x in entries if x["kind"] == "header"), {})
     recorded = {(x["pid"], x["pstart"]) for x in entries if x["kind"] in ("thread", "process")}
     procs = {p: (pp, ps) for (p, _), (pp, ps, _, _) in lineage.items()}
     parents = {p: v[0] for p, v in procs.items()}
-    ex = head.get("exempt_ids") or [{"pid": p, "start": None} for p in head.get("exempt", [])]
+    ex = exempt_entries(head)
+    lost = sorted(e["pid"] for e in ex if e["start"] is not None and (e["pid"] not in procs or procs[e["pid"]][1] != e["start"]))
+    if lost:
+        raise ExemptMissing(f"the exempt processes {', '.join(map(str, lost))} are not in the lineage with their recorded "
+                            "start times")
     spared = tree({e["pid"] for e in ex if e["pid"] in procs and e["start"] in (None, procs[e["pid"]][1])}, parents)
     roots = {p for p, (_, ps) in procs.items() if (p, ps) in recorded}
     obs = tree(roots, parents) - spared
@@ -737,7 +803,11 @@ def check(record: pathlib.Path, tasks_file: pathlib.Path, worker: int) -> int:
     allowed: dict[tuple[int, int], set[int] | None] = {}
     if lineage is not None:
         allowed = {k: v[3] for k, v in lineage.items()}
-        obs, new = observers_in(lineage=lineage, entries=lines)
+        try:
+            obs, new = observers_in(lineage=lineage, entries=lines)
+        except ExemptMissing as e:
+            print(f"observer placement check: {e}: no evidence", file=sys.stderr)
+            return 1
     else:  # a snapshot before the lineage: the recorded processes alone
         for ln in snap:
             w = ln.split()
@@ -783,6 +853,7 @@ def main() -> int:
     c.add_argument("--exclude-cpus", required=True)
     c.add_argument("--record", type=pathlib.Path, required=True)
     c.add_argument("--exempt-pid", type=int, action="append", default=[])
+    c.add_argument("--exempt", action="append", default=[], help="PID:START, an exempt root by its verified identity")
     r = sub.add_parser("restore")
     r.add_argument("--record", type=pathlib.Path, required=True)
     sub.add_parser("tasks")
@@ -806,7 +877,14 @@ def main() -> int:
     if not pids or not exclude:
         print("observer_affinity: --pids and --exclude-cpus are empty", file=sys.stderr)
         return 2
-    return confine(pids, exclude, a.record, a.exempt_pid)
+    given = []
+    for x in a.exempt:
+        m = re.fullmatch(r"([1-9][0-9]*):([0-9]+)", x, re.ASCII)
+        if not m:
+            print(f"observer_affinity: --exempt takes PID:START, not {x!r}", file=sys.stderr)
+            return 2
+        given.append((int(m[1]), int(m[2])))
+    return confine(pids, exclude, a.record, a.exempt_pid, given)
 
 
 if __name__ == "__main__":

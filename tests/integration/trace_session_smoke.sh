@@ -2021,12 +2021,19 @@ fi
 # process of this test's with two threads and a child): labelled names, the
 # confined run's record of the tool's confinement, restoration and halfway
 # check, the probe started off the excluded CPU, the open run left alone,
-# and the observer's masks restored afterwards.
+# and the observer's masks restored afterwards. --exempt PID:START (plan
+# L1): a malformed identity, one without a confined placement, and one that
+# no process holds are refused; the confined run is given a stand-in exempt
+# root (outside the observer's tree), named in its record and passed to the
+# tool, whose record lists it.
 for c in "--placements confined|a confined placement needs --observers" \
          "--placements confined --observers 1 --modes untraced,traced|a confined placement runs untraced or in the timer mode" \
          "--placements open --observers 1|--observers needs --placements with confined" \
          "--placements shut --observers 1|unknown placement 'shut'" \
-         "--placements open,confined --observers 999999999|--observers: no process 999999999"; do
+         "--placements open,confined --observers 999999999|--observers: no process 999999999" \
+         "--placements confined --observers 1 --exempt 5|--exempt takes PID:START" \
+         "--placements open --exempt 1:1|--exempt needs --placements with confined" \
+         "--placements open,confined --observers 1 --exempt 1:999999999|--exempt 1:999999999: no process 1 with start time 999999999"; do
   extra=${c%%|*} words=${c#*|}
   # shellcheck disable=SC2086
   if setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 54 --modes untraced \
@@ -2041,12 +2048,15 @@ threading.Thread(target=lambda: time.sleep(600), daemon=True).start()
 subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
 time.sleep(600)' &
 obs_pid=$!
+sleep 600 >/dev/null 2>&1 &
+ex_pid=$!  # a stand-in exempt root (plan L1's emulator), outside the observer's tree
 # A failed check must not leave the observer holding the test's output.
-trap 'kill "$EMU_PID" 2>/dev/null || true; pkill -P "$obs_pid" 2>/dev/null || true; kill "$obs_pid" 2>/dev/null || true' EXIT
+trap 'kill "$EMU_PID" 2>/dev/null || true; pkill -P "$obs_pid" 2>/dev/null || true; kill "$obs_pid" "$ex_pid" 2>/dev/null || true' EXIT
 sleep 0.5
+ex_id=$ex_pid:$(sed 's/.*) //' "/proc/$ex_pid/stat" | cut -d ' ' -f 20)
 all_cpus=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0)))))')
 setsid tools/trace_session.sh "${COMMON[@]}" --yes --attempt 54 --duration 4 --modes untraced \
-  --runs current:100:idle:fast-motion --placements open,confined --observers "$obs_pid" \
+  --runs current:100:idle:fast-motion --placements open,confined --observers "$obs_pid" --exempt "$ex_id" \
   </dev/null >"$ROOT/pl.log" 2>&1 || fail "the placement session failed" "$ROOT/pl.log"
 bo=$(base current-100hz-idle-bounded-fast-motion-obs-open-untraced 54)
 bc=$(base current-100hz-idle-bounded-fast-motion-obs-confined-untraced 54)
@@ -2065,6 +2075,8 @@ grep -q "^placement: confined (observers $obs_pid moved off CPUs 0, the probe st
   grep -Eq '^lineage complete: [0-9]+ tasks$' "$bc.tasks.txt" &&
   grep -q '^--- task lineage (observer_affinity.py tasks: pid tid ppid pstart start allowed) ---$' "$bc.tasks.txt" &&
   grep -q '"kind": "state", "passes": [0-9]*, "state": "confined"' "$bc.observers.jsonl" &&
+  grep -Eq "^exempt trees: the session's own \([0-9]+\) and $ex_id \(PID:START\)$" "$bc.run.txt" &&
+  grep -q "\"exempt_given\": \[{\"pid\": ${ex_id%%:*}, \"start\": ${ex_id#*:}}\]" "$bc.observers.jsonl" &&
   grep -Eq '^verdict: (pass|fail)' "$bc.run.txt" ||
   fail "the confined run's record" "$bc.run.txt"
 python3 - "$obs_pid" "$all_cpus" <<'EOF' || fail "the observer's masks were not restored" "$bc.run.txt"
@@ -2090,8 +2102,8 @@ if [ -n "$SAMPLER" ]; then
     fail "the confined timer run's lineage" "$b.run.txt"
 fi
 pkill -P "$obs_pid" 2>/dev/null || true
-kill "$obs_pid" 2>/dev/null || true
-wait "$obs_pid" 2>/dev/null || true
+kill "$obs_pid" "$ex_pid" 2>/dev/null || true
+wait "$obs_pid" "$ex_pid" 2>/dev/null || true
 trap 'kill "$EMU_PID" 2>/dev/null || true' EXIT
 
 # A confine that fails (here one that does not settle) stops the session

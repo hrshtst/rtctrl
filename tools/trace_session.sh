@@ -81,8 +81,13 @@
 # right after its trace started (<log>.csv.lineage.txt), for the trace's
 # checks to follow with the fork events (a confined run's placement, the
 # emulator's residency); a confined run is therefore untraced or in the
-# timer mode. The session's own process tree is exempt, and kernel
-# workers are outside this mechanism. An open run leaves the observers as
+# timer mode. The session's own process tree is exempt, and so are the
+# trees of the roots given with --exempt PID:START (plan L1: the emulator's
+# and the supervisor's processes, by the identities the caller verified):
+# tools/observer_affinity.py refuses a confinement whose exempt roots do not
+# hold those identities, at its start and at every pass, and the halfway
+# snapshot's check and the trace's placement check read the same record.
+# Kernel workers are outside this mechanism. An open run leaves the observers as
 # they are.
 #
 # Recorder staging (every run; tools/trace_stage.py, approved 2026-11-09):
@@ -246,7 +251,7 @@ MOUNT=${MOUNT:-mount}
 STAGE_ROOT=${TRACE_SESSION_STAGE_ROOT:-/run/rtctrl-stage}
 MEMINFO=${TRACE_SESSION_MEMINFO:-/proc/meminfo}
 VMSTAT=${TRACE_SESSION_VMSTAT:-/proc/vmstat}
-placements=; observers=
+placements=; observers=; exempts=()
 obs_owed=0; obs_record=  # a confined run's placement record, owed a restoration while obs_owed is 1
 placement=  # the placement of the run being named or made
 fs_defs=; fs_layout=  # the probes' definitions and layout (timer mode), read before anything is sent
@@ -330,6 +335,11 @@ usage: $0 [options]
                       (default: no placement, no label)
   --observers PIDS    the observer applications' processes (explicit PIDs,
                       their trees confined in confined runs)
+  --exempt PID:START  a confined run's exempt root besides the session's
+                      own (plan L1: the emulator's or the supervisor's
+                      process, by the identity the caller verified;
+                      repeatable): its tree is never confined, and a root
+                      that does not hold the identity refuses the run
   --fs-controls C     the timer mode's rehearsal: the fair server's probes'
                       positive and negative controls on spare CPU C before
                       the runs (refused without --port, on a serial device,
@@ -374,7 +384,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--manifest|--outdir|--max-runnable|\
-    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls|--placements|--observers)
+    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls|--placements|--observers|--exempt)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
@@ -400,6 +410,7 @@ while [ $# -gt 0 ]; do
         --fs-controls) fs_controls_cpu=$2 ;;
         --placements) placements=$2 ;;
         --observers) observers=$2 ;;
+        --exempt) exempts+=("$2") ;;
       esac
       shift 2 ;;
     --no-usbmon) usbmon=0; shift ;;
@@ -517,6 +528,10 @@ if [ -n "$observers" ]; then
   [[ $observers =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--observers must be a list of PIDs"
   case ",$placements," in *,confined,*) ;; *) die "--observers needs --placements with confined" ;; esac
 fi
+for ex in "${exempts[@]}"; do  # ASCII digits only
+  [[ $ex =~ ^[123456789][0123456789]*:[0123456789]+$ ]] || die "--exempt takes PID:START (an exempt root's identity), not '$ex'"
+  case ",$placements," in *,confined,*) ;; *) die "--exempt needs --placements with confined" ;; esac
+done
 case ",$placements," in
   *,confined,*)
     [ -n "$observers" ] || die "a confined placement needs --observers (the PIDs to confine)"
@@ -634,6 +649,10 @@ if [ -n "$observers" ]; then
     [ -d "/proc/$op" ] || problems+=("--observers: no process $op")
   done
 fi
+for ex in "${exempts[@]}"; do  # each exempt root holds its identity now (confine checks it again at every pass)
+  ex_start=$(sed 's/.*) //' "/proc/${ex%%:*}/stat" 2>/dev/null | cut -d ' ' -f 20)
+  [ "$ex_start" = "${ex#*:}" ] || problems+=("--exempt $ex: no process ${ex%%:*} with start time ${ex#*:}${ex_start:+ (its start is $ex_start)}")
+done
 if [ ${#lt_list[@]} -gt 0 ]; then
   [ -x "$LATENCY_TOOL" ] || problems+=("$LATENCY_TOOL is not executable")
   [ -n "$lt_tty" ] || problems+=("no port to set the latency timer of")
@@ -866,6 +885,7 @@ if [ "$dry_run" -eq 1 ]; then
   placement=
   if [ -n "$placements" ]; then
     echo "placements $placements: a confined run moves the trees of $observers off CPUs $exclude_cpus through $OBS_TOOL (recorded first, repeated until a pass finds nothing new, restored right after the probe and on every exit; its halfway snapshot and, in the timer mode, a listing after the trace started follow the observers' lineage) and starts the probe on CPUs $other_cpus"
+    [ ${#exempts[@]} -eq 0 ] || echo "  exempt trees besides the session's own: ${exempts[*]} (PID:START, verified at every pass)"
   fi
   echo "staging: each run's capture streams on a private noswap tmpfs under $STAGE_ROOT ($STAGE_TOOL), published to $outdir, verified and released after the run; the budgets (provisional) at today's MemAvailable:"
   # A traced budget needs the trace buffers' geometry, read as root when the
@@ -2033,7 +2053,8 @@ run_one() {
     echo "variant: $variant (bounded read path: the probe's 35 ms budget and equal guard)"
     echo "mode: $mode"
     case "$placement" in
-      confined) echo "placement: confined (observers $observers moved off CPUs $exclude_cpus, the probe started on CPUs $other_cpus)" ;;
+      confined) echo "placement: confined (observers $observers moved off CPUs $exclude_cpus, the probe started on CPUs $other_cpus)"
+                [ ${#exempts[@]} -eq 0 ] || echo "exempt trees: the session's own ($$) and ${exempts[*]} (PID:START)" ;;
       open) echo "placement: open (observers $observers left as they are)" ;;
     esac
     if [ -n "$step" ]; then
@@ -2087,8 +2108,10 @@ run_one() {
     local obs_out obs_status
     obs_record="$csv.observers.jsonl"
     obs_owed=1
+    local ex_args=() ex
+    for ex in "${exempts[@]}"; do ex_args+=(--exempt "$ex"); done
     obs_out=$(python3 "$OBS_TOOL" confine --pids "$observers" --exclude-cpus "$exclude_cpus" \
-      --record "$obs_record" --exempt-pid "$$" 2>&1)
+      --record "$obs_record" --exempt-pid "$$" "${ex_args[@]}" 2>&1)
     obs_status=$?
     { echo "--- observer placement: python3 $OBS_TOOL confine (exit $obs_status) ---"; echo "$obs_out"; } >>"$note"
     [ -s "$obs_record" ] || obs_owed=0  # refused before writing anything

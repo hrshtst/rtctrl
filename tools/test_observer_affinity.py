@@ -53,6 +53,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -627,9 +628,23 @@ def lineage_checks(root: pathlib.Path, mine: list[int]) -> None:
     expect(r.returncode == 0 and "1 observer threads, 0 allowed" in r.stdout, f"the exempt trees left out: {r.stdout}")
     r = check(record, base + ["5001 5001 5000 30 30 0-3"])
     expect(r.returncode == 1 and "process 5001 thread 5001" in r.stdout, f"a new descendant there fails: {r.stdout}")
-    r = check(record, ["5000 5000 1 99 99 0-3", "5002 5002 5000 100 100 0-3", "4242 4243 1 50 50 3"])
+    r = check(record, ["5000 5000 1 99 99 0-3", "5002 5002 5000 100 100 0-3", "4242 4243 1 50 50 3",
+                       "6000 6000 1 20 20 0-3"])  # the exempt session, alive with its recorded start (now required)
     expect(r.returncode == 0 and "0 observer threads" in r.stdout,
            f"a reused process ID (another start time) and its child are not observers: {r.stdout}")
+    # The exempt roots must hold their recorded identities in the lineage (plan L1): absent, or its ID reused by
+    # another process (which, a child of an observer, would otherwise be judged as one), is no evidence.
+    r = check(record, [ln for ln in base if not ln.startswith("6000 ")])
+    expect(r.returncode == 1 and "exempt processes 6000 are not in the lineage" in r.stderr,
+           f"an exempt root absent from the lineage: {r.returncode} {r.stdout} {r.stderr}")
+    r = check(record, [ln if not ln.startswith("6000 ") else "6000 6000 5000 21 21 0-3" for ln in base])
+    expect(r.returncode == 1 and "exempt processes 6000 are not in the lineage" in r.stderr,
+           f"an exempt root's ID held by another process: {r.returncode} {r.stdout} {r.stderr}")
+    # Two exempt roots (the session's and a given one, plan L1), both in the lineage: both trees left out.
+    two = [dict(record[0], exempt=[6000, 7000], exempt_ids=[{"pid": 6000, "start": 20}, {"pid": 7000, "start": 70}],
+                exempt_given=[{"pid": 7000, "start": 70}])] + record[1:]
+    r = check(two, base + ["7000 7000 5000 70 70 0-3", "7001 7001 7000 71 71 0-3"])
+    expect(r.returncode == 0 and "1 observer threads, 0 allowed" in r.stdout, f"two exempt trees left out: {r.stdout}")
     # A record of the single-pass confine (version 1) and a snapshot before
     # the lineage: the recorded processes alone, said so.
     v1 = [{"kind": "header", "exclude": [3], "allowed": [0, 1, 2], "exempt": [6000]}, record[2]]
@@ -695,6 +710,105 @@ class FakeProc:
                 yield self
             finally:
                 pathlib.Path.read_text, pathlib.Path.iterdir = real_read, real_iter
+
+
+def exempt_tree_checks(root: pathlib.Path) -> None:
+    """Plan L1's verified exemptions on a fake /proc: a terminal (10) with a multiplexer (11) and two panes, the
+    emulator (14) under one pane's heredoc bash, the supervisor (17) under the other's, with its session (18, the
+    session's own exemption), the probe (19) and the keeper (20, reparented to the supervisor); an unrelated child of
+    the terminal (21). Excluded CPUs 2-5; the emulator allowed on 4-5 only."""
+    ex = {2, 3, 4, 5}
+    tree_ = {10: (1, 100), 11: (10, 110), 12: (11, 120), 13: (12, 130), 14: (13, 140), 15: (11, 150), 16: (15, 160),
+             17: (16, 170), 18: (17, 180), 19: (18, 190), 20: (17, 200), 21: (10, 210)}
+    rig = {14, 17, 18, 19, 20}
+    observers = set(tree_) - rig
+    case = {"n": 0}
+
+    def fresh() -> tuple[FakeProc, pathlib.Path]:
+        case["n"] += 1
+        d = root / f"ex{case['n']}"
+        d.mkdir()
+        f = FakeProc(d, {p: (pp, s, {p: s}) for p, (pp, s) in tree_.items()})
+        f.masks[14] = {4, 5}
+        return f, d / "observers.jsonl"
+
+    def recorded(rec: pathlib.Path) -> set[int]:
+        return {x["tid"] for x in entries(rec) if x["kind"] == "thread"}
+    given = [(14, 140), (17, 170)]
+    # 1. The two verified exemptions: the targets are the terminal, the multiplexer, the panes' shells and bashes and
+    # the unrelated child; never the emulator, the supervisor, the session, the probe or the keeper.
+    f, rec = fresh()
+    with f.active():
+        st, out = capture(oa.confine, [10], ex, rec, [18], given)
+    head = entries(rec)[0]
+    expect(st == 0 and recorded(rec) == observers and not {t for t, _ in f.sets} & rig and f.masks[14] == {4, 5}
+           and head["exempt_ids"] == [{"pid": 14, "start": 140}, {"pid": 17, "start": 170}, {"pid": 18, "start": 180}]
+           and head["exempt_given"] == [{"pid": 14, "start": 140}, {"pid": 17, "start": 170}],
+           f"the verified exemptions leave the rig out: {st} {out} {sorted(recorded(rec))} {f.sets}")
+    # 5. The snapshot check and the restoration read the same record: the exempt trees neither flagged nor restored.
+    snap = rec.with_name("tasks.txt")
+    rows = [f"{p} {p} {pp} {s} {s} {'4-5' if p == 14 else ('0-1' if p in observers else '0-3')}" for p, (pp, s) in tree_.items()]
+    snap.write_text("taken: x\n" + oa.LINEAGE + "\ntaken monotonic_ns: 1 2\n" + "\n".join(rows) + f"\n{oa.COMPLETE} {len(rows)} tasks\n")
+    st, out = capture(oa.check, rec, snap, 19)
+    expect(st == 0 and f"{len(observers)} observer threads, 0 allowed" in out, f"the check leaves the exempt trees out: {st} {out}")
+    with f.active():
+        f.thread(17, 16, 1701, 175)      # a thread the supervisor created after the last pass
+        f.thread(21, 10, 2101, 215)      # one the unrelated observer created
+        f.masks[2101] = {0, 1}
+        f.sets.clear()
+        st, out = capture(oa.restore, rec)
+    expect(st == 0 and all(f.masks[t] == {0, 1, 2, 3} for t in observers) and f.masks[14] == {4, 5}
+           and not {t for t, _ in f.sets} & (rig | {1701}) and f.masks[2101] == {0, 1, 2, 3},
+           f"the restoration leaves the exempt trees alone: {st} {out} {f.sets}")
+    # 2. The defect, kept as a regression: the session's own exemption alone selects the emulator and the keeper.
+    f, rec = fresh()
+    with f.active():
+        st, out = capture(oa.confine, [10], ex, rec, [18])
+    expect(st == 1 and {14, 17, 20} <= recorded(rec) and "1 left (only excluded CPUs)" in out,
+           f"the session-only exemption selects the emulator and the keeper: {st} {out} {sorted(recorded(rec))}")
+    # 3. An exempt identity whose start time differs (a reused ID): refused at the start, nothing changed; and at a
+    # later pass (the emulator's ID taken by another process after the first pass): a failure, not a dropped exemption.
+    f, rec = fresh()
+    with f.active():
+        st, out = capture(oa.confine, [10], ex, rec, [18], [(14, 141), (17, 170)])
+    expect(st == 2 and not rec.exists() and not f.sets and "exempt process 14 (start 141) is not running" in out,
+           f"an exempt identity with another start time: {st} {out}")
+    for what, change in (("reused", lambda f: (f.proc / "14" / "stat").write_text(FakeProc.stat(14, 13, 999))),
+                         ("gone", lambda f: shutil.rmtree(f.proc / "14"))):
+        f, rec = fresh()
+        calls: list[int] = []
+        real_processes = oa.processes
+
+        def later(f=f, change=change):
+            calls.append(1)
+            if len(calls) == 3:  # the second pass's listing
+                change(f)
+            return real_processes()
+        with f.active():
+            with patched(processes=later):
+                st, out = capture(oa.confine, [10], ex, rec, [18], given)
+        expect(st == 1 and "exempt processes 14 are gone or replaced" in rec.read_text() and 14 not in recorded(rec)
+               and '"state": "confined with failures"' in rec.read_text(),
+               f"an exempt process {what} at a later pass fails the confinement: {st} {out}")
+        # Its restoration: the recorded threads restored; the threads created after the last pass left, and said so.
+        with f.active():
+            f.thread(21, 10, 2102, 216)
+            f.masks[2102] = {0, 1}
+            st, out = capture(oa.restore, rec)
+        expect(st == 0 and all(f.masks[t] == {0, 1, 2, 3} for t in observers) and f.masks[2102] == {0, 1}
+               and "the threads created after the last pass were left as found" in out
+               and '"kind": "new skipped"' in rec.read_text(), f"restore with the exempt process {what}: {st} {out}")
+    # 4. An exempt process gone before confinement: refused, nothing changed.
+    f, rec = fresh()
+    shutil.rmtree(f.proc / "14")
+    with f.active():
+        st, out = capture(oa.confine, [10], ex, rec, [18], given)
+    expect(st == 2 and not rec.exists() and not f.sets, f"an exempt process gone before confinement: {st} {out}")
+    # The CLI's PID:START form.
+    for bad in ("14", "14:", ":140", "x:140", "0:140", "14:140:1", "١٤:140"):
+        r = tool("confine", "--pids", "1", "--exclude-cpus", "3", "--record", str(root / "cli.jsonl"), "--exempt", bad)
+        expect(r.returncode == 2 and "--exempt takes PID:START" in r.stderr and not (root / "cli.jsonl").exists(),
+               f"--exempt {bad!r}: {r.returncode} {r.stderr}")
 
 
 def read_failure_checks(root: pathlib.Path) -> None:
@@ -992,6 +1106,8 @@ def main() -> int:
             counterexample_checks(pathlib.Path(t))
         with tempfile.TemporaryDirectory() as t:
             read_failure_checks(pathlib.Path(t))
+        with tempfile.TemporaryDirectory() as t:
+            exempt_tree_checks(pathlib.Path(t))
     finally:
         for p in procs:
             p.kill()

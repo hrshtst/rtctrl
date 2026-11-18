@@ -751,7 +751,8 @@ def main() -> int:
                 ("v2-other", [(1000.0, "other", 6600), (1050.0, "session", 8000), (1060.0, "sesskid", 8001),
                               (1070.0, None, 0)], [(900.0, 8000, 8001)], True),
                 ("v2-nolineage", [], [], False),
-                ("v2-incomplete", [], [], False)):
+                ("v2-incomplete", [], [], False),
+                ("v2-exempt-gone", [], [], False)):
             r = Run(timer=True)
             prev = ("swapper/2", 0)
             for us, parent, child in forks:
@@ -767,6 +768,9 @@ def main() -> int:
             if name == "v2-incomplete":  # a listing that could not read a live task: no evidence
                 pathlib.Path(str(path) + ".lineage.txt").write_text(
                     lineage.replace("lineage complete: 5 tasks", "lineage INCOMPLETE: 1 unreadable: /proc/7781/stat"))
+            elif name == "v2-exempt-gone":  # the exempt root absent from the lineage (plan L1): the trees unknown
+                pathlib.Path(str(path) + ".lineage.txt").write_text(
+                    lineage.replace("8000 8000 7770 80 80 0-31\n", "").replace("lineage complete: 5 tasks", "lineage complete: 4 tasks"))
             elif name != "v2-nolineage":
                 pathlib.Path(str(path) + ".lineage.txt").write_text(lineage)
             p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(path), *saved_report(root, name),
@@ -774,9 +778,10 @@ def main() -> int:
             out = p.stdout + p.stderr
             words = ("no task lineage after the trace started" if name == "v2-nolineage" else
                      "task lineage is incomplete (lineage INCOMPLETE: 1 unreadable" if name == "v2-incomplete" else
+                     "exempt processes 8000 are not in the lineage with their recorded start times" if name == "v2-exempt-gone" else
                      "lineage after the trace started (" if ok else "ran on CPUs 2,3")
             expect(("observer placement (confined, " in out) and ((p.returncode == 0) == ok) and words in out
-                   and (name in ("v2-nolineage", "v2-incomplete") or "3 observer tasks in 2 processes (1 processes not in the placement "
+                   and (name in ("v2-nolineage", "v2-incomplete", "v2-exempt-gone") or "3 observer tasks in 2 processes (1 processes not in the placement "
                         "record), 2 tasks absent from the record" in out),
                    f"the version 2 placement check ({name})", out)
         # The recorders' off-CPU spans over 5 ms begun in D state are listed,

@@ -955,7 +955,11 @@ def observer_placement(csv_path: pathlib.Path, run: Run, tr: Trace, out, failure
             lineage = {}
         elif problem:  # a partial lineage is no evidence: its surviving subset is not checked as if whole
             failures.append(f"observer placement: {linf.name}'s task lineage is incomplete ({problem})")
-        procs, new = observer_affinity.observers_in(entries, lineage)
+        try:
+            procs, new = observer_affinity.observers_in(entries, lineage)
+        except observer_affinity.ExemptMissing as e:  # the exempt trees unknown there: nothing read against them
+            failures.append(f"observer placement: {e} ({linf.name}): the exempt trees are not known")
+            procs, new = set(), set()
         seeded = {t for (p, t) in lineage if p in procs}
         notes.append(f"lineage after the trace started ({linf.name}): {len(seeded)} observer tasks in "
                      f"{len(procs)} processes ({len(new)} processes not in the placement record), "
