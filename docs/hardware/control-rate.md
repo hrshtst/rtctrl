@@ -2655,7 +2655,7 @@ and H2 stay paused.
 (the procedure; executed 2026-11-18 as attempts 18 and 19, recorded
 below).** Attempt 17's trace showed most
 reads waiting a substantial part of the period for the emulator's next 1 ms
-poll (that wait's median 0.48 ms over the 17,260 complete reads; some reads
+poll (that wait's median about 0.47 ms over all 17,720 reads; some reads
 found the emulator already runnable or running) and its model time running
 about 6 percent slow; `ede876d` replaced that loop (the emulator reads its
 input on readiness, ticks its model every 1 ms of wall time, and exits with
