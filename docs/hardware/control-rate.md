@@ -2768,7 +2768,7 @@ corrected design, carrying A3's unsupported verdict forward rather than
 treating attempt 19 as a certified timer baseline; no placement change,
 acquisition, hardware work or H2 is authorized.
 
-**Plan L1: a placement rehearsal on CPUs 4-5 (tools in place, for review;
+**Plan L1: a placement rehearsal on CPUs 4-5 (tools accepted 2026-11-18;
 not executed).** L1 moves the emulator and every unbound workqueue onto one
 P-core's two threads, 4 and 5, and keeps CPU 2 (CPU 3's SMT sibling) free of
 everything the rig places. It is a declared bundle, never combined with A3,
@@ -2847,6 +2847,69 @@ rehearsal come a candidate checkout and build with its identities, a guard
 revision whose emulator check requires exactly 4-5, operator blocks naming
 the observers at the time, their checks, and a separate go with fresh
 attempt names.
+
+**Plan L1's rehearsal: the procedure (for review; not executed).** On the
+emulator only, the arm's actuator power off, at the candidate's commit:
+the supervisor's layout `l1` as the committed constant, attempts 20
+(untraced) and 21 (timer), into `clock-validation-20`,
+`clock-validation-21` and `clock-validation-option-l1`. Everything A3 ran
+stays as it was (the 20 s runs, `rt-loaded-excl`, the 35 ms budget and
+guard, the servos' state checks, the gates and the stop without retry)
+except the bundle above. A pass would qualify no control rate, the USB path
+or the hardware, and an improvement would be the bundle's.
+
+- **The candidate.** A fresh checkout of the procedure's commit with its own
+  build and identities. The files root runs now include
+  `tools/wq_target.py`, and `tools/wq_mask.sh` and `tools/root_keeper.sh`
+  changed with the reviewed series; the identities list them with their
+  hashes. The launch guard's next revision binds the emulator as A3's did,
+  every thread allowed exactly 4-5.
+- **The operator blocks.** The emulator's block launches it with
+  `taskset -c 4,5`. The supervisor's block pins its own bash to 0-1,6-31
+  before anything else, so the supervisor, its sessions and the keeper
+  inherit that affinity, and collects the observers' PIDs right before the
+  dry run: the Claude Code processes, the oldest Chrome process, Dropbox,
+  the terminal (`ghostty`), the multiplexer (`herdr`) and `gnome-shell`
+  (attempt 17's occupants of CPU 2), with their trees. The emulator's and
+  the supervisor's trees are exempt by identity (above). The same list
+  goes to the dry run and the run.
+- **The interrupt placement, recorded.** The host's interrupt affinities
+  are read (unprivileged, nothing relocated) before the dry run and after
+  the supervisor ends. On 2026-11-18 irqbalance was inactive and the
+  storage controller's VMD vector 18 was effective on CPU 2. Attempt 19's
+  trace showed that vector delivering NVMe queues `nvme0q15` and
+  `nvme1q16`, the queues of submissions from CPUs 28-31. CPUs 4 and 5
+  held a PCIe port each, the management engine (4) and the SMBus (5). So
+  CPU 2 still takes storage completions for I/O submitted from CPUs 28-31,
+  where the load and the tracers may run; L1 relocates no interrupt.
+
+The rehearsal passes only if, besides A3's criteria:
+- the gates read the set record (`--mask-target 4-5 --rt-cpu 3`) on the
+  open and closed records;
+- `tools/emulator_residency.py --allowed 4-5` passes;
+- `tools/unbound_work.py --experiment FILE --allowed 4-5` passes, and its
+  coverage line lists no CPU outside 4-5 with events but no switch. A CPU
+  listed there, or one with no event at all, is not shown clear of unbound
+  workers: the placement stays unestablished for it, whatever the tool's
+  other checks print;
+- the main trace and the TSC instance lost no events;
+- the confined placement holds, with both exemptions verified at every
+  pass: the halfway snapshot shows no observer allowed on 2-5 outside the
+  exempt trees, the correlation finds no observer time there, and every
+  observer is restored;
+- the controls on CPU 7 pass;
+- the guard's binding and the supervisor's three emulator records name one
+  process, allowed exactly 4-5.
+
+The CPU-time accounting of CPUs 2, 4 and 5 by class, the interrupt
+records and the stall statistics are descriptive; in comparisons the
+supervisor's class is "supervisor tree, including stress load", and the
+idle comparison is a consistency check, not an accuracy bound. The clock
+certificate is judged as in A3: `systemd-timesyncd` runs unchanged, so an
+adjustment inside the timer run makes it UNSUPPORTED again. The placement
+checks read the trace's clock and the probe's monotonic stamps, not the
+conversion. A cap exit, a servo-state anomaly, a timeout or a read failure
+is a failure; nothing is retried. Hardware and H2 stay paused.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
