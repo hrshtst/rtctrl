@@ -2653,8 +2653,10 @@ and H2 stay paused.
 
 **Option A, third run: the event-driven emulator at the accepted placement
 (the procedure; executed 2026-11-18 as attempts 18 and 19, recorded
-below).** Attempt 17's trace showed every
-read waiting for the emulator's next 1 ms poll and its model time running
+below).** Attempt 17's trace showed most
+reads waiting a substantial part of the period for the emulator's next 1 ms
+poll (that wait's median 0.48 ms over the 17,260 complete reads; some reads
+found the emulator already runnable or running) and its model time running
 about 6 percent slow; `ede876d` replaced that loop (the emulator reads its
 input on readiness, ticks its model every 1 ms of wall time, and exits with
 status 3 rather than drop model time when more than 50 ticks are due at

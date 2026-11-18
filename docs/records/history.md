@@ -961,11 +961,12 @@ acquisitions under their own declared environment, not attempt 15 with only
 the affinity changed, and their execution deviations (a bash heredoc, no
 tmux, an interrupted first paste) were accepted for these runs only.
 
-Attempt 17's trace then showed every read waiting for the emulator's next
-1 ms poll and its model time running about 6 percent slow, so `ede876d`
-made the emulator event-driven (reads on readiness, model time on wall
-time, an explicit exit when more than 50 ticks fall due). Option A's third
-run validated that rig at the same placement, with the servos' state
+Attempt 17's trace then showed most reads waiting a substantial part of
+the period for the emulator's next 1 ms poll (some found it already
+runnable or running) and its model time running about 6 percent slow, so
+`ede876d` made the emulator event-driven (reads on readiness, model time on
+wall time, an explicit exit when more than 50 ticks fall due). Option A's
+third run tested that rig at the same placement, with the servos' state
 checked before any host change and after each session, and a launch guard
 binding the process that actually holds the emulator's pty. Attempts 18
 and 19 (2026-11-18, at `2fb3b24`) were acquired with both record gates
