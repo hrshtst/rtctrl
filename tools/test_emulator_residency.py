@@ -21,7 +21,14 @@ header, its completeness line and its taken line, and list the emulator by pid a
 processes join, other processes do not); the record must hold all three emulator lines, the same pid and start time,
 and affinities without CPU 3 (a failed check, a changed identity, a list with CPU 3, a malformed or descending list, a
 missing line, a line twice: unreadable); the CLI reads the default or a given lineage, a stand-in decoder to its end,
-and fails on its late nonzero exit."""
+and fails on its late nonzero exit.
+
+With --allowed 4-5 (plan L1): the emulator on CPU 4, or on 4 and 5, passes; on CPU 2 throughout (passing without the
+option), queued on CPU 2 to the window's end, migrated off the set and run on CPU 6, carried into the window on CPU 2,
+and a lineage thread allowed outside the set each fail; on CPU 2 only outside the window, and another task on CPU 2,
+do not count; a lineage not read against the set, a set holding CPU 3 and a list not in canonical form are refused; a
+record allowing 0-2,4-31 is unreadable under the option, one allowing exactly 4-5 is read; the lineage names a
+descendant allowed outside the set."""
 
 from __future__ import annotations
 
@@ -267,12 +274,74 @@ def lineage_text(rows: list[str] | None = None, taken: tuple = TAKEN, close: str
                      + [close if close is not None else f"lineage complete: {len(rows)} tasks"]) + "\n"
 
 
+def polls_on(cpu: int) -> list[str]:
+    """Ten polls on CPU cpu in the 10 ms window, the worker on CPU 3 before it; the trace runs past the window."""
+    out = start() + [switch(T - MS, 3, IDLE3, WORKER)]
+    for k in range(10):
+        out += cycle(T + k * MS + 100_000, cpu)
+    return out + [line(T + 11 * MS, 0, "swapper/0", 0, "sched_switch", "swapper/0:0 [120] R ==> x:1 [120]")]
+
+
+def allowed_units() -> None:
+    """--allowed 4-5 (plan L1): the emulator's time outside the set, and its lineage threads allowed outside it."""
+    rec = dict(EMU_REC, allowed_outside=[])
+
+    def chk(lines: list[str], emu: dict | None = None) -> dict:
+        return er.analyse(sorted(lines, key=stamp), Cap(), emu or rec, 3, io.StringIO(), "4-5")
+    r = chk(polls_on(4))
+    expect(r["ok"] and r["outside"] == 0 and r["cpus"] == {4: 10}, f"allowed 4-5, the emulator on CPU 4 throughout: {r}")
+    r = chk(polls_on(4) + cycle(T + 5 * MS + 400_000, 5))
+    expect(r["ok"] and r["outside"] == 0, f"allowed 4-5, the emulator on CPUs 4 and 5: {r}")
+    r = chk(clean())
+    expect(not r["ok"] and r["outside"] == 10 and r["outside_tasks"] == 1, f"allowed 4-5, the emulator on CPU 2 throughout: {r}")
+    r = check(clean())
+    expect(r["ok"], f"the same without --allowed: {r}")
+    late = T + 9 * MS + 500_000
+    r = chk(polls_on(4) + [wakeup(late, 2, by=("swapper/2", 0))])
+    expect(not r["ok"] and r["outside"] == 1, f"allowed 4-5, a stretch queued on CPU 2 to the window's end: {r}")
+    # Queued on CPU 4, migrated to CPU 6 inside the window and run there.
+    r = chk(polls_on(4) + [wakeup(T + 5 * MS + 400_000, 4, by=("swapper/4", 0)), migrate(T + 5 * MS + 410_000, 4, 6),
+                           switch(T + 5 * MS + 420_000, 6, ("swapper/6", 0), ("dxl_emu", EMU)),
+                           switch(T + 5 * MS + 460_000, 6, ("dxl_emu", EMU), ("swapper/6", 0))])
+    expect(not r["ok"] and r["outside"] == 1, f"allowed 4-5, a migration off the set inside the window: {r}")
+    # Carried into the window on CPU 2: switched in there before it, out just after it began.
+    r = chk(start() + [switch(T - MS, 3, IDLE3, WORKER), switch(T - 200_000, 2, ("swapper/2", 0), ("dxl_emu", EMU)),
+                       switch(T + 10_000, 2, ("dxl_emu", EMU), ("swapper/2", 0))] + polls_on(4)[2:])
+    expect(not r["ok"] and r["outside"] == 1, f"allowed 4-5, the emulator carried into the window on CPU 2: {r}")
+    # Off the set only outside the window: no count.
+    r = chk(polls_on(4) + cycle(T - 2 * MS, 2) + cycle(T + 10 * MS + 200_000, 2))
+    expect(r["ok"] and r["outside"] == 0, f"allowed 4-5, on CPU 2 only outside the window: {r}")
+    # Another task's time on CPU 2: no count.
+    r = chk(polls_on(4) + cycle(T + 5 * MS, 2, 77, "other"))
+    expect(r["ok"], f"allowed 4-5, another task on CPU 2: {r}")
+    r = chk(polls_on(4), dict(rec, allowed_outside=[EMU]))
+    expect(not r["ok"] and r["allowed_outside"] == 1, f"allowed 4-5, a lineage thread allowed outside it: {r}")
+    for what, emu, allowed in (("a lineage not read against the set", EMU_REC, "4-5"),
+                               ("a set holding the real-time CPU", rec, "3-5"),
+                               ("a set not in canonical form", rec, "4,5")):
+        try:
+            er.analyse(sorted(polls_on(4), key=stamp), Cap(), emu, 3, io.StringIO(), allowed)
+            expect(False, f"allowed: {what}: read")
+        except (er.Unreadable, er.wq_target.Refused):
+            pass
+
+
 def records() -> None:
     with tempfile.TemporaryDirectory() as d:
         p = pathlib.Path(d, "experiment.record")
         p.write_text("\n".join(RECORD) + "\n")
         e = er.emulator(p, 3)
         expect(e == dict(pid=4100, start="1234", tids={4100}), f"a good record: {e}")
+        try:
+            er.emulator(p, 3, {4, 5})
+            expect(False, "a record allowing 0-2,4-31 read under --allowed 4-5")
+        except er.Unreadable:
+            pass
+        on45 = GOOD.replace("allowed=0-2,4-31", "allowed=4-5")
+        p.write_text("\n".join(["started=x", f"emulator_start=t0 {on45}", f"emulator_A=t1 {on45}", f"emulator_B=t2 {on45}"]) + "\n")
+        e = er.emulator(p, 3, {4, 5})
+        expect(e["pid"] == 4100, f"a record allowing exactly 4-5 under --allowed 4-5: {e}")
+        p.write_text("\n".join(RECORD) + "\n")
         two = RECORD[:3] + ["emulator_B=t2 pid=4100 start=1234 comm=dxl_emu tids=4100,4101 allowed=0-2,4-31;0-2"]
         p.write_text("\n".join(two) + "\n")
         e = er.emulator(p, 3)
@@ -297,7 +366,14 @@ def records() -> None:
         lf = pathlib.Path(d, "lineage.txt")
         lf.write_text(lineage_text())
         g = er.lineage(lf, emu, 3)
-        expect(g == dict(seeds={4100, 4101, 4200}, procs={4100, 4200}, taken=TAKEN, allowed_rt=[]), f"a good lineage: {g}")
+        expect(g == dict(seeds={4100, 4101, 4200}, procs={4100, 4200}, taken=TAKEN, allowed_rt=[], allowed_outside=None),
+               f"a good lineage: {g}")
+        # With an allowed set (plan L1): the tree's threads allowed outside it.
+        lf.write_text(lineage_text([ROWS[0], "4100 4100 4000 1234 1234 4-5", "4100 4101 4000 1234 1300 4-5",
+                                    "4200 4200 4100 1400 1400 0-2,4-31"] + ROWS[4:]))
+        g = er.lineage(lf, emu, 3, {4, 5})
+        expect(g["allowed_outside"] == [4200] and g["allowed_rt"] == [], f"a descendant allowed outside 4-5: {g}")
+        lf.write_text(lineage_text())
         lf.write_text(lineage_text(ROWS[:2] + ["4100 4101 4000 1234 1300 0-31"] + ROWS[3:]))
         g = er.lineage(lf, emu, 3)
         expect(g["allowed_rt"] == [4101], f"an emulator thread allowed on CPU 3: {g}")
@@ -420,6 +496,7 @@ def cli() -> None:
 
 def main() -> int:
     units()
+    allowed_units()
     records()
     cli()
     if FAILURES:

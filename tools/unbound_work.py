@@ -3,7 +3,7 @@
 validation's Option A (docs/hardware/control-rate.md): with that CPU out of the unbound workqueues' mask
 (tools/wq_mask.sh), none of their workers may run there. Read-only.
 
-    unbound_work.py <run>.csv [--report FILE] [--rt-cpu N]
+    unbound_work.py <run>.csv [--report FILE] [--rt-cpu N] [--experiment FILE [--lineage FILE] [--allowed LIST]]
 
 Inside the probe's window (its first wake stamp to its last cycle-end stamp, as tools/tk_cost.py takes it), from the
 main trace (trace-cmd report -t under tools/tk_record.py's launch, or a saved --report):
@@ -18,9 +18,21 @@ main trace (trace-cmd report -t under tools/tk_record.py's launch, or a saved --
   window began counts) fail, as does work executed by a task that is no kernel worker (unclassified);
 - the worker's flushes (its instructions to the emulator, workqueue_queue_work of flush_to_ldisc by the probe's
   worker inside the window), each matched to that work's next execution: one never seen to run, or run on the
-  real-time CPU, fails; their CPUs and queue-to-run delays are descriptive.
+  real-time CPU, fails; their CPUs and queue-to-run delays are descriptive;
+- with --experiment FILE (the supervisor's record) the emulator's flushes too, the other tty direction (its replies,
+  and any flush of its tty its reads restart): workqueue_queue_work of flush_to_ldisc inside the window by one of the
+  emulator's tasks, identified as tools/emulator_residency.py identifies them (the record's threads, its process tree
+  in the task lineage after the trace started, --lineage FILE or <run>.csv.lineage.txt, the tasks the trace shows
+  exiting before the lineage ended, and every task these created through the trace's forks up to the window's end),
+  each matched to its next execution: none queued, one never seen to run, or one run on the real-time CPU, fails;
+- with --allowed LIST (plan L1: the unbound mask set to exactly those CPUs; it needs --experiment, so that both tty
+  directions are judged), besides every check above: any execution by an unbound worker or a rescuer overlapping the
+  window on a CPU outside LIST, and any flush of either direction run outside LIST, fails. LIST is a canonical CPU
+  list without the real-time CPU. Per-CPU workers stay outside these checks (the mask does not govern them).
 
-The evidence must be complete: every sched_switch of the real-time CPU and every workqueue event must parse, every
+The evidence must be complete: every sched_switch of the real-time CPU and every workqueue event must parse (with
+--experiment, every sched_process_fork and sched_process_exit too, and the lineage must begin after the trace's first
+event and end before the window began), every
 event line after the first must be an event line, the real-time CPU's switches must follow on from each other (each
 switch's previous task is the one the last switch put there), the report must reach past the window's end, and it is
 read to its end: a decoder that exits nonzero, at any point, makes the evidence unreadable.
@@ -39,9 +51,11 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import emulator_residency  # noqa: E402
 import tk_cost  # noqa: E402
 import tk_record  # noqa: E402
 import trace_correlate  # noqa: E402
+import wq_target  # noqa: E402
 
 AFTER_NS = 100_000_000  # executions are looked for this long after the window, for flushes queued near its end
 QUEUE = re.compile(r"work struct=(\S+) function=(\S+) workqueue=(\S+)")
@@ -70,9 +84,17 @@ def classify(comm: str, rt: int) -> str:
 FORBIDDEN = {"unbound", "rescuer", "other-cpu", "unclassified"}
 
 
-def analyse(lines, cap, rt: int, out) -> dict:
-    """The checks above on report lines (read to their end); raises Unreadable on incomplete evidence."""
+def analyse(lines, cap, rt: int, out, allowed: str | None = None, emu: dict | None = None) -> dict:
+    """The checks above on report lines (read to their end); raises Unreadable on incomplete evidence. emu is the
+    emulator of tools/emulator_residency.py's emulator() with its lineage() (the emulator's flushes are judged only
+    with it); allowed a canonical CPU list (it needs emu)."""
     lo, hi = cap.window
+    allowed_set = set(wq_target.canonical_list(allowed)) if allowed is not None else None
+    if allowed_set is not None and (emu is None or rt in allowed_set):
+        raise Unreadable(f"the allowed CPUs {allowed} need the emulator's record, and must not hold the real-time CPU {rt}")
+    if emu is not None and ("seeds" not in emu or "taken" not in emu):
+        raise Unreadable("no task lineage after the trace started")
+    first = None
     last = None
     started = False
     unparsed = malformed = inconsistent = 0
@@ -85,6 +107,13 @@ def analyse(lines, cap, rt: int, out) -> dict:
     queued: list = []           # (ts, work, workqueue) of the worker's flushes inside the window
     pending: dict = {}          # work -> index into queued, awaiting its execution
     ran: dict = {}              # index -> (ts, cpu, comm)
+    outside_n = 0               # unbound or rescuer executions overlapping the window outside the allowed CPUs
+    outside_ex: list = []       # the first five of them: (comm, class, function, cpu)
+    other_q: list = []          # (ts, work, workqueue, pid) of flushes queued inside the window by other tasks (with emu)
+    other_pending: dict = {}    # work -> index into other_q
+    other_ran: dict = {}        # index -> (ts, cpu, comm)
+    forks: list = []            # (ts, parent, child) every fork up to the window's end (with emu)
+    exited: set = set()         # every task seen exiting before the lineage ended (with emu)
 
     def stretch(comm: str, pid: int, a: int, b: int) -> None:
         nonlocal own
@@ -97,12 +126,18 @@ def analyse(lines, cap, rt: int, out) -> dict:
             own += 1
 
     def execution(rec: tuple, end: int) -> None:
+        nonlocal outside_n
         ts, cpu, comm, _, fn = rec
-        if cpu != rt or end < lo or ts > hi:
+        if end < lo or ts > hi:
             return
         c = classify(comm, rt)
-        if c in FORBIDDEN or c == "task" or fn == "flush_to_ldisc":
-            executed.append((comm, c, fn, ts, end))
+        if cpu == rt:
+            if c in FORBIDDEN or c == "task" or fn == "flush_to_ldisc":
+                executed.append((comm, c, fn, ts, end))
+        elif allowed_set is not None and c in ("unbound", "rescuer") and cpu not in allowed_set:
+            outside_n += 1
+            if len(outside_ex) < 5:
+                outside_ex.append((comm, c, fn, cpu))
 
     for ln in lines:
         ln = ln.rstrip("\n")
@@ -113,6 +148,8 @@ def analyse(lines, cap, rt: int, out) -> dict:
             continue
         started = True
         ts = int(m["s"]) * 1_000_000_000 + int(m["ns"])
+        if first is None:
+            first = ts
         last = ts
         if ts > hi + AFTER_NS:
             continue  # read to the end, judged no more
@@ -129,6 +166,20 @@ def analyse(lines, cap, rt: int, out) -> dict:
             occupant = (s["next"], int(s["npid"]), ts)
             if ts <= lo:
                 occupant_at_lo = occupant
+        elif emu is not None and ev == "sched_process_fork":
+            f = emulator_residency.FORK.search(rest)
+            if not f:
+                malformed += 1
+                continue
+            if ts <= hi:
+                forks.append((ts, int(f["pid"]), int(f["child"])))
+        elif emu is not None and ev == "sched_process_exit":
+            x = emulator_residency.EXIT.search(rest)
+            if not x:
+                malformed += 1
+                continue
+            if ts <= emu["taken"][1]:
+                exited.add(int(x["pid"]))
         elif ev in WORK_EVENTS:
             if ev == "workqueue_queue_work":
                 q = QUEUE.search(rest)
@@ -138,6 +189,9 @@ def analyse(lines, cap, rt: int, out) -> dict:
                 if pid == cap.tid and lo <= ts <= hi and q[2] == "flush_to_ldisc":
                     pending[q[1]] = len(queued)
                     queued.append((ts, q[1], q[3]))
+                elif emu is not None and lo <= ts <= hi and q[2] == "flush_to_ldisc":
+                    other_pending[q[1]] = len(other_q)
+                    other_q.append((ts, q[1], q[3], pid))
                 continue
             x = EXEC.search(rest)
             if not x:
@@ -147,6 +201,9 @@ def analyse(lines, cap, rt: int, out) -> dict:
                 k = pending.pop(x[1], None)
                 if k is not None:
                     ran[k] = (ts, cpu, comm)
+                k = other_pending.pop(x[1], None)
+                if k is not None:
+                    other_ran[k] = (ts, cpu, comm)
                 open_exec[pid] = (ts, cpu, comm, x[1], x[2])
             else:
                 rec = open_exec.pop(pid, None)
@@ -161,6 +218,9 @@ def analyse(lines, cap, rt: int, out) -> dict:
     if unparsed or malformed or inconsistent:
         raise Unreadable(f"{malformed} malformed required events, {unparsed} lines that are no events, {inconsistent} switches of CPU {rt} "
                          "that do not follow on from the previous one")
+    if emu is not None and not (first is not None and first < emu["taken"][0] and emu["taken"][1] < lo):
+        raise Unreadable(f"the task lineage ({emu['taken'][0]} to {emu['taken'][1]} ns) does not begin after the trace's first "
+                         f"event ({first} ns) and end before the window began ({lo} ns)")
     if occupant is not None:
         stretch(occupant[0], occupant[1], occupant[2], hi)
     for rec in open_exec.values():
@@ -171,6 +231,16 @@ def analyse(lines, cap, rt: int, out) -> dict:
     unmatched = len(queued) - len(ran)
     wqs = collections.Counter(q[2] for q in queued)
     known = occupant_at_lo is not None
+    off_instr = sum(1 for k in ran if allowed_set is not None and ran[k][1] not in allowed_set)
+    emu_tids: set = set()
+    emu_idx: list = []
+    if emu is not None:
+        emu_tids = emulator_residency.closure(set(emu["tids"]) | set(emu["seeds"]) | exited, forks)
+        emu_idx = [i for i, q in enumerate(other_q) if q[3] in emu_tids]
+    emu_ran = [other_ran[i] for i in emu_idx if i in other_ran]
+    emu_unmatched = len(emu_idx) - len(emu_ran)
+    emu_on_rt = sum(1 for r in emu_ran if r[1] == rt)
+    emu_off = sum(1 for r in emu_ran if allowed_set is not None and r[1] not in allowed_set)
     print(f"window: {lo} to {hi} ns ({(hi - lo) / 1e9:.6f} s); real-time CPU {rt}", file=out)
     print(f"  on CPU {rt} when the window began: " + (f"{occupant_at_lo[0]} ({occupant_at_lo[1]}), since {occupant_at_lo[2]} ns" if known
                                                     else "unknown (no switch onto it recorded before the window)"), file=out)
@@ -187,13 +257,30 @@ def analyse(lines, cap, rt: int, out) -> dict:
         print(f"    queued to executed (descriptive): {tk_cost.dist(delays)}", file=out)
     if not queued:
         print("  no flush queued by the worker: nothing establishes where the instructions' flushes ran", file=out)
-    ok = known and not resident and not executed and on_rt == 0 and unmatched == 0 and bool(queued)
+    if emu is not None:
+        ecpus = collections.Counter(r[1] for r in emu_ran)
+        edelays = sorted(other_ran[i][0] - other_q[i][0] for i in emu_idx if i in other_ran)
+        print(f"  the emulator's flushes (its replies, the other direction): {len(emu_idx)} queued by its {len(emu_tids)} tasks, "
+              f"{len(emu_ran)} seen to run, {emu_unmatched} not", file=out)
+        if emu_ran:
+            print("    ran on CPUs: " + ", ".join(f"{c} {n}" for c, n in sorted(ecpus.items())) + f"; on CPU {rt}: {emu_on_rt}", file=out)
+            print(f"    queued to executed (descriptive): {tk_cost.dist(edelays)}", file=out)
+        if not emu_idx:
+            print("  no flush queued by the emulator: nothing establishes where the replies' flushes ran", file=out)
+    if allowed_set is not None:
+        print(f"  outside the allowed CPUs {allowed}: unbound or rescuer executions in the window {outside_n}" + (" (" + ", ".join(
+            f"{f} by {c} ({k}) on CPU {u}" for c, k, f, u in outside_ex) + (", ..." if outside_n > 5 else "") + ")" if outside_n else "")
+              + f"; the worker's flushes run there {off_instr}; the emulator's {emu_off}", file=out)
+    ok = (known and not resident and not executed and on_rt == 0 and unmatched == 0 and bool(queued)
+          and (emu is None or (bool(emu_idx) and emu_unmatched == 0 and emu_on_rt == 0))
+          and (allowed_set is None or (outside_n == 0 and off_instr == 0 and emu_off == 0)))
     print(f"unbound work: {'PASS' if ok else 'FAIL'}", file=out)
     return dict(ok=ok, known=known, resident=len(resident), executed=len(executed), own=own, queued=len(queued), ran=len(ran),
-                on_rt=on_rt, unmatched=unmatched, cpus=dict(cpus), delays=delays)
+                on_rt=on_rt, unmatched=unmatched, cpus=dict(cpus), delays=delays, emu_queued=len(emu_idx), emu_ran=len(emu_ran),
+                emu_unmatched=emu_unmatched, emu_on_rt=emu_on_rt, outside=outside_n, off_instr=off_instr, emu_off=emu_off)
 
 
-def run_report(csv_path: pathlib.Path, cap, rt: int, out) -> dict:
+def run_report(csv_path: pathlib.Path, cap, rt: int, out, allowed: str | None = None, emu: dict | None = None) -> dict:
     """analyse() over trace-cmd report -t under the launch, read to its end; the decoder's exit is always collected."""
     decoder = os.environ.get("UNBOUND_WORK_DECODER") if os.environ.get("UNBOUND_WORK_TEST") == "1" else None
     if decoder is None:
@@ -205,7 +292,7 @@ def run_report(csv_path: pathlib.Path, cap, rt: int, out) -> dict:
                             stderr=subprocess.DEVNULL, text=True, errors="replace", env=tk_record.launch_env())
     assert proc.stdout is not None
     try:
-        r = analyse(proc.stdout, cap, rt, out)
+        r = analyse(proc.stdout, cap, rt, out, allowed, emu)
     finally:
         if proc.poll() is None:
             for _ in proc.stdout:  # drain to the end, so that its exit is its own
@@ -222,7 +309,14 @@ def main() -> int:
     p.add_argument("csv", type=pathlib.Path, help="the timer capture's probe log (<run>.csv)")
     p.add_argument("--report", type=pathlib.Path, help="a saved trace-cmd report -t of the capture (default: run trace-cmd)")
     p.add_argument("--rt-cpu", type=int, help="the real-time CPU (default: the run record's, else 3)")
+    p.add_argument("--experiment", type=pathlib.Path, help="the supervisor's experiment.record: the emulator's flushes judged too")
+    p.add_argument("--lineage", type=pathlib.Path, help="the task lineage after the trace started (default: <run>.csv.lineage.txt)")
+    p.add_argument("--allowed", help="the unbound mask's CPUs, a canonical list (plan L1: 4-5; needs --experiment)")
     a = p.parse_args()
+    if a.allowed is not None and a.experiment is None:
+        p.error("--allowed needs --experiment (both tty directions are judged)")
+    if a.lineage is not None and a.experiment is None:
+        p.error("--lineage goes with --experiment")
     try:
         cap = tk_cost.Capture(a.csv)
     except (OSError, KeyError, ValueError, SystemExit) as e:
@@ -232,13 +326,30 @@ def main() -> int:
         print(f"unbound_work: {a.csv}: no worker_tid in the summary", file=sys.stderr)
         return 2
     rt = a.rt_cpu if a.rt_cpu is not None else tk_cost.rt_cpu_of(a.csv)
+    allowed = None
+    if a.allowed is not None:
+        try:
+            allowed = set(wq_target.canonical_list(a.allowed))
+        except wq_target.Refused as e:
+            print(f"unbound_work: --allowed: {e}", file=sys.stderr)
+            return 2
+        if rt in allowed:
+            print(f"unbound_work: --allowed {a.allowed} holds the real-time CPU {rt}", file=sys.stderr)
+            return 2
     print(f"{a.csv.name}: tools/unbound_work.py")
     try:
+        emu = None
+        if a.experiment is not None:
+            emu = emulator_residency.emulator(a.experiment, rt, allowed)
+            emu.update(emulator_residency.lineage(a.lineage or pathlib.Path(f"{a.csv}.lineage.txt"), emu, rt, allowed))
         if a.report:
             with open(a.report, errors="replace") as f:
-                r = analyse(f, cap, rt, sys.stdout)
+                r = analyse(f, cap, rt, sys.stdout, a.allowed, emu)
         else:
-            r = run_report(a.csv, cap, rt, sys.stdout)
+            r = run_report(a.csv, cap, rt, sys.stdout, a.allowed, emu)
+    except emulator_residency.Unreadable as e:
+        print(f"unbound_work: UNREADABLE: {e}", file=sys.stderr)
+        return 2
     except (OSError, Unreadable) as e:
         print(f"unbound_work: UNREADABLE: {e}", file=sys.stderr)
         return 2

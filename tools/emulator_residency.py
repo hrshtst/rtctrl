@@ -3,7 +3,7 @@
 second run (docs/hardware/control-rate.md): launched with an affinity without that CPU, and checked so by the supervisor
 (tools/option_a.sh), none of its tasks may run there or wait on its run queue. Read-only.
 
-    emulator_residency.py <run>.csv --experiment FILE [--lineage FILE] [--report FILE] [--rt-cpu N]
+    emulator_residency.py <run>.csv --experiment FILE [--lineage FILE] [--report FILE] [--rt-cpu N] [--allowed LIST]
 
 The emulator's identity comes from the supervisor's experiment record: its emulator_start=, emulator_A= and emulator_B=
 lines, each "TIME pid=P start=S comm=C tids=T,... allowed=L;..." (every thread's Cpus_allowed_list). All three must be
@@ -43,7 +43,12 @@ main trace (trace-cmd report -t under tools/tk_record.py's launch, or a saved --
   unreadable. A fork that reuses the ID of a task still queued or running does not follow;
 - lineage affinity: no thread of the emulator's process tree in the lineage (its process and descendants by parent)
   allowed on the real-time CPU; the tasks the record, the exits and the forks add are judged by their events only;
-- seen: at least one switch to an emulator task in the window, on any CPU (else nothing establishes where it ran).
+- seen: at least one switch to an emulator task in the window, on any CPU (else nothing establishes where it ran);
+- with --allowed LIST (plan L1: the emulator launched on exactly those CPUs), besides every check above: every recorded
+  thread's affinity inside LIST (else the record is unreadable, as for the real-time CPU); no time of an emulator task,
+  queued or running, overlapping the window on a CPU outside LIST (its placement, as above: a stretch on CPU 2 above
+  all, one carried into the window included); no thread of its process tree in the lineage allowed outside LIST.
+  LIST is a canonical CPU list (4-5) without the real-time CPU.
 
 The evidence must be complete: every sched_switch, sched_wakeup, sched_migrate_task, sched_process_fork and
 sched_process_exit must parse, the real-time CPU's switches must follow on from each other (each switch's previous task
@@ -71,6 +76,7 @@ import observer_affinity  # noqa: E402
 import tk_cost  # noqa: E402
 import tk_record  # noqa: E402
 import trace_correlate  # noqa: E402
+import wq_target  # noqa: E402
 
 WAKEUP = re.compile(r"^(?P<comm>.*):(?P<pid>\d+) \[-?\d+\] CPU:(?P<cpu>\d+)$")
 MIGRATE = re.compile(r"\bpid=(?P<pid>\d+) prio=-?\d+ orig_cpu=(?P<orig>\d+) dest_cpu=(?P<dest>\d+)$")
@@ -100,8 +106,9 @@ def cpus(spec: str) -> set:
     return out
 
 
-def emulator(record: pathlib.Path, rt: int) -> dict:
-    """The emulator's pid, start time and recorded threads from the experiment record; raises Unreadable."""
+def emulator(record: pathlib.Path, rt: int, allowed: set | None = None) -> dict:
+    """The emulator's pid, start time and recorded threads from the experiment record (with allowed, every recorded
+    thread's affinity inside it); raises Unreadable."""
     try:
         lines = record.read_text().splitlines()
     except OSError as e:
@@ -125,6 +132,8 @@ def emulator(record: pathlib.Path, rt: int) -> dict:
             raise Unreadable(f"{record}: {k}: a malformed affinity list {e}") from None
         if any(rt in s or not s for s in sets):
             raise Unreadable(f"{record}: {k}: a thread may run on CPU {rt} (or on no CPU): {m['allowed']}")
+        if allowed is not None and any(not s <= allowed for s in sets):
+            raise Unreadable(f"{record}: {k}: a thread may run outside the allowed CPUs: {m['allowed']}")
         seen[k] = (int(m["pid"]), m["start"], {int(t) for t in tids})
     missing = [k for k in ("emulator_start", "emulator_A", "emulator_B") if k not in seen]
     if missing:
@@ -191,11 +200,11 @@ def read_lineage(path: pathlib.Path) -> tuple[dict, tuple[int, int]]:
     return rows, taken
 
 
-def lineage(path: pathlib.Path, emu: dict, rt: int) -> dict:
+def lineage(path: pathlib.Path, emu: dict, rt: int, allowed: set | None = None) -> dict:
     """The emulator's tasks in the session's lineage after the trace started (read_lineage): its process (by pid and
     start time) and its descendants by parent, every thread of each; when the lineage was taken (monotonic ns, its
-    start and end); and those threads allowed on the real-time CPU. Raises Unreadable for a lineage that is missing,
-    malformed or without the emulator."""
+    start and end); those threads allowed on the real-time CPU, and (with allowed) those allowed outside it. Raises
+    Unreadable for a lineage that is missing, malformed or without the emulator."""
     rows, taken = read_lineage(path)
     parents = {p: pp for (p, _), (pp, _, _, _) in rows.items()}
     starts = {p: ps for (p, _), (_, ps, _, _) in rows.items()}
@@ -203,8 +212,9 @@ def lineage(path: pathlib.Path, emu: dict, rt: int) -> dict:
         raise Unreadable(f"{path}: the emulator (pid {emu['pid']}, start {emu['start']}) is not in the task lineage"
                          + (f" (pid {emu['pid']} has start {starts[emu['pid']]})" if emu["pid"] in starts else ""))
     procs = observer_affinity.tree({emu["pid"]}, parents)
-    tasks = {t: allowed for (p, t), (_, _, _, allowed) in rows.items() if p in procs}
-    return dict(seeds=set(tasks), procs=procs, taken=taken, allowed_rt=sorted(t for t, a in tasks.items() if rt in a))
+    tasks = {t: a for (p, t), (_, _, _, a) in rows.items() if p in procs}
+    return dict(seeds=set(tasks), procs=procs, taken=taken, allowed_rt=sorted(t for t, a in tasks.items() if rt in a),
+                allowed_outside=None if allowed is None else sorted(t for t, a in tasks.items() if not a <= allowed))
 
 
 def closure(base: set, forks: list) -> set:
@@ -223,13 +233,18 @@ def closure(base: set, forks: list) -> set:
     return out
 
 
-def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
+def analyse(lines, cap, emu: dict, rt: int, out, allowed: str | None = None) -> dict:
     """The checks above on report lines (read to their end), for the emulator of emulator() with its lineage();
     raises Unreadable on incomplete evidence. Every task's evidence is gathered (the idle tasks, ID 0, aside) and judged
     once the emulator's tasks are known: the lineage's, the record's and the tasks that exited before the lineage
-    ended, with the closure of every fork in the trace up to the window's end."""
+    ended, with the closure of every fork in the trace up to the window's end. With allowed (a canonical CPU list, plan
+    L1), every task's time outside it is tallied as it is placed (a count and the first stretch per task, so that the
+    tally stays bounded) and judged for the emulator's tasks once they are known."""
     if "seeds" not in emu or "taken" not in emu:
         raise Unreadable("no task lineage after the trace started")
+    allowed_set = set(wq_target.canonical_list(allowed)) if allowed is not None else None
+    if allowed_set is not None and (rt in allowed_set or emu.get("allowed_outside") is None):
+        raise Unreadable(f"the allowed CPUs {allowed} hold the real-time CPU {rt}, or the lineage was not read against them")
     lo, hi = cap.window
     t0, t1 = emu["taken"]
     first = last = None
@@ -250,6 +265,7 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
     waits: list = []
     woken: dict = {}            # tid -> wakeup ts inside the window, awaiting its switch-in
     born: dict = {}             # tid -> its fork's ts, until its first own event (its first queue is not recorded)
+    outside: dict = {}          # tid -> [count, (cpu, from, to)]: its time off the allowed CPUs overlapping the window
 
     def on(tid: int) -> int | None:
         """The CPU a task is known to be queued or running on (None: asleep or unknown)."""
@@ -260,6 +276,12 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
         p = place.get(tid)
         if p and p[0] == rt and ts >= lo and p[1] <= hi:
             spans.append((tid, p[1], ts))
+        if p and allowed_set is not None and p[0] not in allowed_set and ts >= lo and p[1] <= hi:
+            o = outside.get(tid)
+            if o is None:
+                outside[tid] = [1, (p[0], p[1], ts)]
+            else:
+                o[0] += 1
 
     def put(tid: int, cpu: int | None, ts: int) -> None:
         if cpu is not None and on(tid) == cpu:
@@ -423,16 +445,27 @@ def analyse(lines, cap, emu: dict, rt: int, out) -> dict:
           + (f" ({', '.join(map(str, emu['allowed_rt'][:10]))})" if emu["allowed_rt"] else ""), file=out)
     if waits:
         print(f"  wake to run (descriptive): {tk_cost.dist(sorted(waits))}", file=out)
+    off_set = {t: v for t, v in outside.items() if t in tids}
+    n_off = sum(v[0] for v in off_set.values())
+    if allowed_set is not None:
+        print(f"  its time outside the allowed CPUs {allowed} (queued or running) overlapping the window: {n_off} stretches of "
+              f"{len(off_set)} tasks" + (" (" + ", ".join(
+                  f"{t} on CPU {c} {(a - lo) / 1e6:+.3f}..{(b - lo) / 1e6:+.3f} ms" for t, (_, (c, a, b)) in sorted(off_set.items())[:5])
+                  + ")" if off_set else ""), file=out)
+        print(f"  its process tree's threads in the lineage allowed outside {allowed}: {len(emu['allowed_outside'])}"
+              + (f" ({', '.join(map(str, emu['allowed_outside'][:10]))})" if emu["allowed_outside"] else ""), file=out)
     if not seen:
         print("  the emulator was not seen to run in the window: nothing establishes where it ran", file=out)
-    ok = seen > 0 and not ran_rt and not placed_rt and not off and not emu["allowed_rt"]
+    ok = (seen > 0 and not ran_rt and not placed_rt and not off and not emu["allowed_rt"]
+          and (allowed_set is None or (not off_set and not emu["allowed_outside"])))
     print(f"emulator residency: {'PASS' if ok else 'FAIL'}", file=out)
     return dict(ok=ok, seen=seen, occupant=occupant_at_lo[1], ran_rt=len(ran_rt), placed_rt=len(placed_rt), moved_off=len(off),
                 woken_rt=n_woken, moved_rt=n_moved, allowed_rt=len(emu["allowed_rt"]), forks=len(created), exited=len(only_exited),
-                tasks=len(tids), cpus=dict(cpus_ran), waits=waits)
+                tasks=len(tids), cpus=dict(cpus_ran), waits=waits, outside=n_off, outside_tasks=len(off_set),
+                allowed_outside=len(emu.get("allowed_outside") or []))
 
 
-def run_report(csv_path: pathlib.Path, cap, emu: dict, rt: int, out) -> dict:
+def run_report(csv_path: pathlib.Path, cap, emu: dict, rt: int, out, allowed: str | None = None) -> dict:
     """analyse() over trace-cmd report -t under the launch, read to its end; the decoder's exit is always collected."""
     decoder = os.environ.get("EMULATOR_RESIDENCY_DECODER") if os.environ.get("EMULATOR_RESIDENCY_TEST") == "1" else None
     if decoder is None:
@@ -444,7 +477,7 @@ def run_report(csv_path: pathlib.Path, cap, emu: dict, rt: int, out) -> dict:
                             stderr=subprocess.DEVNULL, text=True, errors="replace", env=tk_record.launch_env())
     assert proc.stdout is not None
     try:
-        r = analyse(proc.stdout, cap, emu, rt, out)
+        r = analyse(proc.stdout, cap, emu, rt, out, allowed)
     finally:
         if proc.poll() is None:
             for _ in proc.stdout:  # drain to the end, so that its exit is its own
@@ -463,6 +496,7 @@ def main() -> int:
     p.add_argument("--lineage", type=pathlib.Path, help="the task lineage after the trace started (default: <run>.csv.lineage.txt)")
     p.add_argument("--report", type=pathlib.Path, help="a saved trace-cmd report -t of the capture (default: run trace-cmd)")
     p.add_argument("--rt-cpu", type=int, help="the real-time CPU (default: the run record's, else 3)")
+    p.add_argument("--allowed", help="the emulator's CPUs, a canonical list (plan L1: 4-5): its time outside them fails")
     a = p.parse_args()
     try:
         cap = tk_cost.Capture(a.csv)
@@ -470,15 +504,25 @@ def main() -> int:
         print(f"emulator_residency: {a.csv}: unreadable ({e})", file=sys.stderr)
         return 2
     rt = a.rt_cpu if a.rt_cpu is not None else tk_cost.rt_cpu_of(a.csv)
+    allowed = None
+    if a.allowed is not None:
+        try:
+            allowed = set(wq_target.canonical_list(a.allowed))
+        except wq_target.Refused as e:
+            print(f"emulator_residency: --allowed: {e}", file=sys.stderr)
+            return 2
+        if rt in allowed:
+            print(f"emulator_residency: --allowed {a.allowed} holds the real-time CPU {rt}", file=sys.stderr)
+            return 2
     print(f"{a.csv.name}: tools/emulator_residency.py")
     try:
-        emu = emulator(a.experiment, rt)
-        emu.update(lineage(a.lineage or pathlib.Path(f"{a.csv}.lineage.txt"), emu, rt))
+        emu = emulator(a.experiment, rt, allowed)
+        emu.update(lineage(a.lineage or pathlib.Path(f"{a.csv}.lineage.txt"), emu, rt, allowed))
         if a.report:
             with open(a.report, errors="replace") as f:
-                r = analyse(f, cap, emu, rt, sys.stdout)
+                r = analyse(f, cap, emu, rt, sys.stdout, a.allowed)
         else:
-            r = run_report(a.csv, cap, emu, rt, sys.stdout)
+            r = run_report(a.csv, cap, emu, rt, sys.stdout, a.allowed)
     except (OSError, Unreadable) as e:
         print(f"emulator_residency: UNREADABLE: {e}", file=sys.stderr)
         return 2
