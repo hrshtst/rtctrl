@@ -15,7 +15,17 @@ work on CPU 0 in the window each fail; unbound work there after the window, a pe
 tty flush do not count; --allowed without the emulator, a set holding CPU 3, a lineage ending after the window began or
 beginning before the trace, and a malformed fork or exit (required only with --experiment) are unreadable; the CLI needs
 --experiment for --allowed, refuses a set holding CPU 3, a list not in canonical form, a set narrower than the run's,
-and a record allowing the emulator outside the set."""
+and a record allowing the emulator outside the set.
+
+Executions followed across their task's switches (the L1 code review's finding): an excursion to CPU 6 between a start
+and an end on CPU 4 fails, for other unbound work, for the worker's flush (also run by a per-CPU worker's name: the
+flush's own check) and for an emulator's reply flush; moves within 4-5 and a preemption resumed on CPU 4 pass; an
+execution carried into the window fails on CPU 6 across the window's start or before it (the whole execution is
+judged once it overlaps the window) and passes on 5; one begun before the report fails on CPU 6 in the window and
+passes on 5 then 4; one still running on CPU 6 when the report ends fails; without --allowed, a flush that moves onto
+CPU 3 mid-execution counts as run there; an end where its task was not running, an executing task switched in twice,
+a start while its last execution is open, an end with no start after its last end, and an end with no start whose
+earlier switches did not follow on are unreadable."""
 
 from __future__ import annotations
 
@@ -236,6 +246,113 @@ def allowed_units() -> None:
     expect(r["ok"], f"a malformed fork without --experiment (not required): {r}")
 
 
+def swc(t: int, cpu: int, prev: tuple, nxt: tuple, state: str = "S") -> str:
+    """A switch on any CPU."""
+    return line(t, cpu, prev[0], prev[1], "sched_switch", f"{prev[0]}:{prev[1]} [120] {state} ==> {nxt[0]}:{nxt[1]} [120]")
+
+
+def legs(who: tuple, fn: str, work: str, t0: int, path: list, start: bool = True, end: bool = True) -> list[str]:
+    """who executes work across path [(cpu, ns)]: switched in on each leg's CPU from its idle task and out (preempted,
+    except after the last) to it, 20 us between legs; the execution starts 10 us into the first leg and ends 10 us before
+    the last one's end (start or end False: begun before the report, or still open)."""
+    out, t = [], t0
+    for i, (cpu, d) in enumerate(path):
+        idle = (f"swapper/{cpu}", 0)
+        out.append(swc(t, cpu, idle, who))
+        if i == 0 and start:
+            out.append(line(t + 10_000, cpu, who[0], who[1], "workqueue_execute_start", f"work struct {work}: function {fn}"))
+        if i == len(path) - 1 and end:
+            out.append(line(t + d - 10_000, cpu, who[0], who[1], "workqueue_execute_end", f"work struct {work}: function {fn}"))
+        out.append(swc(t + d, cpu, who, idle, "R" if i < len(path) - 1 else "S"))
+        t += d + 20_000
+    return out
+
+
+def followed_units() -> None:
+    """Executions followed across their task's switches (the L1 code review's finding): every CPU an execution ran on is
+    judged, not only where it began and ended."""
+    def chk(lines: list[str], allowed: str | None = "4-5") -> dict:
+        return uw.analyse(sorted(lines, key=stamp), Cap(), 3, io.StringIO(), allowed, EMU_REC)
+    u9, u6, pc = ("kworker/u128:9", 88), ("kworker/u128:6", 90), ("kworker/4:1", 91)
+    t = T + 6 * MS
+    away, within, still = [(4, 100_000), (6, 880_000), (4, 100_000)], [(4, 100_000), (5, 880_000), (4, 100_000)], \
+        [(4, 100_000), (4, 300_000)]
+    # Other unbound work: an excursion to CPU 6 between a start and an end on CPU 4 fails; a move within 4-5 and a
+    # preemption resumed on CPU 4 pass.
+    r = chk(l1() + legs(u9, "wb_workfn", "0xffff00f1", t, away))
+    expect(not r["ok"] and r["outside"] == 1 and r["moved"] == 1, f"followed: unbound work 4 -> 6 -> 4: {r}")
+    r = chk(l1() + legs(u9, "wb_workfn", "0xffff00f1", t, within))
+    expect(r["ok"] and r["outside"] == 0 and r["moved"] == 1, f"followed: unbound work 4 -> 5 -> 4 (within the set): {r}")
+    r = chk(l1() + legs(u9, "wb_workfn", "0xffff00f1", t, still))
+    expect(r["ok"] and r["outside"] == 0 and r["moved"] == 0, f"followed: unbound work preempted, resumed on CPU 4: {r}")
+    # The worker's flushes (instructions): the same excursion fails the flush's own check, by an unbound worker and by a
+    # worker outside that class (whose executions the unbound check leaves aside); a move within 4-5 passes.
+    r = chk(l1() + [queue(t - 5_000, "0xffff00f2")] + legs(u6, "flush_to_ldisc", "0xffff00f2", t, away))
+    expect(not r["ok"] and r["off_instr"] == 1 and r["outside"] == 1 and r["instr_moved"] == 1,
+           f"followed: an instruction flush 4 -> 6 -> 4: {r}")
+    r = chk(l1() + [queue(t - 5_000, "0xffff00f2")] + legs(pc, "flush_to_ldisc", "0xffff00f2", t, away))
+    expect(not r["ok"] and r["off_instr"] == 1 and r["outside"] == 0,
+           f"followed: an instruction flush 4 -> 6 -> 4 by a per-CPU worker's name: {r}")
+    r = chk(l1() + [queue(t - 5_000, "0xffff00f2")] + legs(u6, "flush_to_ldisc", "0xffff00f2", t, within))
+    expect(r["ok"] and r["off_instr"] == 0 and r["instr_moved"] == 1, f"followed: an instruction flush 4 -> 5 -> 4: {r}")
+    # The emulator's flushes (replies), the other direction: likewise.
+    r = chk(l1() + [emu_queue(t - 5_000, work="0xffff00f3")] + legs(u6, "flush_to_ldisc", "0xffff00f3", t, [(5, 100_000), (6, 880_000), (5, 100_000)]))
+    expect(not r["ok"] and r["emu_off"] == 1 and r["emu_moved"] == 1, f"followed: a reply flush 5 -> 6 -> 5: {r}")
+    r = chk(l1() + [emu_queue(t - 5_000, work="0xffff00f3")] + legs(u6, "flush_to_ldisc", "0xffff00f3", t, [(5, 100_000), (4, 880_000)]))
+    expect(r["ok"] and r["emu_off"] == 0 and r["emu_moved"] == 1 and r["emu_ran"] == 4, f"followed: a reply flush 5 -> 4: {r}")
+    # Carried into the window: begun on CPU 4 before it, on CPU 6 across its start, back on 4 inside it, fails; on 5
+    # instead passes; an excursion before the window also fails (the whole execution is judged once it overlaps the
+    # window, as its start CPU always was).
+    c0 = T - 2 * MS
+    r = chk(l1() + legs(u9, "long_job", "0xffff00f4", c0, [(4, 1_500_000), (6, 880_000), (4, 100_000)]))
+    expect(not r["ok"] and r["outside"] == 1, f"followed: carried in, 4 -> 6 (across the window's start) -> 4: {r}")
+    r = chk(l1() + legs(u9, "long_job", "0xffff00f4", c0, [(4, 1_500_000), (5, 880_000), (4, 100_000)]))
+    expect(r["ok"] and r["outside"] == 0 and r["moved"] == 1, f"followed: carried in, 4 -> 5 -> 4: {r}")
+    r = chk(l1() + legs(u9, "long_job", "0xffff00f4", c0, [(4, 1_000_000), (6, 300_000), (4, 1_000_000)]))
+    expect(not r["ok"] and r["outside"] == 1, f"followed: carried in, its excursion to CPU 6 before the window: {r}")
+    # Begun before the report (an end with no start): its task followed from the report's first event.
+    r = chk(l1() + legs(u9, "long_job", "0xffff00f5", T + 100_000, [(6, 300_000), (4, 100_000)], start=False))
+    expect(not r["ok"] and r["outside"] == 1, f"followed: begun before the report, on CPU 6 in the window: {r}")
+    r = chk(l1() + legs(u9, "long_job", "0xffff00f5", T + 100_000, [(5, 300_000), (4, 100_000)], start=False))
+    expect(r["ok"] and r["outside"] == 0, f"followed: begun before the report, on 5 then 4: {r}")
+    # Still open, and running on CPU 6, when the report ends: followed to its end.
+    r = chk(l1() + legs(u9, "long_job", "0xffff00f6", t, [(4, 100_000)], end=False) + [swc(t + 120_000, 6, ("swapper/6", 0), u9)])
+    expect(not r["ok"] and r["outside"] == 1, f"followed: still open at the report's end, running on CPU 6: {r}")
+    # Without --allowed (Option A): a flush that moves onto the real-time CPU mid-execution counts as run there.
+    w = T + 6 * MS + 100_000
+    via3 = ([queue(w - 5_000, "0xffff00f7"), swc(w, 2, ("swapper/2", 0), u6),
+             line(w + 10_000, 2, u6[0], u6[1], "workqueue_execute_start", "work struct 0xffff00f7: function flush_to_ldisc"),
+             swc(w + 20_000, 2, u6, ("swapper/2", 0), "R")] + visit(w + 30_000, w + 60_000, u6, [])
+            + [swc(w + 70_000, 2, ("swapper/2", 0), u6),
+               line(w + 80_000, 2, u6[0], u6[1], "workqueue_execute_end", "work struct 0xffff00f7: function flush_to_ldisc"),
+               swc(w + 90_000, 2, u6, ("swapper/2", 0))])
+    r = check(clean() + via3)
+    expect(not r["ok"] and r["on_rt"] == 1 and r["executed"] == 1 and r["resident"] == 1,
+           f"followed: an instruction flush 2 -> 3 -> 2, without --allowed: {r}")
+    # Evidence that does not follow on: unreadable.
+    for what, extra in (("an end where its task was not running",
+                         [swc(t, 6, ("swapper/6", 0), u9),
+                          line(t + 10_000, 6, u9[0], u9[1], "workqueue_execute_start", "work struct 0xffff00f8: function x"),
+                          line(t + 20_000, 4, u9[0], u9[1], "workqueue_execute_end", "work struct 0xffff00f8: function x")]),
+                        ("an executing task switched in twice",
+                         [line(t, 6, u9[0], u9[1], "workqueue_execute_start", "work struct 0xffff00f8: function x"),
+                          swc(t + 10_000, 4, ("swapper/4", 0), u9)]),
+                        ("a start while its task's execution is open",
+                         [line(t, 6, u9[0], u9[1], "workqueue_execute_start", "work struct 0xffff00f8: function x"),
+                          line(t + 10_000, 6, u9[0], u9[1], "workqueue_execute_start", "work struct 0xffff00f9: function x")]),
+                        ("an end with no start after its task's last end",
+                         legs(u9, "x", "0xffff00f8", t, still)
+                         + [line(t + 500_000, 4, u9[0], u9[1], "workqueue_execute_end", "work struct 0xffff00f9: function x")]),
+                        ("an end with no start whose task's switches did not follow on",
+                         [swc(t, 6, ("swapper/6", 0), u9), swc(t + 10_000, 4, ("swapper/4", 0), u9),
+                          line(t + 20_000, 4, u9[0], u9[1], "workqueue_execute_end", "work struct 0xffff00f8: function x")])):
+        try:
+            chk(l1() + extra)
+            expect(False, f"followed: {what}: read")
+        except uw.Unreadable:
+            pass
+
+
 def cli() -> None:
     with tempfile.TemporaryDirectory() as d:
         base = pathlib.Path(d, "run.csv")
@@ -282,6 +399,7 @@ def cli() -> None:
 def main() -> int:
     units()
     allowed_units()
+    followed_units()
     cli()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED")
