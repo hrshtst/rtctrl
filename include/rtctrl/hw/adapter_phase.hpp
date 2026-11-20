@@ -919,8 +919,14 @@ struct ScheduleCounts {
   std::uint64_t abandoned_requests = 0;  // no result within fit_max_age_ns
   std::uint64_t old_generation_results = 0;  // results of abandoned requests
   std::uint64_t queue_failures = 0;     // no stamps, or no buffer the worker's
-  std::uint64_t protocol_errors = 0;    // closeCycle or publish out of turn
+  std::uint64_t protocol_errors = 0;    // a call out of turn (see ReferencedSchedule)
 };
+
+// Where a schedule is in its calls: first() starts it (kUnstarted to
+// kPublished); closeCycle() moves kPublished to kProvisional; publish() moves
+// kProvisional to kPublished. Any other call changes nothing and counts a
+// protocol error.
+enum class SchedulePhase : std::uint8_t { kUnstarted = 0, kPublished = 1, kProvisional = 2 };
 
 class ReferencedSchedule {
  public:
@@ -934,25 +940,34 @@ class ReferencedSchedule {
         exchange_(exchange),
         acquisition_end_(epoch_ns + cfg.windows.acquisition_ns) {}
 
-  // The first cycle's plan, published.
+  // The first cycle's plan, published: once, before anything else. Called
+  // again it changes nothing and counts a protocol error.
   const WakePlan& first() {
+    if (phase_ != SchedulePhase::kUnstarted) {
+      ++counts_.protocol_errors;
+      return current_;
+    }
     current_ = planner_.first();
     current_.lock_state = lockState();
-    published_ = true;
+    phase_ = SchedulePhase::kPublished;
     return current_;
   }
 
   // Phase 1, at a cycle's end: observes its reply stamp (kInvalidStamp if
   // none) against the published plan's intended completion, hands the
   // acquisition over and takes fit results, and plans the next wake
-  // provisionally. Nothing is counted until publish(). Out of turn (before
-  // the previous plan was published) it changes nothing and counts a
-  // protocol error.
+  // provisionally. Nothing is counted until publish(). Its decisions about
+  // time (a fit's freshness, a request's timeout, a restarted acquisition
+  // window) are taken at max(now, cycle end), now being when the call runs:
+  // a delay before the call makes a result older, never younger. Out of
+  // turn (unstarted, or before the last plan was published) it changes
+  // nothing and counts a protocol error.
   const WakePlan& closeCycle(std::int64_t reply_stamp_ns, std::int64_t cycle_end_ns, std::int64_t now_ns) {
-    if (!published_) {
+    if (phase_ != SchedulePhase::kPublished) {
       ++counts_.protocol_errors;
-      return provisional_;
+      return phase_ == SchedulePhase::kProvisional ? provisional_ : current_;
     }
+    const std::int64_t decision_ns = std::max(now_ns, cycle_end_ns);
     observation_ = Observation::kNone;
     if (est_.state() == EstimatorState::kAcquiring) {
       if (!pending_ && reply_stamp_ns >= 0) {
@@ -964,9 +979,9 @@ class ReferencedSchedule {
       }
     } else if (current_.referenced) {
       observation_ = est_.observeIntended(reply_stamp_ns, current_.target_index);
-      if (est_.state() == EstimatorState::kAcquiring) restartAcquisition(cycle_end_ns);  // lost
+      if (est_.state() == EstimatorState::kAcquiring) restartAcquisition(decision_ns);  // lost
     }
-    if (exchange_ != nullptr) takeResults(cycle_end_ns);
+    if (exchange_ != nullptr) takeResults(decision_ns);
     if (est_.state() == EstimatorState::kAcquiring && !pending_ && cycle_end_ns >= acquisition_end_) {
       if (exchange_ != nullptr) {
         if (exchange_->queue(acquisition_end_, generation_ + 1)) {
@@ -975,14 +990,14 @@ class ReferencedSchedule {
           ++counts_.fits_requested;
         } else {
           ++counts_.queue_failures;
-          restartAcquisition(cycle_end_ns);
+          restartAcquisition(decision_ns);
         }
       } else if (!est_.finishAcquisition(acquisition_end_)) {
-        restartAcquisition(cycle_end_ns);
+        restartAcquisition(decision_ns);
       }
     }
-    provisional_ = planner_.next(est_, cycle_end_ns, now_ns);
-    published_ = false;
+    provisional_ = planner_.next(est_, cycle_end_ns, decision_ns);
+    phase_ = SchedulePhase::kProvisional;
     return provisional_;
   }
 
@@ -991,7 +1006,7 @@ class ReferencedSchedule {
   // skips it produced, and publishes the plan. Out of turn it changes nothing
   // and counts a protocol error.
   const WakePlan& publish(std::int64_t now_ns) {
-    if (published_) {
+    if (phase_ != SchedulePhase::kProvisional) {
       ++counts_.protocol_errors;
       return current_;
     }
@@ -999,12 +1014,18 @@ class ReferencedSchedule {
     p.lock_state = lockState();
     accounting_.add(current_.wake_ns, p.skipped, current_.referenced);
     current_ = p;
-    published_ = true;
+    phase_ = SchedulePhase::kPublished;
     return current_;
   }
 
   // Both phases at once (tests; the integration rereads the clock between).
+  // Only where closeCycle() would be accepted; otherwise it changes nothing
+  // and counts one protocol error (it never publishes a plan left pending).
   const WakePlan& closeAndPublish(std::int64_t reply_stamp_ns, std::int64_t cycle_end_ns, std::int64_t now_ns) {
+    if (phase_ != SchedulePhase::kPublished) {
+      ++counts_.protocol_errors;
+      return phase_ == SchedulePhase::kProvisional ? provisional_ : current_;
+    }
     closeCycle(reply_stamp_ns, cycle_end_ns, now_ns);
     return publish(now_ns);
   }
@@ -1018,7 +1039,8 @@ class ReferencedSchedule {
   const SkipAccounting& accounting() const { return accounting_; }
   const ScheduleCounts& counts() const { return counts_; }
   const WakePlan& current() const { return current_; }
-  bool published() const { return published_; }
+  SchedulePhase phase() const { return phase_; }
+  bool published() const { return phase_ == SchedulePhase::kPublished; }
 
  private:
   void restartAcquisition(std::int64_t at_ns) {
@@ -1060,7 +1082,7 @@ class ReferencedSchedule {
   std::int64_t acquisition_end_;
   std::uint64_t generation_ = 0;
   bool pending_ = false;
-  bool published_ = false;
+  SchedulePhase phase_ = SchedulePhase::kUnstarted;
   Observation observation_ = Observation::kNone;
   WakePlan current_;
   WakePlan provisional_;

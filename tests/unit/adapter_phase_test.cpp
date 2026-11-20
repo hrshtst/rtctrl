@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <random>
 #include <thread>
 #include <atomic>
@@ -920,7 +921,7 @@ TEST_CASE("the publication's recheck at a slot's rounded wake and +-1 ns", "[hw]
         CHECK(pub.recheck_skipped == (delta > 0 ? 1U : 0U));
       }
     }
-    SECTION("a scheduler delay of 2.5 periods is visible in recheck_skipped") {
+    {  // a scheduler delay of 2.5 periods is visible in recheck_skipped (each slope)
       ad::WakePlanner planner(pc, 5);
       planner.first();
       const std::int64_t w_n = slotWake(locked, 3000, pc);
@@ -1093,7 +1094,7 @@ TEST_CASE("replies at a constant delay after the request lock falsely, and super
     struct Out {
       ad::EstimatorCounts est;
       double share = 0, first_lock_s = -1, first_loss_s = -1;
-      std::uint64_t past = 0, referenced = 0, cycles = 0;
+      std::uint64_t past = 0, referenced = 0, cycles = 0, first_lock_referenced = 0;
       ad::SkipCounts whole;
     } out;
     ad::ReferencedSchedule s(defaultConfig(), 0);
@@ -1103,7 +1104,10 @@ TEST_CASE("replies at a constant delay after the request lock falsely, and super
       const double send = wake + 12000.0;
       const auto stamp = static_cast<std::int64_t>(send + delay_ns + 300.0 * static_cast<double>((k * 104729) % 7));
       const std::int64_t end = stamp + 5000;
-      if (plan.referenced) ++out.referenced;
+      if (plan.referenced) {
+        ++out.referenced;  // over the whole simulated run
+        if (out.first_loss_s < 0) ++out.first_lock_referenced;  // within the first lock
+      }
       const std::uint64_t losses = s.estimator().counts().losses;
       plan = s.closeAndPublish(stamp, end, end);
       if (plan.wake_ns < end) ++out.past;
@@ -1128,11 +1132,131 @@ TEST_CASE("replies at a constant delay after the request lock falsely, and super
   }
   SECTION("800 us, inside the gate: the lock holds for seconds until the period clamp ends it") {
     const auto o = run(800000.0);
-    INFO("first lock " << o.first_lock_s << " s, first loss " << o.first_loss_s << " s, referenced cycles "
-                       << o.referenced);
+    INFO("first lock " << o.first_lock_s << " s, first loss " << o.first_loss_s << " s; referenced cycles "
+                       << o.first_lock_referenced << " in the first lock, " << o.referenced << " in the whole run");
     CHECK(o.share > 0.99);
     CHECK(o.est.lost_period_clamp >= 1);
     CHECK(o.first_loss_s - o.first_lock_s > 1.0);  // supervision is slow here: recorded, not a pass
     CHECK(o.past == 0);
+  }
+}
+
+TEST_CASE("every call in every phase is accepted where it belongs and otherwise changes nothing",
+          "[hw][adapter][safety]") {
+  using Phase = ad::SchedulePhase;
+  enum Call { kFirst, kClose, kPublish, kCloseAndPublish };
+  const char* names[] = {"first", "closeCycle", "publish", "closeAndPublish"};
+  auto make = [](Phase ph) {
+    auto s = std::make_unique<ad::ReferencedSchedule>(defaultConfig(), 1000);
+    if (ph != Phase::kUnstarted) s->first();
+    if (ph == Phase::kProvisional) s->closeCycle(ad::kInvalidStamp, 700000, 700000);
+    REQUIRE(s->phase() == ph);
+    REQUIRE(s->counts().protocol_errors == 0);
+    return s;
+  };
+  auto call = [](ad::ReferencedSchedule& s, Call c, std::int64_t t) {
+    switch (c) {
+      case kFirst: s.first(); break;
+      case kClose: s.closeCycle(ad::kInvalidStamp, t, t); break;
+      case kPublish: s.publish(t); break;
+      case kCloseAndPublish: s.closeAndPublish(ad::kInvalidStamp, t, t); break;
+    }
+  };
+  // what is accepted, and the phase and counted cycles it leaves
+  struct Want { bool accepted; Phase after; std::uint64_t cycles; };
+  const Want table[3][4] = {
+      // unstarted
+      {{true, Phase::kPublished, 0}, {false, Phase::kUnstarted, 0}, {false, Phase::kUnstarted, 0},
+       {false, Phase::kUnstarted, 0}},
+      // published
+      {{false, Phase::kPublished, 0}, {true, Phase::kProvisional, 0}, {false, Phase::kPublished, 0},
+       {true, Phase::kPublished, 1}},
+      // provisional
+      {{false, Phase::kProvisional, 0}, {false, Phase::kProvisional, 0}, {true, Phase::kPublished, 1},
+       {false, Phase::kProvisional, 0}},
+  };
+  const Phase phases[] = {Phase::kUnstarted, Phase::kPublished, Phase::kProvisional};
+  for (int pi = 0; pi < 3; ++pi) {
+    for (int ci = 0; ci < 4; ++ci) {
+      INFO("phase " << pi << ", " << names[ci]);
+      auto s = make(phases[pi]);
+      const ad::WakePlan before = s->current();
+      call(*s, static_cast<Call>(ci), 1800000);
+      const Want& w = table[pi][ci];
+      CHECK(s->phase() == w.after);
+      CHECK(s->accounting().wholeRun().cycles == w.cycles);
+      CHECK(s->counts().protocol_errors == (w.accepted ? 0U : 1U));
+      if (!w.accepted) {
+        CHECK(s->current().wake_ns == before.wake_ns);  // nothing changed
+        CHECK(s->current().target_index == before.target_index);
+      }
+      // after it, the proper calls still work: start if unstarted, publish a
+      // pending plan, then two whole cycles; each publication counts once
+      const std::uint64_t errors = s->counts().protocol_errors;
+      const std::uint64_t cycles = s->accounting().wholeRun().cycles;
+      std::uint64_t publications = 0;
+      if (s->phase() == Phase::kUnstarted) s->first();
+      if (s->phase() == Phase::kProvisional) {
+        s->publish(1900000);
+        ++publications;
+      }
+      for (int k = 0; k < 2; ++k) {
+        const std::int64_t end = s->current().wake_ns + 600000;
+        s->closeAndPublish(ad::kInvalidStamp, end, end);
+        ++publications;
+      }
+      CHECK(s->phase() == Phase::kPublished);
+      CHECK(s->counts().protocol_errors == errors);
+      CHECK(s->accounting().wholeRun().cycles == cycles + publications);
+    }
+  }
+}
+
+TEST_CASE("freshness and timeouts are judged when the call runs, not when the cycle ended",
+          "[hw][adapter][safety]") {
+  // A delay between a cycle's end and its closeCycle() call makes a result
+  // older, never younger.
+  const ad::ScheduleConfig cfg = defaultConfig();
+  const std::int64_t at = cfg.windows.acquisition_ns;  // the fit window's end (epoch 0)
+  auto toRequest = [&](ad::FitExchange& ex, ad::ReferencedSchedule& s) {
+    Lattice lat;
+    Probe pr;
+    ad::WakePlan plan = s.first();
+    std::int64_t k = 0;
+    while (s.counts().fits_requested == 0) {
+      const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+      plan = s.closeAndPublish(c.stamp, c.end, c.end);
+    }
+    (void)ex;
+    return plan;
+  };
+  for (const std::int64_t late : {std::int64_t{0}, std::int64_t{1}}) {
+    INFO("late " << late);
+    {  // a completed fit taken by a late call: applied at the limit, refused 1 ns past it
+       // (plain blocks, not SECTIONs: a SECTION in a loop runs on its first pass only)
+      ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+      ad::ReferencedSchedule s(cfg, 0, &ex);
+      const ad::WakePlan plan = toRequest(ex, s);
+      REQUIRE(ex.service());
+      const std::int64_t end = plan.wake_ns + 700000;  // the cycle ended early
+      REQUIRE(end - at < cfg.fit_max_age_ns);
+      const std::int64_t now = at + cfg.fit_max_age_ns + late;  // the call runs late
+      s.closeCycle(ad::kInvalidStamp, end, now);
+      const ad::WakePlan pub = s.publish(now);
+      CHECK(s.counts().fits_applied == (late == 0 ? 1U : 0U));
+      CHECK(s.counts().stale_results == (late == 0 ? 0U : 1U));
+      CHECK(pub.wake_ns >= now);
+    }
+    {  // a request with no result: abandoned once the call's own time passes the limit
+      ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+      ad::ReferencedSchedule s(cfg, 0, &ex);
+      const ad::WakePlan plan = toRequest(ex, s);
+      const std::int64_t end = plan.wake_ns + 700000;
+      const std::int64_t now = at + cfg.fit_max_age_ns + late;
+      s.closeCycle(ad::kInvalidStamp, end, now);
+      s.publish(now);
+      CHECK(s.counts().abandoned_requests == (late == 0 ? 0U : 1U));
+      CHECK(s.lockState() == (late == 0 ? ad::LockState::kFitPending : ad::LockState::kAcquiring));
+    }
   }
 }
