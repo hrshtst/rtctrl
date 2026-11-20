@@ -1061,6 +1061,126 @@ TEST_CASE("a fit is applied up to its age limit and refused 1 ns after", "[hw][a
   }
 }
 
+TEST_CASE("each close reports its fit events once, in order, with the window and the time they concern",
+          "[hw][adapter]") {
+  const ad::ScheduleConfig cfg = defaultConfig();
+  Lattice lat;
+  Probe pr;
+  pr.late_fraction = 0.0;  // no whole-period delays: the fit qualifies
+  pr.tail_fraction = 0.0;
+  std::vector<ad::FitEvent> events;
+  std::size_t reports = 0;
+  auto close = [&](ad::ReferencedSchedule& s, ad::WakePlan& plan, std::int64_t stamp, std::int64_t end) {
+    plan = s.closeAndPublish(stamp, end, end);
+    for (std::size_t i = 0; i < s.fitEventCount(); ++i) events.push_back(s.fitEvent(i));
+    if (s.fitEventCount() > 0) ++reports;
+    return s.fitEventCount();
+  };
+  {
+    // A request at the window's end, the fitter's copy of its result, and
+    // the result applied at the next close; nothing in between.
+    ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+    ad::ReferencedSchedule s(cfg, 0, &ex);
+    ad::WakePlan plan = s.first();
+    std::int64_t k = 0;
+    while (s.counts().fits_requested == 0) {
+      const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+      close(s, plan, c.stamp, c.end);
+    }
+    REQUIRE(events.size() == 1);
+    CHECK(reports == 1);
+    const ad::FitEvent request = events[0];
+    CHECK(request.outcome == ad::FitOutcome::kRequested);
+    CHECK(request.generation == 1);
+    CHECK(request.window_end_ns == cfg.windows.acquisition_ns);
+    CHECK(request.at_ns >= request.window_end_ns);
+    CHECK(request.at_ns < request.window_end_ns + 2000000);
+    ad::FitResult done;
+    REQUIRE(ex.service(&done));
+    CHECK(done.generation == 1);
+    CHECK(done.at_ns == cfg.windows.acquisition_ns);
+    CHECK(done.fit.stamps == ex.workerCounts().appended);
+    CHECK(done.fit.share >= cfg.estimator.lock_min_share);
+    const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+    REQUIRE(close(s, plan, c.stamp, c.end) == 1);
+    const ad::FitEvent applied = events[1];
+    CHECK(applied.outcome == ad::FitOutcome::kApplied);
+    CHECK(applied.generation == 1);
+    CHECK(applied.window_end_ns == request.window_end_ns);
+    CHECK(applied.at_ns == c.end);
+    CHECK(applied.fit.slope_ppm == done.fit.slope_ppm);
+    CHECK(applied.fit.phase0_us == done.fit.phase0_us);
+    CHECK(applied.fit.share == done.fit.share);
+    CHECK(applied.fit.stamps == done.fit.stamps);
+    CHECK(s.estimator().state() == ad::EstimatorState::kLocked);
+    for (int i = 0; i < 100; ++i) {
+      const CycleOut d = runCycle(lat, pr, k++, plan.wake_ns);
+      CHECK(close(s, plan, d.stamp, d.end) == 0);
+    }
+  }
+  events.clear();
+  {
+    // No fitter: abandoned at the first close past the age limit; the late
+    // result, when it comes, an old generation; with both buffers queued, a
+    // queue failure.
+    ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+    ad::ReferencedSchedule s(cfg, 0, &ex);
+    ad::WakePlan plan = s.first();
+    std::int64_t k = 0;
+    while (s.counts().abandoned_requests == 0) {
+      const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+      close(s, plan, c.stamp, c.end);
+    }
+    REQUIRE(events.size() == 2);
+    CHECK(events[1].outcome == ad::FitOutcome::kAbandoned);
+    CHECK(events[1].generation == 1);
+    CHECK(events[1].window_end_ns == cfg.windows.acquisition_ns);
+    CHECK(events[1].at_ns - events[1].window_end_ns > cfg.fit_max_age_ns);
+    CHECK(events[1].at_ns - events[1].window_end_ns < cfg.fit_max_age_ns + 2000000);
+    ad::FitResult late;
+    REQUIRE(ex.service(&late));  // the abandoned request's fit, done late
+    CHECK(late.generation == 1);
+    const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+    REQUIRE(close(s, plan, c.stamp, c.end) == 1);
+    CHECK(events[2].outcome == ad::FitOutcome::kOldGeneration);
+    CHECK(events[2].generation == 1);
+    CHECK(events[2].fit.stamps == late.fit.stamps);
+    CHECK(s.counts().old_generation_results == 1);
+    // The next two requests, never fitted, hold both buffers: the third
+    // window's end cannot queue.
+    while (s.counts().queue_failures == 0) {
+      const CycleOut d = runCycle(lat, pr, k++, plan.wake_ns);
+      close(s, plan, d.stamp, d.end);
+    }
+    std::vector<ad::FitOutcome> outcomes;
+    for (const ad::FitEvent& e : events) outcomes.push_back(e.outcome);
+    const std::vector<ad::FitOutcome> want = {
+        ad::FitOutcome::kRequested, ad::FitOutcome::kAbandoned, ad::FitOutcome::kOldGeneration,
+        ad::FitOutcome::kRequested, ad::FitOutcome::kAbandoned, ad::FitOutcome::kRequested,
+        ad::FitOutcome::kAbandoned, ad::FitOutcome::kQueueFailed};
+    CHECK(outcomes == want);
+    CHECK(events.back().generation == 0);  // none was made
+    CHECK(s.counts().fits_requested == 3);
+  }
+  events.clear();
+  {
+    // Without an exchange (tests and offline use) the fit runs in the close:
+    // its outcome is reported as applied, with the estimator's fit.
+    ad::ReferencedSchedule s(cfg, 0);
+    ad::WakePlan plan = s.first();
+    std::int64_t k = 0;
+    while (s.estimator().state() != ad::EstimatorState::kLocked) {
+      const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+      close(s, plan, c.stamp, c.end);
+    }
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].outcome == ad::FitOutcome::kApplied);
+    CHECK(events[0].generation == 0);
+    CHECK(events[0].window_end_ns == cfg.windows.acquisition_ns);
+    CHECK(events[0].fit.share == s.estimator().lastFit().share);
+  }
+}
+
 TEST_CASE("the intended completion is fixed when the plan is published", "[hw][adapter]") {
   Lattice lat;
   Probe pr;

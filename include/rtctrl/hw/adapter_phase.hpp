@@ -1,8 +1,9 @@
 #pragma once
 
-// Adapter-referenced cycle timing: pure logic, not wired into any probe or
-// controller (the stage approved on 2026-11-20 is this logic, its unit tests
-// and an offline replay; integration needs its own review).
+// Adapter-referenced cycle timing: pure logic. x7_bus_timing's torque-off
+// --timing adapter mode runs it (apps/bus/bus_timing_adapter.hpp, approved
+// for implementation against the pty emulator on 2026-11-21); no controller
+// uses it.
 //
 // The USB serial adapter returns data in bulk IN completions on its own
 // cadence near 1 ms, which drifts against the host's monotonic clock. The
@@ -38,7 +39,9 @@
 // doubles in the same nanoseconds (0.06 ns resolution at 4e14 ns).
 //
 // Log encoding, for the probe's per-cycle log (integers only: its reader
-// converts every column but command_kind to an integer):
+// converts every column but command_kind to an integer). Each row's plan
+// columns are the plan that row's read executed; observation is that read's
+// reply at its cycle's close:
 //   target_index             the intended completion, fixed at publication;
 //                            -1 on the grid
 //   schedule                 Schedule: 0 grid, 1 lattice
@@ -55,7 +58,8 @@
 //   coupling_state           CouplingState at publication: 0 insufficient
 //                            evidence, 1 no coupling detected, 2 request-tied
 //                            timing detected
-// (the last two are WakePlan fields the probe does not log yet)
+// (the probe adds recheck_skipped, of its skipped_periods the slots the
+// publication's recheck added; see apps/bus/bus_timing_adapter.hpp)
 
 #include <algorithm>
 #include <array>
@@ -1043,8 +1047,11 @@ class FitExchange {
   // ---- the fitter ----
 
   // Claims a queued buffer, fits it and completes it; false if none was
-  // queued. Allocates (fitLattice): never call it on the worker.
-  bool service() {
+  // queued. With `done`, it also copies the result it completes (its
+  // generation, its window's end and the fit) for the fitter's own record,
+  // while the buffer is still the fitter's. Allocates (fitLattice): never call
+  // it on the worker.
+  bool service(FitResult* done = nullptr) {
     for (auto& s : slots_) {
       Owner expected = Owner::kQueued;
       if (!s.owner.compare_exchange_strong(expected, Owner::kFitting, std::memory_order_acq_rel,
@@ -1052,6 +1059,11 @@ class FitExchange {
         continue;
       }
       s.fit = fitLattice(s.stamps.data(), s.count, fit_cfg_);
+      if (done != nullptr) {
+        done->generation = s.generation;
+        done->at_ns = s.at_ns;
+        done->fit = s.fit;
+      }
       fitted_.fetch_add(1, std::memory_order_relaxed);
       s.owner.store(Owner::kDone, std::memory_order_release);
       return true;
@@ -1127,6 +1139,26 @@ struct ScheduleCounts {
   std::uint64_t protocol_errors = 0;    // a call out of turn (see ReferencedSchedule)
 };
 
+// What happened to an acquisition's fit at a cycle's close, for the record
+// (ReferencedSchedule::fitEvent). The values do not change.
+enum class FitOutcome : std::uint8_t {
+  kRequested = 0,      // its buffer queued for the fitter
+  kQueueFailed = 1,    // no stamps, or no buffer the worker's: the acquisition restarts
+  kApplied = 2,        // its result locked the estimator
+  kRefused = 3,        // its result failed the lock criteria: the acquisition restarts
+  kStale = 4,          // its result was older than fit_max_age_ns: the acquisition restarts
+  kOldGeneration = 5,  // the result of a request abandoned earlier, discarded
+  kAbandoned = 6,      // no result within fit_max_age_ns of its window's end: it restarts
+};
+
+struct FitEvent {
+  FitOutcome outcome = FitOutcome::kRequested;
+  std::uint64_t generation = 0;    // the request's (0 for a queue failure: none was made)
+  std::int64_t window_end_ns = 0;  // the end of the acquisition window it concerns
+  std::int64_t at_ns = 0;          // the close's decision time, max(now, cycle end)
+  LatticeFit fit;                  // results only (applied, refused, stale, old generation)
+};
+
 // Where a schedule is in its calls: first() starts it (kUnstarted to
 // kPublished); closeCycle() moves kPublished to kProvisional; publish() moves
 // kProvisional to kPublished. Any other call changes nothing and counts a
@@ -1188,6 +1220,7 @@ class ReferencedSchedule {
     const std::int64_t decision_ns = std::max(now_ns, cycle_end_ns);
     const bool was_locked = est_.state() == EstimatorState::kLocked;
     observation_ = Observation::kNone;
+    fit_event_count_ = 0;
     if (est_.state() == EstimatorState::kAcquiring) {
       if (!pending_ && reply_stamp_ns >= 0) {
         if (exchange_ != nullptr) {
@@ -1222,12 +1255,18 @@ class ReferencedSchedule {
           ++generation_;
           pending_ = true;
           ++counts_.fits_requested;
+          addFitEvent(FitOutcome::kRequested, generation_, acquisition_end_, decision_ns, LatticeFit{});
         } else {
           ++counts_.queue_failures;
+          addFitEvent(FitOutcome::kQueueFailed, 0, acquisition_end_, decision_ns, LatticeFit{});
           restartAcquisition(decision_ns);
         }
-      } else if (!est_.finishAcquisition(acquisition_end_)) {
-        restartAcquisition(decision_ns);
+      } else {
+        const std::int64_t window_end = acquisition_end_;
+        const bool applied = est_.finishAcquisition(window_end);
+        addFitEvent(applied ? FitOutcome::kApplied : FitOutcome::kRefused, 0, window_end, decision_ns,
+                    est_.lastFit());
+        if (!applied) restartAcquisition(decision_ns);
       }
     }
     const bool locked = est_.state() == EstimatorState::kLocked;
@@ -1286,6 +1325,12 @@ class ReferencedSchedule {
     if (est_.state() == EstimatorState::kLocked) return LockState::kLocked;
     return pending_ ? LockState::kFitPending : LockState::kAcquiring;
   }
+  // The fit events of the last accepted closeCycle(), in order: a request or
+  // a queue failure, and the results taken and the abandonment, each once.
+  // At most kMaxFitEvents (two buffers' results, an abandonment, a request).
+  static constexpr std::size_t kMaxFitEvents = 4;
+  std::size_t fitEventCount() const { return fit_event_count_; }
+  const FitEvent& fitEvent(std::size_t i) const { return fit_events_[i]; }
   Observation lastObservation() const { return observation_; }
   const AdapterPhaseEstimator& estimator() const { return est_; }
   const SkipAccounting& accounting() const { return accounting_; }
@@ -1315,21 +1360,36 @@ class ReferencedSchedule {
     if (exchange_ != nullptr) exchange_->clearWorkerBuffer();
   }
 
+  void addFitEvent(FitOutcome outcome, std::uint64_t generation, std::int64_t window_end_ns, std::int64_t at_ns,
+                   const LatticeFit& fit) {
+    if (fit_event_count_ >= kMaxFitEvents) return;  // not reachable: see kMaxFitEvents
+    FitEvent& e = fit_events_[fit_event_count_++];
+    e.outcome = outcome;
+    e.generation = generation;
+    e.window_end_ns = window_end_ns;
+    e.at_ns = at_ns;
+    e.fit = fit;
+  }
+
   void takeResults(std::int64_t now_ns) {
     FitResult r;
     while (exchange_->take(&r)) {
       if (!pending_ || r.generation != generation_) {
         ++counts_.old_generation_results;
+        addFitEvent(FitOutcome::kOldGeneration, r.generation, r.at_ns, now_ns, r.fit);
         continue;
       }
       pending_ = false;
       if (now_ns - r.at_ns > cfg_.fit_max_age_ns) {
         ++counts_.stale_results;
+        addFitEvent(FitOutcome::kStale, r.generation, r.at_ns, now_ns, r.fit);
         restartAcquisition(now_ns);
       } else if (est_.applyFit(r.fit, r.at_ns)) {
         ++counts_.fits_applied;
+        addFitEvent(FitOutcome::kApplied, r.generation, r.at_ns, now_ns, r.fit);
       } else {
         ++counts_.fits_refused;
+        addFitEvent(FitOutcome::kRefused, r.generation, r.at_ns, now_ns, r.fit);
         restartAcquisition(now_ns);
       }
     }
@@ -1337,6 +1397,7 @@ class ReferencedSchedule {
       // no result in time: abandon the request; a late result is discarded
       pending_ = false;
       ++counts_.abandoned_requests;
+      addFitEvent(FitOutcome::kAbandoned, generation_, acquisition_end_, now_ns, LatticeFit{});
       restartAcquisition(now_ns);
     }
   }
@@ -1357,6 +1418,8 @@ class ReferencedSchedule {
   CouplingDetector detector_;
   LeadSequencer sequencer_;
   std::int64_t executed_cycles_ = 0;
+  std::array<FitEvent, kMaxFitEvents> fit_events_{};
+  std::size_t fit_event_count_ = 0;
 };
 
 }  // namespace rtctrl::hw::adapter

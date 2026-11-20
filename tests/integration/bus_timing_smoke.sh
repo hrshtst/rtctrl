@@ -75,6 +75,13 @@ grep -q '^read_failures = 0' "$SUMMARY"
 grep -q '^torque_off_after = true' "$SUMMARY"
 grep -q '^\[budget\]' "$SUMMARY"
 grep -q '^\[histogram.host_transaction\]' "$SUMMARY"
+# Grid timing is the default, recorded as such, with no adapter section
+# (tests/integration/bus_timing_adapter_smoke.sh covers --timing adapter).
+grep -q '^timing = "grid"$' "$SUMMARY"
+if grep -q '^\[adapter' "$SUMMARY"; then
+  fail "a grid run wrote an [adapter] section" "$SUMMARY"
+fi
+grep -q '^timing: grid (the default)$' "$ROOT/run.log"
 
 # --duration is a monotonic deadline, not a cycle count: at a rate the pty
 # may not sustain, the run ends once the deadline passes, never later than

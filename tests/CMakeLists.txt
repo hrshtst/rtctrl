@@ -71,11 +71,22 @@ catch_discover_tests(adapter_phase_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
 
+# x7_bus_timing's adapter timing (apps/bus/bus_timing_adapter.hpp): the
+# choice's rules and the worker's driver, header-only like the logic it runs.
+add_executable(bus_timing_adapter_tests unit/bus_timing_adapter_test.cpp)
+target_include_directories(bus_timing_adapter_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/apps)
+target_link_libraries(bus_timing_adapter_tests PRIVATE Catch2::Catch2WithMain Threads::Threads)
+catch_discover_tests(bus_timing_adapter_tests
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PROPERTIES LABELS unit)
+
 # Replaces the global operator new to count allocations, so it cannot
 # share an executable with the other unit tests.
 add_executable(alloc_free_tests unit/alloc_free_test.cpp)
 target_link_libraries(alloc_free_tests PRIVATE rtctrl::rtctrl
                       Catch2::Catch2WithMain)
+target_include_directories(alloc_free_tests PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 catch_discover_tests(alloc_free_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
@@ -298,6 +309,17 @@ add_test(NAME timing_summary_regressions
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(timing_summary_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "timing summary regressions OK"
+  LABELS unit)
+
+# The probe log's readers (timing_summary, trace_correlate, tk_cost) on an
+# adapter-timing log and its grid twin: identical outputs.
+add_test(NAME adapter_log_readers
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_adapter_log_readers.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(adapter_log_readers PROPERTIES
+  PASS_REGULAR_EXPRESSION "adapter log readers OK"
   LABELS unit)
 
 # Traced-run correlation: the association and alignment checks, each of
@@ -821,6 +843,22 @@ add_test(NAME x7_bus_timing_smoke
 set_tests_properties(x7_bus_timing_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "bus timing probe OK"
+  LABELS integration)
+
+# x7_bus_timing --timing adapter over dxl_emu as it is: refusals before any bus
+# access, the grid default, adapter runs' logs against their summaries (with
+# a shutdown after a request and a stall), timing_summary on the real log; uv
+# runs timing_summary, so the build-local uv cache keeps it hermetic.
+add_test(NAME x7_bus_timing_adapter_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/bus_timing_adapter_smoke.sh
+      $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
+      $<TARGET_FILE:dxl_inspect>
+      ${CMAKE_BINARY_DIR}/bus_timing_adapter_smoke)
+set_tests_properties(x7_bus_timing_adapter_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "bus timing adapter smoke OK"
   LABELS integration)
 
 # The E1 session scripts (tools/e1_prod.sh, tools/e1_cal.sh) over the

@@ -43,6 +43,32 @@
 //       [--read-path legacy|bounded [--budget-ms B] [--guard-ms G]
 //        [--feedback full|motion [--aux-interval-ms A]]
 //        [--read-instruction sync|fast] [--expect-latency-timer-ms L]]
+//       [--timing grid|adapter [--lead-us L] [--wake-to-read-us W]
+//        [--acquisition-s A] [--settling-s S] [--lead-alternation-us D]]
+//
+// --timing chooses how each cycle's wake is planned. grid (the default) is
+// the fixed grid of --rate-hz periods from the run's start, as always.
+// adapter is adapter-referenced timing, a torque-off diagnostic (see
+// bus/bus_timing_adapter.hpp and rtctrl/hw/adapter_phase.hpp): the run
+// starts on the 1 ms grid while it collects its reply stamps (last_reply_ns)
+// for A s (default 2); the probe's main thread, which is not real-time, fits
+// them; the worker locks on the fit if it qualifies and is at most 500 ms
+// old, and then plans each wake L us (default 780) plus W us (default 10)
+// before the adapter completion it targets, falling back to the grid if the
+// lock is lost. Settling (S s, default 1) and the locked measurement after
+// it are declared windows, reported apart. Every published wake is at least
+// 20 us after the clock read that publishes it; slots passed are skipped
+// periods. --lead-alternation-us D (default 0, none) alternates the lead of
+// the motion-only reads by +-D us and records whether the replies follow the
+// request's send time (a lock on request-tied replies, as the pty emulator
+// gives): an observation only, which nothing in the probe acts on. Adapter
+// timing needs --rate-hz 1000, production traffic and the bounded read
+// path; the alternation needs motion-only reads between the full-window
+// reads, which stay at the base lead. Unsupported combinations are refused
+// before the probe opens the port. The adapter log appends its columns
+// (bus_timing::kAdapterColumns) to the grid log's; the summary records the
+// choice in every run (timing = "grid" or "adapter") and, under adapter
+// timing, an [adapter] section.
 //
 // --read-path chooses how the grouped feedback read receives (control-rate
 // Phase R). legacy (the default) is the DynamixelSDK's receive, as at
@@ -120,6 +146,7 @@
 #include <thread>
 #include <vector>
 
+#include "bus/bus_timing_adapter.hpp"
 #include "common/x7_common.hpp"
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/dxl/conversions.hpp"
@@ -135,6 +162,8 @@
 #include "rtctrl/util/realtime.hpp"
 #include "rtctrl/util/spsc_ring.hpp"
 
+namespace ad = rtctrl::hw::adapter;
+namespace bus_timing = rtctrl::apps::bus_timing;
 namespace dxl = rtctrl::dxl;
 namespace hw = rtctrl::hw;
 namespace reg = rtctrl::dxl::reg;
@@ -193,7 +222,20 @@ struct Args {
   // check expects (1 ms, as on every bounded read path, unless given).
   int expect_latency_timer_ms = 1;
   bool latency_given = false;
+  // --timing (grid by default) and the adapter timing's values; their
+  // combination rules are bus_timing::timingChoiceError's.
+  bus_timing::TimingChoice timing;
 };
+
+// How often a cycle reads the full window: every cycle (1), every n cycles,
+// or never after the initial read (0); as CraneX7 rounds it.
+std::uint64_t fullReadEveryFor(const Args& args) {
+  if (!args.motion_only) return 1;
+  if (args.aux_interval_ms == 0.0) return 0;
+  const double cycles = args.aux_interval_ms * 1e-3 * args.rate_hz;
+  return std::max<std::uint64_t>(
+      1, static_cast<std::uint64_t>(std::ceil(cycles - 1e-9)));
+}
 
 bool parseArgs(const std::vector<const char*>& rest, Args* a) {
   for (std::size_t i = 0; i < rest.size(); ++i) {
@@ -279,6 +321,34 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
       }
       a->expect_latency_timer_ms = static_cast<int>(n);
       a->latency_given = true;
+    } else if (flag == "--timing") {
+      if (!value(&v)) return false;
+      const std::string t = v;
+      if (t != "grid" && t != "adapter") {
+        std::fprintf(stderr, "--timing: grid or adapter\n");
+        return false;
+      }
+      a->timing.adapter = t == "adapter";
+    } else if (flag == "--lead-us" || flag == "--wake-to-read-us" ||
+               flag == "--acquisition-s" || flag == "--settling-s" ||
+               flag == "--lead-alternation-us") {
+      if (!value(&v)) return false;
+      double d = 0.0;
+      if (!x7::parseStrictDouble(v, &d)) {
+        std::fprintf(stderr, "%s: not a number: %s\n", flag.c_str(), v);
+        return false;
+      }
+      bus_timing::TimingChoice& t = a->timing;
+      if (flag == "--lead-alternation-us") {
+        t.alternation_us = d;
+        t.alternation_given = true;
+      } else {
+        (flag == "--lead-us"            ? t.lead_us
+         : flag == "--wake-to-read-us" ? t.wake_to_read_us
+         : flag == "--acquisition-s"   ? t.acquisition_s
+                                       : t.settling_s) = d;
+        t.adapter_values_given = true;
+      }
     } else if (flag == "--rt-priority" || flag == "--rt-cpu") {
       if (!value(&v)) return false;
       long n = 0;
@@ -359,6 +429,20 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
   const std::string why = util::validateRealtimePolicy(a->realtime);
   if (!why.empty()) {
     std::fprintf(stderr, "%s\n", why.c_str());
+    return false;
+  }
+  // The timing choice, before the port is opened: an unsupported combination
+  // is refused before any bus access.
+  bus_timing::TimingChoice& t = a->timing;
+  t.rate_hz = a->rate_hz;
+  t.duration_s = a->duration_s;
+  t.calibration = a->confirm_writes || a->drain;
+  t.bounded = a->bounded;
+  t.motion_only = a->motion_only;
+  t.full_every = fullReadEveryFor(*a);
+  const std::string timing_why = bus_timing::timingChoiceError(t);
+  if (!timing_why.empty()) {
+    std::fprintf(stderr, "%s\n", timing_why.c_str());
     return false;
   }
   return true;
@@ -614,6 +698,8 @@ struct ProbeRecord {
   // The write was sent and its acknowledging read returned a valid
   // response (no goal value is compared).
   bool ack_ok = false;
+  // Adapter timing only: the plan this cycle's read executed and its close.
+  bus_timing::AdapterRow adapter;
 };
 
 constexpr const char* kCsvHeader =
@@ -663,9 +749,11 @@ double threadCpuSeconds() {
 
 class Probe {
  public:
+  // adapter: adapter timing's driver, or null for grid timing.
   Probe(dxl::PacketIO& io, const hw::Config& config, const Args& args,
         int baudrate, int last_servo_return_delay,
-        std::uint16_t last_servo_model, int drain_fd)
+        std::uint16_t last_servo_model, int drain_fd,
+        bus_timing::AdapterCycles* adapter)
       : io_(io),
         group_(io, ids(config)),
         args_(args),
@@ -674,6 +762,7 @@ class Probe {
         last_model_(last_servo_model),
         drain_fd_(drain_fd),
         full_every_(fullReadEvery(args)),
+        adapter_(adapter),
         ring_(std::max<std::size_t>(
             4096, static_cast<std::size_t>(args.rate_hz * 4.0))) {
     // The run's reads go through the armed bounded windows.
@@ -683,11 +772,7 @@ class Probe {
   // How often a cycle reads the full window: every cycle (1), every n
   // cycles, or never after the initial read (0); as CraneX7 rounds it.
   static std::uint64_t fullReadEvery(const Args& args) {
-    if (!args.motion_only) return 1;
-    if (args.aux_interval_ms == 0.0) return 0;
-    const double cycles = args.aux_interval_ms * 1e-3 * args.rate_hz;
-    return std::max<std::uint64_t>(
-        1, static_cast<std::uint64_t>(std::ceil(cycles - 1e-9)));
+    return fullReadEveryFor(args);
   }
   std::uint64_t fullEvery() const { return full_every_; }
 
@@ -738,6 +823,13 @@ class Probe {
     };
     hw::PeriodicSchedule schedule(epoch, period);
     auto scheduled = epoch;
+    // Adapter timing plans on nanoseconds from this epoch, the log's origin:
+    // its first wake is the epoch, as the grid's.
+    const auto at = [&](std::int64_t t_ns) {
+      return epoch + std::chrono::duration_cast<Clock::duration>(
+                         std::chrono::nanoseconds(t_ns));
+    };
+    if (adapter_ != nullptr) scheduled = at(adapter_->first());
     std::uint64_t full_due_in = 0;  // cycles until the next full read
     std::int64_t prev_wake = -1;
     const double cpu0 = threadCpuSeconds();
@@ -835,10 +927,33 @@ class Probe {
 
       const auto finished = Clock::now();
       c.cycle_end_ns = ns(finished);
-      const hw::DeadlineAdvance advance = schedule.closeIteration(finished);
-      c.skipped_periods = static_cast<std::uint32_t>(advance.skipped_periods);
-      result->skipped_periods += advance.skipped_periods;
-      if (advance.skipped_periods > 0) ++result->overruns;
+      Clock::time_point next_wake;
+      std::uint64_t skipped = 0;
+      if (adapter_ == nullptr) {
+        const hw::DeadlineAdvance advance = schedule.closeIteration(finished);
+        next_wake = advance.wake_time;
+        skipped = advance.skipped_periods;
+      } else {
+        // The next read's class, from the full-read counter as updated above,
+        // and this read's reply stamp (its last bytes, from a complete read
+        // only).
+        const bool next_full =
+            full_every_ == 1 || (full_every_ > 1 && full_due_in == 0);
+        adapter_->close(k, bus_timing::replyStamp(c), c.cycle_end_ns,
+                        ns(Clock::now()),
+                        full ? ad::ReadClass::kFull : ad::ReadClass::kMotion,
+                        next_full ? ad::ReadClass::kFull
+                                  : ad::ReadClass::kMotion);
+        // The clock read again just before publishing: the plan is rechecked
+        // against it.
+        const ad::WakePlan& plan =
+            adapter_->publish(ns(Clock::now()), &r.adapter);
+        next_wake = at(plan.wake_ns);
+        skipped = plan.skipped;
+      }
+      c.skipped_periods = static_cast<std::uint32_t>(skipped);
+      result->skipped_periods += skipped;
+      if (skipped > 0) ++result->overruns;
       hw::accumulateCycleTiming(c, prev_wake, &result->timing);
       prev_wake = c.wake_ns;
       if (!ring_.push(r)) ++result->ring_drops;
@@ -846,10 +961,11 @@ class Probe {
       result->elapsed_s = c.cycle_end_ns * 1e-9;
       // The next wake is never before this cycle's end, so an overrun
       // past the deadline ends the run here too.
-      if (advance.wake_time >= deadline) break;
-      scheduled = advance.wake_time;
-      std::this_thread::sleep_until(advance.wake_time);
+      if (next_wake >= deadline) break;
+      scheduled = next_wake;
+      std::this_thread::sleep_until(next_wake);
     }
+    if (adapter_ != nullptr) adapter_->finish();
     result->cpu_s = threadCpuSeconds() - cpu0;
     result->wall_s =
         std::chrono::duration<double>(Clock::now() - epoch).count();
@@ -871,13 +987,22 @@ class Probe {
   std::uint16_t last_model_;
   int drain_fd_;
   std::uint64_t full_every_;
+  bus_timing::AdapterCycles* adapter_;
   util::SpscRing<ProbeRecord> ring_;
 };
 
-void appendRow(util::AsyncWriter& log, const ProbeRecord& r) {
+// A fit the main thread made under adapter timing: its result, and when the
+// fit began and ended on CLOCK_MONOTONIC.
+struct FitService {
+  ad::FitResult result;
+  std::int64_t started_mono_ns = 0;
+  std::int64_t finished_mono_ns = 0;
+};
+
+void appendRow(util::AsyncWriter& log, const ProbeRecord& r, bool adapter) {
   const hw::CycleRecord& c = r.cycle;
   log.appendf("%llu,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
-              "%lld,%lld,%lld,%lld,%d,%d,%d,%u,%u\n",
+              "%lld,%lld,%lld,%lld,%d,%d,%d,%u,%u",
               static_cast<unsigned long long>(c.cycle),
               static_cast<long long>(c.scheduled_wake_ns),
               static_cast<long long>(c.wake_ns),
@@ -896,6 +1021,21 @@ void appendRow(util::AsyncWriter& log, const ProbeRecord& r) {
               c.write_ok ? 1 : 0, r.ack_ok ? 1 : 0,
               static_cast<unsigned>(c.skipped_periods),
               static_cast<unsigned>(c.read_len));
+  if (adapter) {
+    // bus_timing::kAdapterColumns, in order.
+    const bus_timing::AdapterRow& a = r.adapter;
+    log.appendf(",%lld,%u,%u,%u,%lld,%lld,%u,%u,%llu",
+                static_cast<long long>(a.target_index),
+                static_cast<unsigned>(a.schedule),
+                static_cast<unsigned>(a.lock_state),
+                static_cast<unsigned>(a.transition),
+                static_cast<long long>(a.predicted_completion_ns),
+                static_cast<long long>(a.lead_offset_ns),
+                static_cast<unsigned>(a.coupling_state),
+                static_cast<unsigned>(a.observation),
+                static_cast<unsigned long long>(a.recheck_skipped));
+  }
+  log.append("\n");
 }
 
 void writeHistogram(std::FILE* f, const char* name,
@@ -917,6 +1057,218 @@ void printHistogram(const char* name, const hw::LatencyHistogram& h) {
               name, static_cast<unsigned long long>(h.count()),
               1e3 * h.quantileUpperEdge(0.5), 1e3 * h.quantileUpperEdge(0.99),
               1e3 * h.quantileUpperEdge(0.999), 1e3 * h.max());
+}
+
+void writeSkipCounts(std::FILE* f, const char* name, const char* comment,
+                     const ad::SkipCounts& c) {
+  std::fprintf(f, "\n[adapter.%s]\n%s", name, comment);
+  std::fprintf(f,
+               "cycles = %llu\nskipped_periods = %llu\noverruns = %llu\n"
+               "consecutive_skips = %llu\nreferenced_cycles = %llu\n"
+               "grid_cycles = %llu\n",
+               static_cast<unsigned long long>(c.cycles),
+               static_cast<unsigned long long>(c.skipped),
+               static_cast<unsigned long long>(c.overruns),
+               static_cast<unsigned long long>(c.consecutive),
+               static_cast<unsigned long long>(c.referenced_cycles),
+               static_cast<unsigned long long>(c.grid_cycles));
+}
+
+// The summary's [adapter] section. Its times are seconds from the log's
+// epoch, as every other time in the summary: the worker's are already
+// relative to it, and the main thread's fits are placed with origin_mono,
+// the epoch on CLOCK_MONOTONIC.
+void writeAdapterSummary(std::FILE* f, const ad::ScheduleConfig& cfg,
+                         const bus_timing::AdapterCycles& a,
+                         const ad::FitExchange& exchange,
+                         const std::vector<FitService>& services,
+                         std::int64_t origin_mono) {
+  const ad::ReferencedSchedule& s = a.schedule();
+  const ad::EstimatorCounts& e = s.estimator().counts();
+  const ad::ScheduleCounts& k = s.counts();
+  const auto u = [](std::uint64_t n) {
+    return static_cast<unsigned long long>(n);
+  };
+  const auto sec = [](std::int64_t t_ns) {
+    return 1e-9 * static_cast<double>(t_ns);
+  };
+  std::fprintf(f, "\n[adapter]\n");
+  std::fprintf(f,
+               "# adapter-referenced timing (--timing adapter), a torque-off "
+               "diagnostic; *_s times count\n# from the log's epoch; see "
+               "apps/bus/bus_timing_adapter.hpp for the log's columns\n");
+  std::fprintf(f, "lead_us = %.9g\nwake_to_read_us = %.9g\n",
+               1e-3 * static_cast<double>(cfg.planner.lead_ns),
+               1e-3 * static_cast<double>(cfg.planner.wake_to_read_ns));
+  std::fprintf(f, "# 0: no lead alternation\nlead_alternation_us = %.9g\n",
+               1e-3 * static_cast<double>(cfg.lead_alternation_ns));
+  std::fprintf(f, "acquisition_s = %.9g\nsettling_s = %.9g\n",
+               sec(cfg.windows.acquisition_ns), sec(cfg.windows.settling_ns));
+  std::fprintf(f,
+               "# provisional diagnostic values (2026-11-20), fixed: neither "
+               "is a demonstrated bound\npublication_margin_us = %.9g\n"
+               "fit_max_age_s = %.9g\n",
+               1e-3 * static_cast<double>(cfg.planner.min_gap_ns),
+               sec(cfg.fit_max_age_ns));
+  std::fprintf(f, "stamp = \"last_reply_ns\"\nfitter = \"main_thread\"\n");
+  std::fprintf(f,
+               "# the estimator's fixed values (no flags): a reply's nominal "
+               "delay after its completion,\n# and the gate on its "
+               "innovation (stamp - predicted completion - delay)\n"
+               "reply_delay_us = %.9g\ngate_us = %.9g\n",
+               1e-3 * cfg.estimator.delay_ns, 1e-3 * cfg.estimator.gate_ns);
+  std::fprintf(f,
+               "# LockState: 0 acquiring, 1 fit pending, 2 locked\n"
+               "lock_state_at_end = %u\nfit_pending_at_end = %s\n",
+               static_cast<unsigned>(s.lockState()),
+               s.lockState() == ad::LockState::kFitPending ? "true" : "false");
+  std::fprintf(f, "protocol_errors = %llu\n", u(k.protocol_errors));
+  std::fprintf(f,
+               "# the acquisitions' stamps handed to the fitter (the log's "
+               "observation 1) and dropped\n# (2: no buffer free, or the "
+               "buffer full)\nexchange_appended = %llu\n"
+               "exchange_dropped = %llu\n",
+               u(exchange.workerCounts().appended),
+               u(exchange.workerCounts().dropped));
+  std::fprintf(f, "# the tracking's observations (the log's observation 3 to "
+                  "6) and the locks\n");
+  std::fprintf(f, "gated = %llu\nlate = %llu\nearly = %llu\ninvalid = %llu\n",
+               u(e.gated), u(e.late), u(e.early), u(e.invalid));
+  std::fprintf(f,
+               "locks = %llu\nlosses = %llu\nlost_outside_gate = %llu\n"
+               "lost_no_gated_stamp = %llu\nlost_period_clamp = %llu\n"
+               "lost_non_finite = %llu\nfailed_acquisitions = %llu\n",
+               u(e.locks), u(e.losses), u(e.lost_outside_gate),
+               u(e.lost_no_gated), u(e.lost_period_clamp),
+               u(e.lost_non_finite), u(e.failed_acquisitions));
+  std::fprintf(f, "# the fit hand-off (the worker's counts, then the main "
+                  "thread's)\n");
+  std::fprintf(f,
+               "fits_requested = %llu\nfits_applied = %llu\n"
+               "fits_refused = %llu\nstale_results = %llu\n"
+               "abandoned_requests = %llu\nold_generation_results = %llu\n"
+               "queue_failures = %llu\n",
+               u(k.fits_requested), u(k.fits_applied), u(k.fits_refused),
+               u(k.stale_results), u(k.abandoned_requests),
+               u(k.old_generation_results), u(k.queue_failures));
+  std::fprintf(f, "fits_completed = %llu\n", u(exchange.fitted()));
+  std::fprintf(f,
+               "# records beyond the worker's bounded lists, counted only\n"
+               "lock_records_dropped = %llu\nfit_records_dropped = %llu\n",
+               u(a.locksDropped()), u(a.fitsDropped()));
+  const ad::SkipAccounting& acc = s.accounting();
+  writeSkipCounts(f, "acquisition",
+                  "# the declared windows, by each cycle's scheduled wake: "
+                  "[0, acquisition_s)\n",
+                  acc.window(ad::Window::kAcquisition));
+  writeSkipCounts(f, "settling",
+                  "# [acquisition_s, acquisition_s + settling_s)\n",
+                  acc.window(ad::Window::kSettling));
+  writeSkipCounts(f, "locked",
+                  "# the locked measurement, from acquisition_s + settling_s: "
+                  "descriptive, never a criterion\n",
+                  acc.window(ad::Window::kLocked));
+  writeSkipCounts(f, "whole_run",
+                  "# the whole run (the T2 inputs): every cycle once, with "
+                  "the skips its close produced\n",
+                  acc.wholeRun());
+  if (cfg.lead_alternation_ns != 0) {
+    const ad::CouplingDetector& d = s.coupling();
+    std::uint64_t tied = 0, free = 0, insufficient = 0;
+    for (std::size_t i = 0; i < a.lockCount(); ++i) {
+      const std::uint8_t c = a.lock(i).coupling_at_end;
+      if (c == 2) ++tied;
+      else if (c == 1) ++free;
+      else ++insufficient;
+    }
+    std::fprintf(f, "\n[adapter.coupling]\n");
+    std::fprintf(f,
+                 "# the lead alternation's check of each lock, an "
+                 "observation only: nothing in the\n# probe (its schedule, "
+                 "its stop rule, its exit status) reads it. No coupling\n# "
+                 "detected does not establish independent timing\n");
+    std::fprintf(f, "delta_us = %.9g\nwindow_pairs = %d\nconfirm = %d\n",
+                 1e-3 * d.config().delta_ns, d.config().window,
+                 d.config().confirm);
+    std::fprintf(f,
+                 "evaluations = %llu\nabstentions = %llu\n"
+                 "rejected_samples = %llu\nstate_at_end = \"%s\"\n",
+                 u(d.evaluations()), u(d.abstentions()), u(d.rejected()),
+                 bus_timing::couplingName(
+                     static_cast<std::uint8_t>(d.state())));
+    std::fprintf(f,
+                 "# the locks by the state each ended in (or held at the "
+                 "run's end)\nlocks_request_tied = %llu\n"
+                 "locks_no_coupling = %llu\nlocks_insufficient = %llu\n",
+                 u(tied), u(free), u(insufficient));
+  }
+  for (std::size_t i = 0; i < a.lockCount(); ++i) {
+    const bus_timing::LockRecord& l = a.lock(i);
+    std::fprintf(f, "\n[[adapter.lock]]\n");
+    std::fprintf(f, "locked_cycle = %llu\nlocked_s = %.9g\n",
+                 u(l.locked_cycle), sec(l.locked_ns));
+    if (l.ended_cycle != 0) {
+      std::fprintf(f, "ended_cycle = %llu\nended_s = %.9g\n",
+                   u(l.ended_cycle), sec(l.ended_ns));
+    }
+    std::fprintf(f, "end = \"%s\"\nreferenced_cycles = %llu\n",
+                 l.ended_cycle == 0 ? "run_end"
+                                    : bus_timing::lossCauseName(l.cause),
+                 u(l.referenced_cycles));
+    if (cfg.lead_alternation_ns != 0) {
+      std::fprintf(f, "coupling_at_end = \"%s\"\n",
+                   bus_timing::couplingName(l.coupling_at_end));
+      if (l.first_declaration != 0) {
+        std::fprintf(f,
+                     "first_declaration = \"%s\"\n"
+                     "first_declaration_after = %llu\n",
+                     bus_timing::couplingName(l.first_declaration),
+                     u(l.first_declaration_after));
+      }
+    }
+  }
+  for (std::size_t i = 0; i < a.fitCount(); ++i) {
+    const bus_timing::FitRecord& r = a.fit(i);
+    const ad::FitEvent& ev = r.event;
+    std::fprintf(f, "\n[[adapter.fit]]\n");
+    std::fprintf(f,
+                 "cycle = %llu\noutcome = \"%s\"\ngeneration = %llu\n"
+                 "window_end_s = %.9g\nat_s = %.9g\n",
+                 u(r.cycle), bus_timing::fitOutcomeName(ev.outcome),
+                 u(ev.generation), sec(ev.window_end_ns), sec(ev.at_ns));
+    const bool result = ev.outcome == ad::FitOutcome::kApplied ||
+                        ev.outcome == ad::FitOutcome::kRefused ||
+                        ev.outcome == ad::FitOutcome::kStale ||
+                        ev.outcome == ad::FitOutcome::kOldGeneration;
+    if (!result) continue;
+    // Its request's close, if it is on record, and the result's age.
+    for (std::size_t j = 0; j < i; ++j) {
+      const ad::FitEvent& q = a.fit(j).event;
+      if (q.outcome == ad::FitOutcome::kRequested &&
+          q.generation == ev.generation) {
+        std::fprintf(f, "request_to_result_s = %.9g\n",
+                     sec(ev.at_ns - q.at_ns));
+      }
+    }
+    std::fprintf(f,
+                 "age_s = %.9g\nstamps = %llu\nslope_ppm = %.9g\n"
+                 "phase0_us = %.9g\nshare = %.9g\n",
+                 sec(ev.at_ns - ev.window_end_ns),
+                 u(static_cast<std::uint64_t>(ev.fit.stamps)),
+                 ev.fit.slope_ppm, ev.fit.phase0_us, ev.fit.share);
+  }
+  for (const FitService& sv : services) {
+    std::fprintf(f, "\n[[adapter.fit_service]]\n");
+    std::fprintf(f,
+                 "# a fit by the main thread\ngeneration = %llu\n"
+                 "window_end_s = %.9g\nstarted_s = %.9g\nfinished_s = %.9g\n"
+                 "fit_s = %.9g\nstamps = %llu\n",
+                 u(sv.result.generation), sec(sv.result.at_ns),
+                 sec(sv.started_mono_ns - origin_mono),
+                 sec(sv.finished_mono_ns - origin_mono),
+                 sec(sv.finished_mono_ns - sv.started_mono_ns),
+                 u(static_cast<std::uint64_t>(sv.result.fit.stamps)));
+  }
 }
 
 }  // namespace
@@ -1068,7 +1420,12 @@ int main(int argc, char* argv[]) {
     close_drain();
     return 1;
   }
+  const bool adapter_mode = args.timing.adapter;
   log->append(kCsvHeader);
+  if (adapter_mode) {
+    log->append(",");
+    log->append(bus_timing::kAdapterColumns);
+  }
   log->append("\n");
   log->commitRow();
 
@@ -1132,25 +1489,73 @@ int main(int argc, char* argv[]) {
               "stuffing)\n",
               1e3 * startup_s);
 
+  // Adapter timing: the schedule's configuration, the fit exchange this
+  // thread shares with the worker, and the worker's driver, all made (and
+  // their buffers allocated) before the worker starts. The exchange outlives
+  // the worker.
+  const ad::ScheduleConfig adapter_config = bus_timing::scheduleConfig(args.timing);
+  std::unique_ptr<ad::FitExchange> exchange;
+  std::unique_ptr<bus_timing::AdapterCycles> adapter;
+  if (adapter_mode) {
+    exchange = std::make_unique<ad::FitExchange>(
+        adapter_config.estimator.acquisition_capacity,
+        adapter_config.estimator.fit);
+    adapter = std::make_unique<bus_timing::AdapterCycles>(adapter_config,
+                                                          exchange.get());
+    char alternation[64] = "off";
+    if (adapter_config.lead_alternation_ns != 0) {
+      std::snprintf(alternation, sizeof alternation,
+                    "+-%.3f us (observational)",
+                    1e-3 * static_cast<double>(
+                               adapter_config.lead_alternation_ns));
+    }
+    std::printf("adapter timing: acquisition %.3f s on the 1 ms grid, "
+                "settling %.3f s, lead %.3f us + %.3f us to the read, "
+                "lead alternation %s; fits on the main thread (at most "
+                "%.0f ms old), wakes at least %.0f us after publication\n",
+                args.timing.acquisition_s, args.timing.settling_s,
+                args.timing.lead_us, args.timing.wake_to_read_us, alternation,
+                1e-6 * bus_timing::kFitMaxAgeNs,
+                1e-3 * bus_timing::kPublicationMarginNs);
+  } else {
+    std::printf("timing: grid (the default)\n");
+  }
+
   Probe probe(*port, config, args, config.baudrate,
-              servos.back().return_delay_time, servos.back().model, drain_fd);
+              servos.back().return_delay_time, servos.back().model, drain_fd,
+              adapter.get());
   RunResult result;
   std::atomic<bool> done{false};
   std::thread worker([&] { probe.run(initial, &result, &done); });
   // Drain records off the probe thread into the log. `done` is read
   // before draining: every record pushed before it was set is then
-  // visible, so the final pass misses nothing.
+  // visible, so the final pass misses nothing. Under adapter timing this
+  // thread, which is not real-time, also fits a queued acquisition after
+  // each drain pass; the worker never waits for it.
   ProbeRecord r;
+  std::vector<FitService> services;
   for (;;) {
     const bool finished = done.load();
     bool any = false;
     while (probe.ring().pop(&r)) {
-      appendRow(*log, r);
+      appendRow(*log, r, adapter_mode);
       log->commitRow();
       any = true;
     }
     if (finished) break;
-    if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    bool fitted = false;
+    if (exchange) {
+      ad::FitResult fit;
+      const std::int64_t started = util::monotonicNs(Clock::now());
+      if (exchange->service(&fit)) {
+        services.push_back(
+            {fit, started, util::monotonicNs(Clock::now())});
+        fitted = true;
+      }
+    }
+    if (!any && !fitted) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
   }
   worker.join();
   close_drain();
@@ -1191,6 +1596,10 @@ int main(int argc, char* argv[]) {
                args.motion_only ? "motion" : "full");
   std::fprintf(summary, "read_instruction = \"%s\"\n",
                args.fast ? "fast_sync" : "sync");
+  std::fprintf(summary,
+               "# how each wake was planned: grid (the default) or adapter "
+               "(see [adapter])\ntiming = \"%s\"\n",
+               adapter_mode ? "adapter" : "grid");
   if (args.motion_only) {
     std::fprintf(summary, "aux_interval_s = %.9g\nfull_read_every = %llu\n",
                  args.aux_interval_ms * 1e-3,
@@ -1292,6 +1701,10 @@ int main(int argc, char* argv[]) {
                             "latency_timer_verified = false\n");
     }
   }
+  if (adapter_mode) {
+    writeAdapterSummary(summary, adapter_config, *adapter, *exchange, services,
+                        result.monotonic_origin_ns);
+  }
   std::fprintf(summary, "\n[budget]\n");
   std::fprintf(summary,
                "# Analytic wire bytes of the run's longest production "
@@ -1390,6 +1803,39 @@ int main(int argc, char* argv[]) {
                 static_cast<unsigned long long>(b.recoveries),
                 static_cast<unsigned long long>(b.guard_waits));
   }
+  std::uint64_t adapter_protocol_errors = 0;
+  if (adapter_mode) {
+    const ad::ReferencedSchedule& s = adapter->schedule();
+    const ad::EstimatorCounts& e = s.estimator().counts();
+    const ad::ScheduleCounts& k = s.counts();
+    const ad::SkipCounts& locked = s.accounting().window(ad::Window::kLocked);
+    adapter_protocol_errors = k.protocol_errors;
+    std::printf("adapter timing: %llu locks, %llu losses (outside gate %llu, "
+                "no gated stamp %llu, period clamp %llu); fits requested "
+                "%llu: applied %llu, refused %llu, stale %llu, abandoned "
+                "%llu; lock state at end %u; locked window %llu cycles "
+                "(%llu referenced), %llu skipped\n",
+                static_cast<unsigned long long>(e.locks),
+                static_cast<unsigned long long>(e.losses),
+                static_cast<unsigned long long>(e.lost_outside_gate),
+                static_cast<unsigned long long>(e.lost_no_gated),
+                static_cast<unsigned long long>(e.lost_period_clamp),
+                static_cast<unsigned long long>(k.fits_requested),
+                static_cast<unsigned long long>(k.fits_applied),
+                static_cast<unsigned long long>(k.fits_refused),
+                static_cast<unsigned long long>(k.stale_results),
+                static_cast<unsigned long long>(k.abandoned_requests),
+                static_cast<unsigned>(s.lockState()),
+                static_cast<unsigned long long>(locked.cycles),
+                static_cast<unsigned long long>(locked.referenced_cycles),
+                static_cast<unsigned long long>(locked.skipped));
+    if (adapter_config.lead_alternation_ns != 0) {
+      std::printf("lead alternation (observational): coupling at the end "
+                  "%s\n",
+                  bus_timing::couplingName(
+                      static_cast<std::uint8_t>(s.coupling().state())));
+    }
+  }
   printHistogram("wake_lateness", t.wake_lateness);
   printHistogram("period", t.period);
   printHistogram("host_transaction", t.host_transaction);
@@ -1400,6 +1846,13 @@ int main(int argc, char* argv[]) {
 
   if (!result.started) {
     std::fprintf(stderr, "%s\n", result.error.c_str());
+    return 1;
+  }
+  if (adapter_protocol_errors > 0) {
+    std::fprintf(stderr,
+                 "ADAPTER SCHEDULE CALLED OUT OF TURN %llu times: the "
+                 "adapter records are not trustworthy\n",
+                 static_cast<unsigned long long>(adapter_protocol_errors));
     return 1;
   }
   if (!log_complete || result.ring_drops > 0) {

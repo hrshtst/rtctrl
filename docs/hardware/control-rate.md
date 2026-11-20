@@ -247,6 +247,51 @@ Sync Read. It combines with `--feedback motion`. The scripts take
 names gain `-fast`. A powered session selects it with
 `CraneX7::Options::feedback_read.instruction`.
 
+**Adapter-referenced timing (a torque-off diagnostic, emulator only so
+far).** `x7_bus_timing --timing adapter` plans each wake from the USB
+adapter's completion lattice instead of the fixed grid. Grid timing
+(`--timing grid`) stays the default, unchanged. An adapter run:
+- starts on the 1 ms grid and collects its reply stamps (`last_reply_ns`)
+  for `--acquisition-s` (default 2);
+- has the probe's main thread, which is not real-time, fit them; the
+  worker locks if the fit qualifies and is at most 500 ms old, and
+  otherwise stays on the grid and acquires again;
+- once locked, wakes `--lead-us` (default 780) plus `--wake-to-read-us`
+  (default 10) before each completion it targets, and falls back to the
+  grid when supervision loses the lock;
+- publishes no wake earlier than 20 µs after the clock read that publishes
+  it; the slots passed are skipped periods, as on the grid.
+
+The 500 ms limit and the 20 µs margin are provisional diagnostic values,
+fixed in the probe; neither is a demonstrated bound. Settling
+(`--settling-s`, default 1) and the locked measurement after it are
+declared windows, reported apart and never as criteria.
+
+`--lead-alternation-us D` alternates the lead of the motion-only reads by
+±D µs and records whether the replies follow the request's send time, as
+request-tied replies do. Its result (insufficient evidence, no coupling
+detected, request-tied timing detected) is an observation: nothing in the
+probe acts on it, and "no coupling detected" does not establish
+independent timing. Full-window reads stay at the base lead.
+
+Adapter timing needs `--rate-hz 1000`, production traffic and
+`--read-path bounded`; the alternation needs `--feedback motion` with
+full-window reads less often than every cycle. The probe refuses any other
+combination before it opens the port. The log appends integer columns
+(`target_index`, `schedule`, `lock_state`, `transition`,
+`predicted_completion_ns`, `lead_offset_ns`, `coupling_state`,
+`observation`, `recheck_skipped`): a row's plan columns are the plan its
+read executed, and `observation` and `recheck_skipped` belong to its
+close. The summary records `timing` in every run and, under adapter
+timing, an `[adapter]` section: the windows and the whole run, each fit,
+each lock and, with the alternation, the coupling check.
+
+The pty emulator answers each request after the pty's own delays, with no
+adapter cadence. A lock on it is therefore a false lock on request-tied
+replies, which supervision ends after 64 cycles, or there is no lock at all
+when the pty's delays spread too widely for the fit. A lock alone does not
+establish independent adapter timing.
+
 ### Summaries
 
 ```sh

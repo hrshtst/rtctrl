@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <new>
 
+#include "bus/bus_timing_adapter.hpp"
 #include "rtctrl/hw/adapter_phase.hpp"
 #include "rtctrl/hw/cycle_record.hpp"
 #include "rtctrl/util/spsc_ring.hpp"
@@ -159,4 +160,58 @@ TEST_CASE("the worker's side of the fit exchange and publication never allocate"
   CHECK(sched.counts().fits_applied == 1);
   CHECK(sched.estimator().state() == ad::EstimatorState::kLocked);
   CHECK(sched.estimator().counts().gated > 20000);
+}
+
+TEST_CASE("x7_bus_timing's adapter driver never allocates once constructed",
+          "[bus_timing][adapter]") {
+  // The probe's worker calls (close, publish, finish) through acquisition,
+  // the hand-off, locks on request-tied replies, their losses and fallbacks,
+  // with the alternation and full-window reads; the fitter's service() (it
+  // allocates) runs with counting off, as the probe's main thread.
+  namespace ad = rtctrl::hw::adapter;
+  namespace bt = rtctrl::apps::bus_timing;
+  bt::TimingChoice c;
+  c.adapter = true;
+  c.rate_hz = 1000.0;
+  c.duration_s = 60.0;
+  c.bounded = true;
+  c.motion_only = true;
+  c.full_every = 100;
+  c.acquisition_s = 0.6;
+  c.settling_s = 0.0;
+  c.alternation_us = 20.0;
+  REQUIRE(bt::timingChoiceError(c).empty());
+  const ad::ScheduleConfig cfg = bt::scheduleConfig(c);
+  ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+  bt::AdapterCycles a(cfg, &ex);
+  std::int64_t wake = a.first();
+  std::uint64_t full_due_in = 0;
+  std::size_t worker_allocations = 0;
+  for (std::uint64_t k = 1; k <= 30000; ++k) {
+    const std::int64_t read_start = wake + 7000;
+    const bool full = full_due_in == 0;
+    if (!full) --full_due_in;
+    else full_due_in = 99;
+    // 150 us after the request: a false lock, lost after 64 cycles, again.
+    const std::int64_t stamp = read_start + 150000 + 500 * static_cast<std::int64_t>(k % 7);
+    const std::int64_t end = stamp + 40000;
+    g_counting = true;
+    g_allocations = 0;
+    a.close(k, stamp, end, end + 1000, full ? ad::ReadClass::kFull : ad::ReadClass::kMotion,
+            full_due_in == 0 ? ad::ReadClass::kFull : ad::ReadClass::kMotion);
+    bt::AdapterRow row;
+    wake = a.publish(end + 3000, &row).wake_ns;
+    worker_allocations += g_allocations;
+    g_counting = false;
+    ex.service();
+  }
+  g_counting = true;
+  g_allocations = 0;
+  a.finish();
+  worker_allocations += g_allocations;
+  g_counting = false;
+  CHECK(worker_allocations == 0);
+  CHECK(a.lockCount() >= 10);
+  CHECK(a.schedule().estimator().counts().losses >= 10);
+  CHECK(a.fitCount() >= 20);
 }
