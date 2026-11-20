@@ -74,7 +74,7 @@ TEST_CASE("adapter-referenced tracking, planning and accounting never allocate o
   auto cycle = [&]() {
     const double ready = static_cast<double>(plan.wake_ns) + 10000.0 + 660000.0;
     const auto stamp = static_cast<std::int64_t>(completion_after(ready) + 10000.0);
-    plan = sched.closeCycle(stamp, stamp + 5000, stamp + 5000);
+    plan = sched.closeAndPublish(stamp, stamp + 5000, stamp + 5000);
   };
   while (sched.estimator().state() != ad::EstimatorState::kLocked ||
          !plan.referenced) {
@@ -89,4 +89,36 @@ TEST_CASE("adapter-referenced tracking, planning and accounting never allocate o
   CHECK(allocations == 0);
   CHECK(sched.estimator().state() == ad::EstimatorState::kLocked);
   CHECK(sched.estimator().counts().gated >= 20000);
+}
+
+TEST_CASE("the worker's side of the fit exchange and publication never allocate",
+          "[hw][adapter]") {
+  namespace ad = rtctrl::hw::adapter;
+  ad::ScheduleConfig cfg;
+  ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+  ad::ReferencedSchedule sched(cfg, 0, &ex);
+  const double period = 1e6 * (1 - 57.5e-6);
+  auto completion_after = [&](double t) {
+    const double k = std::ceil((t - 412000.0) / period);
+    return 412000.0 + k * period;
+  };
+  ad::WakePlan plan = sched.first();
+  std::size_t worker_allocations = 0;
+  // Acquisition, the hand-off and tracking, on the worker's calls only: the
+  // fitter's service() (it allocates) runs with counting off.
+  for (int i = 0; i < 25000; ++i) {
+    const double ready = static_cast<double>(plan.wake_ns) + 10000.0 + 660000.0;
+    const auto stamp = static_cast<std::int64_t>(completion_after(ready) + 10000.0);
+    g_counting = true;
+    g_allocations = 0;
+    sched.closeCycle(stamp, stamp + 5000, stamp + 5000);
+    plan = sched.publish(stamp + 6000);
+    worker_allocations += g_allocations;
+    g_counting = false;
+    ex.service();
+  }
+  CHECK(worker_allocations == 0);
+  CHECK(sched.counts().fits_applied == 1);
+  CHECK(sched.estimator().state() == ad::EstimatorState::kLocked);
+  CHECK(sched.estimator().counts().gated > 20000);
 }

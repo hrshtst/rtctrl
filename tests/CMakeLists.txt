@@ -66,7 +66,7 @@ catch_discover_tests(unit_tests
 # builds and runs without the library.
 add_executable(adapter_phase_tests unit/adapter_phase_test.cpp)
 target_include_directories(adapter_phase_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(adapter_phase_tests PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(adapter_phase_tests PRIVATE Catch2::Catch2WithMain Threads::Threads)
 catch_discover_tests(adapter_phase_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)

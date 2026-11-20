@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <thread>
+#include <atomic>
 #include <vector>
 
 #include "rtctrl/hw/adapter_phase.hpp"
@@ -154,7 +156,7 @@ Run closedLoop(const Lattice& lat, const Probe& pr, ad::ScheduleConfig cfg,
     if (static_cast<double>(plan.wake_ns) >= locked_from) ++r.locked_window_cycles;
     const CycleOut c = runCycle(lat, pr, k, plan.wake_ns);
     const std::int64_t now = c.end;
-    plan = sched.closeCycle(c.stamp, c.end, now);
+    plan = sched.closeAndPublish(c.stamp, c.end, now);
     if (plan.wake_ns < now) ++r.past_wakes;
   }
   r.locked_window_ns = duration_ns - locked_from;
@@ -569,7 +571,7 @@ TEST_CASE("the period clamp is a loss of lock", "[hw][adapter]") {
   bool clamped = false;
   for (std::int64_t k = 0; plan.wake_ns < 20000000000LL && !clamped; ++k) {
     const CycleOut c = runCycle(lat, pr, k, plan.wake_ns);
-    plan = sched.closeCycle(c.stamp, c.end, c.end);
+    plan = sched.closeAndPublish(c.stamp, c.end, c.end);
     clamped = sched.estimator().counts().losses > 0 &&
               sched.estimator().lossCause() == ad::LossCause::kPeriodClamp;
   }
@@ -628,8 +630,8 @@ TEST_CASE("a plan depends only on what was observed before it", "[hw][adapter][s
   for (std::int64_t k = 0; k < 9000; ++k) {
     const CycleOut ca = runCycle(lat, a, k, pa.wake_ns);
     const CycleOut cb = k < K ? ca : runCycle(lat, b, k, pb.wake_ns);
-    pa = sa.closeCycle(ca.stamp, ca.end, ca.end);
-    pb = sb.closeCycle(cb.stamp, cb.end, cb.end);
+    pa = sa.closeAndPublish(ca.stamp, ca.end, ca.end);
+    pb = sb.closeAndPublish(cb.stamp, cb.end, cb.end);
     if (k < K) {
       REQUIRE(pa.wake_ns == pb.wake_ns);
       REQUIRE(pa.target_index == pb.target_index);
@@ -742,4 +744,395 @@ TEST_CASE("schedule changes and late cycles at a slot's rounded wake and +-1 ns"
     }
   }
   CHECK(checked == 3 * 3 * 3 * 3);
+}
+
+// ------------------------------------------------------------ step 1 (the integration's pure logic)
+
+static_assert(static_cast<int>(ad::Observation::kNone) == 0 && static_cast<int>(ad::Observation::kStored) == 1 &&
+                  static_cast<int>(ad::Observation::kDropped) == 2 && static_cast<int>(ad::Observation::kGated) == 3 &&
+                  static_cast<int>(ad::Observation::kLate) == 4 && static_cast<int>(ad::Observation::kEarly) == 5 &&
+                  static_cast<int>(ad::Observation::kInvalid) == 6,
+              "the log's observation encoding");
+static_assert(static_cast<int>(ad::Schedule::kGrid) == 0 && static_cast<int>(ad::Schedule::kLattice) == 1,
+              "the log's schedule encoding");
+static_assert(static_cast<int>(ad::LockState::kAcquiring) == 0 && static_cast<int>(ad::LockState::kFitPending) == 1 &&
+                  static_cast<int>(ad::LockState::kLocked) == 2,
+              "the log's lock-state encoding");
+
+TEST_CASE("the fit exchange hands each buffer to one owner at a time", "[hw][adapter]") {
+  using Owner = ad::FitExchange::Owner;
+  ad::FitExchange ex(100);
+  CHECK(ex.owner(0) == Owner::kWorker);
+  CHECK(ex.owner(1) == Owner::kWorker);
+  CHECK_FALSE(ex.queue(1000, 1));  // nothing to queue
+  for (int i = 0; i < 50; ++i) REQUIRE(ex.append(1000000 * i + 412000));
+  CHECK(ex.workerBufferCount() == 50);
+  REQUIRE(ex.queue(50000000, 1));
+  CHECK(ex.owner(0) == Owner::kQueued);
+  // the frozen buffer is not the worker's any more: stamps go to the other
+  for (int i = 0; i < 10; ++i) REQUIRE(ex.append(60000000 + 1000000 * i + 412000));
+  CHECK(ex.workerBufferCount() == 10);
+  REQUIRE(ex.queue(70000000, 2));
+  CHECK(ex.owner(1) == Owner::kQueued);
+  CHECK_FALSE(ex.append(80000000));  // neither buffer is the worker's: dropped
+  CHECK(ex.workerCounts().dropped == 1);
+  ad::FitResult r;
+  CHECK_FALSE(ex.take(&r));  // nothing completed
+  REQUIRE(ex.service());     // the fitter claims and completes one
+  CHECK(ex.owner(0) == Owner::kDone);
+  CHECK(ex.owner(1) == Owner::kQueued);
+  REQUIRE(ex.take(&r));
+  CHECK(r.generation == 1);
+  CHECK(r.at_ns == 50000000);
+  CHECK(r.fit.stamps == 50);
+  CHECK(r.fit.share == 1.0);
+  CHECK(ex.owner(0) == Owner::kWorker);  // returned, cleared
+  REQUIRE(ex.append(90000000));
+  CHECK(ex.workerBufferCount() == 1);
+  REQUIRE(ex.service());
+  REQUIRE(ex.take(&r));
+  CHECK(r.generation == 2);
+  CHECK(r.fit.stamps == 10);
+  CHECK_FALSE(ex.service());  // nothing queued
+  ex.clearWorkerBuffer();
+  CHECK(ex.workerBufferCount() == 0);
+  CHECK(ex.fitted() == 2);
+  CHECK(ex.workerCounts().taken == 2);
+}
+
+TEST_CASE("a fitter thread never reads a payload the worker is changing", "[hw][adapter]") {
+  // Each generation's stamps sit on its own phase, a count of its own: a
+  // result mixing two generations' stamps would fit a share below 1, and a
+  // count changed under the fitter would not match.
+  ad::LatticeFitConfig fc;
+  fc.slope_min_ppm = -10.0;  // a short grid: quick fits
+  fc.slope_max_ppm = 10.0;
+  ad::FitExchange ex(600, fc);
+  std::atomic<bool> stop{false};
+  std::thread fitter([&] {
+    while (!stop.load()) {
+      if (!ex.service()) std::this_thread::yield();
+    }
+  });
+  const int kGenerations = 300;
+  auto count_of = [](int g) { return static_cast<std::size_t>(200 + (g * 37) % 300); };
+  std::vector<int> seen(kGenerations + 1, 0);
+  int bad = 0, received = 0;
+  auto drain = [&] {
+    ad::FitResult r;
+    while (ex.take(&r)) {
+      const int g = static_cast<int>(r.generation);
+      ++seen[static_cast<std::size_t>(g)];
+      ++received;
+      if (r.fit.stamps != count_of(g) || r.fit.share != 1.0) ++bad;
+    }
+  };
+  for (int g = 1; g <= kGenerations; ++g) {
+    const std::int64_t phase = (g * 37) % 1000 * 1000;  // ns within the slot
+    const std::size_t n = count_of(g);
+    for (std::size_t k = 0; k < n; ++k) {
+      while (!ex.append(static_cast<std::int64_t>(k) * 1000000 + phase + 1000000)) {
+        drain();  // both buffers busy: take a result to free one
+        std::this_thread::yield();
+      }
+    }
+    while (!ex.queue(static_cast<std::int64_t>(n) * 1000000, static_cast<std::uint64_t>(g))) {
+      drain();
+      std::this_thread::yield();
+    }
+    drain();
+  }
+  while (received < kGenerations) {
+    drain();
+    std::this_thread::yield();
+  }
+  stop.store(true);
+  fitter.join();
+  CHECK(bad == 0);
+  CHECK(received == kGenerations);
+  CHECK(std::count(seen.begin() + 1, seen.end(), 1) == kGenerations);  // each exactly once
+}
+
+TEST_CASE("publication counts each cycle once and refuses calls out of turn", "[hw][adapter][safety]") {
+  ad::ReferencedSchedule s(defaultConfig(), 1000);
+  ad::WakePlan plan = s.first();
+  CHECK(s.published());
+  CHECK(plan.lock_state == ad::LockState::kAcquiring);
+  CHECK(s.publish(5000).wake_ns == plan.wake_ns);  // nothing to publish
+  CHECK(s.counts().protocol_errors == 1);
+  const ad::WakePlan prov = s.closeCycle(ad::kInvalidStamp, 900000, 900000);
+  CHECK_FALSE(s.published());
+  CHECK(s.closeCycle(ad::kInvalidStamp, 950000, 950000).wake_ns == prov.wake_ns);  // out of turn
+  CHECK(s.counts().protocol_errors == 2);
+  CHECK(s.accounting().wholeRun().cycles == 0);  // nothing counted before publication
+  plan = s.publish(900000);
+  CHECK(s.accounting().wholeRun().cycles == 1);
+  s.publish(900000);
+  CHECK(s.accounting().wholeRun().cycles == 1);
+  CHECK(s.counts().protocol_errors == 3);
+  for (int i = 0; i < 10; ++i) {
+    const std::int64_t end = plan.wake_ns + 600000;
+    plan = s.closeAndPublish(ad::kInvalidStamp, end, end);
+  }
+  CHECK(s.accounting().wholeRun().cycles == 11);
+  CHECK(s.counts().protocol_errors == 3);
+}
+
+TEST_CASE("the publication's recheck at a slot's rounded wake and +-1 ns", "[hw][adapter][safety]") {
+  ad::PlannerConfig pc;
+  pc.min_gap_ns = 20000;
+  const std::int64_t gap = pc.min_gap_ns;
+  ad::EstimatorConfig ec;
+  ec.supervise = false;
+  for (const double slope : {-57.7, -27.83, 13.37}) {
+    ad::AdapterPhaseEstimator locked(ec), acquiring(ec);
+    locked.lockFrom(slope, 433.3, 0);
+    for (const std::int64_t delta : {std::int64_t{-1}, std::int64_t{0}, std::int64_t{1}}) {
+      INFO("slope " << slope << " delta " << delta);
+      {  // on the lattice
+        ad::WakePlanner planner(pc, 1 + 7 * pc.grid_period_ns / 3);
+        planner.first();
+        const std::int64_t w_n = slotWake(locked, 3000, pc);
+        const ad::WakePlan prov = planner.next(locked, w_n - 300000, w_n - 300000);
+        REQUIRE(prov.target_index == 3000);
+        const ad::WakePlan pub = planner.recheck(w_n + delta - gap);  // now + gap = w_n + delta
+        if (delta <= 0) {
+          CHECK(pub.wake_ns == w_n);
+          CHECK(pub.target_index == 3000);
+          CHECK(pub.recheck_skipped == 0);
+          CHECK(pub.skipped == prov.skipped);
+        } else {
+          CHECK(pub.target_index == 3001);
+          CHECK(pub.wake_ns == slotWake(locked, 3001, pc));
+          CHECK(pub.recheck_skipped == 1);
+          CHECK(pub.skipped == prov.skipped + 1);
+          CHECK(pub.predicted_completion_ns == std::llround(locked.completionNs(3001)));
+        }
+      }
+      {  // on the grid
+        const std::int64_t epoch = 987654321;
+        ad::WakePlanner planner(pc, epoch);
+        planner.first();
+        const ad::WakePlan prov = planner.next(acquiring, epoch + 400000, epoch + 400000);
+        REQUIRE(prov.wake_ns == epoch + pc.grid_period_ns);
+        const ad::WakePlan pub = planner.recheck(prov.wake_ns + delta - gap);
+        CHECK(pub.wake_ns == (delta <= 0 ? prov.wake_ns : prov.wake_ns + pc.grid_period_ns));
+        CHECK(pub.recheck_skipped == (delta > 0 ? 1U : 0U));
+      }
+    }
+    SECTION("a scheduler delay of 2.5 periods is visible in recheck_skipped") {
+      ad::WakePlanner planner(pc, 5);
+      planner.first();
+      const std::int64_t w_n = slotWake(locked, 3000, pc);
+      planner.next(locked, w_n - 300000, w_n - 300000);
+      const ad::WakePlan pub = planner.recheck(w_n + 2500000 - gap);
+      CHECK(pub.recheck_skipped == 3);
+      CHECK(pub.target_index == 3003);
+      CHECK(pub.wake_ns >= w_n + 2500000);
+    }
+  }
+  SECTION("through the schedule, the recheck's skips are counted for the cycle that ended") {
+    ad::ScheduleConfig cfg = defaultConfig();
+    cfg.planner.min_gap_ns = gap;
+    ad::ReferencedSchedule s(cfg, 0);
+    s.first();
+    const ad::WakePlan prov = s.closeCycle(ad::kInvalidStamp, 500000, 500000);
+    REQUIRE(prov.wake_ns == 1000000);
+    const ad::WakePlan pub = s.publish(1000000 - gap + 1);  // 1 ns too late for the slot
+    CHECK(pub.wake_ns == 2000000);
+    CHECK(pub.recheck_skipped == 1);
+    CHECK(s.accounting().wholeRun().skipped == 1);
+    CHECK(s.accounting().wholeRun().overruns == 1);
+  }
+}
+
+namespace {
+
+struct ExchangeRun {
+  Run run;
+  ad::ScheduleCounts counts;
+  ad::FitExchange::Counts exchange;
+  std::uint64_t pending_cycles = 0;
+};
+
+// The closed loop with a FitExchange: the fitter is serviced (on this thread,
+// in simulated time) `fit_delay_ns` after each request, or never.
+ExchangeRun closedLoopExchange(const Lattice& lat, const Probe& pr, ad::ScheduleConfig cfg, double fit_delay_ns,
+                               bool never = false, double duration_ns = 20e9) {
+  ExchangeRun er;
+  ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+  ad::ReferencedSchedule sched(cfg, 0, &ex);
+  ad::WakePlan plan = sched.first();
+  std::vector<double> due;  // when each request's fit is serviced
+  std::uint64_t requested = 0;
+  std::int64_t last_target = std::numeric_limits<std::int64_t>::min();
+  for (std::int64_t k = 0; static_cast<double>(plan.wake_ns) < duration_ns; ++k) {
+    if (plan.referenced) {
+      if (plan.target_index <= last_target) ++er.run.backward_targets;
+      last_target = plan.target_index;
+    } else {
+      last_target = std::numeric_limits<std::int64_t>::min();
+    }
+    if (plan.lock_state == ad::LockState::kFitPending) ++er.pending_cycles;
+    const CycleOut c = runCycle(lat, pr, k, plan.wake_ns);
+    while (!due.empty() && static_cast<double>(c.end) >= due.front()) {
+      ex.service();
+      due.erase(due.begin());
+    }
+    plan = sched.closeAndPublish(c.stamp, c.end, c.end);
+    if (plan.wake_ns < c.end) ++er.run.past_wakes;
+    if (sched.counts().fits_requested > requested) {
+      requested = sched.counts().fits_requested;
+      if (!never) due.push_back(static_cast<double>(c.end) + fit_delay_ns);
+    }
+  }
+  er.run.whole = sched.accounting().wholeRun();
+  er.run.acquisition = sched.accounting().window(ad::Window::kAcquisition);
+  er.run.settling = sched.accounting().window(ad::Window::kSettling);
+  er.run.locked = sched.accounting().window(ad::Window::kLocked);
+  er.run.locks = sched.estimator().counts().locks;
+  er.run.losses = sched.estimator().counts().losses;
+  er.counts = sched.counts();
+  er.exchange = ex.workerCounts();
+  return er;
+}
+
+}  // namespace
+
+TEST_CASE("delayed, stale, abandoned and missing fits keep the grid running", "[hw][adapter][safety]") {
+  Lattice lat;
+  Probe pr;
+  SECTION("a fit 20 ms late locks inside the settling window") {
+    const ExchangeRun r = closedLoopExchange(lat, pr, defaultConfig(), 20e6);
+    CHECK(r.counts.fits_requested == 1);
+    CHECK(r.counts.fits_applied == 1);
+    CHECK(r.run.locks == 1);
+    CHECK(r.pending_cycles > 0);  // published as fit pending while it waited
+    CHECK(r.run.past_wakes == 0);
+    CHECK(r.run.locked.referenced_cycles > 0);
+    CHECK(r.run.locked.grid_cycles == 0);
+  }
+  SECTION("a fit 600 ms late is abandoned and its late result discarded") {
+    const ExchangeRun r = closedLoopExchange(lat, pr, defaultConfig(), 600e6);
+    CHECK(r.run.locks == 0);
+    CHECK(r.counts.abandoned_requests >= 5);
+    CHECK(r.counts.old_generation_results >= 5);
+    CHECK(r.counts.fits_applied == 0);
+    CHECK(r.run.past_wakes == 0);
+    CHECK(r.run.whole.referenced_cycles == 0);  // the grid throughout
+    CHECK(r.run.whole.cycles == r.run.acquisition.cycles + r.run.settling.cycles + r.run.locked.cycles);
+  }
+  SECTION("a fitter that never answers leaves the worker on the grid, its buffers held and stamps dropped") {
+    const ExchangeRun r = closedLoopExchange(lat, pr, defaultConfig(), 0.0, true);
+    CHECK(r.run.locks == 0);
+    CHECK(r.counts.fits_requested == 2);  // both buffers queued, never returned
+    CHECK(r.counts.queue_failures > 0);
+    CHECK(r.exchange.dropped > 0);
+    CHECK(r.run.past_wakes == 0);
+    CHECK(r.run.whole.referenced_cycles == 0);
+  }
+}
+
+TEST_CASE("a fit is applied up to its age limit and refused 1 ns after", "[hw][adapter]") {
+  for (const std::int64_t late : {std::int64_t{0}, std::int64_t{1}}) {
+    Lattice lat;
+    Probe pr;
+    const ad::ScheduleConfig cfg = defaultConfig();
+    ad::FitExchange ex(cfg.estimator.acquisition_capacity, cfg.estimator.fit);
+    ad::ReferencedSchedule s(cfg, 0, &ex);
+    ad::WakePlan plan = s.first();
+    std::int64_t k = 0;
+    while (s.counts().fits_requested == 0) {
+      const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+      plan = s.closeAndPublish(c.stamp, c.end, c.end);
+    }
+    REQUIRE(ex.service());
+    // the next cycle ends exactly at the age limit, or 1 ns after it
+    const std::int64_t at = cfg.windows.acquisition_ns;
+    const std::int64_t end = at + cfg.fit_max_age_ns + late;
+    plan = s.closeAndPublish(ad::kInvalidStamp, end, end);
+    INFO("late " << late);
+    CHECK(s.counts().fits_applied == (late == 0 ? 1U : 0U));
+    CHECK(s.counts().stale_results == (late == 0 ? 0U : 1U));
+    CHECK(plan.wake_ns >= end);
+  }
+}
+
+TEST_CASE("the intended completion is fixed when the plan is published", "[hw][adapter]") {
+  Lattice lat;
+  Probe pr;
+  ad::ReferencedSchedule s(defaultConfig(), 0);
+  ad::WakePlan plan = s.first();
+  std::int64_t k = 0;
+  while (!plan.referenced || plan.transition) {
+    const CycleOut c = runCycle(lat, pr, k++, plan.wake_ns);
+    plan = s.closeAndPublish(c.stamp, c.end, c.end);
+  }
+  REQUIRE(plan.lock_state == ad::LockState::kLocked);
+  const ad::WakePlan published = plan;
+  CHECK(published.predicted_completion_ns == std::llround(s.estimator().completionNs(published.target_index)));
+  // its reply, 10 us after the predicted completion: gated against that target
+  const std::int64_t stamp = published.predicted_completion_ns + 10000;
+  s.closeCycle(stamp, stamp + 5000, stamp + 5000);
+  CHECK(s.lastObservation() == ad::Observation::kGated);
+  CHECK(published.target_index == plan.target_index);  // the published record is its own
+  plan = s.publish(stamp + 5000);
+  // the next reply, a whole period after its own completion: late, not the next target's
+  const std::int64_t late = plan.predicted_completion_ns + 1000000 + 10000;
+  s.closeCycle(late, late + 5000, late + 5000);
+  CHECK(s.lastObservation() == ad::Observation::kLate);
+  s.publish(late + 5000);
+}
+
+TEST_CASE("replies at a constant delay after the request lock falsely, and supervision ends the lock",
+          "[hw][adapter][safety]") {
+  // The pty emulator answers a constant delay after each request: no adapter
+  // cadence, yet on the 1 ms grid its replies form a lattice. Locking alone
+  // cannot establish independent adapter timing.
+  auto run = [](double delay_ns) {
+    struct Out {
+      ad::EstimatorCounts est;
+      double share = 0, first_lock_s = -1, first_loss_s = -1;
+      std::uint64_t past = 0, referenced = 0, cycles = 0;
+      ad::SkipCounts whole;
+    } out;
+    ad::ReferencedSchedule s(defaultConfig(), 0);
+    ad::WakePlan plan = s.first();
+    for (std::int64_t k = 0; plan.wake_ns < 20000000000LL; ++k) {
+      const double wake = static_cast<double>(plan.wake_ns) + 2000.0 + 1000.0 * static_cast<double>((k * 7919) % 5);
+      const double send = wake + 12000.0;
+      const auto stamp = static_cast<std::int64_t>(send + delay_ns + 300.0 * static_cast<double>((k * 104729) % 7));
+      const std::int64_t end = stamp + 5000;
+      if (plan.referenced) ++out.referenced;
+      const std::uint64_t losses = s.estimator().counts().losses;
+      plan = s.closeAndPublish(stamp, end, end);
+      if (plan.wake_ns < end) ++out.past;
+      if (out.first_lock_s < 0 && s.estimator().state() == ad::EstimatorState::kLocked) {
+        out.first_lock_s = static_cast<double>(end) / 1e9;
+        out.share = s.estimator().lastFit().share;
+      }
+      if (out.first_loss_s < 0 && s.estimator().counts().losses > losses) out.first_loss_s = static_cast<double>(end) / 1e9;
+    }
+    out.est = s.estimator().counts();
+    out.whole = s.accounting().wholeRun();
+    return out;
+  };
+  SECTION("700 us: the replies fall outside the gate, the lock ends within 64 cycles, again and again") {
+    const auto o = run(700000.0);
+    INFO("first lock " << o.first_lock_s << " s, first loss " << o.first_loss_s << " s");
+    CHECK(o.share > 0.99);  // the false lock's fit
+    CHECK(o.est.locks >= 5);
+    CHECK(o.est.lost_no_gated == o.est.losses);
+    CHECK(o.first_loss_s - o.first_lock_s < 0.1);
+    CHECK(o.past == 0);
+  }
+  SECTION("800 us, inside the gate: the lock holds for seconds until the period clamp ends it") {
+    const auto o = run(800000.0);
+    INFO("first lock " << o.first_lock_s << " s, first loss " << o.first_loss_s << " s, referenced cycles "
+                       << o.referenced);
+    CHECK(o.share > 0.99);
+    CHECK(o.est.lost_period_clamp >= 1);
+    CHECK(o.first_loss_s - o.first_lock_s > 1.0);  // supervision is slow here: recorded, not a pass
+    CHECK(o.past == 0);
+  }
 }

@@ -36,6 +36,7 @@ namespace {
 
 const char* outcomeName(ad::Observation o) {
   switch (o) {
+    case ad::Observation::kNone: return "none";
     case ad::Observation::kGated: return "gated";
     case ad::Observation::kLate: return "late";
     case ad::Observation::kEarly: return "early";
