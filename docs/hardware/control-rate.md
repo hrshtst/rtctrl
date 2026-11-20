@@ -2988,6 +2988,37 @@ with Firefox's root added to the observers, scheduling priorities
 unchanged. A new acquisition needs its own go and new attempt numbers.
 The analysis and its corrections are archived in `clock_validation/`.
 
+**Plan L1 with Firefox among the observers: the second rehearsal's
+procedure (attempts 22 and 23; for review, not executed).** The review
+accepted the observer update for the documented single-browser setup and
+approved preparing a candidate, not a run. The rehearsal is L1's above,
+with three differences:
+
+- **The names.** Attempts 22 (untraced) and 23 (timer), into
+  `clock-validation-22`, `clock-validation-23` and
+  `clock-validation-option-l1b`, with the blocks' files named
+  `option-l1b-*`. All were checked free locally, in the archives and in
+  every branch.
+- **The observers.** The supervisor's block also collects Firefox's root:
+  the oldest process running the snap's `firefox` binary, selected by its
+  command line. Its tree holds the fork server and every content process.
+  `pgrep -x firefox` is not used, because it also matches defunct
+  `firefox` entries, which a Firefox restart would make the oldest match.
+  The confinement and restoration are the existing mechanism's.
+- **The candidate.** L1's checkout, advanced to this commit. No C++
+  source, build file or submodule changed since `095cc61`, so its four
+  acquisition binaries stay as built and the accepted listing holds. The
+  guard's revision 5 is revision 4 with the new commit.
+
+The readiness check also confirms that the selector finds the live
+browser root and that its tree covers every Firefox content process, and
+unrelated background load is resolved before the acquisition. Scheduling
+priorities, the layout, the acceptance criteria and the exceptional limits
+are L1's, unchanged. The comparison with attempt 21 would differ by
+Firefox's confinement, the names and the host's state on the day. A pass
+would qualify no control rate, the USB path or the hardware. Hardware and
+H2 stay paused.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
