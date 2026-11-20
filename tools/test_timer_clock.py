@@ -755,5 +755,152 @@ for seed in range(20):
             print(f"  seed {seed}: error {err:.1f} over bound {c[1]:.1f}")
             break
 claim("20 realizable captures through analyze(), stale reads up to the maximum", bad == 0 and len(wr) > 1000, f"{len(wr)} queries; largest error/bound {max(wr):.2f}")
+print("entries no deadline delimits (proposed revision 54; attempts 13 and 23):")
+EXP = 10  # an hrtimer expiry 10 ns after its entry
+ORDER = {"W": 0, "E": 1, "H": 2, "X": 3}
+
+
+def served(ev, skip=()):
+    """The ledger with an hrtimer expiry inside every entry except those at the times in skip."""
+    return sorted(list(ev) + [(t + EXP, "H", "0x1 tick_nohz_handler/0x0") for t, k, _ in ev if k == "E" and t not in skip],
+                  key=lambda r: (r[0], ORDER[r[1]]))
+
+
+def und(r):
+    return r.get("undelimited") or []
+
+
+E, D, W, X, tau, samp = gen()
+xe = E[K] + 18_500  # attempt 23: 18.5 us after the previous entry
+FRESH = (E[K] + EXIT + 60, "W", D[K + 1] - 1)  # the next deadline (one count lower, as attempt 23's), not due at the extra entry
+BASE_EV = served(events(E, D, W, X))
+r0 = check("baseline with expiries recorded", "PASS", BASE_EV, tau, samp)
+
+
+def extra(fresh=True, inst=True, shift=0, expire=False, more=(), more_tau=()):
+    add = [(xe, "E", None), (xe + EXIT, "X", None)] + ([FRESH] if fresh else []) + list(more)
+    ev = served(events(E, D, W, X, extra=add), skip=() if expire else (xe,) + tuple(t for t, k, _ in more if k == "E"))
+    return ev, sorted(tau + ([xe + DELAY + shift] if inst else []) + list(more_tau))
+
+
+ev, t2 = extra()
+r = check("attempt 23's shape: extra entry, nothing expired, a fresh deadline not due", "PASS", ev, t2, samp)
+claim("  ... identified by order, within range, left out of the conversion", len(und(r)) == 1 and und(r)[0]["ok"] and r["used"] == r0["used"]
+      and r["U"] == r0["U"] and r["paired"] == r0["paired"], f"undelimited {[(x['j'], round(x['e']), x['ok']) for x in und(r)]}, used {r['used']}/{r0['used']}, U {r['U']:.1f}/{r0['U']:.1f}")
+ev, t2 = extra(fresh=False)
+r = check("an extra entry, nothing expired, no fresh deadline written", "PASS", ev, t2, samp)
+claim("  ... identified by order, left out of the conversion", len(und(r)) == 1 and r["used"] == r0["used"] and r["U"] == r0["U"], f"used {r['used']}, U {r['U']:.1f}")
+F13 = (E[K] + EXIT + 60, "W", D[K + 1] + 10)  # attempt 13: the next deadline written early, then rewritten 10 counts lower
+
+
+def extra13(expire=False):
+    add = [(xe, "E", None), (xe + EXIT, "X", None), F13]
+    return served(events(E, D, W, X, extra=add), skip=() if expire else (xe,)), sorted(tau + [xe + DELAY])
+
+
+ev, t2 = extra13()
+check("attempt 13's shape with no expiries recorded: fails, as frozen", "FAIL", [x for x in ev if x[1] != "H"], t2, samp, "ladder decreases")
+r = check("attempt 13's shape: the early deadline rewritten 10 counts lower; the ladder is the delimiting slots'", "PASS", ev, t2, samp)
+claim("  ... identified by order, left out of the conversion", len(und(r)) == 1 and r["used"] == r0["used"] and r["U"] == r0["U"], f"used {r['used']}, U {r['U']:.1f}")
+ev, t2 = extra13(expire=True)
+check("attempt 13's shape, but a timer expired in the extra entry: the ladder failure stands", "FAIL", ev, t2, samp, "ladder decreases")
+Dl = list(D)
+Dl[K + 1] = D[K] - 10
+check("a ladder decrease between delimiting slots still fails", "FAIL", served(events(E, Dl, W, X)), tau, samp, "ladder decreases")
+ev, t2 = extra()
+plain = [x for x in ev if x[1] != "H"]
+check("attempt 23's shape with no expiries recorded: fails, as frozen", "FAIL", plain, t2, samp, "two instance anchors")
+ev, t2 = extra(fresh=False)
+check("no fresh deadline, with no expiries recorded: fails, as frozen", "FAIL", [x for x in ev if x[1] != "H"], t2, samp, "no deadline written")
+ev, t2 = extra(expire=True)
+check("an extra entry in which a timer expired", "FAIL", ev, t2, samp, "no instance anchor")
+ev, t2 = extra(inst=False)
+check("an extra main entry with no instance anchor", "FAIL", ev, t2, samp)
+check("an extra instance anchor with no main entry", "FAIL", BASE_EV, sorted(tau + [xe + DELAY]), samp, "two instance anchors")
+for sh in (1000, -1000, 200, -200):
+    ev, t2 = extra(shift=sh)
+    check(f"the extra entry's anchor {sh:+d} ns from its stamp", "FAIL", ev, t2, samp, "disagree")
+x2 = xe + 5_000
+ev, t2 = extra(more=[(x2, "E", None), (x2 + EXIT, "X", None)], more_tau=[x2 + DELAY])
+check("two extra entries in a row", "FAIL", ev, t2, samp)
+ev, t2 = extra()
+ev = sorted([x for x in ev if not (x[1] == "H" and x[0] == E[K] + EXP)], key=lambda r: (r[0], ORDER[r[1]]))
+check("the previous neighbour served nothing (deadline-raised, as 112 of attempt 13's)", "PASS", ev, t2, samp)
+xl = E[-1] + 18_500
+ev = served(events(E, D, W, X, extra=[(xl, "E", None), (xl + EXIT, "X", None)]), skip=(xl,))
+check("an extra entry after the last one", "FAIL", ev, sorted(tau + [xl + DELAY]), samp)
+xf = E[0] - 18_500
+ev = served(events(E, D, W, X, extra=[(xf, "E", None), (xf + EXIT, "X", None)]), skip=(xf,))
+check("an extra entry before the first one", "FAIL", ev, sorted(tau + [xf + DELAY]), samp)
+Es = sorted(without(E, K) + [E[K] - 30])
+ev = served(events(Es, without(D, K), without(W, K), sorted(without(X, K) + [E[K] - 30 + EXIT])), skip=(E[K] - 30,))
+r = check("LIMIT: a lost entry and its write replaced by an undelimited stamp within range", "PASS", ev, tau, samp)
+claim("  ... the substitute is not used in the conversion", len(und(r)) == 1 and r["used"] == r0["used"] - 1, f"used {r['used']}")
+
+print("the identified pair's own bound, independent of other pairs' brackets (the review of revision 54):")
+MIXED = [(c - 1200, c, c + 1200, z) if E[400] < c < E[1200] else (a, c, b, z) for a, c, b, z in samp]
+ev, _ = extra()
+
+
+def at_e(e, sampler):
+    """The rule on attempt 23's shape with the extra entry's anchor placed for a main-minus-anchor e (identity map)."""
+    return R.rule(ev, sorted(tau + [round(xe - e)]), sampler, M2)
+
+
+r = check("mixed brackets elsewhere, the extra entry intact", "PASS", ev, sorted(tau + [xe + DELAY]), MIXED)
+claim("  ... its own bound met, and within the (wide) range", len(und(r)) == 1 and und(r)[0]["own"] and und(r)[0]["in_range"],
+      f"e {und(r)[0]['e']:.0f}, B {und(r)[0]['B']:.1f}, range [{und(r)[0]['lo']:.0f}, {und(r)[0]['hi']:.0f}]")
+check("mixed brackets elsewhere: main stamp 240 ns after the anchor (the review's case)", "FAIL", ev, sorted(tau + [xe - 240]), MIXED, "beyond its own bound")
+B0 = und(at_e(0, MIXED))[0]["B"]
+r1 = at_e(math.floor(B0), MIXED)
+x1 = und(r1)[0]
+claim("boundary: e at the pair's own bound passes (mixed brackets)", r1["status"] == "PASS" and x1["e"] <= x1["B"], f"e {x1['e']:.1f}, B {x1['B']:.2f}, {r1['status']}")
+r2 = at_e(math.floor(x1["B"]) + 1, MIXED)
+x2 = und(r2)[0]
+claim("boundary: e 1 ns beyond the pair's own bound fails, the wide range notwithstanding",
+      r2["status"] == "FAIL" and x2["e"] > x2["B"] and x2["in_range"] and any("own bound" in w for w in r2["why"]),
+      f"e {x2['e']:.1f}, B {x2['B']:.2f}, in range {x2['in_range']}, {r2['status']}")
+r3 = at_e(40, samp)
+x3 = und(r3)[0]
+claim("the range check still applies when the own bound holds (tight brackets)",
+      r3["status"] == "FAIL" and x3["own"] and not x3["in_range"] and any("retained pairs' range" in w for w in r3["why"]),
+      f"e {x3['e']:.1f}, B {x3['B']:.1f}, range [{x3['lo']:.0f}, {x3['hi']:.0f}]")
+WIN_X = (E[100], E[3900])
+EV_X = evidence_for(*WIN_X)
+r = R.analyze((ev, []), (sorted(tau + [xe + DELAY]), []), samp, window=WIN_X, evidence=EV_X)
+claim("certified analyze(): the identified entry, intact: accepted, validated, the entry reported",
+      r["status"] == "PASS" and r["accepted"] is True and r["U_label"] == "validated" and len(und(r)) == 1 and und(r)[0]["ok"],
+      f"{r['status']}, {r['U_label']}, U {r['U']:.1f}")
+r = R.analyze((ev, []), (sorted(tau + [xe - 240]), []), MIXED, window=WIN_X, evidence=EV_X)
+claim("certified analyze(), mixed brackets, main stamp 240 ns after the anchor: not accepted, a candidate",
+      r["status"] == "FAIL" and r["accepted"] is False and r["cert"] == "CERTIFIED" and r["U_label"] == "candidate U; conversion not accepted"
+      and any("own bound" in w for w in r["why"]), f"{r['status']}, {r['U_label']}, e {und(r)[0]['e']:.0f}, B {und(r)[0]['B']:.1f}")
+r = R.analyze((ev, []), (sorted(tau + [xe + DELAY]), []), MIXED, window=WIN_X, evidence=EV_X)
+claim("certified analyze(), mixed brackets, the extra entry intact: accepted", r["status"] == "PASS" and r["accepted"] is True,
+      f"{r['status']}, {r['U_label']}, U {r['U']:.1f}")
+
+print("the review of revision 10's substitutions, now with expiries recorded and nothing expired in the substitute:")
+E, D, W, X, tau, samp = gen(cluster=CL)
+E1, X1 = without(E, K), without(X, K)
+check("missing entry in the cluster, no duplicate", "FAIL", served(events(E1, D, W, X1)), tau, samp, "two instance anchors")
+dup = E[K - 1] + 300
+E2, X2 = sorted(E1 + [dup]), sorted(X1 + [dup + EXIT])
+check("missing entry and write, duplicate at +300 ns, no deadline", "FAIL", served(events(E2, without(D, K), without(W, K), X2), skip=(dup,)), tau, samp)
+check("duplicate at +300 ns inside the previous interrupt", "FAIL", served(events(E2, D, [(w if k != K else E[K - 1] + 100) for k, w in enumerate(W)], X2), skip=(dup,)), tau, samp, "inside the previous")
+Eb, Db, Wb, Xb, tb, sb = gen(cluster={K: lambda E: E[K - 1] + 20_000})
+E4, X4 = sorted(without(Eb, K) + [Eb[K - 1] + 400]), sorted(without(Xb, K) + [Eb[K - 1] + 720])
+check("20 us variant: duplicate stamped before the armed deadline", "FAIL", served(events(E4, Db, [(w if k != K else Eb[K - 1] + 360) for k, w in enumerate(Wb)], X4), skip=(Eb[K - 1] + 400,)), tb, sb, "before their deadline")
+E, D, W, X, tau, samp = gen()
+for sep in (1, 3, 10, 100, 1000):
+    xs = E[K + sep] + 1000
+    check(f"compensating: missing entry and extra entry {sep} apart", "FAIL", served(events(sorted(without(E, K) + [xs]), D, W, sorted(without(X, K) + [xs + 200])), skip=(xs,)), tau, samp)
+for sc_ in (500, 1000, 5000, 20000):
+    Ec, Dc, Wc, Xc, tc, sc = gen(cluster={K: lambda E, s=sc_: E[K - 1] + s, K + 1: lambda E, s=sc_: E[K - 1] + 2 * s})
+    d = Ec[K - 1] + 300
+    check(f"cluster {sc_} ns: missing entry and write, duplicate at +300 ns", "FAIL", served(events(sorted(without(Ec, K) + [d]), without(Dc, K), without(Wc, K), sorted(without(Xc, K) + [d + EXIT])), skip=(d,)), tc, sc)
+print("the ledger takes hrtimer expiries strictly:")
+lg = led([(100, "local_timer_entry", "vector=236"), (150, "hrtimer_expire_entry", "hrtimer=0xffff8c577efa2098 now=358688588000915 function=tick_nohz_handler/0x0"), (300, "local_timer_exit", "vector=236")])
+claim("a well-formed expiry is taken", [k for _, k, _ in lg.events] == ["E", "H", "X"] and not lg.problems)
+claim("a malformed expiry is reported", any("malformed hrtimer expiry" in x for x in led([(150, "hrtimer_expire_entry", "hrtimer=0x1 function=f")]).problems))
 print(f"\n{COUNT} cases. {'ALL OK' if not FAILS else 'FAILED: ' + '; '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

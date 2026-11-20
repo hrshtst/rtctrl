@@ -67,7 +67,7 @@ from typing import NamedTuple
 import timer_clock
 import tk_record
 
-ANALYSIS_REVISION = "clock alignment revision 53"
+ANALYSIS_REVISION = "clock alignment revision 54 (proposed)"
 U_LIMIT_NS = int(timer_clock.U_LIMIT)  # the provisional bound on the validated uncertainty
 LATE_NS = 50_000         # a timer service this late is classified
 RES_NS = 1               # timestamp resolution added to U (mono 1 ns; the TSC finer)
@@ -1043,6 +1043,15 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             print(f"    anchors: {len(tsc)} in the TSC instance, {len(ev.ledger.events)} ledger records, {r['paired']} paired by "
                   f"deadline slot, {len(r['left_out'])} left out of the conversion, {r['nomap']} with no independent "
                   f"check; {len(samp)} sampler pairs", file=out)
+            und = r.get("undelimited") or []
+            if und:
+                print(f"    entries no deadline delimits, identified by order (nothing expired in them; between "
+                      f"delimited neighbours; not used in the conversion): {len(und)}", file=out)
+                for x in und[:top]:
+                    print(f"      the entry at {x['t']} ns: e {x['e']:+.0f} ns, its own bound {x['B']:.0f} ns "
+                          f"({'met' if x['own'] else 'EXCEEDED'}); {'within' if x['in_range'] else 'OUTSIDE'} the "
+                          f"retained deadline-identified pairs' range [{x['lo']:+.0f}, {x['hi']:+.0f}] ns widened by "
+                          f"its bound", file=out)
             print(f"    clock model ({m['source']}): slope range {m['ds'] * 1e6:.3f} ppm, read allowance {m['W_ns'] / 1e6:.1f} ms, "
                   f"R {m['R_ns']:.1f} ns", file=out)
             if r.get("provenance"):

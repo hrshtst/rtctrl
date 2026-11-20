@@ -43,12 +43,14 @@ SHIFT_PLL = 2           # kernel/time: include/linux/timex.h
 INST_LINE = re.compile(r"\[(\d{3})\]\s+\S+\s+(\d+):\s+(\w+):\s*(.*)$")
 MSR_BODY = re.compile(r"^6e0, value ([0-9a-f]+)$")
 VEC_BODY = re.compile(r"^vector=236$")
-KIND = {"local_timer_entry": "E", "local_timer_exit": "X", "write_msr": "W"}
+EXP_BODY = re.compile(r"^hrtimer=(0x[0-9a-f]+) now=\d+ function=(\S+)$")
+KIND = {"local_timer_entry": "E", "local_timer_exit": "X", "write_msr": "W", "hrtimer_expire_entry": "H"}
 
 
 class Ledger:
-    """The real-time CPU's deadline writes, local timer entries and exits, in
-    the report's order. Every row is taken or reported; nothing is skipped."""
+    """The real-time CPU's deadline writes, local timer entries and exits, and
+    hrtimer expiries (whether an entry served a timer), in the report's order.
+    Every row is taken or reported; nothing is skipped."""
 
     def __init__(self, back_ns: int = 0) -> None:
         self.events: list[tuple] = []
@@ -65,6 +67,12 @@ class Ledger:
                 self.problems.append(f"{where}: malformed deadline write ({body})")
                 return
             v = int(b.group(1), 16)
+        elif k == "H":
+            h = EXP_BODY.match(body)
+            if not h:
+                self.problems.append(f"{where}: malformed hrtimer expiry ({body})")
+                return
+            v = f"{h.group(1)} {h.group(2)}"
         elif not VEC_BODY.match(body):
             self.problems.append(f"{where}: unexpected vector ({body})")
             return
@@ -139,6 +147,10 @@ def build_slots(ev):
     that has nothing else is flagged for the expiry proof in validation."""
     out, armed, pre_zero, t_zero, open_, tail_orphan, head_orphan = [], [], [], None, False, 0, 0
     for t, k, v in ev:
+        if k == "H":
+            if open_:
+                out[-1]["served"] += 1
+            continue
         if k == "W":
             if v == 0:
                 pre_zero += armed
@@ -147,7 +159,7 @@ def build_slots(ev):
                 armed.append(v)
         elif k == "E":
             A, pending = (min(armed), False) if armed else ((min(pre_zero), True) if pre_zero else (None, False))
-            out.append(dict(t=t, A=A, pending=pending, t_zero=t_zero if pending else None, nested=open_, closed=False))
+            out.append(dict(t=t, A=A, pending=pending, t_zero=t_zero if pending else None, nested=open_, closed=False, served=0))
             armed, pre_zero, t_zero, open_ = [], [], None, True
         else:
             if open_:
@@ -184,11 +196,43 @@ def assign(sl, tsc):
             last -= 1
         unclosed_tail = 1
     inner = sl[first:last + 1]
-    return dict(first=first, last=last, before=before, notinc=notinc, unclosed_tail=unclosed_tail,
+    return dict(first=first, last=last, before=before, notinc=notinc, unclosed_tail=unclosed_tail, hit=hit,
                 pairs={j: v[0] for j, v in hit.items() if len(v) == 1},
                 double=sum(1 for v in hit.values() if len(v) > 1), empty=sum(1 for j in range(first, last + 1) if j not in hit),
                 nofresh=sum(1 for s in inner if s["A"] is None), nested=sum(1 for s in inner if s["nested"]),
                 unclosed=sum(1 for s in inner if not s["closed"]))
+
+
+def resolve_undelimited(sl, tsc, r):
+    """Proposed revision 54: an entry the deadline slots cannot delimit, identified by order instead.
+
+    The slots assume every entry is raised by a deadline written since the previous one. Attempts 13 and 23 each hold
+    one entry that no recorded deadline was due to raise, in which no hrtimer expired; its instance anchor falls into
+    the previous slot. Such an entry j is identified, never dropped, only if: the ledger records expiries (some entry
+    served one); j is inside the span, closed, not nested or pending, served nothing and holds no anchor; slot j-1 is
+    delimited, not pending and holds exactly two anchors; slot j+1 is delimited, not pending and holds exactly one; and
+    the three anchors are consecutive. (Whether the neighbours served a timer is not asked: a deadline-raised entry can
+    serve none, as 112 of attempt 13's did.) Slot j-1 keeps its first anchor; j takes the second, by order. The
+    rule then checks j's pair against its own bound (e <= B), and in addition against the retained pairs' range, and
+    leaves j out of the conversion. Returns
+    {j: anchor index}; the counts in r are corrected for each identified entry."""
+    if not any(s["served"] for s in sl):
+        return {}
+    hit, first, last, out = r["hit"], r["first"], r["last"], {}
+    for j in range(first + 1, last):
+        s, p, n = sl[j], sl[j - 1], sl[j + 1]
+        hp, hn = hit.get(j - 1, []), hit.get(j + 1, [])
+        if (j in hit or s["served"] or not s["closed"] or s["nested"] or s["pending"] or len(hp) != 2 or len(hn) != 1
+                or p["A"] is None or n["A"] is None or p["pending"] or n["pending"]
+                or not hp[0] + 1 == hp[1] == hn[0] - 1):
+            continue
+        out[j] = hp[1]
+        r["pairs"][j - 1] = hp[0]
+        r["double"] -= 1
+        r["empty"] -= 1
+        if s["A"] is None:
+            r["nofresh"] -= 1
+    return out
 
 
 # --- The clock model ------------------------------------------------------------------------------------------------
@@ -302,6 +346,12 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
     r = assign(sl, tsc)
     if r["first"] is None:
         return dict(status="FAIL", why=r["why"], U=None)
+    und = resolve_undelimited(sl, tsc, r)
+    if und:
+        # The ladder is the delimiting slots': an identified entry's delimiter delimits nothing (it was not due at the
+        # entry; in attempt 13 the deadline written early was rewritten 10 counts lower after the entry).
+        lad = [s["A"] for k, s in enumerate(sl) if s["A"] is not None and k not in und]
+        r["notinc"] = sum(1 for a, b in zip(lad, lad[1:]) if b <= a)
     for key, msg in (("nofresh", "entries with no deadline written since the previous entry"), ("nested", "entries inside the previous interrupt"),
                      ("notinc", "times the deadline ladder decreases"), ("double", "deadline slots hold two instance anchors"),
                      ("empty", "deadline slots hold no instance anchor"), ("unclosed", "entries inside the span have no exit")):
@@ -326,6 +376,24 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
         if s["t"] - a[0] < -a[1]:
             bad_dl += 1
         items.append(dict(tsc=tsc[i], t=s["t"], e=e, B=v[1], E=abs(e) + v[1], j=j, i=i))
+    # The entries identified by order: the same offset, an independent check, and the main stamp not after the mapped
+    # anchor beyond the pair's own bound (the check every deadline-identified pair passes, independent of any other
+    # pair's bracket); the range check follows once the conversion's retained pairs are known. Never used in the
+    # conversion.
+    und_items, und_none, und_after = [], 0, 0
+    for j, i in sorted(und.items()):
+        offs.add(j - i)
+        v = M.at(tsc[i])
+        if v is None:
+            und_none += 1
+            continue
+        e = sl[j]["t"] - v[0]
+        und_items.append(dict(j=j, i=i, t=sl[j]["t"], tsc=tsc[i], e=e, B=v[1], own=e <= v[1], in_range=False, ok=False))
+        und_after += e > v[1]
+    if und_none:
+        why.append(f"{und_none} entries no deadline delimits have no independent check of their anchor by order")
+    if und_after:
+        why.append(f"{und_after} entries no deadline delimits have the main stamp after their anchor by order, beyond its own bound")
     if len(offs) != 1:
         why.append(f"the pairs do not share one index offset ({len(offs)} offsets)")
     if bad_e:
@@ -337,10 +405,21 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
     # Coverage comes first and does not depend on which pairs are retained.
     if len(items) < 2:
         why.append(f"no usable conversion pairs ({len(items)} verified, {nomap} without an independent check)")
-        return dict(status="FAIL", why=why, U=None, paired=len(r["pairs"]), used=0, nomap=nomap, ladder=r, slots=sl)
+        return dict(status="FAIL", why=why, U=None, paired=len(r["pairs"]), used=0, nomap=nomap, ladder=r, slots=sl, undelimited=und_items)
     items.sort(key=lambda x: x["tsc"])
     cap_n = int((CAP if cap is None else cap) * len(r["pairs"]))
     kept, out, bounds = select(items, model, cap_n)
+    if und_items:
+        # In addition, both sides: within the range the retained deadline-identified pairs span, their bounds included,
+        # widened by the entry's own bound. A consistency check only; it never replaces the pair's own bound above.
+        lo_e, hi_e = min(k["e"] - k["B"] for k in kept), max(k["e"] + k["B"] for k in kept)
+        for x in und_items:
+            x["lo"], x["hi"] = lo_e, hi_e
+            x["in_range"] = lo_e - x["B"] <= x["e"] <= hi_e + x["B"]
+            x["ok"] = x["own"] and x["in_range"]
+        bad = sum(1 for x in und_items if not x["in_range"])
+        if bad:
+            why.append(f"{bad} entries no deadline delimits disagree with their anchor by order beyond the retained pairs' range")
     U = max(bounds)
     conv = Conversion(kept, bounds)
     if window:
@@ -367,7 +446,8 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
     gaps = [b["t"] - a["t"] for a, b in zip(kept, kept[1:])]
     return dict(status="FAIL" if why else "PASS", why=why, U=U, U_label=model.label, dependency=dict(sampler=(M.dep_lo, M.dep_hi), span=(kept[0]["t"], kept[-1]["t"])),
                 paired=len(r["pairs"]), used=len(kept), left_out=[round(x["e"]) for x in out], nomap=nomap, Bmax=max(k["B"] for k in kept), Emax=max(k["E"] for k in kept), emin=min(k["e"] for k in kept), emax=max(k["e"] for k in kept),
-                g_conv_ms=max(gaps) / 1e6, Imax=model.ds * max(gaps) / 4, offsets=sorted(offs)[:3], pairs=[(k["tsc"], k["t"]) for k in kept], conv=conv, ladder=r, unclosed_tail=r["unclosed_tail"], head_orphan=head_orphan, slope_statistic=M.slope_statistic(), residual_margin=worst)
+                g_conv_ms=max(gaps) / 1e6, Imax=model.ds * max(gaps) / 4, offsets=sorted(offs)[:3], pairs=[(k["tsc"], k["t"]) for k in kept], conv=conv, ladder=r, unclosed_tail=r["unclosed_tail"], head_orphan=head_orphan, slope_statistic=M.slope_statistic(), residual_margin=worst,
+                undelimited=und_items)
 
 
 # --- Certification: whether the acquisition establishes the model the calculation uses ---------------------------------

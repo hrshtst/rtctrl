@@ -649,7 +649,7 @@ def main() -> int:
         code, out, _ = correlate(root, "timer", timer=True)
         expect(code == 0 and "timer service (the real-time CPU's deadlines" in out
                and "sleep timing: 2 sleeps; 2 with their sleep call and timer" in out
-               and "analysis: clock alignment revision 53" in out and "conversion certificate: CERTIFIED" in out
+               and "analysis: clock alignment revision 54 (proposed)" in out and "conversion certificate: CERTIFIED" in out
                and "paired by deadline slot" in out and "clock model (certificate):" in out
                and ", validated; longest conversion" in out and "certificate provenance: 7.0.0-42.42" in out
                and "sleeps: 2; on time 2" in out and ", 0 disarming" in out
