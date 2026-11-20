@@ -3203,6 +3203,20 @@ latches the shell. Any STOP or failed validity check ends the sitting with
 no retry. This approves no run;
 hardware and H2 stay paused until the plan is reviewed.
 
+**Attempt 24's sitting: stopped before the pair (2026-11-20).** Under its
+conditional go, blocks 0 and 1 passed and the identity record was
+approved. The operator's interactive bash, however, ran the user's
+`~/.bashrc`, whose direnv hook reverted `LD_LIBRARY_PATH` at the prompt
+after block 1's `cd` into L1's checkout. Under the reverted path the probe
+would have loaded `libroki.so` and `libzm.so` from `~/usr/lib`, with other
+contents, before the binaries' RUNPATH. The guard, re-run in that bash
+before block 2, refused, and by the stop rule block 2 never ran: nothing
+was acquired, the bus was not contacted, and the host was not changed. The
+pair runs as attempt 25, with fresh names. The sitting's bash starts as
+`bash --norc --noprofile`, so no prompt hook runs in it, and block 2 re-runs
+the guard as its first step. Attempt 24's identity record and guard records
+are kept as evidence. This approves no run.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
