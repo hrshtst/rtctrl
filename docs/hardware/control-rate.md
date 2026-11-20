@@ -2989,7 +2989,8 @@ unchanged. A new acquisition needs its own go and new attempt numbers.
 The analysis and its corrections are archived in `clock_validation/`.
 
 **Plan L1 with Firefox among the observers: the second rehearsal's
-procedure (attempts 22 and 23; for review, not executed).** The review
+procedure (executed 2026-11-20 as attempts 22 and 23, recorded below).**
+The review
 accepted the observer update for the documented single-browser setup and
 approved preparing a candidate, not a run. The rehearsal is L1's above,
 with three differences:
@@ -3018,6 +3019,55 @@ are L1's, unchanged. The comparison with attempt 21 would differ by
 Firefox's confinement, the names and the host's state on the day. A pass
 would qualify no control rate, the USB path or the hardware. Hardware and
 H2 stay paused.
+
+**Attempts 22 and 23 (2026-11-20, at `7b87587`): acquired; every measured
+probe criterion passed; the timer validation not passed.** On the
+emulator only, actuator power off, the operator ran the blocks unchanged
+right after a readiness record meeting all 33 of its checks, with Firefox
+running. Both blocks exited 0 and the supervisor reported the pair
+acquired. The review gave separate verdicts:
+
+- **Acquisition and recorded restoration: accepted.** Both record gates
+  passed, 14 of 14 and 15 of 15, also against the closed set record, with
+  zero read failures, timeouts and guard waits, three complete servo-state
+  records, one emulator process allowed exactly 4-5, the controls on CPU 7
+  passing as an aggregate (negative-idle INCONCLUSIVE), and every
+  restoration verified.
+- **Placement: PASS within the declared limits.** Attempt 23's continuous
+  trace shows the emulator and every unbound execution and resident
+  worker on 4-5 only, every CPU outside 4-5 with switch evidence, no trace
+  losses, and no confined observer or probe helper running on 2-5.
+  Firefox's content processes, confined now, no longer ran there. Attempt
+  22, untraced, has the confinement, identity, mask and snapshot
+  evidence. CPU 2's storage interrupts and the unlisted tasks on 2, 4 and
+  5 remain declared limits.
+- **The clock: the model CERTIFIED, the full-window conversion not
+  accepted.** The deadline-slot accounting fails: one slot holds two
+  instance anchors and the next holds none, so U = 1,581 ns is a candidate
+  bound, not an accepted one. The failure is one local timer interrupt on
+  CPU 3, 18.5 us after the worker's own, with no recorded deadline due and
+  no timer expiring in it; why it occurred is not established. Neither the
+  certificate nor the sleeps override the failed accounting.
+- **The sleep service: all 19,999 sleeps on time**, independently of the
+  conversion. The on-time test compares the trace's monotonic expiry
+  timestamps, before the conversion is used.
+- **Complete timer validation: not passed**, because the deadline-slot
+  accounting fails.
+
+Both runs pass every measured probe criterion: 20,000 cycles each, zero
+skipped, zero read and write failures, T2, and both of T6a's limits
+(p99.9 0.029 and 0.033 ms; maxima 0.353 and 0.711 ms, below 1 ms). T4,
+T6b and T7 are not measured. The remaining validation failure is not an
+observed cycle miss. The pair is one observation: it attributes no
+improvement over attempts 20 and 21 to Firefox's confinement alone.
+Overall 1 kHz control qualification remains unestablished, including the
+physical USB/RS-485 path and the controller. Next is a bounded offline
+investigation of the slot assignment, comparing attempts 13 and 23 with
+attempt 21, to find whether the extra interrupt exposes an unsupported
+assumption in the pairing; any correction is proposed with regression
+cases. The interrupt is not discarded and the criterion is not waived,
+and the pair is not repeated merely to obtain a passing conversion. The
+records are archived in `clock_validation/`. Hardware and H2 stay paused.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

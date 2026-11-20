@@ -1003,8 +1003,16 @@ reads of 100 us or more, the 7 longest among them, queued on CPU 4 or 5
 behind threads of Firefox, which was not among the observer roots, while
 the set's other CPU was mostly idle; of the other four, one waited behind
 an unbound worker, one is an elapsed emulator phase and two are not
-explained. Adding Firefox's root to the observers, with scheduling
-unchanged, is prepared for review; hardware and H2 stay paused.
+explained. With Firefox's root added to the observers and scheduling
+unchanged, attempts 22 and 23 (2026-11-20, at `7b87587`) passed every
+measured probe criterion: zero skipped cycles, host work at most 0.353
+and 0.711 ms. Placement passed again and all 19,999 sleeps were on time,
+but the timer validation did not pass: one extra local timer interrupt on
+CPU 3, with no recorded deadline due, failed the conversion's
+deadline-slot accounting, so its bound (1,581 ns) is only a candidate.
+Overall 1 kHz qualification remains unestablished, the USB/RS-485 path and
+the controller included. An offline investigation of the slot assignment
+comes next; hardware and H2 stay paused.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
