@@ -367,7 +367,7 @@ TEST_CASE("invalid samples change nothing", "[hw][adapter]") {
 TEST_CASE("the grid schedule is hw::advanceCycleDeadline's", "[hw][adapter]") {
   ad::AdapterPhaseEstimator acquiring;  // never locked: the planner stays on the grid
   ad::PlannerConfig cfg;
-  ad::WakePlanner planner(cfg, 0);
+  ad::WakePlanner planner(cfg, 987654321);  // a nonzero epoch
   ad::WakePlan plan = planner.first();
   std::mt19937_64 rng(11);
   std::uniform_int_distribution<int> kind(0, 9);
@@ -398,10 +398,10 @@ TEST_CASE("no wake is planned in the past, and targets only move forward",
   ad::EstimatorConfig ecfg;
   ecfg.supervise = false;
   ad::AdapterPhaseEstimator locked(ecfg), acquiring(ecfg);
-  locked.lockFrom(-57.5, 321.0, 0);
+  locked.lockFrom(-57.7, 321.0, 0);  // a fractional period, 999,942.3 ns
   ad::PlannerConfig cfg;
   cfg.min_gap_ns = 2000;
-  ad::WakePlanner planner(cfg, 0);
+  ad::WakePlanner planner(cfg, 1234567);  // a nonzero epoch
   ad::WakePlan plan = planner.first();
   std::mt19937_64 rng(5);
   std::uniform_int_distribution<int> mode(0, 19), kind(0, 9);
@@ -426,17 +426,17 @@ TEST_CASE("no wake is planned in the past, and targets only move forward",
       const double c = locked.completionNs(plan.target_index);
       CHECK(std::fabs(static_cast<double>(plan.wake_ns) - (c - 790000.0)) <= 1.0);
     }
-    // skipped, recounted: the outgoing schedule's slots before the new wake
-    // (the grid's; the lattice's targets passed over, or on falling back its
-    // slots from the last lattice plan's wake and period)
+    // skipped, recounted from the definition, slot by slot: the outgoing
+    // schedule's slots after the last plan whose wakes come before the new
+    // wake (a lattice slot's wake: its completion less the lead and the
+    // allowance, rounded up, on the lattice that plan used; this test's
+    // locked estimator never moves)
     std::uint64_t count = 0;
     if (!prev.referenced) {
       for (std::int64_t w = prev.wake_ns + 1000000; w < plan.wake_ns; w += 1000000) ++count;
-    } else if (plan.referenced) {
-      count = static_cast<std::uint64_t>(plan.target_index - prev.target_index - 1);
     } else {
-      for (double w = static_cast<double>(prev.wake_ns) + locked.periodNs();
-           w < static_cast<double>(plan.wake_ns); w += locked.periodNs()) {
+      for (std::int64_t n = prev.target_index + 1;
+           static_cast<std::int64_t>(std::ceil(locked.completionNs(n) - 790000.0)) < plan.wake_ns; ++n) {
         ++count;
       }
     }
@@ -639,4 +639,107 @@ TEST_CASE("a plan depends only on what was observed before it", "[hw][adapter][s
   }
   CHECK(compared == K);
   CHECK(sa.estimator().state() == ad::EstimatorState::kLocked);
+}
+
+namespace {
+// A lattice slot's wake, from the definition: its completion on the
+// estimator's lattice less the lead and the allowance, rounded up.
+std::int64_t slotWake(const ad::AdapterPhaseEstimator& est, std::int64_t n, const ad::PlannerConfig& c) {
+  return static_cast<std::int64_t>(
+      std::ceil(est.completionNs(n) - static_cast<double>(c.lead_ns + c.wake_to_read_ns)));
+}
+}  // namespace
+
+TEST_CASE("the review's case: a fallback wake on the next lattice slot skips nothing",
+          "[hw][adapter][safety]") {
+  // the reviewer's reproducer (review-notes/2026-11-20-adapter-timing-prototype-review)
+  ad::EstimatorConfig ec;
+  ec.supervise = false;
+  ad::AdapterPhaseEstimator locked(ec), acquiring(ec);
+  locked.lockFrom(-57.7, 100.0, 0);
+  ad::PlannerConfig pc;
+  ad::WakePlanner planner(pc, 2309770);
+  planner.first();
+  const ad::WakePlan before = planner.next(locked, 2309771, 2309771);
+  const std::int64_t next_wake = slotWake(locked, before.target_index + 1, pc);
+  const ad::WakePlan after = planner.next(acquiring, next_wake, next_wake);
+  CHECK(std::fabs(locked.periodNs() - 999942.3) < 1e-6);
+  CHECK(next_wake == 3309770);
+  CHECK(after.wake_ns == next_wake);
+  CHECK(after.skipped == 0);
+}
+
+TEST_CASE("schedule changes and late cycles at a slot's rounded wake and +-1 ns",
+          "[hw][adapter][safety]") {
+  // Independent boundary checks: fractional periods, nonzero epochs, and each
+  // incoming wake placed at an outgoing slot's rounded wake, 1 ns before it
+  // and 1 ns after it. A slot whose wake equals the new wake was used.
+  const ad::PlannerConfig pc;  // lead 780 us, allowance 10 us, no gap
+  const std::int64_t P = pc.grid_period_ns;
+  ad::EstimatorConfig ec;
+  ec.supervise = false;
+  int checked = 0;
+  for (const double slope : {-57.7, -27.83, 13.37}) {
+    for (const double phase : {100.0, 433.3, 987.6}) {
+      ad::AdapterPhaseEstimator locked(ec), acquiring(ec);
+      locked.lockFrom(slope, phase, 0);
+      REQUIRE(locked.periodNs() != std::floor(locked.periodNs()));  // fractional
+      for (const std::int64_t delta : {std::int64_t{-1}, std::int64_t{0}, std::int64_t{1}}) {
+        const std::int64_t n = 3000;  // a lattice slot about 3 s in
+        const std::int64_t w_n = slotWake(locked, n, pc);
+        const std::int64_t w_next = slotWake(locked, n + 1, pc);
+        INFO("slope " << slope << " phase " << phase << " delta " << delta << " w_n " << w_n
+                      << " w_next " << w_next);
+        {
+          // Falling back: the lattice plan targets n; the grid's first slot
+          // after the cycle's end is w_next + delta. Only delta = +1 passes
+          // the outgoing slot n + 1 without a cycle.
+          const std::int64_t grid_wake = w_next + delta;
+          const std::int64_t epoch = grid_wake - 5 * P;  // nonzero, on the grid wake
+          ad::WakePlanner planner(pc, epoch);
+          planner.first();
+          const ad::WakePlan lat = planner.next(locked, w_n - 300, w_n - 300);
+          REQUIRE(lat.referenced);
+          REQUIRE(lat.target_index == n);
+          REQUIRE(lat.wake_ns == w_n);
+          const std::int64_t end = grid_wake - 400;  // the cycle ends before the grid wake
+          const ad::WakePlan fb = planner.next(acquiring, end, end);
+          REQUIRE_FALSE(fb.referenced);
+          REQUIRE(fb.wake_ns == grid_wake);
+          CHECK(fb.skipped == (delta > 0 ? 1U : 0U));
+          ++checked;
+        }
+        {
+          // Locking: the grid's next slot is w_n + delta and the lattice plan
+          // wakes at w_n. Only delta = -1 passes that grid slot.
+          const std::int64_t epoch = w_n + delta - P;  // the grid's slot 1 at w_n + delta
+          ad::WakePlanner planner(pc, epoch);
+          planner.first();
+          const ad::WakePlan lat = planner.next(locked, w_n - 300, w_n - 300);
+          REQUIRE(lat.referenced);
+          REQUIRE(lat.target_index == n);
+          REQUIRE(lat.wake_ns == w_n);
+          CHECK(lat.skipped == (delta < 0 ? 1U : 0U));
+          ++checked;
+        }
+        {
+          // Within the lattice: the cycle targeting n ends at w_next + delta.
+          // At or before w_next it is in time; 1 ns after, n + 1 is skipped.
+          const std::int64_t epoch = 1 + 7 * P / 3;  // nonzero
+          ad::WakePlanner planner(pc, epoch);
+          planner.first();
+          const ad::WakePlan lat = planner.next(locked, w_n - 300, w_n - 300);
+          REQUIRE(lat.target_index == n);
+          const std::int64_t end = w_next + delta;
+          const ad::WakePlan nx = planner.next(locked, end, end);
+          REQUIRE(nx.referenced);
+          CHECK(nx.target_index == (delta > 0 ? n + 2 : n + 1));
+          CHECK(nx.skipped == (delta > 0 ? 1U : 0U));
+          CHECK(nx.wake_ns >= end);
+          ++checked;
+        }
+      }
+    }
+  }
+  CHECK(checked == 3 * 3 * 3 * 3);
 }

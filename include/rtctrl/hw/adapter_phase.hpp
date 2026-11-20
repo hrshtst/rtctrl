@@ -467,8 +467,10 @@ class WakePlanner {
   // skipped counts the slots of the outgoing schedule, after the last plan,
   // that come before the new wake: within one schedule exactly the probe's
   // skipped periods (on the lattice, the targets passed over); on falling
-  // back, the lattice slots as they stood when the last plan was made (its
-  // wake and period), not as the estimator that lost the lock now has them.
+  // back, the lattice's slots as they stood when the last lattice plan was
+  // made (its reference: anchor, index and period), each rounded as that
+  // plan's own wake was, not as the estimator that lost the lock now has
+  // them. A slot whose wake equals the new wake was used, not skipped.
   WakePlan next(const AdapterPhaseEstimator& est, std::int64_t cycle_end_ns,
                 std::int64_t now_ns) {
     const std::int64_t t = std::max(cycle_end_ns, now_ns + cfg_.min_gap_ns);
@@ -495,7 +497,7 @@ class WakePlanner {
                       ? static_cast<std::uint64_t>(n - last_.target_index - 1)
                       : passedGridSlots(p.wake_ns);
       last_ = p;
-      last_period_ = est.periodNs();
+      last_ref_ = LatticeRef{est.anchorNs(), est.anchorIndex(), est.periodNs()};
       return p;
     } else {
       const std::int64_t P = cfg_.grid_period_ns;
@@ -517,9 +519,22 @@ class WakePlanner {
   const WakePlan& last() const { return last_; }
 
  private:
+  // A lattice as a plan used it: the estimator's anchor, its index and the
+  // period. wakeAt() is the one rounding of a lattice slot to a wake, for the
+  // live estimator and for a kept reference alike.
+  struct LatticeRef {
+    double anchor = 0.0;
+    std::int64_t anchor_index = 0;
+    double period = 0.0;
+  };
   double offset() const { return static_cast<double>(cfg_.lead_ns + cfg_.wake_to_read_ns); }
+  std::int64_t wakeAt(const LatticeRef& r, std::int64_t n) const {
+    // the same expression as AdapterPhaseEstimator::completionNs
+    const double c = r.anchor + static_cast<double>(n - r.anchor_index) * r.period;
+    return static_cast<std::int64_t>(std::ceil(c - offset()));
+  }
   std::int64_t wakeOf(const AdapterPhaseEstimator& est, std::int64_t n) const {
-    return static_cast<std::int64_t>(std::ceil(est.completionNs(n) - offset()));
+    return wakeAt(LatticeRef{est.anchorNs(), est.anchorIndex(), est.periodNs()}, n);
   }
 
   // The grid's slots after the last grid plan that come before `wake`.
@@ -527,19 +542,25 @@ class WakePlanner {
     const std::int64_t m = ceilDiv(wake - epoch_, cfg_.grid_period_ns);
     return static_cast<std::uint64_t>(std::max<std::int64_t>(0, m - 1 - grid_index_));
   }
-  // The lattice's slots after the last lattice plan that come before
-  // `wake`, on that plan's own wake and period.
+  // The lattice's slots after the last lattice plan whose wakes, rounded as
+  // that plan's were (its kept reference), come before `wake`.
   std::uint64_t passedLatticeSlots(std::int64_t wake) const {
-    const double gap = static_cast<double>(wake - last_.wake_ns);
-    const double slots = std::ceil(gap / last_period_) - 1;
-    return slots > 0 ? static_cast<std::uint64_t>(slots) : 0;
+    const std::int64_t first = last_.target_index + 1;
+    if (wakeAt(last_ref_, first) >= wake) return 0;
+    auto m = last_ref_.anchor_index +
+             static_cast<std::int64_t>(std::ceil((static_cast<double>(wake) + offset() - last_ref_.anchor) /
+                                                 last_ref_.period));
+    if (m <= first) m = first + 1;
+    while (wakeAt(last_ref_, m) < wake) ++m;                        // m: the first slot at or after wake
+    while (m - 1 > first && wakeAt(last_ref_, m - 1) >= wake) --m;
+    return static_cast<std::uint64_t>(m - first);
   }
 
   PlannerConfig cfg_;
   std::int64_t epoch_;
   std::int64_t grid_index_ = 0;
   WakePlan last_;
-  double last_period_ = 0.0;  // the lattice period at the last lattice plan
+  LatticeRef last_ref_;  // the lattice as the last lattice plan used it
 };
 
 // --------------------------------------------------------- the accounting
