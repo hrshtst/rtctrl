@@ -67,7 +67,7 @@ from typing import NamedTuple
 import timer_clock
 import tk_record
 
-ANALYSIS_REVISION = "clock alignment revision 54 (proposed)"
+ANALYSIS_REVISION = "clock alignment revision 54"
 U_LIMIT_NS = int(timer_clock.U_LIMIT)  # the provisional bound on the validated uncertainty
 LATE_NS = 50_000         # a timer service this late is classified
 RES_NS = 1               # timestamp resolution added to U (mono 1 ns; the TSC finer)

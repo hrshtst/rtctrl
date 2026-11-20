@@ -1,7 +1,8 @@
 """The TSC to CLOCK_MONOTONIC conversion of the timer analysis, with a bound on
 every converted value and a certificate of the clock model it rests on
 (tools/timer_service.py; docs/hardware/control-rate.md, the frozen design of
-revision 53 of the clock-alignment work).
+revision 53 of the clock-alignment work, with revision 54's identification by
+order of an entry no deadline delimits, accepted 2026-11-20).
 
 Three separate results. status PASS or FAIL: the slot accounting, the sign
 checks, the coverage and the model-consistency check. U: a bound on the error
@@ -204,7 +205,7 @@ def assign(sl, tsc):
 
 
 def resolve_undelimited(sl, tsc, r):
-    """Proposed revision 54: an entry the deadline slots cannot delimit, identified by order instead.
+    """Revision 54 (accepted 2026-11-20): an entry the deadline slots cannot delimit, identified by order instead.
 
     The slots assume every entry is raised by a deadline written since the previous one. Attempts 13 and 23 each hold
     one entry that no recorded deadline was due to raise, in which no hrtimer expired; its instance anchor falls into

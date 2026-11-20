@@ -755,7 +755,7 @@ for seed in range(20):
             print(f"  seed {seed}: error {err:.1f} over bound {c[1]:.1f}")
             break
 claim("20 realizable captures through analyze(), stale reads up to the maximum", bad == 0 and len(wr) > 1000, f"{len(wr)} queries; largest error/bound {max(wr):.2f}")
-print("entries no deadline delimits (proposed revision 54; attempts 13 and 23):")
+print("entries no deadline delimits (revision 54; attempts 13 and 23):")
 EXP = 10  # an hrtimer expiry 10 ns after its entry
 ORDER = {"W": 0, "E": 1, "H": 2, "X": 3}
 
@@ -837,7 +837,7 @@ ev = served(events(Es, without(D, K), without(W, K), sorted(without(X, K) + [E[K
 r = check("LIMIT: a lost entry and its write replaced by an undelimited stamp within range", "PASS", ev, tau, samp)
 claim("  ... the substitute is not used in the conversion", len(und(r)) == 1 and r["used"] == r0["used"] - 1, f"used {r['used']}")
 
-print("the identified pair's own bound, independent of other pairs' brackets (the review of revision 54):")
+print("the identified pair's own bound, independent of other pairs' brackets (revision 54's review):")
 MIXED = [(c - 1200, c, c + 1200, z) if E[400] < c < E[1200] else (a, c, b, z) for a, c, b, z in samp]
 ev, _ = extra()
 

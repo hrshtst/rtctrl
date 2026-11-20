@@ -1179,6 +1179,35 @@ independent check of the pairs, with sign checks at every pair. At most 0.1% of
 the anchors may be left out, only the ones that set the bound's maximum, and U
 is recomputed from the final set.
 
+Revision 54 (accepted 2026-11-20; the reports name it) accounts for an entry
+no deadline delimits. Revision 53 assumed that every CPU 3 local timer entry
+is raised by a deadline written since the previous one. Attempts 13 and 23
+each hold one entry that no recorded deadline was due to raise: CPU 3 had
+just left idle with a reschedule pending, no hrtimer expired, and the kernel
+rewrote the stopped tick's far deadline. Its anchor fell into the previous
+slot and the accounting failed closed. The strict ledger now also takes CPU
+3's hrtimer expiries, and such an entry is identified by order, never
+dropped, only if all of these hold:
+
+- expiries are recorded at all (with none, the rule is revision 53's);
+- the entry served nothing, is closed, not nested or pending, and holds no
+  anchor;
+- its previous slot is delimited and holds exactly two anchors, its next is
+  delimited and holds exactly one, and the three anchors are consecutive;
+- its pair meets its own bound (the main stamp not after the mapped anchor
+  beyond the pair's B), independently of any other pair's bracket;
+- in addition, its pair lies within the range the retained
+  deadline-identified pairs span, their bounds included, widened by its own.
+
+The ladder is then the delimiting slots': an identified entry's delimiter
+leaves it, and a decrease anywhere else still fails. An identified entry is
+reported with its pair's checks and kept entirely outside the conversion, so
+U rests on deadline-identified pairs only. "Nothing expired" alone marks
+nothing: a deadline-raised entry can serve no timer. Revision 53's
+substitution cases still fail with expiries recorded. Accepting the method
+promotes no historical result: reanalyses under it are labelled separately,
+and the original analyses and failures stay intact.
+
 U bounds the error of every converted value, not a sample of them. For each
 interval it is the larger of the two anchors' measured stamp differences plus
 the sampler's bound, plus the chord over the interval and the clock-read
@@ -2121,7 +2150,8 @@ preserved, then the emulator controls and end-to-end timer validation on
 are archived in `stage1_hardware/`, each with its own verdict.
 
 That design was frozen as revision 53 on 2026-11-11, and the session and the
-analysis now implement it (the conversion and the timekeeping record, above).
+analysis now implement it (the conversion and the timekeeping record, above;
+revision 54, accepted 2026-11-20, adds the identification by order there).
 The implementation review of 2026-11-11 requested three corrections, which its
 re-review accepted: the cleanup's existence checks answer only from a listing
 read in full, the evidence files are read strictly, and the audited trace-cmd
@@ -3068,6 +3098,25 @@ assumption in the pairing; any correction is proposed with regression
 cases. The interrupt is not discarded and the criterion is not waived,
 and the pair is not repeated merely to obtain a passing conversion. The
 records are archived in `clock_validation/`. Hardware and H2 stay paused.
+
+**The slot-assignment investigation and revision 54 (2026-11-20).** Read-only
+on the archived captures, it found one entry no recorded deadline was due to
+raise in each of attempts 13 and 23, and none in attempt 21. Both had one
+signature: an idle exit with a reschedule pending, nothing expired, the
+stopped tick's far deadline rewritten one count lower. In attempt 13 the
+next tick's deadline, written early, was rewritten 10 counts lower after the
+entry, which also decreased the ladder. Both streams recorded the interrupt
+one to one, and its cause is not established. The unsupported assumption
+was the slots' premise, and revision 54 (in the conversion's description
+above) corrects it. Its review found that wide sampler brackets elsewhere
+could admit an ordered pair beyond its own bound; the own-bound check was
+made independent before acceptance. The clock regressions pass 369 cases,
+covering attempts 13's and 23's shapes, revision 53's substitution cases with
+expiries recorded, mixed sampler brackets, the own bound's boundary and the
+certified path. Revision-54 reanalyses of attempts 13, 21 and 23 come next,
+labelled separately. No recorded verdict changes until their review; the
+original revision-53 analyses and failures stay intact. Hardware and H2 stay
+paused.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

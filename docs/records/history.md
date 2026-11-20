@@ -1011,8 +1011,15 @@ but the timer validation did not pass: one extra local timer interrupt on
 CPU 3, with no recorded deadline due, failed the conversion's
 deadline-slot accounting, so its bound (1,581 ns) is only a candidate.
 Overall 1 kHz qualification remains unestablished, the USB/RS-485 path and
-the controller included. An offline investigation of the slot assignment
-comes next; hardware and H2 stay paused.
+the controller included. The offline investigation found one such
+interrupt, at an idle exit with nothing expiring, in each of attempts 13
+and 23 and none in attempt 21: the deadline slots' premise that every entry
+is raised by a recorded deadline is unsupported. Clock alignment revision 54,
+accepted after one correction (the ordered pair's own bound, independent of
+other pairs' brackets), identifies such an entry by order, reports it and
+keeps it out of the conversion. Separately labelled revision-54 reanalyses
+of attempts 13, 21 and 23 come next; no recorded verdict changes before
+their review, and hardware and H2 stay paused.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
