@@ -3176,8 +3176,15 @@ under the frozen clock design.
   - host scheduling;
   - the probe after its switch-in.
 
-  On attempt 7's open run the adapter and bus held 96.2 % of the time, and
-  host scheduling 29.2 % of the slowest 1 %.
+  The breakdown's scope is the reads with a complete blocked chain: the
+  worker blocked when the TTY work ended, and every stage present. A read
+  blocked without an established waking or switch-in is incomplete
+  evidence, and reads outside the scope are counted and summarised apart.
+  On attempt 7's open run, 11,430 of its 12,943 reads were in scope,
+  holding 88.4 % of all reads' transaction time. Among them, the adapter
+  and bus held 96.2 % of the time, and host scheduling 29.2 % of their
+  slowest 1 %. The other 1,513 reads, whose worker was not blocked when the
+  TTY work ended, are outside it.
 - **Tools.** The accepted H2 procedure runs with only its identity
   baseline moved to `4fc7ae0`, from L1's checkout advanced with its
   binaries as built. Guard revision 6 adds a read-only hardware mode for
@@ -3190,8 +3197,10 @@ Capture validity (recording, timing coverage under revision 54, the USB
 association, placement, cleanup, the controls) is judged apart from the
 measured rate. T1 to T7 are reported with unchanged thresholds, and T1, T2
 and T6a are expected to fail at 1 kHz on this adapter. The owner is at the
-robot, torque-off, the power cutoff within reach. Any STOP or failed
-validity check ends the sitting with no retry. This approves no run;
+robot, torque-off, the power cutoff within reach. The operator blocks stop
+themselves: each is one command whose failed step skips the rest and
+latches the shell. Any STOP or failed validity check ends the sitting with
+no retry. This approves no run;
 hardware and H2 stay paused until the plan is reviewed.
 
 ## Later steps (after the bounded transaction and Phases B and C)
