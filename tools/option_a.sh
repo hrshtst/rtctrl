@@ -12,7 +12,7 @@
 #
 # Its layout is a constant of the committed run (LAYOUT, below), as its
 # attempt numbers and experiment directory are (this commit: l1, attempts
-# 20 and 21, clock-validation-option-l1): a3, the accepted placement above
+# 22 and 23, clock-validation-option-l1b): a3, the accepted placement above
 # (the emulator off CPU 3, CPU 3 cleared from the unbound mask, observers
 # open, the controls on CPU 5); or l1, plan L1's placement rehearsal, a
 # declared bundle: the supervisor's own affinity exactly 0-1,6-31 (checked and recorded before
@@ -165,11 +165,11 @@ KRUN=/run
 [ "${ROOT_KEEPER_TEST:-0}" = 1 ] && KRUN=${KEEPER_RUNDIR:-/run}
 GROUP_WAIT=${OPTION_A_GROUP_WAIT:-120}
 RT_CPU=3
-ATT_A=20
-ATT_B=21
+ATT_A=22
+ATT_B=23
 D_A=$OUT/clock-validation-$ATT_A
 D_B=$OUT/clock-validation-$ATT_B
-E=$OUT/clock-validation-option-l1
+E=$OUT/clock-validation-option-l1b
 LAYOUT=${OPTION_A_LAYOUT:-l1}  # the committed run's layout: a3 or l1 (see above)
 case "$LAYOUT" in
   a3) EMU_CPUS=; MASK_ARGS=(clear "$RT_CPU"); MASK_STEP=mask_clear; KEEPER_ARGS=("$RT_CPU"); GATE_MASK=(); CTL_CPU=5

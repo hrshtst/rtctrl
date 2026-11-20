@@ -88,9 +88,9 @@ printf '0-31\n' >"$ROOT/cpusys/online"; printf '2-3\n' >"$ROOT/cpusys/cpu3/topol
 export WQ_MASK_CPUSYS=$ROOT/cpusys KEEPER_CPUSYS=$ROOT/cpusys
 REAL_DATE=$(command -v date)
 REAL_PY=$(command -v python3)
-ATT_A=20  # tools/option_a.sh's attempts and experiment directory
-ATT_B=21
-E=$ROOT/out/clock-validation-option-l1
+ATT_A=22  # tools/option_a.sh's attempts and experiment directory
+ATT_B=23
+E=$ROOT/out/clock-validation-option-l1b
 
 cat >"$ROOT/cpus" <<'EOF'
 import sys
