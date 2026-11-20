@@ -3139,6 +3139,61 @@ rate and no physical USB/RS-485 path. The stray interrupts' cause remains
 unknown. The records are archived in `clock_validation/`. Hardware and H2
 stay paused.
 
+**The revised H2's first hardware pair: the procedure (attempt 24; for
+review, not executed).** The first fresh torque-off hardware diagnostic
+under revision 54 is one invocation of two runs, untraced then timer, at
+H2's condition (current, 1000 Hz, `rt-loaded-excl`, 20 s, Fast Sync Read
+with the motion-only read, SCHED_FIFO 80 on CPU 3) with the observers open:
+H2 attempt 7's accepted open pair, with fresh labels. It is the first
+invocation of a revised H2, open first as before; its confined invocations
+and the confined-first order follow only after its review. It also
+replicates attempt 7's open pair and is the first hardware capture analysed
+under the frozen clock design.
+
+- **Placement, declared.**
+  - The unbound workqueue mask stays at the kernel's default: L1's 4-5 mask
+    was built for the emulator and would move the adapter's TTY flush work.
+    Attempt 7's open run shows that work on CPUs 2 and 3, waiting up to
+    3.0 ms, so a mask keeping unbound work off 2-3 is a later, separately
+    reviewed step, judged against this pair.
+  - No observer is confined.
+  - The xHCI interrupt stays where it is (effective on CPU 7), and readiness
+    refuses it on CPU 2 or 3.
+  - CPU 2's storage interrupt and unlisted tasks remain declared limits.
+- **The real USB checks.** The PTY exception does not apply: the
+  association and alignment must pass, and the analysis must exit 0. USB
+  completion (the host controller's, measured), RS-485 transmission
+  completion (not measured in production traffic: `write_return` and the
+  OUT completion are the host's and the adapter's) and servo measurement age
+  (unknown) are kept apart.
+- **Where transaction time goes.** Each read's host transaction is split
+  from the trace's receive path into six parts that sum to it:
+  - the host before sending;
+  - USB OUT delivery;
+  - the adapter and bus, from the OUT completion to the last IN data
+    completion, with the wire time as context;
+  - receive processing;
+  - host scheduling;
+  - the probe after its switch-in.
+
+  On attempt 7's open run the adapter and bus held 96.2 % of the time, and
+  host scheduling 29.2 % of the slowest 1 %.
+- **Tools.** The accepted H2 procedure runs with only its identity
+  baseline moved to `4fc7ae0`, from L1's checkout advanced with its
+  binaries as built. Guard revision 6 adds a read-only hardware mode for
+  the adapter, and readiness gains the adapter's and the USB interrupt's
+  checks. Attempt 23's controls are proposed to count, since only the clock
+  conversion and the analysis label changed since them; the session refuses
+  controls on a serial device.
+
+Capture validity (recording, timing coverage under revision 54, the USB
+association, placement, cleanup, the controls) is judged apart from the
+measured rate. T1 to T7 are reported with unchanged thresholds, and T1, T2
+and T6a are expected to fail at 1 kHz on this adapter. The owner is at the
+robot, torque-off, the power cutoff within reach. Any STOP or failed
+validity check ends the sitting with no retry. This approves no run;
+hardware and H2 stay paused until the plan is reviewed.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
