@@ -3257,6 +3257,32 @@ confined comparison under the same workqueue-mask and interrupt policy, is
 to be planned for review; no further acquisition or powered control is
 authorized.
 
+**The revised H2's confined comparison: the plan (attempt 26; for review,
+not executed).** It compares the observers confined and open under
+attempt 25's workqueue-mask and interrupt policy: the unbound mask at its
+default `ffffffff`, and the xHCI interrupt unchanged (readiness refuses it
+on CPU 2 or 3).
+- **Recommended:** one sitting, attempt 26, confined first, as H2's
+  attempt 8 was planned. It runs a confined untraced invocation, a
+  confined timer invocation, then an open pair. The comparison stays
+  within one sitting, in the order opposite to attempt 25's.
+- **The alternative:** the two confined invocations alone, compared
+  across sittings with attempt 25. Attempt 25 against attempt 7 showed how
+  much the host's scheduling can differ between days.
+
+The observers are L1's accepted selector: every Claude Code process, the
+oldest Chrome, Firefox's root, the oldest Dropbox, ghostty, herdr and
+gnome-shell, collected fresh before each confined invocation. That set is
+larger than the 2026-11-10 H2's, so attempt 7's confined runs are not
+like-for-like. Kernel workers, the TTY work among them, are outside the
+confinement, and each confined run is its invocation's only run. A later
+invocation's block runs only on the developer's go, given as the SHA-256
+of the previous invocation's run record, and any STOP or failed validity
+check ends the sitting. Attempt 23's controls are reused, as for attempt
+25. Everything else is attempt 25's: the condition, the validity checks
+(with the confined runs' placement checks added), the stop rules and the
+restoration. This approves no run.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
