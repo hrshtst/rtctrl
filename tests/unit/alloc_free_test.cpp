@@ -91,6 +91,44 @@ TEST_CASE("adapter-referenced tracking, planning and accounting never allocate o
   CHECK(sched.estimator().counts().gated >= 20000);
 }
 
+TEST_CASE("the lead alternation (sequencer, offset plans, paired detector) never allocates once locked",
+          "[hw][adapter][coupling]") {
+  namespace ad = rtctrl::hw::adapter;
+  ad::ScheduleConfig cfg;
+  cfg.lead_alternation_ns = 20000;
+  ad::ReferencedSchedule sched(cfg, 0);
+  // the same lattice and replies as above: independent of the send time
+  const double period = 1e6 * (1 - 57.5e-6);
+  auto completion_after = [&](double t) {
+    const double k = std::ceil((t - 412000.0) / period);
+    return 412000.0 + k * period;
+  };
+  ad::WakePlan plan = sched.first();
+  std::int64_t k = 0;
+  auto cycle = [&]() {
+    const bool full = k % 100 == 0, next_full = (k + 1) % 100 == 0;
+    ++k;
+    const double ready = static_cast<double>(plan.wake_ns) + 10000.0 + 660000.0 + (full ? 110000.0 : 0.0);
+    const auto stamp = static_cast<std::int64_t>(completion_after(ready) + 10000.0);
+    plan = sched.closeAndPublish(stamp, stamp + 5000, stamp + 5000, full ? ad::ReadClass::kFull : ad::ReadClass::kMotion,
+                                 next_full ? ad::ReadClass::kFull : ad::ReadClass::kMotion);
+  };
+  while (sched.estimator().state() != ad::EstimatorState::kLocked || !plan.referenced) {
+    cycle();
+    REQUIRE(plan.wake_ns < 10000000000LL);
+  }
+  const std::uint64_t evaluations_before = sched.coupling().evaluations();
+  g_counting = true;
+  g_allocations = 0;
+  for (int i = 0; i < 20000; ++i) cycle();
+  const std::size_t allocations = g_allocations;
+  g_counting = false;
+  CHECK(allocations == 0);
+  CHECK(sched.estimator().state() == ad::EstimatorState::kLocked);
+  CHECK(sched.coupling().evaluations() - evaluations_before > 9000);  // the median ran, in the counted loop
+  CHECK(sched.coupling().state() == ad::CouplingState::kNoCouplingDetected);
+}
+
 TEST_CASE("the worker's side of the fit exchange and publication never allocate",
           "[hw][adapter]") {
   namespace ad = rtctrl::hw::adapter;

@@ -27,7 +27,10 @@
 //   - FitExchange: the acquisition stamps and their fit, handed between the
 //     real-time worker and a non-real-time fitter by explicit ownership, so
 //     that the fit (some ms, allocating) never runs on the worker;
-//   - ReferencedSchedule: the three together, per cycle in two phases: plan
+//   - LeadSequencer and CouplingDetector: the lead alternation, a check of
+//     whether a lock's replies follow the request's send time (a lock on
+//     request-tied replies) or not, with three outcomes;
+//   - ReferencedSchedule: the parts together, per cycle in two phases: plan
 //     provisionally at the cycle's end, then recheck the clock and publish,
 //     counting the cycle exactly once at publication.
 //
@@ -47,6 +50,12 @@
 //                            6 invalid
 //   predicted_completion_ns  the intended completion on the plan's lattice at
 //                            publication, rounded to ns; -1 on the grid
+//   lead_offset_ns           the plan's own lead offset (the lead
+//                            alternation's +-delta, or 0)
+//   coupling_state           CouplingState at publication: 0 insufficient
+//                            evidence, 1 no coupling detected, 2 request-tied
+//                            timing detected
+// (the last two are WakePlan fields the probe does not log yet)
 
 #include <algorithm>
 #include <array>
@@ -490,6 +499,11 @@ struct WakePlan {
   // clock (a scheduler delay between planning and publishing, kept visible).
   std::uint64_t recheck_skipped = 0;
   LockState lock_state = LockState::kAcquiring;  // set at publication
+  // The plan's own lead offset (the lead alternation's +-delta; 0 on the grid
+  // and at the base lead): its wake is its completion less (lead + offset)
+  // less the allowance, and its publication's recheck keeps it.
+  std::int64_t lead_offset_ns = 0;
+  std::uint8_t coupling_state = 0;  // CouplingState at publication (the log's encoding)
 };
 
 inline std::int64_t ceilDiv(std::int64_t a, std::int64_t b) {
@@ -523,8 +537,16 @@ class WakePlanner {
   // made (its reference: anchor, index and period), each rounded as that
   // plan's own wake was, not as the estimator that lost the lock now has
   // them. A slot whose wake equals the new wake was used, not skipped.
+  //
+  // lead_offset_ns is the incoming plan's own lead offset (lattice plans only;
+  // ignored on the grid). The cycle just ended meets its deadline when it
+  // ended by the next target's wake with that offset: deadlines come from the
+  // plan actually made. With the offset alternating +-delta, consecutive
+  // targets' wakes are P - 2 delta or P + 2 delta apart, and P -+ delta into
+  // and out of a plan at the base lead (P the lattice's period; the
+  // estimator's updates move each slightly).
   WakePlan next(const AdapterPhaseEstimator& est, std::int64_t cycle_end_ns,
-                std::int64_t now_ns) {
+                std::int64_t now_ns, std::int64_t lead_offset_ns = 0) {
     const std::int64_t t = std::max(cycle_end_ns, now_ns + cfg_.min_gap_ns);
     const bool locked = est.state() == EstimatorState::kLocked;
     WakePlan p;
@@ -532,20 +554,22 @@ class WakePlanner {
     p.transition = locked != last_.referenced;
     if (locked) {
       const LatticeRef ref{est.anchorNs(), est.anchorIndex(), est.periodNs()};
+      const std::int64_t off = lead_offset_ns;
       std::int64_t n = 0;
-      if (last_.referenced && t <= wakeAt(ref, last_.target_index + 1)) {
+      if (last_.referenced && t <= wakeAt(ref, last_.target_index + 1, off)) {
         n = last_.target_index + 1;
       } else {
-        n = est.firstIndexAtOrAfter(static_cast<double>(t) + offset());
+        n = est.firstIndexAtOrAfter(static_cast<double>(t) + offset(off));
         if (last_.referenced) {
           n = std::max(n, last_.target_index + 1);
-          while (wakeAt(ref, n) <= t) ++n;  // late: the first slot after t
+          while (wakeAt(ref, n, off) <= t) ++n;  // late: the first slot after t
         } else {
-          while (wakeAt(ref, n) < t) ++n;
+          while (wakeAt(ref, n, off) < t) ++n;
         }
       }
       p.target_index = n;
-      p.wake_ns = wakeAt(ref, n);
+      p.lead_offset_ns = off;
+      p.wake_ns = wakeAt(ref, n, off);
       p.predicted_completion_ns = std::llround(completionAt(ref, n));
       p.skipped = last_.referenced
                       ? static_cast<std::uint64_t>(n - last_.target_index - 1)
@@ -572,9 +596,10 @@ class WakePlanner {
 
   // The publication's recheck of the last plan against the clock: if its wake
   // is before now + min_gap, the plan moves to its own schedule's first slot
-  // at or after now + min_gap (the lattice as the plan used it), and the
-  // slots it passes are added to skipped and recorded as recheck_skipped. A
-  // wake exactly at now + min_gap stands.
+  // at or after now + min_gap (the lattice as the plan used it, with the
+  // plan's own lead offset, which it keeps), and the slots it passes are
+  // added to skipped and recorded as recheck_skipped. A wake exactly at
+  // now + min_gap stands.
   WakePlan recheck(std::int64_t now_ns) {
     const std::int64_t t = now_ns + cfg_.min_gap_ns;
     WakePlan p = last_;
@@ -585,16 +610,17 @@ class WakePlanner {
     }
     std::int64_t extra = 0;
     if (p.referenced) {
+      const std::int64_t off = p.lead_offset_ns;
       std::int64_t n = p.target_index + 1;
       auto m = last_ref_.anchor_index +
-               static_cast<std::int64_t>(std::ceil((static_cast<double>(t) + offset() - last_ref_.anchor) /
+               static_cast<std::int64_t>(std::ceil((static_cast<double>(t) + offset(off) - last_ref_.anchor) /
                                                    last_ref_.period));
       n = std::max(n, m);
-      while (wakeAt(last_ref_, n) < t) ++n;
-      while (n - 1 > p.target_index && wakeAt(last_ref_, n - 1) >= t) --n;
+      while (wakeAt(last_ref_, n, off) < t) ++n;
+      while (n - 1 > p.target_index && wakeAt(last_ref_, n - 1, off) >= t) --n;
       extra = n - p.target_index;
       p.target_index = n;
-      p.wake_ns = wakeAt(last_ref_, n);
+      p.wake_ns = wakeAt(last_ref_, n, off);
       p.predicted_completion_ns = std::llround(completionAt(last_ref_, n));
     } else {
       const std::int64_t g = ceilDiv(t - epoch_, cfg_.grid_period_ns);
@@ -619,13 +645,15 @@ class WakePlanner {
     std::int64_t anchor_index = 0;
     double period = 0.0;
   };
-  double offset() const { return static_cast<double>(cfg_.lead_ns + cfg_.wake_to_read_ns); }
+  double offset(std::int64_t lead_offset_ns) const {
+    return static_cast<double>(cfg_.lead_ns + lead_offset_ns + cfg_.wake_to_read_ns);
+  }
   static double completionAt(const LatticeRef& r, std::int64_t n) {
     // the same expression as AdapterPhaseEstimator::completionNs
     return r.anchor + static_cast<double>(n - r.anchor_index) * r.period;
   }
-  std::int64_t wakeAt(const LatticeRef& r, std::int64_t n) const {
-    return static_cast<std::int64_t>(std::ceil(completionAt(r, n) - offset()));
+  std::int64_t wakeAt(const LatticeRef& r, std::int64_t n, std::int64_t lead_offset_ns) const {
+    return static_cast<std::int64_t>(std::ceil(completionAt(r, n) - offset(lead_offset_ns)));
   }
 
   // The grid's slots after the last grid plan that come before `wake`.
@@ -634,16 +662,18 @@ class WakePlanner {
     return static_cast<std::uint64_t>(std::max<std::int64_t>(0, m - 1 - grid_index_));
   }
   // The lattice's slots after the last lattice plan whose wakes, rounded as
-  // that plan's were (its kept reference), come before `wake`.
+  // that plan's were (its kept reference and its lead offset), come before
+  // `wake`.
   std::uint64_t passedLatticeSlots(std::int64_t wake) const {
+    const std::int64_t off = last_.lead_offset_ns;
     const std::int64_t first = last_.target_index + 1;
-    if (wakeAt(last_ref_, first) >= wake) return 0;
+    if (wakeAt(last_ref_, first, off) >= wake) return 0;
     auto m = last_ref_.anchor_index +
-             static_cast<std::int64_t>(std::ceil((static_cast<double>(wake) + offset() - last_ref_.anchor) /
+             static_cast<std::int64_t>(std::ceil((static_cast<double>(wake) + offset(off) - last_ref_.anchor) /
                                                  last_ref_.period));
     if (m <= first) m = first + 1;
-    while (wakeAt(last_ref_, m) < wake) ++m;                        // m: the first slot at or after wake
-    while (m - 1 > first && wakeAt(last_ref_, m - 1) >= wake) --m;
+    while (wakeAt(last_ref_, m, off) < wake) ++m;                        // m: the first slot at or after wake
+    while (m - 1 > first && wakeAt(last_ref_, m - 1, off) >= wake) --m;
     return static_cast<std::uint64_t>(m - first);
   }
 
@@ -731,6 +761,176 @@ inline T2Verdict t2Loaded(const SkipCounts& whole_run, double per_10k = 1.0) {
   v.pass = static_cast<double>(whole_run.skipped) <= v.allowed && whole_run.consecutive == 0;
   return v;
 }
+
+// --------------------------------------------------- the lead alternation
+
+// A check of the lock, not of the adapter: alternating the planned lead by
+// +-delta moves each request's send time, and a reply tied to the request
+// (the pty emulator's constant delay) follows it while a reply riding an
+// independent completion cadence does not. Its outcomes, per lock:
+// insufficient evidence; no coupling detected (the replies did not follow the
+// lead change by more than about delta/2 per delta: this does not establish
+// independence, since a partial or a different coupling can pass it); and
+// request-tied timing detected (latched until the next lock).
+//
+// With balanced offsets the nominal spacing of consecutive targets' wakes
+// averages the adapter's period; the measured mean period can still differ
+// (skips, the estimator's updates, schedule changes).
+
+enum class ReadClass : std::uint8_t { kMotion = 0, kFull = 1 };
+
+// The next executed read's lead sign: motion-only reads alternate +1, -1 over
+// the reads actually executed (a skipped target, or a cycle that never ran,
+// does not advance it); full-window reads stay at the base lead (0).
+class LeadSequencer {
+ public:
+  int signFor(ReadClass next) const { return next == ReadClass::kFull ? 0 : next_; }
+  // A read executed with the sign its plan carried.
+  void executed(ReadClass c, int sign_used) {
+    if (c == ReadClass::kMotion && sign_used != 0) next_ = -sign_used;
+  }
+  void reset() { next_ = 1; }
+
+ private:
+  int next_ = 1;
+};
+
+enum class CouplingState : std::uint8_t {
+  kInsufficient = 0,
+  kNoCouplingDetected = 1,
+  kRequestTiedDetected = 2,
+};
+
+struct CouplingConfig {
+  double delta_ns = 20000.0;       // the lead offset's magnitude
+  int window = 32;                 // pairs in the statistic (at most kMaxWindow)
+  int confirm = 8;                 // consecutive evaluations to declare
+  int fresh_factor = 4;            // a pair older than fresh_factor * 2 * window cycles is stale
+  int max_pair_gap = 4;            // cycles between a pair's two reads, at most
+  double on_period_ns = 500000.0;  // |innovation| below this, or the sample is rejected
+};
+
+// The paired detector. Once per executed cycle, in order, onCycle() takes the
+// cycle's number and, when usable (a motion-only read of a referenced cycle,
+// with a reply, at a nonzero lead sign), its sign and innovation (its reply
+// stamp less the completion predicted at publication, less the nominal
+// delay). Two adjacent usable on-period samples of opposite signs, at most
+// max_pair_gap cycles apart, form a pair, e(-) - e(+); each sample joins one
+// pair at most; a rejected (off-period) sample breaks a pending pair. The
+// statistic S is the median of the last `window` pairs. Every executed cycle,
+// usable or not, advances freshness: with fewer than `window` pairs, or the
+// oldest older than fresh_factor * 2 * window cycles, the state is
+// insufficient evidence. On each new pair, S above delta counts toward
+// request-tied, S below delta/2 toward no coupling, anything else resets both;
+// `confirm` consecutive evaluations on one side declare it. No coupling
+// detected lasts only while each evaluation stays in its band; request-tied
+// is latched until reset(). Bounded, preallocated storage; O(window) work per
+// new pair; no allocation.
+class CouplingDetector {
+ public:
+  static constexpr int kMaxWindow = 64;
+
+  explicit CouplingDetector(CouplingConfig cfg = {}) : cfg_(cfg) {
+    cfg_.window = std::min(std::max(cfg_.window, 1), kMaxWindow);
+  }
+
+  CouplingState onCycle(std::int64_t cycle, int sign, bool usable, double innovation_ns) {
+    bool new_pair = false;
+    if (usable && sign != 0) {
+      if (!(std::fabs(innovation_ns) < cfg_.on_period_ns)) {
+        pending_sign_ = 0;  // rejected: it breaks a pending pair
+        ++rejected_;
+      } else if (pending_sign_ == -sign && cycle - pending_cycle_ <= cfg_.max_pair_gap) {
+        push(sign < 0 ? innovation_ns - pending_e_ : pending_e_ - innovation_ns, cycle);
+        pending_sign_ = 0;  // each sample in one pair only
+        new_pair = true;
+      } else {
+        pending_sign_ = sign;
+        pending_e_ = innovation_ns;
+        pending_cycle_ = cycle;
+      }
+    }
+    if (state_ == CouplingState::kRequestTiedDetected) return state_;  // latched until reset()
+    const std::int64_t horizon = cycle - static_cast<std::int64_t>(cfg_.fresh_factor) * 2 * cfg_.window;
+    if (count_ < cfg_.window || oldest() < horizon) {
+      tied_run_ = free_run_ = 0;
+      state_ = CouplingState::kInsufficient;
+      if (new_pair || usable) ++abstentions_;
+      return state_;
+    }
+    if (!new_pair) return state_;  // no new evidence: the state stands (freshness checked above)
+    ++evaluations_;
+    last_statistic_ = median();
+    if (last_statistic_ > cfg_.delta_ns) {
+      ++tied_run_;
+      free_run_ = 0;
+    } else if (last_statistic_ < cfg_.delta_ns / 2) {
+      ++free_run_;
+      tied_run_ = 0;
+    } else {
+      tied_run_ = free_run_ = 0;
+    }
+    if (tied_run_ >= cfg_.confirm) {
+      state_ = CouplingState::kRequestTiedDetected;
+    } else if (free_run_ >= cfg_.confirm) {
+      state_ = CouplingState::kNoCouplingDetected;
+    } else {
+      state_ = CouplingState::kInsufficient;  // a declaration withdrawn when its evidence changes
+    }
+    return state_;
+  }
+
+  void reset() {
+    count_ = head_ = 0;
+    pending_sign_ = 0;
+    tied_run_ = free_run_ = 0;
+    state_ = CouplingState::kInsufficient;
+  }
+
+  CouplingState state() const { return state_; }
+  int pairs() const { return count_; }
+  double lastStatistic() const { return last_statistic_; }
+  std::uint64_t evaluations() const { return evaluations_; }
+  std::uint64_t abstentions() const { return abstentions_; }
+  std::uint64_t rejected() const { return rejected_; }
+  const CouplingConfig& config() const { return cfg_; }
+
+ private:
+  void push(double d, std::int64_t cycle) {
+    diff_[static_cast<std::size_t>(head_)] = d;
+    at_[static_cast<std::size_t>(head_)] = cycle;
+    head_ = (head_ + 1) % cfg_.window;
+    count_ = std::min(count_ + 1, cfg_.window);
+  }
+  std::int64_t oldest() const {
+    std::int64_t m = std::numeric_limits<std::int64_t>::max();
+    for (int i = 0; i < count_; ++i) m = std::min(m, at_[static_cast<std::size_t>(i)]);
+    return m;
+  }
+  double median() {
+    std::copy(diff_.begin(), diff_.begin() + count_, scratch_.begin());
+    const auto m = static_cast<std::size_t>(count_ / 2);
+    const auto end = scratch_.begin() + count_;
+    std::nth_element(scratch_.begin(), scratch_.begin() + static_cast<std::ptrdiff_t>(m), end);
+    const double hi = scratch_[m];
+    if (count_ % 2 == 1) return hi;
+    const double lo = *std::max_element(scratch_.begin(), scratch_.begin() + static_cast<std::ptrdiff_t>(m));
+    return 0.5 * (lo + hi);
+  }
+
+  CouplingConfig cfg_;
+  std::array<double, kMaxWindow> diff_{};
+  std::array<std::int64_t, kMaxWindow> at_{};
+  std::array<double, kMaxWindow> scratch_{};
+  int count_ = 0, head_ = 0;
+  int pending_sign_ = 0;
+  double pending_e_ = 0.0;
+  std::int64_t pending_cycle_ = 0;
+  int tied_run_ = 0, free_run_ = 0;
+  CouplingState state_ = CouplingState::kInsufficient;
+  double last_statistic_ = 0.0;
+  std::uint64_t evaluations_ = 0, abstentions_ = 0, rejected_ = 0;
+};
 
 // ------------------------------------------------------ the fit exchange
 
@@ -911,6 +1111,11 @@ struct ScheduleConfig {
   // A fit is applied only within this of its window's end, and a request
   // older than this is abandoned (provisional diagnostic value, 2026-11-20).
   std::int64_t fit_max_age_ns = 500000000;
+  // The lead alternation's offset magnitude (0: none, the base lead
+  // throughout; its sign is ignored) and its detector, whose delta_ns is
+  // replaced by that magnitude when the alternation is on.
+  std::int64_t lead_alternation_ns = 0;
+  CouplingConfig coupling;
 };
 
 struct ScheduleCounts {
@@ -938,7 +1143,8 @@ class ReferencedSchedule {
         planner_(cfg.planner, epoch_ns),
         accounting_(epoch_ns, cfg.windows),
         exchange_(exchange),
-        acquisition_end_(epoch_ns + cfg.windows.acquisition_ns) {}
+        acquisition_end_(epoch_ns + cfg.windows.acquisition_ns),
+        detector_(couplingFor(cfg)) {}
 
   // The first cycle's plan, published: once, before anything else. Called
   // again it changes nothing and counts a protocol error.
@@ -962,12 +1168,25 @@ class ReferencedSchedule {
   // a delay before the call makes a result older, never younger. Out of
   // turn (unstarted, or before the last plan was published) it changes
   // nothing and counts a protocol error.
+  //
+  // With the lead alternation, `executed` is the class of the read this cycle
+  // ran and `next` the class of the next cycle's read (known from the probe's
+  // full-read counter before its wake is planned). Every executed cycle
+  // advances the detector's freshness; a motion-only read with a reply on the
+  // lattice is its sample; the sequencer advances only for a read executed
+  // with a sign; both reset on every lock and every loss.
   const WakePlan& closeCycle(std::int64_t reply_stamp_ns, std::int64_t cycle_end_ns, std::int64_t now_ns) {
+    return closeCycle(reply_stamp_ns, cycle_end_ns, now_ns, ReadClass::kMotion, ReadClass::kMotion);
+  }
+
+  const WakePlan& closeCycle(std::int64_t reply_stamp_ns, std::int64_t cycle_end_ns, std::int64_t now_ns,
+                             ReadClass executed, ReadClass next) {
     if (phase_ != SchedulePhase::kPublished) {
       ++counts_.protocol_errors;
       return phase_ == SchedulePhase::kProvisional ? provisional_ : current_;
     }
     const std::int64_t decision_ns = std::max(now_ns, cycle_end_ns);
+    const bool was_locked = est_.state() == EstimatorState::kLocked;
     observation_ = Observation::kNone;
     if (est_.state() == EstimatorState::kAcquiring) {
       if (!pending_ && reply_stamp_ns >= 0) {
@@ -980,6 +1199,21 @@ class ReferencedSchedule {
     } else if (current_.referenced) {
       observation_ = est_.observeIntended(reply_stamp_ns, current_.target_index);
       if (est_.state() == EstimatorState::kAcquiring) restartAcquisition(decision_ns);  // lost
+    }
+    ++executed_cycles_;
+    if (alternating()) {
+      const int sign = current_.lead_offset_ns > 0 ? 1 : (current_.lead_offset_ns < 0 ? -1 : 0);
+      if (was_locked && est_.state() != EstimatorState::kLocked) {  // lost at this observation
+        detector_.reset();
+        sequencer_.reset();
+      } else {
+        const bool usable = was_locked && current_.referenced && executed == ReadClass::kMotion && reply_stamp_ns >= 0;
+        const double e = usable ? static_cast<double>(reply_stamp_ns - current_.predicted_completion_ns) -
+                                      cfg_.estimator.delay_ns
+                                : 0.0;
+        detector_.onCycle(executed_cycles_, sign, usable, e);
+        if (was_locked && current_.referenced) sequencer_.executed(executed, sign);
+      }
     }
     if (exchange_ != nullptr) takeResults(decision_ns);
     if (est_.state() == EstimatorState::kAcquiring && !pending_ && cycle_end_ns >= acquisition_end_) {
@@ -996,7 +1230,14 @@ class ReferencedSchedule {
         restartAcquisition(decision_ns);
       }
     }
-    provisional_ = planner_.next(est_, cycle_end_ns, decision_ns);
+    const bool locked = est_.state() == EstimatorState::kLocked;
+    if (alternating() && locked && !was_locked) {  // a new lock: a new lattice
+      detector_.reset();
+      sequencer_.reset();
+    }
+    const std::int64_t offset =
+        alternating() && locked ? sequencer_.signFor(next) * alternationNs() : std::int64_t{0};
+    provisional_ = planner_.next(est_, cycle_end_ns, decision_ns, offset);
     phase_ = SchedulePhase::kProvisional;
     return provisional_;
   }
@@ -1012,6 +1253,7 @@ class ReferencedSchedule {
     }
     WakePlan p = planner_.recheck(now_ns);
     p.lock_state = lockState();
+    p.coupling_state = static_cast<std::uint8_t>(detector_.state());
     accounting_.add(current_.wake_ns, p.skipped, current_.referenced);
     current_ = p;
     phase_ = SchedulePhase::kPublished;
@@ -1030,6 +1272,16 @@ class ReferencedSchedule {
     return publish(now_ns);
   }
 
+  const WakePlan& closeAndPublish(std::int64_t reply_stamp_ns, std::int64_t cycle_end_ns, std::int64_t now_ns,
+                                  ReadClass executed, ReadClass next) {
+    if (phase_ != SchedulePhase::kPublished) {
+      ++counts_.protocol_errors;
+      return phase_ == SchedulePhase::kProvisional ? provisional_ : current_;
+    }
+    closeCycle(reply_stamp_ns, cycle_end_ns, now_ns, executed, next);
+    return publish(now_ns);
+  }
+
   LockState lockState() const {
     if (est_.state() == EstimatorState::kLocked) return LockState::kLocked;
     return pending_ ? LockState::kFitPending : LockState::kAcquiring;
@@ -1040,9 +1292,24 @@ class ReferencedSchedule {
   const ScheduleCounts& counts() const { return counts_; }
   const WakePlan& current() const { return current_; }
   SchedulePhase phase() const { return phase_; }
+  const CouplingDetector& coupling() const { return detector_; }
+  const LeadSequencer& sequencer() const { return sequencer_; }
+  std::int64_t executedCycles() const { return executed_cycles_; }
   bool published() const { return phase_ == SchedulePhase::kPublished; }
 
  private:
+  bool alternating() const { return cfg_.lead_alternation_ns != 0; }
+  std::int64_t alternationNs() const {
+    return cfg_.lead_alternation_ns < 0 ? -cfg_.lead_alternation_ns : cfg_.lead_alternation_ns;
+  }
+  static CouplingConfig couplingFor(const ScheduleConfig& c) {
+    CouplingConfig k = c.coupling;
+    if (c.lead_alternation_ns != 0) {
+      k.delta_ns = static_cast<double>(c.lead_alternation_ns < 0 ? -c.lead_alternation_ns : c.lead_alternation_ns);
+    }
+    return k;
+  }
+
   void restartAcquisition(std::int64_t at_ns) {
     acquisition_end_ = at_ns + cfg_.windows.acquisition_ns;
     if (exchange_ != nullptr) exchange_->clearWorkerBuffer();
@@ -1087,6 +1354,9 @@ class ReferencedSchedule {
   WakePlan current_;
   WakePlan provisional_;
   ScheduleCounts counts_;
+  CouplingDetector detector_;
+  LeadSequencer sequencer_;
+  std::int64_t executed_cycles_ = 0;
 };
 
 }  // namespace rtctrl::hw::adapter

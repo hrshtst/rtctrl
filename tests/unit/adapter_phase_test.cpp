@@ -12,8 +12,10 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <random>
+#include <set>
 #include <thread>
 #include <atomic>
 #include <vector>
@@ -1259,4 +1261,437 @@ TEST_CASE("freshness and timeouts are judged when the call runs, not when the cy
       CHECK(s.lockState() == (late == 0 ? ad::LockState::kFitPending : ad::LockState::kAcquiring));
     }
   }
+}
+
+// ------------------------------------------------------------ the lead alternation
+
+static_assert(static_cast<int>(ad::CouplingState::kInsufficient) == 0 &&
+                  static_cast<int>(ad::CouplingState::kNoCouplingDetected) == 1 &&
+                  static_cast<int>(ad::CouplingState::kRequestTiedDetected) == 2,
+              "the log's coupling-state encoding");
+
+TEST_CASE("the review's counterexamples: a negative declaration withdrawn, stale evidence expired, a verdict latched",
+          "[hw][adapter][coupling]") {
+  using St = ad::CouplingState;
+  ad::CouplingConfig cc;  // delta 20 us, 32 pairs, confirm 8, freshness 4 x 2 x 32 cycles
+  {
+    ad::CouplingDetector d(cc);
+    std::int64_t n = 0;
+    for (int i = 0; i < 80; ++i, ++n) d.onCycle(n, i % 2 == 0 ? 1 : -1, true, 0.0);
+    REQUIRE(d.state() == St::kNoCouplingDetected);
+    // pairs of 42 us: after 16 of them the median is 21 us, above delta: the
+    // first positive evaluation withdraws the negative declaration
+    for (int j = 0; j < 16; ++j) {
+      d.onCycle(n++, 1, true, -21000.0);
+      d.onCycle(n++, -1, true, 21000.0);
+      if (j < 15) CHECK(d.state() == St::kNoCouplingDetected);  // the median still 0: its band
+    }
+    CHECK(d.lastStatistic() == 21000.0);
+    CHECK(d.state() == St::kInsufficient);
+    for (int j = 0; j < 6; ++j) {
+      d.onCycle(n++, 1, true, -21000.0);
+      d.onCycle(n++, -1, true, 21000.0);
+      CHECK(d.state() == St::kInsufficient);  // confirming
+    }
+    d.onCycle(n++, 1, true, -21000.0);
+    d.onCycle(n++, -1, true, 21000.0);
+    CHECK(d.state() == St::kRequestTiedDetected);  // 8 consecutive positive evaluations
+    // latched: neither staleness nor contrary evidence withdraws it; reset() does
+    d.onCycle(n + 100000, 0, false, 0.0);
+    for (int i = 0; i < 80; ++i) d.onCycle(n + 100001 + i, i % 2 == 0 ? 1 : -1, true, 0.0);
+    CHECK(d.state() == St::kRequestTiedDetected);
+    d.reset();
+    CHECK(d.state() == St::kInsufficient);
+    CHECK(d.pairs() == 0);
+  }
+  {
+    ad::CouplingDetector s(cc);
+    for (int i = 0; i < 80; ++i) s.onCycle(i, i % 2 == 0 ? 1 : -1, true, 0.0);
+    REQUIRE(s.state() == St::kNoCouplingDetected);
+    s.onCycle(1000, 0, false, 0.0);  // an excluded read: every pair now stale
+    CHECK(s.state() == St::kInsufficient);
+  }
+  {
+    // freshness advances on full-window reads and missing observations alike
+    ad::CouplingDetector s(cc);
+    std::int64_t n = 0;
+    for (int i = 0; i < 80; ++i, ++n) s.onCycle(n, i % 2 == 0 ? 1 : -1, true, 0.0);
+    REQUIRE(s.state() == St::kNoCouplingDetected);
+    const std::int64_t horizon = 4 * 2 * 32;
+    // the oldest pair formed at cycle 17 (the window keeps the last 32 of
+    // 40): fresh at an age of exactly the horizon, stale 1 cycle later
+    for (; n <= 17 + horizon; ++n) {
+      s.onCycle(n, n % 2 == 0 ? 0 : 1, false, 0.0);  // full-window reads (sign 0) and missing replies
+      REQUIRE(s.state() == St::kNoCouplingDetected);
+    }
+    s.onCycle(n++, 0, false, 0.0);
+    CHECK(s.state() == St::kInsufficient);
+    // re-established only by a full fresh window and K confirmations: the
+    // 32nd new pair is the first evaluation, the 39th the 8th
+    for (int j = 1; j <= 39; ++j) {
+      s.onCycle(n++, 1, true, 0.0);
+      s.onCycle(n++, -1, true, 0.0);
+      if (j < 39) REQUIRE(s.state() == St::kInsufficient);
+    }
+    CHECK(s.state() == St::kNoCouplingDetected);
+  }
+}
+
+TEST_CASE("pairs form only from adjacent opposite signs, each sample once; rejected samples break them",
+          "[hw][adapter][coupling]") {
+  ad::CouplingConfig cc;
+  ad::CouplingDetector d(cc);
+  d.onCycle(0, 1, true, 5000.0);
+  d.onCycle(4, -1, true, 9000.0);  // 4 cycles apart: a pair
+  CHECK(d.pairs() == 1);
+  d.onCycle(10, 1, true, 0.0);
+  d.onCycle(15, -1, true, 0.0);  // 5 apart: no pair; the second sample waits
+  CHECK(d.pairs() == 1);
+  d.onCycle(16, 1, true, 0.0);  // pairs with cycle 15
+  CHECK(d.pairs() == 2);
+  d.onCycle(17, 1, true, 0.0);
+  d.onCycle(18, 1, true, 0.0);  // the same sign: replaces the waiting sample
+  d.onCycle(19, -1, true, 0.0);
+  CHECK(d.pairs() == 3);
+  d.onCycle(20, 1, true, 0.0);
+  d.onCycle(21, -1, true, 600000.0);  // off-period: rejected, and it breaks the waiting sample
+  d.onCycle(22, -1, true, 0.0);       // nothing to pair with: it waits
+  CHECK(d.pairs() == 3);
+  CHECK(d.rejected() == 1);
+  d.onCycle(23, 1, true, 0.0);
+  CHECK(d.pairs() == 4);
+  d.onCycle(24, -1, false, 0.0);  // not usable: neither a sample nor a break
+  d.onCycle(25, 1, true, 0.0);
+  d.onCycle(26, -1, true, 0.0);
+  CHECK(d.pairs() == 5);
+  // +, -, +, -: two pairs, not three
+  ad::CouplingDetector e(cc);
+  e.onCycle(0, 1, true, 0.0);
+  e.onCycle(1, -1, true, 0.0);
+  e.onCycle(2, 1, true, 0.0);
+  e.onCycle(3, -1, true, 0.0);
+  CHECK(e.pairs() == 2);
+  e.reset();
+  CHECK(e.pairs() == 0);
+  e.onCycle(4, -1, true, 0.0);  // the waiting sample was cleared too
+  CHECK(e.pairs() == 0);
+}
+
+TEST_CASE("the sequencer alternates over executed motion-only reads; full-window reads stay at the base lead",
+          "[hw][adapter][coupling]") {
+  ad::LeadSequencer s;
+  CHECK(s.signFor(ad::ReadClass::kMotion) == 1);
+  CHECK(s.signFor(ad::ReadClass::kFull) == 0);
+  s.executed(ad::ReadClass::kMotion, 1);
+  CHECK(s.signFor(ad::ReadClass::kMotion) == -1);
+  s.executed(ad::ReadClass::kFull, 0);  // a full-window read: no advance
+  CHECK(s.signFor(ad::ReadClass::kMotion) == -1);
+  s.executed(ad::ReadClass::kMotion, 0);  // a read executed without a sign: no advance
+  CHECK(s.signFor(ad::ReadClass::kMotion) == -1);
+  s.executed(ad::ReadClass::kMotion, -1);
+  CHECK(s.signFor(ad::ReadClass::kMotion) == 1);
+  s.reset();
+  CHECK(s.signFor(ad::ReadClass::kMotion) == 1);
+}
+
+TEST_CASE("lead offsets: each plan's own rounded wake and +-1 ns, full-window transitions, and falling back",
+          "[hw][adapter][coupling][safety]") {
+  const ad::PlannerConfig pc;  // lead 780 us, allowance 10 us
+  ad::EstimatorConfig ec;
+  ec.supervise = false;
+  const std::int64_t d = 20000;
+  auto wakeOf = [&](const ad::AdapterPhaseEstimator& est, std::int64_t n, std::int64_t off) {
+    return static_cast<std::int64_t>(std::ceil(est.completionNs(n) - static_cast<double>(pc.lead_ns + off + pc.wake_to_read_ns)));
+  };
+  int checked = 0;
+  for (const double slope : {-57.7, 13.37}) {
+    ad::AdapterPhaseEstimator locked(ec), acquiring(ec);
+    locked.lockFrom(slope, 433.3, 0);
+    // (the outgoing plan's offset, the incoming plan's): alternation, and into and out of a full-window read
+    const std::int64_t pairs[][2] = {{d, -d}, {-d, d}, {d, 0}, {0, -d}, {-d, 0}, {0, d}};
+    for (const auto& pr : pairs) {
+      for (const std::int64_t delta : {std::int64_t{-1}, std::int64_t{0}, std::int64_t{1}}) {
+        INFO("slope " << slope << " offsets " << pr[0] << " -> " << pr[1] << " delta " << delta);
+        ad::WakePlanner planner(pc, 1 + 7 * pc.grid_period_ns / 3);
+        planner.first();
+        const std::int64_t n = 3000;
+        const ad::WakePlan a = planner.next(locked, wakeOf(locked, n, pr[0]) - 300000,
+                                            wakeOf(locked, n, pr[0]) - 300000, pr[0]);
+        REQUIRE(a.target_index == n);
+        REQUIRE(a.wake_ns == wakeOf(locked, n, pr[0]));
+        REQUIRE(a.lead_offset_ns == pr[0]);
+        // the cycle ends at the next plan's own wake, 1 ns before or after
+        const std::int64_t own = wakeOf(locked, n + 1, pr[1]);
+        const ad::WakePlan b = planner.next(locked, own + delta, own + delta, pr[1]);
+        CHECK(b.lead_offset_ns == pr[1]);
+        CHECK(b.target_index == (delta > 0 ? n + 2 : n + 1));
+        CHECK(b.skipped == (delta > 0 ? 1U : 0U));
+        CHECK(b.wake_ns == wakeOf(locked, b.target_index, pr[1]));
+        ++checked;
+      }
+    }
+    // falling back from a plan at +delta: the outgoing slot counted with its offset
+    for (const std::int64_t delta : {std::int64_t{-1}, std::int64_t{0}, std::int64_t{1}}) {
+      const std::int64_t n = 3000;
+      const std::int64_t next_slot = wakeOf(locked, n + 1, d);  // the outgoing schedule's next slot
+      const std::int64_t grid_wake = next_slot + delta;
+      ad::WakePlanner planner(pc, grid_wake - 5 * pc.grid_period_ns);
+      planner.first();
+      const ad::WakePlan a = planner.next(locked, wakeOf(locked, n, d) - 300000, wakeOf(locked, n, d) - 300000, d);
+      REQUIRE(a.target_index == n);
+      const ad::WakePlan fb = planner.next(acquiring, grid_wake - 400, grid_wake - 400, d);
+      REQUIRE_FALSE(fb.referenced);
+      CHECK(fb.lead_offset_ns == 0);  // the grid has no offset
+      CHECK(fb.wake_ns == grid_wake);
+      CHECK(fb.skipped == (delta > 0 ? 1U : 0U));
+      ++checked;
+    }
+  }
+  CHECK(checked == 2 * (6 * 3 + 3));
+}
+
+namespace {
+
+struct DitherRun;
+void checkOffsets(const DitherRun& r);
+
+// The closed loop with the lead alternation: full-window reads every 100th
+// executed cycle (the probe's counter), the read class of each cycle and the
+// next passed to the schedule. Request-tied replies when tied_delay > 0.
+struct DitherRun {
+  std::vector<ad::WakePlan> plans;  // every published plan, in order
+  std::vector<bool> full;           // whether each plan's cycle was a full-window read
+  ad::SkipCounts whole;
+  std::uint64_t published = 0, skipped_published = 0, past = 0;
+  std::uint64_t locks = 0, losses = 0;
+  std::vector<std::int64_t> tied_at;  // executed cycles from each lock to request-tied
+  std::uint64_t locks_seen = 0, tied_locks = 0, free_locks = 0, reset_ok = 0;
+  std::uint64_t fallbacks = 0, reset_on_loss = 0;
+  std::uint64_t rechecked = 0, offset_changed = 0;
+  // each lock: its length in executed cycles and whether request-tied was declared
+  std::vector<std::pair<std::int64_t, bool>> lock_outcomes;
+};
+
+// publish_delay_every > 0: every so many cycles the publication runs 2.5
+// periods after the plan was made (a scheduler delay), so its recheck moves
+// the plan.
+DitherRun ditherLoop(const Lattice& lat, const Probe& pr, double tied_delay, double duration_ns = 12e9,
+                     int publish_delay_every = 0, std::int64_t alternation_ns = 20000) {
+  DitherRun r;
+  ad::ScheduleConfig cfg = defaultConfig();
+  cfg.lead_alternation_ns = alternation_ns;
+  cfg.coupling.delta_ns = 99999.0;  // replaced by the alternation's magnitude
+  ad::ReferencedSchedule s(cfg, 0);
+  ad::WakePlan plan = s.first();
+  std::int64_t lock_start = -1;
+  bool tied_seen = false, free_seen = false;
+  for (std::int64_t k = 0; static_cast<double>(plan.wake_ns) < duration_ns; ++k) {
+    const bool full = k % 100 == 0;
+    const bool next_full = (k + 1) % 100 == 0;
+    std::int64_t stamp = 0, end = 0;
+    if (tied_delay > 0) {
+      const double send = static_cast<double>(plan.wake_ns) + 2000.0 + 12000.0;
+      stamp = static_cast<std::int64_t>(send + tied_delay + (full ? 110000.0 : 0.0) +
+                                        2000.0 * (unit(pr.seed, k) - 0.5));
+      end = stamp + 5000;
+    } else {
+      const CycleOut c = runCycle(lat, pr, k, plan.wake_ns);
+      stamp = c.stamp;
+      end = c.end;
+    }
+    r.plans.push_back(plan);
+    r.full.push_back(full);
+    const std::int64_t now =
+        publish_delay_every > 0 && k % publish_delay_every == publish_delay_every - 1 ? end + 2500000 : end;
+    const ad::WakePlan prov = s.closeCycle(stamp, end, end, full ? ad::ReadClass::kFull : ad::ReadClass::kMotion,
+                                           next_full ? ad::ReadClass::kFull : ad::ReadClass::kMotion);
+    plan = s.publish(now);
+    ++r.published;
+    r.skipped_published += plan.skipped;
+    if (plan.wake_ns < now) ++r.past;
+    if (plan.lead_offset_ns != prov.lead_offset_ns) ++r.offset_changed;
+    if (plan.referenced && plan.recheck_skipped > 0) ++r.rechecked;
+    if (!plan.referenced && plan.transition) {  // fallen back: the lock was lost at this cycle's reply
+      ++r.fallbacks;
+      if (s.coupling().pairs() == 0 && s.coupling().state() == ad::CouplingState::kInsufficient &&
+          s.sequencer().signFor(ad::ReadClass::kMotion) == 1) {
+        ++r.reset_on_loss;
+      }
+      r.lock_outcomes.emplace_back(k - lock_start, tied_seen);
+    }
+    if (plan.referenced && plan.transition) {  // a new lock: the detector starts over
+      ++r.locks_seen;
+      if (s.coupling().pairs() == 0 && s.coupling().state() == ad::CouplingState::kInsufficient) ++r.reset_ok;
+      if (tied_seen) ++r.tied_locks;
+      if (free_seen) ++r.free_locks;
+      lock_start = k;
+      tied_seen = free_seen = false;
+    }
+    if (plan.referenced && plan.coupling_state == 2 && !tied_seen) {
+      tied_seen = true;
+      r.tied_at.push_back(k - lock_start);
+    }
+    if (plan.referenced && plan.coupling_state == 1) free_seen = true;
+  }
+  if (tied_seen) ++r.tied_locks;
+  if (free_seen) ++r.free_locks;
+  if (lock_start >= 0 && plan.referenced) r.lock_outcomes.emplace_back(static_cast<std::int64_t>(r.plans.size()) - lock_start, tied_seen);
+  r.whole = s.accounting().wholeRun();
+  r.locks = s.estimator().counts().locks;
+  r.losses = s.estimator().counts().losses;
+  return r;
+}
+
+// The offsets of a run's published plans:
+//   - each lock's first motion-only read at +delta, then motion-only reads
+//     alternating over the reads executed, skipped targets or not;
+//   - full-window reads at the base lead;
+//   - each wake from its own plan's offset: consecutive wakes differ by
+//     their predicted completions' difference less their offsets' difference,
+//     to the rounding (ceil against llround: 1 ns);
+//   - consecutive wakes with no skip near P - 2 delta or P + 2 delta, and
+//     P -+ delta into and out of a full-window read (the nominal spacing;
+//     the estimator's steps move a wake by up to eta, plus 1 us rounding).
+void checkOffsets(const DitherRun& r) {
+  int last_sign = 0, alternations = 0, breaks = 0, after_skip = 0;
+  std::map<long, int> spacing;  // us -> count
+  for (std::size_t i = 1; i < r.plans.size(); ++i) {
+    const ad::WakePlan& p = r.plans[i];
+    const ad::WakePlan& q = r.plans[i - 1];
+    if (!p.referenced) {
+      last_sign = 0;
+      continue;
+    }
+    if (p.transition) last_sign = 0;
+    if (q.referenced && !p.transition) {
+      const std::int64_t nominal =
+          (p.predicted_completion_ns - q.predicted_completion_ns) - (p.lead_offset_ns - q.lead_offset_ns);
+      CHECK(std::llabs(p.wake_ns - q.wake_ns - nominal) <= 1);
+      if (p.skipped == 0) ++spacing[std::lround(static_cast<double>(p.wake_ns - q.wake_ns) / 1e3)];
+    }
+    if (r.full[i]) {
+      CHECK(p.lead_offset_ns == 0);
+      continue;
+    }
+    const int sign = p.lead_offset_ns > 0 ? 1 : -1;
+    CHECK(std::abs(p.lead_offset_ns) == 20000);
+    if (last_sign == 0) {
+      CHECK(sign == 1);
+    } else if (sign == -last_sign) {
+      ++alternations;
+      if (p.skipped > 0) ++after_skip;
+    } else {
+      ++breaks;
+    }
+    last_sign = sign;
+  }
+  CHECK(breaks == 0);
+  CHECK(alternations > 5000);
+  CHECK(after_skip > 10);  // alternation over executed reads, exercised across skipped targets
+  const long tol = 3;      // eta (2 us) plus rounding
+  for (const long nominal : {960L, 980L, 1020L, 1040L}) {
+    int n = 0;
+    for (const auto& kv : spacing) {
+      if (std::labs(kv.first - nominal) <= tol) n += kv.second;
+    }
+    INFO("nominal " << nominal << " us");
+    CHECK(n > 0);  // full-read transitions both ways, and both alternations, seen
+  }
+  for (const auto& kv : spacing) {
+    INFO("spacing " << kv.first << " us, " << kv.second << " times");
+    const bool near = std::labs(kv.first - 960) <= tol || std::labs(kv.first - 980) <= tol ||
+                      std::labs(kv.first - 1020) <= tol || std::labs(kv.first - 1040) <= tol;
+    CHECK(near);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("the lead alternation in closed loop: offsets over executed reads, accounting once, outcomes per lock",
+          "[hw][adapter][coupling][safety]") {
+  SECTION("an independent cadence: no coupling detected, never request-tied") {
+    Lattice lat;
+    Probe pr;
+    const DitherRun r = ditherLoop(lat, pr, 0.0);
+    REQUIRE(r.locks == 1);
+    CHECK(r.losses == 0);
+    CHECK(r.past == 0);
+    CHECK(r.tied_at.empty());
+    CHECK(r.free_locks == 1);
+    CHECK(r.reset_ok == r.locks_seen);
+    // exactly once: every publication counted, with the skips it carried
+    CHECK(r.whole.cycles == r.published);
+    CHECK(r.whole.skipped == r.skipped_published);
+    checkOffsets(r);
+  }
+  SECTION("a negative magnitude is its absolute value; the detector's delta follows it") {
+    Lattice lat;
+    Probe pr;
+    const DitherRun r = ditherLoop(lat, pr, 0.0, 12e9, 0, -20000);
+    REQUIRE(r.locks == 1);
+    CHECK(r.tied_at.empty());
+    CHECK(r.free_locks == 1);
+    checkOffsets(r);
+    ad::ScheduleConfig cfg = defaultConfig();
+    cfg.lead_alternation_ns = -15000;
+    cfg.coupling.delta_ns = 99999.0;
+    const ad::ReferencedSchedule s(cfg, 0);
+    CHECK(s.coupling().config().delta_ns == 15000.0);
+  }
+  SECTION("delayed publications: each recheck keeps its plan's offset; the accounting stays exact") {
+    Lattice lat;
+    Probe pr;
+    const DitherRun r = ditherLoop(lat, pr, 0.0, 12e9, 37);
+    REQUIRE(r.locks == 1);
+    CHECK(r.past == 0);
+    CHECK(r.rechecked > 100);
+    CHECK(r.offset_changed == 0);
+    CHECK(r.tied_at.empty());
+    CHECK(r.whole.cycles == r.published);
+    CHECK(r.whole.skipped == r.skipped_published);
+    checkOffsets(r);
+  }
+  SECTION("request-tied replies (800 us after the send): detected in each lock that lasts") {
+    Lattice lat;
+    Probe pr;
+    const DitherRun r = ditherLoop(lat, pr, 800000.0);
+    CHECK(r.locks >= 1);
+    CHECK(r.past == 0);
+    CHECK(r.free_locks == 0);  // never "no coupling detected"
+    REQUIRE_FALSE(r.tied_at.empty());
+    for (std::int64_t at : r.tied_at) CHECK(at < 200);
+    CHECK(r.reset_ok == r.locks_seen);
+    // every false lock ends (the period clamp), and each that lasted 200
+    // executed cycles was declared request-tied first
+    REQUIRE(r.fallbacks >= 1);
+    CHECK(r.reset_on_loss == r.fallbacks);
+    REQUIRE(r.lock_outcomes.size() == r.locks_seen);
+    for (const auto& lo : r.lock_outcomes) {
+      INFO("lock of " << lo.first << " executed cycles");
+      CHECK((lo.second || lo.first < 200));
+    }
+    CHECK(r.whole.cycles == r.published);
+    CHECK(r.whole.skipped == r.skipped_published);
+  }
+}
+
+TEST_CASE("a publication's recheck keeps the plan's lead offset", "[hw][adapter][coupling]") {
+  ad::PlannerConfig pc;
+  pc.min_gap_ns = 20000;
+  ad::EstimatorConfig ec;
+  ec.supervise = false;
+  ad::AdapterPhaseEstimator locked(ec);
+  locked.lockFrom(-57.7, 433.3, 0);
+  ad::WakePlanner planner(pc, 12345);
+  planner.first();
+  const std::int64_t w = static_cast<std::int64_t>(std::ceil(locked.completionNs(3000) - (780000.0 - 20000.0 + 10000.0)));
+  const ad::WakePlan prov = planner.next(locked, w - 300000, w - 300000, -20000);
+  REQUIRE(prov.target_index == 3000);
+  REQUIRE(prov.wake_ns == w);
+  const ad::WakePlan pub = planner.recheck(w + 2500000);  // a delay of 2.5 periods
+  CHECK(pub.lead_offset_ns == -20000);
+  CHECK(pub.recheck_skipped == 3);
+  const std::int64_t want =
+      static_cast<std::int64_t>(std::ceil(locked.completionNs(pub.target_index) - (780000.0 - 20000.0 + 10000.0)));
+  CHECK(pub.wake_ns == want);
 }
