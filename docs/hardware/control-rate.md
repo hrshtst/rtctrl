@@ -2848,8 +2848,8 @@ revision whose emulator check requires exactly 4-5, operator blocks naming
 the observers at the time, their checks, and a separate go with fresh
 attempt names.
 
-**Plan L1's rehearsal: the procedure (for review; not executed).** On the
-emulator only, the arm's actuator power off, at the candidate's commit:
+**Plan L1's rehearsal: the procedure (executed 2026-11-20 as attempts 20
+and 21, recorded below).** On the emulator only, the arm's actuator power off, at the candidate's commit:
 the supervisor's layout `l1` as the committed constant, attempts 20
 (untraced) and 21 (timer), into `clock-validation-20`,
 `clock-validation-21` and `clock-validation-option-l1`. Everything A3 ran
@@ -2910,6 +2910,55 @@ adjustment inside the timer run makes it UNSUPPORTED again. The placement
 checks read the trace's clock and the probe's monotonic stamps, not the
 conversion. A cap exit, a servo-state anomaly, a timeout or a read failure
 is a failure; nothing is retried. Hardware and H2 stay paused.
+
+**Attempts 20 and 21 (2026-11-20, at `095cc61`): acquired; placement PASS;
+1 kHz not passed.** On the emulator only, actuator power off, the operator
+ran the blocks unchanged after a readiness record meeting all its checks.
+The readiness check's package rule had been replaced first: a 2026-11-20
+maintenance of 14 unrelated packages was assessed and accepted, and every
+package change since the accepted baseline is now recorded and assessed,
+with acquisition stopped for a relevant or unexplained change, a changed
+pinned identity or an active package operation. Both blocks exited 0 and
+the supervisor reported the pair acquired. The review gave separate
+verdicts, as the candidate's review had predeclared:
+
+- **Acquisition and recorded restoration: accepted.** Both record gates
+  passed, 14 of 14 and 15 of 15, also against the closed set record, with
+  zero read failures, timeouts and guard waits, three complete servo-state
+  records, one emulator process allowed exactly 4-5 in the guard's record
+  and all three supervisor records, the controls on CPU 7 passing as an
+  aggregate (negative-normal INCONCLUSIVE), and every restoration verified.
+- **Placement: PASS within the declared evidence and limits.** Attempt
+  21's continuous trace shows the emulator and every unbound execution and
+  resident worker on 4-5 only, both tty flush directions there, no
+  forbidden residency on CPU 3, every CPU outside 4-5 with switch evidence
+  (none unestablished), no trace losses, and no confined observer or probe
+  helper running on 2-5. Attempt 20, untraced, has the confinement,
+  identity, mask and snapshot evidence, not a continuous trace. CPU 2 still
+  took the storage controller's interrupts (51,875 handler groups in the
+  window) and unlisted tasks ran on 2, 4 and 5; these are declared limits,
+  and no CPU is established as exclusive.
+- **The clock certificate: CERTIFIED**, U = 1,569 ns against 5,000 ns.
+- **The timer service: PASS** for the 19,997 recorded sleeps, all served on
+  time. This certifies neither transaction latency nor a complete control
+  loop.
+- **Complete 1 kHz performance: not passed.** T2 fails, with 5 and 2
+  skipped cycles against 1.9995 and 1.9998 allowed and 3 and 1
+  consecutive-skip occurrences. T6a's p99.9 values (0.088 and 0.051 ms)
+  pass its 0.7 ms limit, but its maxima (3.663 and 2.923 ms) fail the 1 ms
+  bound.
+
+Every skipped cycle lies in three long read transactions about 7 s into
+each run (attempt 20, cycles 7388 and 7389; attempt 21, cycle 7360), with a
+few microseconds of wake lateness: the delay is inside the measured read,
+which localizes it without explaining it. The next step is an offline
+analysis of attempt 21's existing capture, starting with cycle 7360. The
+descriptive timing is much better than A3's (999.75 and 999.90 Hz mean;
+host work p99.9 0.088 and 0.051 ms), but L1 changed placement, unbound-work
+routing, confinement and stress capacity together, two days later and after
+package maintenance: the comparison identifies no single cause, and nothing
+about the real USB adapter, the RS-485 bus or the servos. The records are
+archived in `clock_validation/`. Hardware and H2 stay paused.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 

@@ -934,7 +934,7 @@ with its own verdict.
 The details are in the
 [control-rate qualification](../hardware/control-rate.md).
 
-## Control-rate Option A emulator validation (2026-11-12 to 2026-11-18)
+## Control-rate Option A emulator validation (2026-11-12 to 2026-11-20)
 
 After the clock-alignment work, the reviewer chose a loaded emulator
 validation with CPU 3 cleared from the kernel's unbound workqueue mask
@@ -983,6 +983,23 @@ optional. The 1 kHz timing requirement remains unmet: 941.444 and
 rehearsal's offline tools may now be implemented, while placement changes,
 new acquisitions, hardware and H2 stay paused. The details are in the
 [control-rate qualification](../hardware/control-rate.md).
+
+Plan L1 then moved the emulator and all unbound workqueue work onto CPUs
+4-5, kept CPU 2 (CPU 3's SMT sibling) free of everything the rig places,
+and confined the listed observer applications off CPUs 2-5, as one declared
+bundle. Its tools were reviewed through two corrections of the unbound-work
+check: executions are followed across their task's switches, and off-set
+worker residency fails even without execution boundaries. Attempts 20 and
+21 (2026-11-20, at `095cc61`) were acquired with every restoration
+verified. Placement passed within its declared limits (CPU 2 still takes
+the storage controller's interrupts, and unlisted tasks still run on 2, 4
+and 5), the clock certificate was CERTIFIED, and the timer service passed
+for all 19,997 sleeps. Complete 1 kHz performance still did not pass: T2
+and T6a's maxima fail, every skip falling in three long read transactions
+about 7 s into each run. The bundle's timing is much better than A3's
+(999.75 and 999.90 Hz mean against 941 and 944 Hz), which names no single
+cause. An offline analysis of attempt 21's longest read comes next;
+hardware and H2 stay paused.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
