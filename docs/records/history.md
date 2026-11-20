@@ -1045,6 +1045,22 @@ than the worker (softirq on CPU 7), accepted under the checker's
 deferred-submission rule; the plan's literal statement that none would was
 not met. The confined comparison is next, for review.
 
+The confined comparison ran the same evening as attempt 26 (at `5c0812f`),
+in one sitting: the observers confined off CPUs 2 and 3 for an untraced
+and a timer invocation, then an open pair, the developer reviewing each
+invocation's validity before the next one's go. All three invocations
+were accepted as valid torque-off diagnostic evidence, and 1 kHz stays
+unqualified (T1, T2 and T6a fail in all four runs). Confined, host
+scheduling all but vanished from the complete reads' time, the TTY work
+ran on CPU 2 and waited far less, and the transaction tails were lower;
+why the unbound workers chose CPU 2 is not established. The mean rate did
+not follow the placement: the confined untraced run was the fastest
+(774 Hz) and the confined timer run the slowest (580 Hz). How the reads
+fell against the adapter's 1 ms completion cadence is associated with
+their time, but that distribution may itself depend on placement and
+cycle skipping, so it is not an established confound. Offline analysis
+of the existing captures and logs is next; no acquisition is approved.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

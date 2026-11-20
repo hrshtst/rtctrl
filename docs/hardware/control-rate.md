@@ -3283,6 +3283,75 @@ check ends the sitting. Attempt 23's controls are reused, as for attempt
 (with the confined runs' placement checks added), the stop rules and the
 restoration. This approves no run.
 
+**Attempt 26: the confined comparison, accepted (2026-11-20).** The review
+chose the recommended sequence, L1's observer set and attempt 25's
+workqueue-mask and interrupt policy, and required one fix to the blocks:
+an invocation's block now completes only when the invocation exited 0 and
+its interrupt record after was written; otherwise it stops and latches the
+sitting. At `5c0812f`, readiness met all 40 checks immediately before
+block 1, the sitting's bash had no rc files, and the confined untraced
+invocation, the confined timer invocation and the open pair each ended
+CHECKED. The developer reviewed the applicable validity checks before
+giving each go. The reviewer accepted all three invocations as valid
+torque-off diagnostic evidence:
+- torque off throughout; in both timer runs' captured adapter traffic no
+  write reaches Torque Enable or Drive Mode, and every goal-current entry
+  is zero (the confined untraced run rests on the probe's own after-check);
+- the confinement settled and was restored with no failure; in the
+  confined timer run's trace no observer thread or probe helper ran on
+  CPUs 2 or 3;
+- both timer runs' clock conversions accepted under revision 54
+  (U = 1,681 ns confined, 761 ns open) and their real USB association PASS;
+- the placement policy unchanged (mask `ffffffff`, the xHCI interrupt on
+  CPU 7), the cleanup complete, and attempt 23's controls describing both
+  timer runs.
+
+| run | mean rate | host transaction p99.9 / max |
+|---|---|---|
+| confined untraced | 774.4 Hz | 1.73 / 1.93 ms |
+| confined timer | 579.7 Hz | 1.47 / 1.65 ms |
+| open untraced | 644.1 Hz | 3.26 / 4.27 ms |
+| open timer | 640.7 Hz | 2.97 / 3.97 ms |
+
+T1, T2 and T6a fail in all four runs, so 1 kHz stays unqualified. The
+record carries the review's qualifications (an addendum to the sealed
+results packet):
+- **Host scheduling.** Its share was 0.4 % confined against 3.5 % open, of
+  the complete reads' host-transaction time; the complete reads cover
+  97.5 % and 79.8 % of all reads' time. Confined, the TTY work ran on CPU 2
+  in 11,590 of 11,594 reads, its queue waits of 100 us or more fell from
+  500 reads to 4, and the transaction tails were lower. These are useful
+  observations; they do not establish why the unbound workers selected
+  CPU 2.
+- **Sleep timing.** All 11,590 sleeps of the confined timer run were on
+  time; the open timer run had four late sleeps, classified as "interrupt
+  late from idle".
+- **The mean rate did not follow the placement.** The confined untraced
+  run was the sitting's fastest and the confined timer run its slowest. In
+  both timer runs a read's time is associated with where its OUT
+  completion falls between the adapter's 1 ms bulk IN completions, a
+  retrospective association. The reads' spread over those phases differed
+  (33.9 % early confined, 49.9 % open), and selected phase bins had
+  similar medians, which does not show them equivalent. The phase
+  distribution could itself change with placement and cycle skipping, so
+  it is not established as an independent confound. The reviewer's check
+  of the per-cycle logs found about 70.9 % of the confined untraced
+  cycles finishing within their next deadline, against 27.5 % in the
+  confined timer run. That helps account for their rates and leaves the
+  underlying difference unexplained.
+- **The dry run** checks the arguments; the real invocation enforces the
+  prerequisites (the plan's "must then accept the exact arguments").
+- **Deferred submissions.** 3 OUT submissions in the confined timer run
+  and 1 in the open one came from another task than the worker, accepted
+  under the checker's deferred-submission rule.
+
+The three invocations are archived in `stage1_hardware/`
+(`h2r-placement-26-confined-untraced/`, `-confined-timer/` and `-open/`).
+Next, offline analysis of the existing captures and per-cycle logs is
+authorized: the 1 ms deadline grid, the skipped slots and the USB-phase
+distributions, reconciled across the four runs. No acquisition, placement
+change or powered control is approved.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction
