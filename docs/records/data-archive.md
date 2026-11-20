@@ -2403,10 +2403,16 @@ PASS within the declared evidence and limits; the clock certificate CERTIFIED (U
 for the 19,997 recorded sleeps; complete 1 kHz performance not passed (T2, and T6a's maxima above 1 ms).
 `option-a3-acquisition-addendum/` is attempt 19's process-listing timestamp erratum. The three capture folders'
 `SHA256SUMS` were written at archiving.
+Attempt 21's read-only offline analysis (`option-l1-attempt21-offline/`) and its corrections
+(`option-l1-attempt21-offline-addendum/`, made at the review's request before recording): of the 12 reads of 100 us
+or more, every one with a complete chain, 8 (the 7 longest, 623 us to 2.92 ms, and one of 200 us) were queued
+behind threads of Firefox, which was not an observer root; one behind an unbound worker; one is an elapsed
+emulator phase; two are not explained. The occupancy is switch-delimited scheduled time, interrupts not separated.
+Attempt 20 has no trace; the verdicts are unchanged.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the third run's candidate and attempts 18 and 19 (acquired; the validation not passed: the certificate UNSUPPORTED), the terminal clarification, the T3 wording correction, plan L1's candidate, readiness and attempts 20 and 21 (acquired; placement PASS; certificate CERTIFIED; timer service PASS; 1 kHz not passed) | `e63f9e0a9433e00707cd689fd086f93ff4065847188628f9410f39416cad1145` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the third run's candidate and attempts 18 and 19 (acquired; the validation not passed: the certificate UNSUPPORTED), the terminal clarification, the T3 wording correction, plan L1's candidate, readiness and attempts 20 and 21 (acquired; placement PASS; certificate CERTIFIED; timer service PASS; 1 kHz not passed), attempt 21's offline analysis and its corrections | `2e328f6da8ebc0b67e73e473ace71cc18de104ce67e1a80ae724e089783090f9` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -3008,6 +3014,26 @@ for the 19,997 recorded sleeps; complete 1 kHz performance not passed (T2, and T
 | `option-l1-acquisition-20261120/post-run-host-state.txt` | the host state after the run (every restoration) | `5930262834210eceddc04572efbfd1d4d1bc72e63b887f5abda9a4e06e50bc66` |
 | `option-l1-acquisition-addendum/SHA256SUMS` | folder ledger | `41f088ceec88d78d60cda54f780d944182d5572cc16a3ba536608e66e22b1781` |
 | `option-l1-acquisition-addendum/corrections.md` | reporting corrections (T6a's 1 ms maximum; T2 not rounded; the emulator's lifetime statistics; the USB fallback label; attempt 21's continuous trace) | `7240a0e32c9a5920c282f08753c3636ae871d0dc8e91152e174f731dfdc9a124` |
+| `option-l1-attempt21-offline-addendum/README.md` | corrections to attempt 21's offline analysis: the coverage (8 of the 12 reads of 100 us or more queued behind Firefox; the 4 reads without a chain short), scheduled time and the elapsed emulator phase, the unknown queued CPU | `fa630d2b1f23add695345aaf15cc2fe4a712ab580bfc9006df5272de2093a560` |
+| `option-l1-attempt21-offline-addendum/SHA256SUMS` | folder ledger | `05237af07e2585076cb6aa71fd4cacf1c51e31dc05f5f551287ea956d4aff263` |
+| `option-l1-attempt21-offline-addendum/long_stages.diff` | revision 1 to revision 2 | `a5a89887e64597b6bd53883332f52b97bae3b267d32b811405d544a173e12843` |
+| `option-l1-attempt21-offline-addendum/long_stages.py` | revision 2: an unknown queued CPU instead of a future one; the reads without a chain and every read of 100 us or more listed | `d07bc445eb9e4b839d0d8e67e7f3c46edf1892ef7ad23a60e888853c6f3057f4` |
+| `option-l1-attempt21-offline-addendum/outputs/long-stages.txt` | revision 2's output on attempt 21 (no unknown segment; the attributions unchanged) | `e8020cd4bb159aacc07528195be1e2622fe3c4385eaf3389fc773578957cb130` |
+| `option-l1-attempt21-offline-addendum/outputs/segments-cases.txt` | the synthetic cases' output (7 as wanted; revision 1 differs in the 2 without an earlier destination) | `5f297d0a0c0856ee390f78c5bd47d290bca32af165df67888c9755fa8d372d7d` |
+| `option-l1-attempt21-offline-addendum/test_segments.py` | synthetic cases for both revisions' queue segments | `55976caef498abe3d0ad79ce58c8925756ff5788238a0e60a5553ce1cdff4e35` |
+| `option-l1-attempt21-offline/README.md` | attempt 21's offline analysis (read-only): the long read transactions, cycle 7360, the roughly 0.9 ms reads and every wait stage of 100 us or more (its coverage and wording narrowed by the addendum) | `3bab574042ebe395a8ea8cd9b88d6c52f2ed4128d8dce4b0c843c73a8dc4ef0e` |
+| `option-l1-attempt21-offline/SHA256SUMS` | folder ledger | `3c236996a96fe32fb296cea5372ada048ae5d9e7bd5e462eb87f12824aa2c28b` |
+| `option-l1-attempt21-offline/long_stages.py` | revision 1: every wait stage of 100 us or more and what was scheduled on the queued CPU (its future-destination fallback corrected by the addendum) | `ea54eaa853ac6429cf384940bf06cce088c7501aa05e4af3676af73d47e8c727` |
+| `option-l1-attempt21-offline/outliers.py` | the per-read chain on attempt 21 (attempt 17's accepted chain, attempt 21's identities) and the target reads' timelines | `3ffbdc04c5b33cb38dc40434e1cf1c2375dec83596b1565dd32416d49042ba92` |
+| `option-l1-attempt21-offline/outputs/long-stages.txt` | revision 1's output: the 12 waits of 100 us or more | `63c4aea68b28fa11bfb47c5bd23efddb11489021eeb2b8cd4d9e25d5c7861fc8` |
+| `option-l1-attempt21-offline/outputs/stages.txt` | every read's stage distribution (19,994 complete chains) and the target reads' stages | `e9668f3ad9ecc10227f8e4499090dd6770e306fbbbe23f110725399cdef95613` |
+| `option-l1-attempt21-offline/outputs/timeline-6178.txt` | cycle 6178's events (a roughly 0.9 ms read) | `5ad330e2bfee35b4a59c7b73342ae0195dccd5a3b883eb1b9337751603725907` |
+| `option-l1-attempt21-offline/outputs/timeline-6186.txt` | cycle 6186's events (a roughly 0.9 ms read) | `89a5b9d9fb98fc98a8b339526af097ccb27a6ddca9806eca923901fc0b5d9e49` |
+| `option-l1-attempt21-offline/outputs/timeline-6187.txt` | cycle 6187's events (a roughly 0.9 ms read) | `2d18455a1f9da393cc05b3eef6f31af694599d1f995ea5f7bf39eca47330c703` |
+| `option-l1-attempt21-offline/outputs/timeline-6188.txt` | cycle 6188's events (a roughly 0.9 ms read) | `32a63172883618cb5adafb002ba2e02b3b090fcf38247b5a0e6ad7235a1e3c82` |
+| `option-l1-attempt21-offline/outputs/timeline-7359.txt` | cycle 7359's events (a normal read, for reference) | `215b6501e41b5b236f908caa91c144e4bd141800f3ae6b0951644f1899f470e2` |
+| `option-l1-attempt21-offline/outputs/timeline-7360.txt` | cycle 7360's events (the read holding both skipped periods) | `18079250570b2f81e7e82e124029a9120ad800266e33441c8bf8efae89a45e1c` |
+| `option-l1-attempt21-offline/run.txt` | the analysis's run record | `d90073264b805586500073ef8f6ef9c5c3788f8c33e1868133cf6edcecb7289c` |
 | `clock-validation-12/SHA256SUMS` | clock validation (attempt 12), folder ledger | `5e37e10b15b9e9e4419570d069868c5cb1fe035829e5cc870e551fb942c521e5` |
 | `clock-validation-12/fs-controls-20261111-12.controls.txt` | clock validation (attempt 12, probe controls), the controls tool's output (phases, loop, progress samples, state checks) | `d83d7ee35d12cb13e3be7c8f96039d6b85b55026964c6e6d2fd33c6c062c59eb` |
 | `clock-validation-12/fs-controls-20261111-12.run.txt` | clock validation (attempt 12, probe controls), session record | `b074b6409d360c305d4a8991cf376f9d637fe29b3538e82369d571ebfd4f9252` |

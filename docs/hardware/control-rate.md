@@ -2960,6 +2960,34 @@ package maintenance: the comparison identifies no single cause, and nothing
 about the real USB adapter, the RS-485 bus or the servos. The records are
 archived in `clock_validation/`. Hardware and H2 stay paused.
 
+**Attempt 21's long reads, offline (2026-11-20).** The approved read-only
+analysis split every read of attempt 21 into the stages of attempt 17's
+accepted chain: 19,994 of the 19,998 reads have a complete chain, and the
+four others are 13 us reads whose instruction flush starts about 2 us
+before the write returns. All 12 reads of 100 us or more have a complete
+chain with one wait stage of 100 us or more:
+
+- **8 were queued behind Firefox's content-process threads** on CPU 4 or 5,
+  while the set's other CPU was mostly idle: the 7 longest reads (623 us to
+  2.92 ms) and one of 200 us. In cycle 7360, which held both skipped
+  periods, the emulator waited 2,885 us on CPU 5, where a Firefox thread
+  remained the scheduled task with no switch, until CPU 4's load balancing
+  moved it.
+- **1 was queued behind an unbound worker** (182 us).
+- **1 is an elapsed emulator phase** of 344 us.
+- **2 are not explained** (waits of 189 and 140 us; the queued CPU was idle).
+
+Firefox was not among the observer roots, so its processes ran unconfined
+on 4-5. The occupancy is switch-delimited scheduled time, interrupts not
+separated: it shows what was scheduled, not why the scheduler kept it
+there, and a task remaining scheduled is not shown to have run
+uninterrupted. Attempt 20 has no trace, so its long reads are not
+explained. The verdicts are unchanged, and complete 1 kHz performance
+remains unqualified. Prepared for review, not run: the operator blocks
+with Firefox's root added to the observers, scheduling priorities
+unchanged. A new acquisition needs its own go and new attempt numbers.
+The analysis and its corrections are archived in `clock_validation/`.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

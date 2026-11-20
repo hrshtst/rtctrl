@@ -998,8 +998,13 @@ for all 19,997 sleeps. Complete 1 kHz performance still did not pass: T2
 and T6a's maxima fail, every skip falling in three long read transactions
 about 7 s into each run. The bundle's timing is much better than A3's
 (999.75 and 999.90 Hz mean against 941 and 944 Hz), which names no single
-cause. An offline analysis of attempt 21's longest read comes next;
-hardware and H2 stay paused.
+cause. The offline analysis of attempt 21's capture found 8 of its 12
+reads of 100 us or more, the 7 longest among them, queued on CPU 4 or 5
+behind threads of Firefox, which was not among the observer roots, while
+the set's other CPU was mostly idle; of the other four, one waited behind
+an unbound worker, one is an elapsed emulator phase and two are not
+explained. Adding Firefox's root to the observers, with scheduling
+unchanged, is prepared for review; hardware and H2 stay paused.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
