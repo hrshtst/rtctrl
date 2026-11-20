@@ -61,6 +61,16 @@ catch_discover_tests(unit_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
 
+# Adapter-referenced timing (rtctrl/hw/adapter_phase.hpp): header-only pure
+# logic against synthetic ground truth, in its own executable so that it
+# builds and runs without the library.
+add_executable(adapter_phase_tests unit/adapter_phase_test.cpp)
+target_include_directories(adapter_phase_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(adapter_phase_tests PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(adapter_phase_tests
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PROPERTIES LABELS unit)
+
 # Replaces the global operator new to count allocations, so it cannot
 # share an executable with the other unit tests.
 add_executable(alloc_free_tests unit/alloc_free_test.cpp)

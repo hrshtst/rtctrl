@@ -20,6 +20,11 @@ add_executable(x7_bus_timing bus/x7_bus_timing.cpp)
 target_link_libraries(x7_bus_timing PRIVATE rtctrl::rtctrl)
 target_include_directories(x7_bus_timing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Offline: a run's reply stamps through the adapter phase estimator
+# (header-only; no bus, no library).
+add_executable(adapter_phase_replay bus/adapter_phase_replay.cpp)
+target_include_directories(adapter_phase_replay PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # The timer service diagnostics' bracketed TSC/CLOCK_MONOTONIC sampler
 # (rdtscp: x86-64 only).
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")

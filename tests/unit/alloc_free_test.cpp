@@ -2,9 +2,11 @@
 // its own executable because it replaces the global operator new.
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstdlib>
 #include <new>
 
+#include "rtctrl/hw/adapter_phase.hpp"
 #include "rtctrl/hw/cycle_record.hpp"
 #include "rtctrl/util/spsc_ring.hpp"
 
@@ -54,4 +56,37 @@ TEST_CASE("recording, accumulating and publishing a cycle never allocates",
   g_counting = false;
   CHECK(allocations == 0);
   CHECK(stats.host_work.count() == 10000);
+}
+
+TEST_CASE("adapter-referenced tracking, planning and accounting never allocate once locked",
+          "[hw][adapter]") {
+  namespace ad = rtctrl::hw::adapter;
+  ad::ScheduleConfig cfg;
+  ad::ReferencedSchedule sched(cfg, 0);
+  // A lattice at 412 us + k * 999.9425 us; replies 10 us after the targeted
+  // completion; acquisition on the grid first (its fit allocates, uncounted).
+  const double period = 1e6 * (1 - 57.5e-6);
+  auto completion_after = [&](double t) {
+    const double k = std::ceil((t - 412000.0) / period);
+    return 412000.0 + k * period;
+  };
+  ad::WakePlan plan = sched.first();
+  auto cycle = [&]() {
+    const double ready = static_cast<double>(plan.wake_ns) + 10000.0 + 660000.0;
+    const auto stamp = static_cast<std::int64_t>(completion_after(ready) + 10000.0);
+    plan = sched.closeCycle(stamp, stamp + 5000, stamp + 5000);
+  };
+  while (sched.estimator().state() != ad::EstimatorState::kLocked ||
+         !plan.referenced) {
+    cycle();
+    REQUIRE(plan.wake_ns < 10000000000LL);
+  }
+  g_counting = true;
+  g_allocations = 0;
+  for (int i = 0; i < 20000; ++i) cycle();
+  const std::size_t allocations = g_allocations;
+  g_counting = false;
+  CHECK(allocations == 0);
+  CHECK(sched.estimator().state() == ad::EstimatorState::kLocked);
+  CHECK(sched.estimator().counts().gated >= 20000);
 }
