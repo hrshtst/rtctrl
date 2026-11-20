@@ -1017,9 +1017,15 @@ and 23 and none in attempt 21: the deadline slots' premise that every entry
 is raised by a recorded deadline is unsupported. Clock alignment revision 54,
 accepted after one correction (the ordered pair's own bound, independent of
 other pairs' brackets), identifies such an entry by order, reports it and
-keeps it out of the conversion. Separately labelled revision-54 reanalyses
-of attempts 13, 21 and 23 come next; no recorded verdict changes before
-their review, and hardware and H2 stay paused.
+keeps it out of the conversion. Its separately labelled reanalyses were
+accepted as additional, versioned verdicts beside the intact revision-53
+failures: attempt 13's conversion accepted (U = 524 ns; its three late
+sleeps "interrupt late from idle", still late; no overall change for the
+12/13 pair), attempt 21 unchanged, and attempt 23's conversion accepted
+(U = 1,581 ns) with its timer validation passing under the PTY exception,
+so the 22/23 emulator-validation pair passes under revision 54. This
+qualifies no control rate and no physical USB/RS-485 path; the stray
+interrupts' cause remains unknown, and hardware and H2 stay paused.
 
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 

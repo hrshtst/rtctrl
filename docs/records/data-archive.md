@@ -2424,10 +2424,19 @@ conversion not accepted (one deadline slot with two instance anchors, one with n
 bound); all 19,999 sleeps on time, independently of the conversion; complete timer validation not passed. Both runs
 pass every measured probe criterion (zero skips; host work at most 0.353 and 0.711 ms). The three capture folders'
 `SHA256SUMS` were written at archiving.
+The deadline-slot failures of attempts 13 and 23: `clock-slot-investigation-20261120/` (the read-only investigation:
+one entry no recorded deadline was due to raise in each, none in attempt 21; the slots' premise unsupported),
+`review-clock-slot-proposal/` (the reviewer's: the own-bound gap of the proposal), `clock-slot-fix-20261120/` (the
+correction, accepted as clock alignment revision 54), `clock-rev54-reanalysis-20261120/` (the separately labelled
+revision-54 reanalyses of attempts 13, 21 and 23) and `review-clock-rev54-reanalysis/` (the review's versioned
+verdicts, as the owner relayed them): under revision 54, attempt 13's conversion accepted (U = 524 ns; its three late
+sleeps "interrupt late from idle", still late; no overall change for the 12/13 pair), attempt 21 unchanged, attempt
+23's conversion accepted (U = 1,581 ns) and its timer validation PASS under the PTY exception, so the 22/23 pair
+passes under revision 54. The revision-53 analyses and failures stay intact beside them.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the third run's candidate and attempts 18 and 19 (acquired; the validation not passed: the certificate UNSUPPORTED), the terminal clarification, the T3 wording correction, plan L1's candidate, readiness and attempts 20 and 21 (acquired; placement PASS; certificate CERTIFIED; timer service PASS; 1 kHz not passed), attempt 21's offline analysis and its corrections, the Firefox observer update, plan L1's second rehearsal's candidate and attempts 22 and 23 (acquired; placement PASS; every measured probe criterion passed; the model CERTIFIED, the conversion not accepted; 19,999 sleeps on time; the timer validation not passed) | `0ffdf08720d77bf5981621dbdf62be7e694e18fc24fd1a593d8d0d0115a6b345` |
+| `README.md` | the section's README: contents, the reviewers' verdicts through the accepted attempt 15 diagnosis, the second run's proposal, its reviews, the candidate 4dd5bc7, the acquisition identity and attempts 16 and 17 (accepted; 1 kHz timing unmet), the third run's candidate and attempts 18 and 19 (acquired; the validation not passed: the certificate UNSUPPORTED), the terminal clarification, the T3 wording correction, plan L1's candidate, readiness and attempts 20 and 21 (acquired; placement PASS; certificate CERTIFIED; timer service PASS; 1 kHz not passed), attempt 21's offline analysis and its corrections, the Firefox observer update, plan L1's second rehearsal's candidate and attempts 22 and 23 (acquired; placement PASS; every measured probe criterion passed; the model CERTIFIED, the conversion not accepted; 19,999 sleeps on time; the timer validation not passed), the slot-assignment investigation, clock alignment revision 54 and its separately labelled reanalyses (13: the conversion accepted, U 524 ns; 21 unchanged; 23: the timer validation PASS, the 22/23 pair passing under revision 54; the revision-53 failures intact) | `7924f768f35d1c7f21b021cd860d0dcd15b2286deb5990f8a6466293948c9164` |
 | `analysis-20261111/PROVENANCE.txt` | derived analysis: provenance of the derived analyses (commands, revisions, the review's split verdicts) | `e84283aa37c2e1492f54b4979e49919eb5b4b83b8a447a5339c7b8dfddbd0e01` |
 | `analysis-20261111/SHA256SUMS` | derived analysis: folder ledger | `9b1d179d0c0b2867beff3ec346bda8682f5c22725c758bcf1b11c06e3ba807cf` |
 | `analysis-20261111/correlate-12-wake2.txt` | derived analysis: trace_correlate.py with wake accounting revision 2, attempt 12 (corrected analysis pending review) | `b0a4662a0d0dd9c994175ee074b11709e2223bd5c65e23ce350ed2f530a43ed9` |
@@ -3167,6 +3176,41 @@ pass every measured probe criterion (zero skips; host work at most 0.353 and 0.7
 | `option-l1b-acquisition-20261120/operator-terminal-supervisor.txt` | the operator's terminal (the supervisor block), as pasted | `6b29f0a16a97a7ea425a43af3e7502eab48bf493098daf6fb2a79f1036d37117` |
 | `option-l1b-acquisition-20261120/post-run-host-state.txt` | the host state after the run (every restoration) | `3da2a19f2257a18038b52b271127679d697677d7169872fb94d07b144cfa3491` |
 | `option-l1b-acquisition-20261120/unlisted-load.txt` | the unlisted load around the pair: the niced, orphaned ugrep and its tail (0.29 % CPU), as the go asked | `7956c5d0640add7cb12cecf05f9a93297a3ad04812aa78ad4b353f3045dafa19` |
+| `clock-slot-investigation-20261120/README.md` | the slot-assignment investigation (read-only): one entry no recorded deadline was due to raise in each of attempts 13 and 23, none in attempt 21; the unsupported premise; the revision-54 proposal and its regressions | `33e06ecbb01e017dba4c4c52e5c18aacb400dc0c4768c260046c1a43a45f8409` |
+| `clock-slot-investigation-20261120/SHA256SUMS` | folder ledger | `5dfc8f9726ed01ed1c1ad0c6672971363c8fd08b9084f75f801cfe15d92883c5` |
+| `clock-slot-investigation-20261120/e_spread.py` | e over the conversion's retained pairs (the proposal's tools; descriptive) | `fe6b2bb1ad214607a993e0bb5fd1285b3d910faf78d4112acd6e3d850db48d1b` |
+| `clock-slot-investigation-20261120/outputs/compare-13.txt` | attempt 13's entries against the slots: 1 undelimited (slot 94742), 112 delimited entries serving no timer, the ladder decrease | `f51e308c99b80759ddce1259746eb0cb2a849747d160f4144347aa437e2dcd4f` |
+| `clock-slot-investigation-20261120/outputs/compare-21.txt` | attempt 21's entries against the slots: none undelimited | `21186f034c60ba0c1f1c3d51ac92cb9a8ad755bc4ae82fa9f6f2635a6b6dc17f` |
+| `clock-slot-investigation-20261120/outputs/compare-23.txt` | attempt 23's entries against the slots: 1 undelimited (slot 8106) | `18ea9a74b7bb7e69625dab2c5a3be8e3b027e2b7c50c3d11178248b77a99ac04` |
+| `clock-slot-investigation-20261120/outputs/e-spread-21.txt` | attempt 21's e spread over the retained pairs (descriptive) | `a7f50d24e57c3fbb7a02487dd6752117dc47de8e0dc1cc67631711780487e085` |
+| `clock-slot-investigation-20261120/outputs/e-spread-23.txt` | attempt 23's e spread over the retained pairs (descriptive) | `6704cbd471d8f0677ef23044ee94373a487365928a4ec11824378bf9fb208f5e` |
+| `clock-slot-investigation-20261120/outputs/replay-proposal-13.txt` | attempt 13 replayed with the proposal (informational; no verdict) | `ef6c82c7ee2b8e1b9083045d0e3a470d6fe722d784bb33041a67146424b68cd5` |
+| `clock-slot-investigation-20261120/outputs/replay-proposal-21.txt` | attempt 21 replayed with the proposal (informational; no verdict) | `3a19f1dd21a63b0a7eca1977c1e0209301240051055e2f4b8aa3b8aa7dbad820` |
+| `clock-slot-investigation-20261120/outputs/replay-proposal-23.txt` | attempt 23 replayed with the proposal (informational; no verdict) | `540f7f2cfdb762cfe861d2176a72fbd7f492477519cb1cbd1bbff87a5a376b04` |
+| `clock-slot-investigation-20261120/outputs/tests-test_timer_clock.txt` | the proposal's clock regressions (360 cases) | `d16b9217364dcaac3a8bdde2391f664961fdb358aad03a75ef11e0a9aff49f31` |
+| `clock-slot-investigation-20261120/outputs/tests-test_timer_service.txt` | the proposal's timer-service regressions | `a1ba1ba0d96fc0fe8be4edcbd0d5981ca7a100f2eb763647aaf279a8016fe33f` |
+| `clock-slot-investigation-20261120/outputs/tests-test_trace_correlate.txt` | the proposal's correlation regressions | `f3da93c0265181dc55bd8e951eb537256bda547de5145874f2f2a425345f20da` |
+| `clock-slot-investigation-20261120/proposal.diff` | the revision-54 proposal as reviewed (before the own-bound correction) | `704c658e5a7a88efcbb7c4698f56c9fd1b36314156b02ef4ac8000b4696b2ef6` |
+| `clock-slot-investigation-20261120/slot_compare.py` | every CPU 3 local timer entry against the deadline slots (revision 53's tools, unchanged) | `295fd5374da4043720930282ff4e97665655a02005b017d3d32c18e125562c03` |
+| `clock-slot-fix-20261120/README.md` | the own-bound correction of revision 54, for re-review (accepted) | `1e3f692ac9c4eece4c93ebc3b3d6af328cff05d4a2ae5f93a4c0c9bcddbd8cdd` |
+| `clock-slot-fix-20261120/SHA256SUMS` | folder ledger | `87d6c41e42d844ffc3f7f3c85c3d3c63857b63dc89f4b7bcbd2b3d30d9d25d2e` |
+| `clock-slot-fix-20261120/candidate.diff` | 9e4ac67 to d70ba14 (revision 54 as accepted) | `a239886f0370553b8336b638862bfa1224b3a0f39a9e3f0ad7565274d562cdc4` |
+| `clock-slot-fix-20261120/fix-vs-reviewed-proposal.diff` | the reviewed proposal to the candidate d70ba14 | `656817b3d2376bc81d7d6b2c93082dc553bee354a5fb6f5291659b73ee577ccd` |
+| `clock-slot-fix-20261120/outputs/ordered-stamp-bound-d70ba14.txt` | the reviewer's reproducer on d70ba14 (0 unexpected results) | `676a9608b4c0f2a9c04faa0961d9760b38b4a3983d1839ae1d1faf756244671c` |
+| `clock-slot-fix-20261120/outputs/tests-test_timer_clock.txt` | the clock regressions at d70ba14 (369 cases) | `493f2a00e6a9d927f4b2a6c38e38dd739ce99674d05e3a37f1019f08a872e449` |
+| `clock-slot-fix-20261120/outputs/tests-test_timer_service.txt` | the timer-service regressions at d70ba14 | `a2ea074e31d316418a482ba0b58474ebc17c0151b447630a9989f0c6adc10142` |
+| `clock-slot-fix-20261120/outputs/tests-test_trace_correlate.txt` | the correlation regressions at d70ba14 | `c0ddd1b9655cf9d6e52032aa4bf51070e0a74f168636754fe869af6b11cecfba` |
+| `clock-rev54-reanalysis-20261120/README.md` | the separately labelled revision-54 reanalyses of attempts 13, 21 and 23 (accepted; the revision-53 originals intact) | `f8612e0341f4122b99f8428ad9756a88d9acd72984e389bcddbc7a2ba620e385` |
+| `clock-rev54-reanalysis-20261120/SHA256SUMS` | folder ledger | `747b9e8f02cee827e3243d6f77fec3acb5b158cc3a6d307a2ec2421b87f44683` |
+| `clock-rev54-reanalysis-20261120/inputs.txt` | the reanalyses' unchanged inputs, against the archived ledgers | `082530b7757f3e609c16c13e90e5eeed063dac328282202c85e6be95d68fb40e` |
+| `clock-rev54-reanalysis-20261120/outputs/correlate-13-rev53-at-9e4ac67.txt` | attempt 13 under revision 53 with today's other tools (reproduces the original) | `766f411737a903f0cd9a88cfeaff7cc195ec8414708b9c58a62ae82b0860d15e` |
+| `clock-rev54-reanalysis-20261120/outputs/correlate-13-rev54.txt` | attempt 13 under revision 54 (the conversion accepted, U 524 ns) | `164625abf5036be0ef345ce20a83dec72597cbe4c2df8c1d03081e258e42a488` |
+| `clock-rev54-reanalysis-20261120/outputs/correlate-21-rev54.txt` | attempt 21 under revision 54 (unchanged, U 1,569 ns) | `dbbe76994d2131c6cccdb15239f02dc95a3ec035730b139467ef3cf448ba552a` |
+| `clock-rev54-reanalysis-20261120/outputs/correlate-23-rev54.txt` | attempt 23 under revision 54 (the conversion accepted, U 1,581 ns) | `efccdae9d9c39fc9cd41e2b364ac812781418e6e0452d578d75a2b183f1c68ab` |
+| `clock-rev54-reanalysis-20261120/outputs/diff-13-original-vs-rev54.txt` | attempt 13: the original revision-53 analysis against revision 54 | `a510d264ff2f573aeaf8476904b9b23c5074316ad3b1f2ff7c474232b24ad190` |
+| `clock-rev54-reanalysis-20261120/outputs/diff-13-rev53-vs-rev54.txt` | attempt 13: revision 53 against revision 54 on the same tools (revision 54's effect alone) | `03feab2dada308cfa46e5c625d91480a5ecb593f7e9e96fe413f2cd0f99afcaf` |
+| `clock-rev54-reanalysis-20261120/outputs/diff-21.txt` | attempt 21: the accepted analysis against revision 54 | `e73574f0bbb8215baab61e4ba3412dd7d8ea8b107e197e272967bb63b43954a5` |
+| `clock-rev54-reanalysis-20261120/outputs/diff-23.txt` | attempt 23: the revision-53 analysis against revision 54 | `d77c88be1465f3be268b3cb6625bf047f948c459bbd4860b01eb86f353b163de` |
 | `option-l1-attempt21-offline/README.md` | attempt 21's offline analysis (read-only): the long read transactions, cycle 7360, the roughly 0.9 ms reads and every wait stage of 100 us or more (its coverage and wording narrowed by the addendum) | `3bab574042ebe395a8ea8cd9b88d6c52f2ed4128d8dce4b0c843c73a8dc4ef0e` |
 | `option-l1-attempt21-offline/SHA256SUMS` | folder ledger | `3c236996a96fe32fb296cea5372ada048ae5d9e7bd5e462eb87f12824aa2c28b` |
 | `option-l1-attempt21-offline/long_stages.py` | revision 1: every wait stage of 100 us or more and what was scheduled on the queued CPU (its future-destination fallback corrected by the addendum) | `ea54eaa853ac6429cf384940bf06cce088c7501aa05e4af3676af73d47e8c727` |
@@ -3822,6 +3866,14 @@ pass every measured probe criterion (zero skips; host work at most 0.353 and 0.7
 | `review-option-l1-acquisition/review.md` | the reviewer's verdicts on attempts 20, 21 (acquired; placement PASS; certificate CERTIFIED; timer service PASS; 1 kHz not passed) | `cb206d6ba82fb56f9c75fba98dd82f433557cf5c4e90b89badf1a88682617a09` |
 | `review-option-l1b-acquisition/SHA256SUMS` | folder ledger | `c99a6f6b020fc52860e9ef09335994e643294e06a0ffd91989215726e6f68aae` |
 | `review-option-l1b-acquisition/review.md` | the review's verdicts on attempts 22, 23, as the owner relayed them (acquired; placement PASS; the model CERTIFIED, the conversion not accepted; 19,999 sleeps on time; the timer validation not passed) | `611544d301128e57ccc81a71ce6b126de89436375a008848acf4304b88c7ba38` |
+| `review-clock-slot-proposal/SHA256SUMS` | folder ledger | `c6957756afe7eb72f524056010a7e5ce7d4c97c52d8db91e25007726c9118e22` |
+| `review-clock-slot-proposal/check_ordered_stamp_bound.py` | the reviewer's reproducer of the own-bound gap | `d34c19f8a4b39225311a2b1a7a0fff2d3e3341011fe79de289f39c7b8954ee14` |
+| `review-clock-slot-proposal/clock-regressions.txt` | the reviewer's run of the proposal's clock regressions | `956274c6f7c27f344c594c5386531b76c4e1fcfba6742cbfabaf226b6caade8d` |
+| `review-clock-slot-proposal/ordered-stamp-bound.txt` | the reproducer's result on the proposal (2 unexpected results) | `1b7dcbaf1d3e2dd18517796a8f30444a0fb7b04469a8788f4a5c07247b50988e` |
+| `review-clock-slot-proposal/review.json` | the reviewer's review of the revision-54 proposal: the P2 own-bound gap, the decisions | `7acb48cef4556dbe50f4c151888f39106e732422178f421db3030025971e069b` |
+| `review-clock-slot-proposal/reviewed-proposal.diff` | the proposal as the reviewer reviewed it | `452365640be98438893f3986199d51ac599dde1832fd148874bde542b4b20400` |
+| `review-clock-rev54-reanalysis/SHA256SUMS` | folder ledger | `52d9768811854bda89dc0eb8c565f891c077915765ed472ce39239af39a3f9c8` |
+| `review-clock-rev54-reanalysis/review.md` | the review's versioned verdicts under revision 54, as the owner relayed them (13: the conversion accepted, U 524 ns; 21 unchanged; 23: the conversion accepted, U 1,581 ns, the timer validation PASS, the 22/23 pair passing under revision 54) | `60f063d97fb7b41625d14b67965f2438232d091efafa4e9f3a70c5c48e456401` |
 | `review-option-a-7553f40/SHA256SUMS` | Option A review evidence at 7553f40 (the reviewer's) | `75d5c518afefaed5e980bbf41690349d8efb8f4017a6c5489b185f335b081ea5` |
 | `review-option-a-7553f40/check_group_snapshot.py` | Option A review evidence at 7553f40 (the reviewer's) | `3d6afb49cee4afe7d3047c15f1b076ea5cb47fa47abdabf6615ca1d6c2d5843b` |
 | `review-option-a-7553f40/check_keeper_umask.py` | Option A review evidence at 7553f40 (the reviewer's) | `aa3ad3f15caacd3e61603239d7be03d86defbd723b2ebfb7dd0cf03919dd858e` |

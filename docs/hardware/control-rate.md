@@ -2178,6 +2178,10 @@ reviewer split the verdicts:
 | Attempt 13's certificate | Valid, and separate from the anchor accounting |
 | Attempt 13's conversion | Rejected: one local timer entry with no deadline of its own fails the deadline-slot accounting; the frozen rule and the failure stand, and 524 ns is not an accepted bound |
 
+These are revision 53's verdicts and stand. Under clock alignment revision 54
+(2026-11-20, recorded with the slot-assignment investigation below), attempt
+13's conversion is accepted as an additional, versioned verdict.
+
 The 105 wakes lie inside the three failed-read write calls, 35 each: the
 port waits out its guard after a read timeout in sleeps of at most 1 ms. The
 generic check could not account for those sleeps. The accounting review of
@@ -3081,8 +3085,9 @@ acquired. The review gave separate verdicts:
 - **The sleep service: all 19,999 sleeps on time**, independently of the
   conversion. The on-time test compares the trace's monotonic expiry
   timestamps, before the conversion is used.
-- **Complete timer validation: not passed**, because the deadline-slot
-  accounting fails.
+- **Complete timer validation: not passed** under revision 53, because the
+  deadline-slot accounting fails. This stands; revision 54's versioned
+  verdict is recorded with the slot-assignment investigation below.
 
 Both runs pass every measured probe criterion: 20,000 cycles each, zero
 skipped, zero read and write failures, T2, and both of T6a's limits
@@ -3113,10 +3118,26 @@ could admit an ordered pair beyond its own bound; the own-bound check was
 made independent before acceptance. The clock regressions pass 369 cases,
 covering attempts 13's and 23's shapes, revision 53's substitution cases with
 expiries recorded, mixed sampler brackets, the own bound's boundary and the
-certified path. Revision-54 reanalyses of attempts 13, 21 and 23 come next,
-labelled separately. No recorded verdict changes until their review; the
-original revision-53 analyses and failures stay intact. Hardware and H2 stay
-paused.
+certified path.
+
+The separately labelled revision-54 reanalyses of attempts 13, 21 and 23 used
+unchanged inputs. Attempt 13 under revision 53 with today's other tools
+reproduces its original analysis exactly, so every difference is revision
+54's. The review accepted them and recorded these **additional, versioned
+verdicts**:
+
+| Attempt | Under clock alignment revision 54 |
+| --- | --- |
+| 13 | The conversion accepted, U = 524 ns. Its three late sleeps are classified "interrupt late from idle" and remain late events. No overall verdict change for the 12/13 pair |
+| 21 | The accepted results unchanged, U = 1,569 ns (the control) |
+| 23 | The conversion accepted, U = 1,581 ns; the timer validation PASS under the existing PTY exception. With the previously accepted evidence, the 22/23 emulator-validation pair passes under revision 54 |
+
+The original revision-53 analyses and failures stay intact beside these
+results. "Interrupt late from idle" is the evidence-based classification,
+not proof that the idle state caused the delay. This qualifies no control
+rate and no physical USB/RS-485 path. The stray interrupts' cause remains
+unknown. The records are archived in `clock_validation/`. Hardware and H2
+stay paused.
 
 ## Later steps (after the bounded transaction and Phases B and C)
 
