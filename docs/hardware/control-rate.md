@@ -3217,6 +3217,46 @@ pair runs as attempt 25, with fresh names. The sitting's bash starts as
 the guard as its first step. Attempt 24's identity record and guard records
 are kept as evidence. This approves no run.
 
+**Attempt 25: the revised H2's first pair, accepted (2026-11-20).** At
+`16f8afa`, under revision 2 of the plan: readiness met all 37 checks
+immediately before block 1, the sitting's bash had no rc files, the
+identity record was approved, block 2's guard printed OK, and the one
+invocation ended CHECKED. The reviewer accepted it as valid diagnostic
+evidence. Every validity check held:
+- torque off before and after both runs; in the timer run's captured
+  adapter traffic no write reaches Torque Enable or Drive Mode, and every
+  goal-current write is zero (the untraced run rests on the probe's own
+  after-check);
+- no recorder losses or dropped packets;
+- every actual sleep paired (12,357; one cycle began without sleeping);
+- the certificate CERTIFIED and the conversion accepted under revision 54
+  (U = 613 ns, no entry identified by order);
+- the real USB association PASS;
+- the placement unchanged (mask `ffffffff`, the xHCI interrupt on CPU 7);
+- the cleanup complete;
+- attempt 23's controls describing the run.
+
+The rate is a result: 628.6 Hz untraced, 618.0 Hz timer. T1, T2 and T6a
+fail and T3 and T5 pass, so 1 kHz stays unqualified. Of the timer run's
+10,639 complete reads (84.9 % of all reads' time), adapter and bus hold
+91.1 % and host scheduling 6.8 % (66.4 % and 32.5 % in their slowest 1 %).
+Beside attempt 7's open pair the rate was 18 and 29 Hz lower. The
+adapter-and-bus part's measured median (972.1 against 971.1 us) and its
+completion cadence (1,000 us) were similar, which does not establish an
+unchanged distribution. TTY work queue waits of 100 us or more rose from
+285 reads to 1,674; in 1,557 of them the kernel worker first ran after the
+load, and the TTY work ran on load-carrying CPUs other than 3 and 7 in
+14.7 % of reads, against 1.9 %. That is a lead, not an attributed cause.
+Eight OUT submissions came from another task than the worker (softirq on
+CPU 7 while `stress-ng-cpu` was current, 0.56 to 0.91 us after the probe's
+write returned). They were accepted under the checker's deferred-submission
+rule; the plan's literal "none submitted outside the worker" was not met.
+The pair is archived in `stage1_hardware/` (`h2r-placement-25-open/`;
+attempt 24's records in `sittings/sitting-4-h2r/`). The next step, the
+confined comparison under the same workqueue-mask and interrupt policy, is
+to be planned for review; no further acquisition or powered control is
+authorized.
+
 ## Later steps (after the bounded transaction and Phases B and C)
 
 - **E2** repeats E1 for each implemented profile on the bounded transaction

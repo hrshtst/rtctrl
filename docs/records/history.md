@@ -1027,6 +1027,24 @@ so the 22/23 emulator-validation pair passes under revision 54. This
 qualifies no control rate and no physical USB/RS-485 path; the stray
 interrupts' cause remains unknown, and hardware and H2 stay paused.
 
+The revised H2 then returned to the arm under revision 54 (2026-11-20),
+torque-off, with fresh labels and the open pair first, the workqueue mask
+and the USB interrupt at their defaults. Attempt 24's sitting stopped
+before the pair: the operator's interactive bash ran the user's
+`~/.bashrc`, whose direnv hook reverted `LD_LIBRARY_PATH` after block 1,
+and the guard's re-check refused, so nothing was acquired. With the
+sitting's bash started as `bash --norc --noprofile` and block 2 re-running
+the guard, attempt 25 (at `16f8afa`) was accepted as valid diagnostic
+evidence: the clock conversion (U = 613 ns) and the real USB association
+pass, and 1 kHz stays unqualified (628.6 Hz untraced, 618.0 Hz timer; T1,
+T2 and T6a fail). Beside attempt 7's open pair the rate was lower; the
+adapter-and-bus part's measured median and completion cadence were
+similar, while the TTY work waited behind the load far more often, a lead
+and not an attributed cause. Eight OUT submissions came from another task
+than the worker (softirq on CPU 7), accepted under the checker's
+deferred-submission rule; the plan's literal statement that none would was
+not met. The confined comparison is next, for review.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
