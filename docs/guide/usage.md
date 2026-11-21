@@ -1180,7 +1180,9 @@ equal guard by default, `--budget-ms` and `--guard-ms`), after a read-only
 check of the bus profile. `--timing adapter` (with `--rate-hz 1000` and the
 bounded path) plans each wake from the USB adapter's completion lattice, a
 torque-off diagnostic; grid timing stays the default (see
-[control-rate qualification](../hardware/control-rate.md)).
+[control-rate qualification](../hardware/control-rate.md)). For testing it
+headless, `dxl_emu --cadence` gives the emulator a modelled adapter
+completion cadence (described on the same page).
 `dxl/wire_budget.hpp` gives the analytic wire bytes of each
 cycle, and `x7_controller_bench` measures controller computation without a bus.
 `tools/timing_summary.py` reduces probe logs and app `--timing-log` files to

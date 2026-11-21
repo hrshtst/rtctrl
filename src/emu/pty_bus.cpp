@@ -25,6 +25,12 @@ constexpr std::uint8_t kInstSyncWrite = 0x83;
 constexpr std::uint8_t kInstFastSyncRead = 0x8A;
 constexpr std::uint8_t kBroadcastId = 0xFE;
 
+std::int64_t nsOf(std::chrono::steady_clock::time_point t) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             t.time_since_epoch())
+      .count();
+}
+
 }  // namespace
 
 std::uint16_t dxlCrc16(const std::uint8_t* data, std::size_t size) {
@@ -145,11 +151,60 @@ std::vector<Arrival> PtyBus::arrivals() const {
   return arrivals_;
 }
 
+void PtyBus::setCadence(const CadenceConfig& cadence,
+                        std::chrono::steady_clock::time_point origin,
+                        std::size_t record_capacity) {
+  cadence_ = std::make_unique<CompletionCadence>(cadence, nsOf(origin));
+  cadence_records_.clear();
+  cadence_records_.reserve(record_capacity);
+  cadence_record_capacity_ = record_capacity;
+  cadence_replies_ = 0;
+  cadence_records_dropped_ = 0;
+  last_due_ = {};
+}
+
+void PtyBus::holdForCadence(std::vector<std::uint8_t> bytes,
+                            std::chrono::nanoseconds extra_delay) {
+  if (bytes.empty()) return;  // nothing to send, as writeBytes would
+  const std::int64_t arrival = nsOf(current_.at);
+  const CadenceRelease release =
+      cadence_->release(arrival + extra_delay.count(), bytes.size());
+  auto due = std::chrono::steady_clock::time_point(
+      std::chrono::nanoseconds(release.release_ns));
+  if (due < last_due_) due = last_due_;  // in order
+  last_due_ = due;
+  ++cadence_replies_;
+  std::size_t record = kNoRecord;
+  if (cadence_records_.size() < cadence_record_capacity_) {
+    CadenceRecord r;
+    r.arrival_ns = arrival;
+    r.instruction = current_.instruction;
+    r.id = current_.id;
+    r.data_length = current_.data_length;
+    r.bytes = bytes.size();
+    r.release = release;
+    r.due_ns = nsOf(due);
+    record = cadence_records_.size();
+    cadence_records_.push_back(r);
+  } else {
+    ++cadence_records_dropped_;
+  }
+  Pending p{due, std::move(bytes), record};
+  const auto at = std::upper_bound(
+      pending_.begin(), pending_.end(), p.due,
+      [](const auto& d, const Pending& q) { return d < q.due; });
+  pending_.insert(at, std::move(p));
+}
+
 void PtyBus::sendDueReplies() {
   const auto now = std::chrono::steady_clock::now();
   // In order of arrival: an earlier delayed reply goes out first.
   while (!pending_.empty() && pending_.front().due <= now) {
     writeBytes(pending_.front().bytes);
+    if (pending_.front().record != kNoRecord) {
+      cadence_records_[pending_.front().record].written_ns =
+          nsOf(std::chrono::steady_clock::now());
+    }
     pending_.erase(pending_.begin());
   }
 }
@@ -166,11 +221,19 @@ void PtyBus::sendSyncReadReplies(std::vector<std::uint8_t> replies) {
     }
   }
   if (!scripted) {
+    if (cadence_) {
+      holdForCadence(std::move(replies), std::chrono::nanoseconds::zero());
+      return;
+    }
     writeBytes(replies);
     return;
   }
   switch (fault.kind) {
     case ReplyFault::Kind::kDelay: {
+      if (cadence_) {
+        holdForCadence(std::move(replies), fault.delay);
+        break;
+      }
       Pending p{std::chrono::steady_clock::now() + fault.delay,
                 std::move(replies)};
       const auto at = std::upper_bound(
@@ -181,11 +244,19 @@ void PtyBus::sendSyncReadReplies(std::vector<std::uint8_t> replies) {
     }
     case ReplyFault::Kind::kTruncate:
       replies.resize(std::min(fault.keep, replies.size()));
+      if (cadence_) {
+        holdForCadence(std::move(replies), std::chrono::nanoseconds::zero());
+        break;
+      }
       writeBytes(replies);
       break;
     case ReplyFault::Kind::kGarbage: {
       std::vector<std::uint8_t> bytes = fault.garbage;
       bytes.insert(bytes.end(), replies.begin(), replies.end());
+      if (cadence_) {
+        holdForCadence(std::move(bytes), std::chrono::nanoseconds::zero());
+        break;
+      }
       writeBytes(bytes);
       break;
     }
@@ -243,6 +314,7 @@ void PtyBus::extractFrames() {
           const std::lock_guard<std::mutex> lock(script_mutex_);
           arrivals_.push_back(arrival);
         }
+        if (cadence_) current_ = arrival;
         handleFrame(id, instruction, body);
       }
     }
@@ -270,6 +342,11 @@ std::vector<std::uint8_t> PtyBus::encodeStatus(
 
 void PtyBus::sendStatus(std::uint8_t id, std::uint8_t error,
                         const std::vector<std::uint8_t>& params) {
+  if (cadence_) {
+    holdForCadence(encodeStatus(id, error, params),
+                   std::chrono::nanoseconds::zero());
+    return;
+  }
   writeBytes(encodeStatus(id, error, params));
 }
 

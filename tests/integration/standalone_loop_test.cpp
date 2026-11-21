@@ -1,6 +1,6 @@
-// Integration: PtyBus's I/O half (serviceIo, nextReplyDue) and the
-// standalone emulator loop (emu::StandaloneLoop, dxl_emu's), over a real
-// pseudo-terminal. The model-time cases step the loop at synthetic times,
+// Integration: PtyBus's I/O half (serviceIo, nextReplyDue), its opt-in
+// adapter cadence (setCadence), and the standalone emulator loop
+// (emu::StandaloneLoop, dxl_emu's), over a real pseudo-terminal. The model-time cases step the loop at synthetic times,
 // so they are deterministic; the run() cases use the real clock and assert
 // only loose bounds (host dispatch is not the code's).
 #include <fcntl.h>
@@ -559,4 +559,188 @@ TEST_CASE("run(): a stop request is seen while waiting and while busy",
   CHECK(stopped < milliseconds(100));
   CHECK(loop.stats().ticks >= 250);  // the ticks kept running throughout
   if (detached) CHECK(loop.stats().hangup_waits > 0);
+}
+
+// The opt-in adapter cadence (PtyBus::setCadence, dxl_emu --cadence), over a
+// real pseudo-terminal. Long periods (20 ms) keep the real clock's slack out
+// of the assertions; the release arithmetic itself is unit-tested
+// (tests/unit/completion_cadence_test.cpp).
+namespace {
+
+std::int64_t nsOf(Clock::time_point t) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+}
+Clock::time_point atNs(std::int64_t ns) { return Clock::time_point(std::chrono::nanoseconds(ns)); }
+
+// Completions every 20 ms, the first 15 ms after the origin.
+emu::CadenceConfig slowCadence() {
+  emu::CadenceConfig c;
+  c.nominal_period_ns = 20000000;
+  c.phase_ns = 15000000;
+  return c;
+}
+
+// Nothing arrives at the client before `until` (less 2 ms of slack).
+bool silentUntil(Client& c, Clock::time_point until) {
+  const auto left = until - milliseconds(2) - Clock::now();
+  if (left <= Clock::duration::zero()) return true;  // too late to tell
+  return c.receive(1, std::chrono::duration_cast<milliseconds>(left)).empty();
+}
+
+}  // namespace
+
+TEST_CASE("without a cadence (the default) a reply goes at once and nothing is recorded", "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  CHECK_FALSE(pty.cadenceActive());
+  const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+  c.send(sr);
+  REQUIRE(masterHas(pty, static_cast<int>(sr.size()), milliseconds(500)));
+  pty.serviceIo();
+  CHECK_FALSE(pty.nextReplyDue().has_value());  // written, not held
+  CHECK(statuses(c.receive(2 * 15, milliseconds(500))).size() == 2);
+  CHECK(pty.cadenceReplies() == 0);
+  CHECK(pty.cadenceRecords().empty());
+}
+
+TEST_CASE("an independent cadence holds a reply for the first completion at or after its ready time, and "
+          "records when it went",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  const auto origin = Clock::now();
+  pty.setCadence(slowCadence(), origin, 16);
+  REQUIRE(pty.cadenceActive());
+  const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+  c.send(sr);
+  REQUIRE(masterHas(pty, static_cast<int>(sr.size()), milliseconds(500)));
+  pty.serviceIo();
+  REQUIRE(pty.nextReplyDue().has_value());
+  REQUIRE(pty.cadenceRecords().size() == 1);
+  const emu::CadenceRecord& r = pty.cadenceRecords()[0];
+  CHECK(r.instruction == kSyncRead);
+  CHECK(r.data_length == 4);
+  CHECK(r.bytes == 2 * 15);
+  CHECK(r.release.ready_ns == r.arrival_ns);  // no ready time configured
+  CHECK(r.release.completion_ns == nsOf(origin) + 15000000 + 20000000 * r.release.index);
+  CHECK(r.release.completion_ns >= r.release.ready_ns);
+  if (r.release.index > 0) CHECK(r.release.completion_ns - 20000000 < r.release.ready_ns);
+  CHECK(r.release.release_ns == r.release.completion_ns);
+  CHECK(r.due_ns == r.release.release_ns);
+  CHECK(*pty.nextReplyDue() == atNs(r.due_ns));
+  CHECK(r.written_ns == -1);
+  // Held until its completion; sent when serviced after it.
+  pty.serviceIo();
+  CHECK(silentUntil(c, atNs(r.due_ns)));
+  std::this_thread::sleep_until(atNs(r.due_ns) + milliseconds(2));
+  pty.serviceIo();
+  CHECK_FALSE(pty.nextReplyDue().has_value());
+  CHECK(statuses(c.receive(2 * 15, milliseconds(500))).size() == 2);
+  CHECK(pty.cadenceRecords()[0].written_ns >= r.due_ns);
+  CHECK(pty.cadenceReplies() == 1);
+}
+
+TEST_CASE("held replies go in order, each at or after the one before; a scripted delay adds to the ready time",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  const auto origin = Clock::now();
+  pty.setCadence(slowCadence(), origin, 16);
+  emu::ReplyFault delay;
+  delay.delay = milliseconds(25);
+  pty.scriptSyncReadFaults({delay});
+  const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+  const auto ping = frame(2, kPing, {});
+  c.send(sr);
+  c.send(ping);
+  REQUIRE(masterHas(pty, static_cast<int>(sr.size() + ping.size()), milliseconds(500)));
+  pty.serviceIo();
+  REQUIRE(pty.cadenceRecords().size() == 2);
+  const emu::CadenceRecord& first = pty.cadenceRecords()[0];
+  const emu::CadenceRecord& second = pty.cadenceRecords()[1];
+  CHECK(first.release.ready_ns == first.arrival_ns + 25000000);  // the fault's delay
+  CHECK(first.release.completion_ns >= first.release.ready_ns);
+  CHECK(second.instruction == kPing);
+  CHECK(second.due_ns >= first.due_ns);  // never ahead of the earlier reply
+  if (second.release.release_ns < first.release.release_ns) {
+    CHECK(second.due_ns == first.due_ns);  // its own completion came first: it waits
+  }
+  std::this_thread::sleep_until(atNs(second.due_ns) + milliseconds(2));
+  pty.serviceIo();
+  const auto got = statuses(c.receive(2 * 15 + 14, milliseconds(500)));
+  REQUIRE(got.size() == 3);
+  CHECK(got[0].params.size() == 4);  // the Sync Read's two, then the Ping's
+  CHECK(got[1].params.size() == 4);
+  CHECK(got[2].params.size() == 3);
+  CHECK(pty.cadenceRecords()[1].written_ns >= pty.cadenceRecords()[0].written_ns);
+}
+
+TEST_CASE("a request-tied cadence sends each reply a fixed delay after its request; past the record's capacity "
+          "replies are counted only",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  emu::CadenceConfig cfg;
+  cfg.mode = emu::CadenceMode::kRequestTied;
+  cfg.tie_ns = 30000000;
+  pty.setCadence(cfg, Clock::now(), 1);
+  const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+  c.send(sr);
+  REQUIRE(masterHas(pty, static_cast<int>(sr.size()), milliseconds(500)));
+  pty.serviceIo();
+  REQUIRE(pty.cadenceRecords().size() == 1);
+  const emu::CadenceRecord r = pty.cadenceRecords()[0];
+  CHECK(r.release.index == -1);
+  CHECK(r.release.release_ns == r.arrival_ns + 30000000);
+  CHECK(silentUntil(c, atNs(r.due_ns)));
+  std::this_thread::sleep_until(atNs(r.due_ns) + milliseconds(2));
+  pty.serviceIo();
+  CHECK(statuses(c.receive(2 * 15, milliseconds(500))).size() == 2);
+  // A second reply: beyond the one record, counted, still sent.
+  const auto ping = frame(3, kPing, {});
+  c.send(ping);
+  REQUIRE(masterHas(pty, static_cast<int>(ping.size()), milliseconds(500)));
+  pty.serviceIo();
+  CHECK(pty.cadenceRecords().size() == 1);
+  CHECK(pty.cadenceRecordsDropped() == 1);
+  CHECK(pty.cadenceReplies() == 2);
+  REQUIRE(pty.nextReplyDue().has_value());
+  std::this_thread::sleep_until(*pty.nextReplyDue() + milliseconds(2));
+  pty.serviceIo();
+  CHECK(statuses(c.receive(14, milliseconds(500))).size() == 1);
+}
+
+TEST_CASE("run(): the loop wakes for a held reply without input, not before its completion", "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  Loop::Config config;
+  config.tick = milliseconds(200);  // ticks alone would send it far later
+  const auto origin = Clock::now();
+  pty.setCadence(slowCadence(), origin, 16);
+  std::atomic<bool> stop{false};
+  Loop loop(pty, bus, config, origin);
+  std::thread runner([&] { loop.run([&] { return stop.load(); }); });
+  const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+  c.send(sr);
+  const auto reply = c.receive(2 * 15, milliseconds(1000));
+  const auto got = Clock::now();
+  stop.store(true);
+  runner.join();
+  REQUIRE(statuses(reply).size() == 2);
+  REQUIRE(pty.cadenceRecords().size() == 1);
+  const emu::CadenceRecord& r = pty.cadenceRecords()[0];
+  INFO("written " << (r.written_ns - r.due_ns) / 1000 << " us after due");
+  CHECK(r.written_ns >= r.release.completion_ns);  // never early
+  CHECK(nsOf(got) >= r.written_ns);
+  CHECK(r.written_ns - r.due_ns < 100000000);  // not held for the 200 ms tick
 }

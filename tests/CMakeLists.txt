@@ -71,6 +71,15 @@ catch_discover_tests(adapter_phase_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
 
+# The emulator's opt-in adapter cadence (rtctrl/emu/completion_cadence.hpp,
+# dxl_emu --cadence): header-only pure logic, in its own executable too.
+add_executable(completion_cadence_tests unit/completion_cadence_test.cpp)
+target_include_directories(completion_cadence_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(completion_cadence_tests PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(completion_cadence_tests
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PROPERTIES LABELS unit)
+
 # x7_bus_timing's adapter timing (apps/bus/bus_timing_adapter.hpp): the
 # choice's rules and the worker's driver, header-only like the logic it runs.
 add_executable(bus_timing_adapter_tests unit/bus_timing_adapter_test.cpp)
@@ -860,6 +869,22 @@ set_tests_properties(x7_bus_timing_adapter_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "bus timing adapter smoke OK"
   LABELS integration)
+
+# x7_bus_timing --timing adapter over dxl_emu's opt-in adapter cadence
+# (--cadence): the emulator's refusals, then true locks, drift, delayed and
+# missed completions, a phase step's fallback and reacquisition, and the
+# request-tied negative controls, each run checked against its summary and
+# the emulator's record. RUN_SERIAL: the outcomes rest on the delivery spread
+# of an otherwise idle host's pty against the fit's 20 us window.
+add_test(NAME x7_bus_timing_cadence_smoke
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration/bus_timing_cadence_smoke.sh
+          $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
+          $<TARGET_FILE:dxl_inspect>
+          ${CMAKE_BINARY_DIR}/bus_timing_cadence_smoke)
+set_tests_properties(x7_bus_timing_cadence_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "bus timing cadence smoke OK"
+  LABELS integration RUN_SERIAL TRUE TIMEOUT 300)
 
 # The E1 session scripts (tools/e1_prod.sh, tools/e1_cal.sh) over the
 # emulator; they call timing_summary.py through uv, so the build-local uv

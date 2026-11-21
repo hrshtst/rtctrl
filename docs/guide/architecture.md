@@ -133,6 +133,9 @@ flowchart TB
   (the ticks due before the commands it reads), and exits with status 3
   if it falls more than 50 ticks behind, rather than drop model time.
   The in-process fixtures keep driving `PtyBus::poll(dt)` themselves.
+  Opt-in, `dxl_emu --cadence` holds each reply for a modelled USB
+  adapter's completion cadence (`emu::CompletionCadence`) and can record
+  which completion carried it; without it, replies go as before.
 
 Include-dependency rule (what may `#include` what; the build is one
 library, so this, not linkage, is the real boundary): `dxl` and

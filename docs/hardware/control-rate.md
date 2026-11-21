@@ -296,6 +296,55 @@ request, the first lock lasts about 1,000 cycles before the period clamp
 ends it. When the pty's delays spread too widely for the fit, nothing locks.
 A lock alone does not establish independent adapter timing.
 
+**The cadence emulator (opt-in, for headless tests).** `dxl_emu --cadence`
+(`emu::CompletionCadence`) holds each reply for a modelled adapter cadence;
+without `--cadence` the emulator answers as before. With `--cadence
+independent`, a reply waits for the first completion of a 1 ms lattice at or
+after its ready time (`--cadence-ready-us`), the lattice drifting against the
+host clock by `--cadence-ppm`. Delayed and missed completions
+(`--cadence-delay-every` with `--cadence-delay-us`, `--cadence-miss-every`,
+from `--cadence-impair-from-s` on) and phase steps (`--cadence-step T:S`)
+disturb it. `--cadence request-tied --cadence-tie-us T` is the negative
+control: each reply goes T µs after its request. `--cadence-log` records,
+for every reply, the completion that carried it and when it was sent, so a
+probe run can be checked against that ground truth.
+
+On the cadence emulator the probe locks truly: each locked read is carried
+by the completion its plan targeted, and the alternation finds no coupling.
+The probe locks and tracks drifts inside the fit's ±200 ppm range (−150,
++150 and +199 ppm tested); at ±350 ppm every fit is refused and the grid
+runs on. Delayed and missed
+completions after the lock are observed late, and the lock holds. A phase
+step 200 µs earlier makes the replies early: supervision ends the lock
+within 64 cycles, the grid takes over, and a new true lock follows the
+moved completions. The request-tied controls lock falsely. At 150 and 500 µs
+each false lock ends after 64 cycles with its replies early. From 720 to 830 µs the
+alternation declares request-tied timing within 80 cycles and the lock
+lasts at least 256 cycles; how much longer depends on where the replies
+land. These are synthetic results on a modelled cadence, not evidence about
+the adapter.
+
+Deterministic cases (`tests/unit/bus_timing_adapter_test.cpp`, tag
+`[cadence]`) run the emulator's model through the probe's cycle and pin
+these outcomes at each of 20 phases of the cadence against the probe's grid.
+That phase differs from one emulator run to the next. The PTY test
+(`x7_bus_timing_cadence_smoke`) confirms the outcomes end to end. It runs
+alone, and the probe uses `--fine-timer-slack`: with the default 50 µs slack
+the probe wakes about 51 µs late, which moves request-tied replies against
+its predictions. Two observations on this host bound what a PTY run can
+assert. The fit counts the stamps inside a 20 µs window, and the pty spreads
+their delivery: with a tenth of the acquisition's completions delayed, the
+share fell to 0.70, under its 0.75 floor, so the PTY test delays and misses
+completions only after the lock. The pty also delivers a reply slowly when
+it goes less than about 400 µs after its request (p50 25 to 35 µs, against
+5 to 9 µs at 500 µs), and fits of such replies were refused: the PTY test's
+replies are ready 500 µs after their requests, and its early request-tied
+control uses 500 µs, asserting every false lock that forms rather than
+their number.
+A phase step's lock can end by either of supervision's rules, depending on
+the pty's late stamps before the step, and the test checks each loss
+against the rows' observations.
+
 ### Summaries
 
 ```sh
