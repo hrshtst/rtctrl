@@ -287,10 +287,14 @@ timing, an `[adapter]` section: the windows and the whole run, each fit,
 each lock and, with the alternation, the coupling check.
 
 The pty emulator answers each request after the pty's own delays, with no
-adapter cadence. A lock on it is therefore a false lock on request-tied
-replies, which supervision ends after 64 cycles, or there is no lock at all
-when the pty's delays spread too widely for the fit. A lock alone does not
-establish independent adapter timing.
+adapter cadence. Any lock on it is therefore a false lock on request-tied
+replies. In the emulator runs recorded so far, each such lock's replies fell
+outside the gate and supervision ended it after 64 cycles; that is an
+observation, not a bound. Request-tied replies that land inside the gate can
+hold a false lock much longer: in a unit case with replies 790 µs after the
+request, the first lock lasts about 1,000 cycles before the period clamp
+ends it. When the pty's delays spread too widely for the fit, nothing locks.
+A lock alone does not establish independent adapter timing.
 
 ### Summaries
 
