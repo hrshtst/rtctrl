@@ -4,7 +4,10 @@
 # carried each reply: deterministic outcomes, asserted, where the default
 # emulator's depend on whether this host's pty happens to lock
 # (bus_timing_adapter_smoke.sh). First the emulator's refusals of invalid
-# cadence options, before it serves; then one emulator per scenario:
+# cadence options, before it serves (unrepresentable numbers among them);
+# then a client that stops reading: the full pty must fail the run
+# explicitly, with a truthful record (cadence_backpressure.py); then one
+# emulator per scenario:
 # - an independent cadence (-57.5 ppm): one true lock, held to the end, and
 #   no coupling detected (full-window reads on the lattice at the base lead);
 # - delayed and missed completions (from 2.5 s on, after the lock): every
@@ -66,8 +69,22 @@ refuse_emu "two periods apart" --cadence independent --cadence-step 1:100 --cade
 refuse_emu "T:S" --cadence independent --cadence-step 1
 refuse_emu "independent cadence only" --cadence request-tied --cadence-tie-us 150 --cadence-ppm 5
 refuse_emu "request-tied cadence only" --cadence independent --cadence-tie-us 150
+# Numbers checked before they are scaled (the review of e40875f): an
+# unrepresentable shift, an infinite time, a count beyond 64 bits, a time
+# finer than a nanosecond, and a delay the request-tied control would ignore.
+refuse_emu "out of range" --cadence independent --cadence-step 1:1e300
+refuse_emu "out of range" --cadence independent --cadence-miss-every 2 --cadence-impair-from-s inf
+refuse_emu "out of range" --cadence independent --cadence-miss-every 18446744073709551616
+refuse_emu "finer than one nanosecond" --cadence independent --cadence-phase-us 0.0004
+refuse_emu "independent cadence only" --cadence request-tied --cadence-tie-us 790 --cadence-delay-us 120
 : >"$ROOT/exists.csv"
 refuse_emu "must not exist" --cadence independent --cadence-log "$ROOT/exists.csv"
+
+# A client that never reads its replies: the run fails at the first reply
+# the full pty does not accept in full, and says so.
+mkdir -p "$ROOT/backpressure"
+python3 "$(dirname "$0")/cadence_backpressure.py" "$EMU" "$ROOT/backpressure" ||
+  fail "backpressure: not an explicit failure with a truthful record" "$ROOT/backpressure/backpressure.emu.log"
 
 GRID_HEADER="cycle,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,first_reply_ns,last_reply_ns,read_end_ns,limit_start_ns,bus_write_start_ns,write_return_ns,drain_return_ns,ack_return_ns,completion_upper_ns,cycle_end_ns,read_ok,write_ok,ack_ok,skipped_periods,read_len"
 MOTION=(--read-instruction fast --feedback motion --aux-interval-ms 100)

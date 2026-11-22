@@ -107,7 +107,12 @@ bool PtyBus::poll(double dt) {
 
 PtyBus::Serviced PtyBus::serviceIo(std::size_t max_read_bytes) {
   Serviced result;
-  sendDueReplies();
+  // A held reply's failed write ends the run: nothing more is read or
+  // written (cadence mode only; sendDueReplies is true otherwise).
+  if (cadence_failure_ || !sendDueReplies()) {
+    result.ok = false;
+    return result;
+  }
   std::uint8_t buf[512];
   while (true) {
     const std::size_t room = max_read_bytes - result.bytes_read;
@@ -131,7 +136,7 @@ PtyBus::Serviced PtyBus::serviceIo(std::size_t max_read_bytes) {
     }
   }
   extractFrames();
-  sendDueReplies();
+  if (!sendDueReplies()) result.ok = false;
   return result;
 }
 
@@ -160,7 +165,14 @@ void PtyBus::setCadence(const CadenceConfig& cadence,
   cadence_record_capacity_ = record_capacity;
   cadence_replies_ = 0;
   cadence_records_dropped_ = 0;
+  cadence_written_ = 0;
+  cadence_failure_.reset();
   last_due_ = {};
+}
+
+void PtyBus::scriptCadenceWrites(const std::vector<CadenceWrite>& writes) {
+  const std::lock_guard<std::mutex> lock(script_mutex_);
+  write_script_.insert(write_script_.end(), writes.begin(), writes.end());
 }
 
 void PtyBus::holdForCadence(std::vector<std::uint8_t> bytes,
@@ -173,7 +185,7 @@ void PtyBus::holdForCadence(std::vector<std::uint8_t> bytes,
       std::chrono::nanoseconds(release.release_ns));
   if (due < last_due_) due = last_due_;  // in order
   last_due_ = due;
-  ++cadence_replies_;
+  const std::uint64_t reply = cadence_replies_++;
   std::size_t record = kNoRecord;
   if (cadence_records_.size() < cadence_record_capacity_) {
     CadenceRecord r;
@@ -189,24 +201,79 @@ void PtyBus::holdForCadence(std::vector<std::uint8_t> bytes,
   } else {
     ++cadence_records_dropped_;
   }
-  Pending p{due, std::move(bytes), record};
+  Pending p{due, std::move(bytes), record, reply};
   const auto at = std::upper_bound(
       pending_.begin(), pending_.end(), p.due,
       [](const auto& d, const Pending& q) { return d < q.due; });
   pending_.insert(at, std::move(p));
 }
 
-void PtyBus::sendDueReplies() {
+bool PtyBus::sendDueReplies() {
   const auto now = std::chrono::steady_clock::now();
   // In order of arrival: an earlier delayed reply goes out first.
   while (!pending_.empty() && pending_.front().due <= now) {
-    writeBytes(pending_.front().bytes);
-    if (pending_.front().record != kNoRecord) {
-      cadence_records_[pending_.front().record].written_ns =
-          nsOf(std::chrono::steady_clock::now());
+    if (cadence_) {
+      // Kept (unsent) if it fails, and nothing after it is written.
+      if (!writeHeld(pending_.front())) return false;
+    } else {
+      writeBytes(pending_.front().bytes);
     }
     pending_.erase(pending_.begin());
   }
+  return true;
+}
+
+bool PtyBus::writeHeld(const Pending& p) {
+  std::size_t off = 0;
+  int interrupts = 0;  // in a row
+  int error = 0;
+  while (off < p.bytes.size()) {
+    const ssize_t n = writeHeldOnce(p.bytes.data() + off, p.bytes.size() - off);
+    const int e = errno;
+    if (n > 0) {  // the rest, if any, at once
+      off += static_cast<std::size_t>(n);
+      interrupts = 0;
+      continue;
+    }
+    if (n < 0 && e == EINTR && ++interrupts <= kMaxWriteInterrupts) continue;
+    error = n < 0 ? e : -1;
+    break;
+  }
+  CadenceRecord* r =
+      p.record != kNoRecord ? &cadence_records_[p.record] : nullptr;
+  if (r != nullptr) r->written_bytes = off;
+  if (off == p.bytes.size()) {
+    if (r != nullptr) r->written_ns = nsOf(std::chrono::steady_clock::now());
+    ++cadence_written_;
+    return true;
+  }
+  if (r != nullptr) r->write_error = error;
+  CadenceWriteFailure f;
+  f.reply = p.reply;
+  f.record = r != nullptr ? static_cast<std::int64_t>(p.record) : -1;
+  f.bytes = p.bytes.size();
+  f.accepted = off;
+  f.error = error;
+  cadence_failure_ = f;
+  return false;
+}
+
+ssize_t PtyBus::writeHeldOnce(const std::uint8_t* data, std::size_t size) {
+  std::optional<CadenceWrite> scripted;
+  {
+    const std::lock_guard<std::mutex> lock(script_mutex_);
+    if (!write_script_.empty()) {
+      scripted = write_script_.front();
+      write_script_.pop_front();
+    }
+  }
+  if (!scripted) return ::write(master_fd_, data, size);
+  if (scripted->error != 0) {
+    errno = scripted->error;
+    return -1;
+  }
+  if (scripted->accept == 0) return 0;
+  return ::write(master_fd_, data, std::min(size, scripted->accept));
 }
 
 void PtyBus::sendSyncReadReplies(std::vector<std::uint8_t> replies) {

@@ -1,5 +1,6 @@
 // Integration: PtyBus's I/O half (serviceIo, nextReplyDue), its opt-in
-// adapter cadence (setCadence), and the standalone emulator loop
+// adapter cadence (setCadence; a held reply written in full or the run
+// failed with a truthful record), and the standalone emulator loop
 // (emu::StandaloneLoop, dxl_emu's), over a real pseudo-terminal. The model-time cases step the loop at synthetic times,
 // so they are deterministic; the run() cases use the real clock and assert
 // only loose bounds (host dispatch is not the code's).
@@ -12,6 +13,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -580,6 +582,17 @@ emu::CadenceConfig slowCadence() {
   return c;
 }
 
+// Request-tied, each reply due as its request arrives: written by the
+// serviceIo() that reads the request.
+emu::CadenceConfig tiedAtOnce() {
+  emu::CadenceConfig c;
+  c.mode = emu::CadenceMode::kRequestTied;
+  c.tie_ns = 0;
+  return c;
+}
+
+constexpr std::size_t kAll = emu::CadenceWrite{}.accept;
+
 // Nothing arrives at the client before `until` (less 2 ms of slack).
 bool silentUntil(Client& c, Clock::time_point until) {
   const auto left = until - milliseconds(2) - Clock::now();
@@ -743,4 +756,224 @@ TEST_CASE("run(): the loop wakes for a held reply without input, not before its 
   CHECK(r.written_ns >= r.release.completion_ns);  // never early
   CHECK(nsOf(got) >= r.written_ns);
   CHECK(r.written_ns - r.due_ns < 100000000);  // not held for the 200 ms tick
+}
+
+// A held reply's write (PtyBus::writeHeld): written in full, or the run
+// fails with a truthful record. The scripted outcomes stand in for the
+// pty's (scriptCadenceWrites); the last case fills a real one.
+TEST_CASE("scripted writes are for held replies only: without a cadence a reply goes as before",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  oneMotor(bus, 2);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  pty.scriptCadenceWrites({{kAll, EIO}});
+  const auto ping = frame(2, kPing, {});
+  c.send(ping);
+  REQUIRE(masterHas(pty, static_cast<int>(ping.size()), milliseconds(500)));
+  CHECK(pty.serviceIo().ok);
+  CHECK(statuses(c.receive(14, milliseconds(500))).size() == 1);
+  CHECK_FALSE(pty.cadenceWriteFailure().has_value());
+  CHECK(pty.cadencePending() == 0);
+}
+
+TEST_CASE("a held reply is written in full: the rest of a partial write at once, an interrupted write retried",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  pty.setCadence(tiedAtOnce(), Clock::now(), 16);
+  // The Sync Read's 30 bytes: 5, interrupted, 3, interrupted up to the
+  // bound, then the rest; the Ping's 14 as the pty takes them.
+  std::vector<emu::CadenceWrite> script{{5, 0}, {kAll, EINTR}, {3, 0}};
+  for (int i = 0; i < emu::PtyBus::kMaxWriteInterrupts; ++i) script.push_back({kAll, EINTR});
+  pty.scriptCadenceWrites(script);
+  const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+  const auto ping = frame(2, kPing, {});
+  c.send(sr);
+  c.send(ping);
+  REQUIRE(masterHas(pty, static_cast<int>(sr.size() + ping.size()), milliseconds(500)));
+  REQUIRE(pty.serviceIo().ok);
+  CHECK_FALSE(pty.cadenceWriteFailure().has_value());
+  CHECK(pty.cadenceWritten() == 2);
+  CHECK(pty.cadencePending() == 0);
+  const auto& recs = pty.cadenceRecords();
+  REQUIRE(recs.size() == 2);
+  for (const auto& r : recs) {
+    CHECK(r.written_bytes == r.bytes);
+    CHECK(r.write_error == 0);
+    CHECK(r.written_ns >= r.due_ns);
+  }
+  CHECK(recs[1].written_ns >= recs[0].written_ns);
+  // Whole and in order: the Sync Read's two statuses, then the Ping's.
+  const auto bytes = c.receive(2 * 15 + 14, milliseconds(500));
+  REQUIRE(bytes.size() == 2 * 15 + 14);
+  const auto got = statuses(bytes);
+  REQUIRE(got.size() == 3);
+  CHECK(got[0].id == 2);
+  CHECK(got[1].id == 3);
+  CHECK(got[2].params.size() == 3);
+  CHECK(c.receive(1, milliseconds(50)).empty());
+}
+
+TEST_CASE("a failed write of a held reply ends the run: its record keeps the bytes accepted and the error, the "
+          "later replies stay unsent, and nothing more is read or written",
+          "[emu-loop][cadence]") {
+  struct Case {
+    const char* name;
+    std::vector<emu::CadenceWrite> script;
+    std::size_t accepted;
+    int error;
+  };
+  std::vector<emu::CadenceWrite> interrupted(emu::PtyBus::kMaxWriteInterrupts + 1, emu::CadenceWrite{kAll, EINTR});
+  const std::vector<Case> cases = {
+      {"the pty full after a partial write (EAGAIN)", {{8, 0}, {kAll, EAGAIN}}, 8, EAGAIN},
+      {"two partial writes, then a hard error", {{8, 0}, {13, 0}, {kAll, EBADF}}, 21, EBADF},
+      {"a hard error (EIO)", {{kAll, EIO}}, 0, EIO},
+      {"a write that accepts nothing", {{0, 0}}, 0, -1},
+      {"interrupted once beyond the bound", interrupted, 0, EINTR},
+  };
+  for (const Case& k : cases) {
+    INFO(k.name);
+    emu::MotorBus bus;
+    for (std::uint8_t id = 2; id <= 3; ++id) oneMotor(bus, id);
+    emu::PtyBus pty(bus);
+    Client c(pty.slavePath());
+    pty.setCadence(tiedAtOnce(), Clock::now(), 16);
+    pty.scriptCadenceWrites(k.script);
+    const auto sr = syncReadFrame(reg::kPresentPosition, {2, 3});
+    const auto ping = frame(2, kPing, {});
+    c.send(sr);
+    c.send(ping);
+    REQUIRE(masterHas(pty, static_cast<int>(sr.size() + ping.size()), milliseconds(500)));
+    CHECK_FALSE(pty.serviceIo().ok);
+    REQUIRE(pty.cadenceWriteFailure().has_value());
+    const emu::CadenceWriteFailure f = *pty.cadenceWriteFailure();
+    CHECK(f.reply == 0);
+    CHECK(f.record == 0);
+    CHECK(f.bytes == 2 * 15);
+    CHECK(f.accepted == k.accepted);
+    CHECK(f.error == k.error);
+    const auto& recs = pty.cadenceRecords();
+    REQUIRE(recs.size() == 2);
+    CHECK(recs[0].written_ns == -1);
+    CHECK(recs[0].written_bytes == k.accepted);
+    CHECK(recs[0].write_error == k.error);
+    // The Ping's reply, due with it, is not written after an incomplete one.
+    CHECK(recs[1].written_ns == -1);
+    CHECK(recs[1].written_bytes == 0);
+    CHECK(recs[1].write_error == 0);
+    CHECK(pty.cadenceReplies() == 2);
+    CHECK(pty.cadenceWritten() == 0);
+    CHECK(pty.cadencePending() == 2);
+    // The client has exactly the bytes accepted.
+    CHECK(c.receive(2 * 15 + 14, milliseconds(100)).size() == k.accepted);
+    // From then on: not ok, nothing read, nothing written.
+    c.send(ping);
+    REQUIRE(masterHas(pty, static_cast<int>(ping.size()), milliseconds(500)));
+    const auto arrivals = pty.arrivals().size();
+    CHECK_FALSE(pty.serviceIo().ok);
+    CHECK_FALSE(pty.poll(0.001));
+    CHECK(pty.arrivals().size() == arrivals);
+    CHECK(pty.cadenceReplies() == 2);
+    CHECK(c.receive(1, milliseconds(50)).empty());
+  }
+}
+
+TEST_CASE("a client that stops reading fills the pty: the run fails at the first reply not accepted in full, and "
+          "the record's bytes are exactly the ones the client then reads",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  oneMotor(bus, 2);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  pty.setCadence(tiedAtOnce(), Clock::now(), 100000);
+  const auto ping = frame(2, kPing, {});
+  std::vector<std::uint8_t> batch;
+  for (int i = 0; i < 100; ++i) batch.insert(batch.end(), ping.begin(), ping.end());
+  // Pings, 100 at a time, each batch read and answered before the next;
+  // the client never reads.
+  std::size_t sent = 0;
+  bool failed = false;
+  const auto give_up = Clock::now() + std::chrono::seconds(10);
+  while (!failed && sent < 20000 && Clock::now() < give_up) {
+    c.send(batch);
+    sent += 100;
+    while (Clock::now() < give_up) {
+      if (!pty.serviceIo().ok) {
+        failed = true;
+        break;
+      }
+      if (pty.arrivals().size() == sent) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+  }
+  REQUIRE(failed);
+  const emu::CadenceWriteFailure f = *pty.cadenceWriteFailure();
+  INFO("written in full " << pty.cadenceWritten() << ", then " << f.accepted << " of " << f.bytes);
+  CHECK(f.error == EAGAIN);
+  CHECK(f.bytes == 14);
+  CHECK(f.accepted < f.bytes);
+  CHECK(f.reply == pty.cadenceWritten());
+  CHECK(pty.cadenceWritten() > 0);
+  CHECK(pty.cadenceReplies() == pty.cadenceWritten() + pty.cadencePending());
+  const auto& recs = pty.cadenceRecords();
+  REQUIRE(recs.size() == pty.cadenceReplies());
+  std::size_t accepted = 0;
+  for (std::size_t i = 0; i < recs.size(); ++i) {
+    const emu::CadenceRecord& r = recs[i];
+    accepted += r.written_bytes;
+    if (i < f.reply) {
+      CHECK((r.written_ns >= r.due_ns && r.written_bytes == r.bytes && r.write_error == 0));
+    } else if (i == f.reply) {
+      CHECK((r.written_ns == -1 && r.written_bytes == f.accepted && r.write_error == EAGAIN));
+    } else {
+      CHECK((r.written_ns == -1 && r.written_bytes == 0 && r.write_error == 0));
+    }
+  }
+  CHECK(accepted == 14 * pty.cadenceWritten() + f.accepted);
+  // What the pty accepted is what the client reads: every full reply the
+  // same Ping status, then the failed one's first bytes.
+  const auto got = c.receive(accepted, milliseconds(2000));
+  REQUIRE(got.size() == accepted);
+  CHECK(c.receive(1, milliseconds(100)).empty());
+  const std::vector<std::uint8_t> reply(got.begin(), got.begin() + 14);
+  REQUIRE(statuses(reply).size() == 1);
+  CHECK(statuses(reply)[0].id == 2);
+  bool same = true;
+  for (std::size_t i = 0; i < got.size(); ++i) same = same && got[i] == reply[i % 14];
+  CHECK(same);
+}
+
+TEST_CASE("run(): a held reply's failed write stops the loop at once with an I/O error, the reply unsent",
+          "[emu-loop][cadence]") {
+  emu::MotorBus bus;
+  oneMotor(bus, 2);
+  emu::PtyBus pty(bus);
+  Client c(pty.slavePath());
+  pty.setCadence(tiedAtOnce(), Clock::now(), 16);
+  pty.scriptCadenceWrites({{kAll, EIO}});
+  Loop loop(pty, bus, Loop::Config{}, Clock::now());
+  std::atomic<bool> stop{false};
+  std::atomic<bool> done{false};
+  Loop::Status status = Loop::Status::kOk;
+  std::thread runner([&] {
+    status = loop.run([&] { return stop.load(); });
+    done.store(true);
+  });
+  c.send(frame(2, kPing, {}));
+  const auto give_up = Clock::now() + std::chrono::seconds(2);
+  while (!done.load() && Clock::now() < give_up) std::this_thread::sleep_for(milliseconds(1));
+  const bool stopped_itself = done.load();
+  stop.store(true);
+  runner.join();
+  CHECK(stopped_itself);
+  CHECK(status == Loop::Status::kIoError);
+  REQUIRE(pty.cadenceWriteFailure().has_value());
+  CHECK(pty.cadenceWriteFailure()->error == EIO);
+  REQUIRE(pty.cadenceRecords().size() == 1);
+  CHECK(pty.cadenceRecords()[0].written_ns == -1);
+  CHECK(pty.cadencePending() == 1);
+  CHECK(c.receive(1, milliseconds(50)).empty());
 }

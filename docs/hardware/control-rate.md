@@ -307,7 +307,13 @@ from `--cadence-impair-from-s` on) and phase steps (`--cadence-step T:S`)
 disturb it. `--cadence request-tied --cadence-tie-us T` is the negative
 control: each reply goes T µs after its request. `--cadence-log` records,
 for every reply, the completion that carried it and when it was sent, so a
-probe run can be checked against that ground truth.
+probe run can be checked against that ground truth. Each held reply is
+written in full or the run fails: if the pty accepts only part of a reply (a
+client that stops reading fills it), the emulator says so and exits with
+status 1, and its record keeps the bytes accepted, the error, and the later
+replies as unsent. Invalid cadence options exit with status 2 before it
+serves; a time is bounded (at most 1e18 ns) before it is scaled and rounded
+to the nanosecond.
 
 On the cadence emulator the probe locks truly: each locked read is carried
 by the completion its plan targeted, and the alternation finds no coupling.

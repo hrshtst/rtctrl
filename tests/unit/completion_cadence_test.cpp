@@ -2,11 +2,14 @@
 // header-only pure logic, checked against its definition on synthetic
 // times: the lattice and its drift, the first completion at or after a
 // reply's ready time, delayed and missed completions, phase steps, the
-// request-tied control, monotone releases, and the configurations refused.
+// request-tied control, monotone releases, and the configurations refused
+// (overflow-safely, at the int64 extremes too).
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -301,4 +304,164 @@ TEST_CASE("unsupported cadence configurations are refused, naming the rule", "[e
   refused(c, "independent cadence only");
   c.ready_ns = 0;
   CHECK(emu::cadenceConfigError(c).empty());
+}
+
+TEST_CASE("validation is overflow-safe: int64 extremes are refused, never wrapped into range, and each bound holds "
+          "on both sides",
+          "[emu][cadence]") {
+  constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  const auto ok = [](const emu::CadenceConfig& c) {
+    const std::string e = emu::cadenceConfigError(c);
+    INFO(e);
+    CHECK(e.empty());
+  };
+  const auto refused = [](const emu::CadenceConfig& c, const std::string& why) {
+    const std::string e = emu::cadenceConfigError(c);
+    INFO(e);
+    CHECK(e.find(why) != std::string::npos);
+    CHECK_THROWS_AS(emu::CompletionCadence(c, kOrigin), std::invalid_argument);
+  };
+
+  // A phase step's shift, |shift| < P / 2 on both sides, at the nominal
+  // period, a drifted one (P / 2 not a whole ns) and the drift's limit.
+  for (const double ppm : {0.0, -57.5, 1000.0}) {
+    emu::CadenceConfig c = independent(ppm);
+    c.step_count = 1;
+    const double p = emu::cadencePeriodNs(c);
+    const auto largest = static_cast<std::int64_t>(std::ceil(p / 2.0)) - 1;
+    INFO("ppm " << ppm << ", largest shift " << largest);
+    for (const std::int64_t sign : {1, -1}) {
+      c.steps[0] = {1000000000LL, sign * largest};
+      ok(c);
+      c.steps[0].shift_ns = sign * (largest + 1);
+      refused(c, "below half a period");
+    }
+  }
+  // The review's case: INT64_MIN, whose llabs overflows, and the others.
+  for (const std::int64_t shift : {kMin, kMin + 1, kMax}) {
+    emu::CadenceConfig c;
+    c.step_count = 1;
+    c.steps[0] = {1000000000LL, shift};
+    refused(c, "below half a period");
+  }
+
+  // Every other int64 field at both extremes.
+  emu::CadenceConfig c;
+  for (const std::int64_t v : {kMin, kMax}) {
+    INFO("value " << v);
+    c = {};
+    c.nominal_period_ns = v;
+    refused(c, "nominal period");
+    c = {};
+    c.phase_ns = v;
+    refused(c, "phase");
+    c = {};
+    c.ready_ns = v;
+    refused(c, "ready time");
+    c = {};
+    c.byte_ns = v;
+    refused(c, "per byte");
+    c = {};
+    c.delay_every = 3;
+    c.delay_ns = v;
+    refused(c, "half a period");
+    c.delay_every = 0;
+    refused(c, "needs delayed completions");
+    c = {};
+    c.tie_ns = v;
+    refused(c, "request-tied cadence only");
+    c.mode = emu::CadenceMode::kRequestTied;
+    refused(c, "[0, 30000] us");
+  }
+  c = {};
+  c.miss_every = 2;
+  c.impair_from_ns = kMin;
+  refused(c, "impairments' start must be at or after");
+  c.impair_from_ns = kMax;  // never reached: no impairment
+  ok(c);
+  c = {};
+  c.step_count = 1;
+  c.steps[0] = {kMin, 1000};
+  refused(c, "at or after the start");
+  c.steps[0] = {kMax, 1000};  // never reached
+  ok(c);
+  c.step_count = 2;
+  c.steps[0] = {0, 1000};
+  c.steps[1] = {kMax, 1000};
+  ok(c);
+  c.steps[0] = {kMax, 1000};
+  c.steps[1] = {0, 1000};  // out of order, the difference -kMax
+  refused(c, "time order");
+  c.steps[1] = {kMax, 1000};
+  refused(c, "time order");
+  c.step_count = emu::CadenceConfig::kMaxSteps + 1;
+  refused(c, "at most 16");
+  for (const double ppm : {std::nan(""), std::numeric_limits<double>::infinity(),
+                           -std::numeric_limits<double>::infinity()}) {
+    c = {};
+    c.ppm = ppm;
+    refused(c, "drift");
+  }
+}
+
+TEST_CASE("releases stay prompt and on the lattice next to valid extreme steps", "[emu][cadence]") {
+  // The largest valid shifts, both ways, a step never reached, and a
+  // reply ready long after them: each release a completion at or after
+  // its ready time, less than a period later.
+  emu::CadenceConfig c;
+  c.step_count = 3;
+  c.steps[0] = {1000000000LL, -499999};
+  c.steps[1] = {2000000000LL, 499999};
+  c.steps[2] = {std::numeric_limits<std::int64_t>::max(), 1000};
+  const emu::CompletionCadence cadence(c, kOrigin);
+  for (const std::int64_t at : {500000000LL, 1500000000LL, 2500000000LL, 3600000000000LL}) {
+    const emu::CadenceRelease r = cadence.release(kOrigin + at, 0);
+    INFO("ready " << at);
+    CHECK(r.completion_ns >= r.ready_ns);
+    CHECK(r.completion_ns - r.ready_ns < 1000000);
+    CHECK(r.completion_ns == cadence.completionNs(r.index));
+  }
+}
+
+TEST_CASE("the request-tied control refuses each of the independent cadence's options, the delay among them",
+          "[emu][cadence]") {
+  const auto refused = [](const emu::CadenceConfig& c) {
+    const std::string e = emu::cadenceConfigError(c);
+    INFO(e);
+    CHECK(e.find("independent cadence only") != std::string::npos);
+  };
+  const auto tied = [] {
+    emu::CadenceConfig c;
+    c.mode = emu::CadenceMode::kRequestTied;
+    c.tie_ns = 790000;
+    return c;
+  };
+  CHECK(emu::cadenceConfigError(tied()).empty());
+  for (const std::int64_t delay : {std::int64_t{120000}, std::int64_t{-120000}, std::int64_t{1},
+                                   std::numeric_limits<std::int64_t>::min()}) {
+    emu::CadenceConfig c = tied();
+    c.delay_ns = delay;  // the review's case: silently ignored before
+    INFO("delay " << delay);
+    refused(c);
+  }
+  emu::CadenceConfig c = tied();
+  c.delay_every = 3;
+  refused(c);
+  c = tied();
+  c.miss_every = 2;
+  refused(c);
+  c = tied();
+  c.phase_ns = 1;
+  refused(c);
+  c = tied();
+  c.impair_from_ns = 1;
+  refused(c);
+  c = tied();
+  c.step_count = 1;
+  c.steps[0] = {1000000000LL, 1000};
+  refused(c);
+  c = tied();
+  c.byte_ns = 1;
+  refused(c);
 }

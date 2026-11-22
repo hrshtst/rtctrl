@@ -9,8 +9,9 @@ CLOCK_MONOTONIC ns; the probe's are its epoch's, at monotonic_origin_ns.
 Always checked:
 - the record itself: each reply ready at or after its request, carried by a
   completion at or after that (independent) or a fixed delay after it
-  (request-tied), due at or after its release, written at or after due (every
-  reply: each was awaited before the emulator stopped), the replies due and
+  (request-tied), due at or after its release, written in full (all its bytes
+  accepted by the pty, no write error) at or after due (every reply: each
+  was awaited before the emulator stopped), the replies due and
   written in order, and sent on time: their median lateness at the write
   (written less due, the emulator's own wake) within 30 us (2.6 to 19 us
   with its 1 ns timer slack on the test host, about 54 us with the default
@@ -98,6 +99,7 @@ def main() -> int:
             assert r["index"] == -1 and r["completion_ns"] == -1, r
             assert r["release_ns"] > r["arrival_ns"], r
         assert r["due_ns"] >= r["release_ns"], r
+        assert r["written_bytes"] == r["bytes"] and r["write_error"] == 0, ("a reply not written in full", r)
         assert r["written_ns"] >= r["due_ns"], ("a reply not written, or before it was due", r)
         if last_due is not None:
             assert r["due_ns"] >= last_due, ("replies due out of order", r)

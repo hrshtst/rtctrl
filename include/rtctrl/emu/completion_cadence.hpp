@@ -62,7 +62,7 @@ struct CadenceConfig {
   std::int64_t ready_ns = 0;   // [0, 1 s]
   std::int64_t byte_ns = 0;    // [0, 100 us]
   std::uint64_t delay_every = 0;  // 0: none
-  std::int64_t delay_ns = 0;      // (0, P / 2) when delay_every > 0
+  std::int64_t delay_ns = 0;      // (0, P / 2) when delay_every > 0, else 0
   std::uint64_t miss_every = 0;   // 0: none, else >= 2
   std::int64_t impair_from_ns = 0;  // delays and misses from here on
   std::array<PhaseStep, kMaxSteps> steps{};
@@ -75,12 +75,17 @@ inline double cadencePeriodNs(const CadenceConfig& c) {
   return static_cast<double>(c.nominal_period_ns) * (1.0 + c.ppm * 1e-6);
 }
 
-// Why a configuration is not supported (empty: it is).
+// Why a configuration is not supported (empty: it is). Every int64 field
+// is judged without overflow: it is compared as it is or in double, never
+// negated, and the only integer arithmetic (the difference of two step
+// times) is taken once both are known to be nonnegative. An extreme value
+// such as INT64_MIN is therefore refused, never wrapped into range.
 inline std::string cadenceConfigError(const CadenceConfig& c) {
   if (c.mode == CadenceMode::kRequestTied) {
-    if (c.ppm != 0.0 || c.phase_ns != 0 || c.delay_every != 0 || c.miss_every != 0 || c.step_count != 0 ||
-        c.impair_from_ns != 0) {
-      return "drift, phase, delayed and missed completions and phase steps are for the independent cadence only";
+    if (c.ppm != 0.0 || c.phase_ns != 0 || c.delay_every != 0 || c.delay_ns != 0 || c.miss_every != 0 ||
+        c.step_count != 0 || c.impair_from_ns != 0) {
+      return "drift, phase, delayed completions and their delay, missed completions and phase steps are for "
+             "the independent cadence only";
     }
     if (c.tie_ns < 0 || c.tie_ns > 30000000) return "the request-tied delay must be within [0, 30000] us";
     if (c.ready_ns != 0 || c.byte_ns != 0) return "the ready time is for the independent cadence only";
@@ -109,9 +114,14 @@ inline std::string cadenceConfigError(const CadenceConfig& c) {
   for (std::size_t i = 0; i < c.step_count; ++i) {
     const PhaseStep& s = c.steps[i];
     if (s.at_ns < 0) return "a phase step's time must be at or after the start";
-    if (!(2.0 * static_cast<double>(std::llabs(s.shift_ns)) < p) || s.shift_ns == 0) {
+    // In double, both signs bounded: |shift| < P / 2 (no llabs, which
+    // INT64_MIN would overflow).
+    const double twice_shift = 2.0 * static_cast<double>(s.shift_ns);
+    if (s.shift_ns == 0 || !(twice_shift < p && twice_shift > -p)) {
       return "a phase step's shift must be nonzero and below half a period";
     }
+    // Both times are nonnegative here (the previous one was checked in its
+    // own pass), so their difference cannot overflow.
     if (i > 0 && static_cast<double>(s.at_ns - c.steps[i - 1].at_ns) < 2.0 * p) {
       return "phase steps must be in time order, at least two periods apart";
     }

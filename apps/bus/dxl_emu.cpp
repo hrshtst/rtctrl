@@ -40,14 +40,19 @@
 // its request. Replies go in order. Times in the log are CLOCK_MONOTONIC
 // nanoseconds. With --cadence the emulator's timer slack is 1 ns, so its
 // releases are not deferred by the default 50 us slack. Invalid cadence
-// options exit with status 2 before serving.
+// options exit with status 2 before serving: times are bounded (1e18 ns)
+// before they are scaled, then rounded to the nanosecond, and counts are
+// at most 64 bits (bus/dxl_emu_cadence.hpp). A held reply is written in
+// full or the run fails: if the pty does not accept all of its bytes (a
+// client that stops reading fills it), dxl_emu says so and exits with
+// status 1, the record keeping the bytes accepted and the error, the
+// later replies unsent (emu::PtyBus::cadenceWriteFailure).
 
 #include <sys/prctl.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +61,7 @@
 #include <vector>
 #include <toml++/toml.hpp>
 
+#include "bus/dxl_emu_cadence.hpp"
 #include "rtctrl/dxl/control_table.hpp"
 #include "rtctrl/emu/motor_emulator.hpp"
 #include "rtctrl/emu/pty_bus.hpp"
@@ -65,122 +71,17 @@ namespace {
 volatile std::sig_atomic_t g_stop = 0;
 void onSignal(int) { g_stop = 1; }
 
-bool parseDouble(const char* text, double* out) {
-  char* end = nullptr;
-  const double v = std::strtod(text, &end);
-  if (end == text || *end != '\0' || !std::isfinite(v)) return false;
-  *out = v;
-  return true;
-}
-
-bool parseCount(const char* text, std::uint64_t* out) {
-  char* end = nullptr;
-  if (*text == '-') return false;
-  const unsigned long long v = std::strtoull(text, &end, 10);
-  if (end == text || *end != '\0') return false;
-  *out = v;
-  return true;
-}
-
-std::int64_t usToNs(double us) {
-  return static_cast<std::int64_t>(std::llround(us * 1e3));
-}
-
-// The cadence options (all opt-in). Returns false with *why set if one is
-// malformed or misplaced.
-struct CadenceArgs {
-  bool on = false;
-  rtctrl::emu::CadenceConfig config;
-  std::string log_path;
-};
-
-bool parseCadence(int argc, char* argv[], CadenceArgs* c, std::string* why) {
-  bool any_option = false;
-  for (int i = 1; i < argc; ++i) {
-    const std::string flag = argv[i];
-    if (flag.rfind("--cadence", 0) != 0) continue;
-    if (i + 1 >= argc) {
-      *why = flag + ": needs a value";
-      return false;
-    }
-    const char* value = argv[++i];
-    double x = 0.0;
-    std::uint64_t n = 0;
-    if (flag == "--cadence") {
-      if (std::strcmp(value, "independent") == 0) {
-        c->config.mode = rtctrl::emu::CadenceMode::kIndependent;
-      } else if (std::strcmp(value, "request-tied") == 0) {
-        c->config.mode = rtctrl::emu::CadenceMode::kRequestTied;
-      } else {
-        *why = "--cadence: independent or request-tied";
-        return false;
-      }
-      c->on = true;
-      continue;
-    }
-    any_option = true;
-    if (flag == "--cadence-log") {
-      c->log_path = value;
-    } else if (flag == "--cadence-ppm" && parseDouble(value, &x)) {
-      c->config.ppm = x;
-    } else if (flag == "--cadence-phase-us" && parseDouble(value, &x)) {
-      c->config.phase_ns = usToNs(x);
-    } else if (flag == "--cadence-ready-us" && parseDouble(value, &x)) {
-      c->config.ready_ns = usToNs(x);
-    } else if (flag == "--cadence-byte-ns" && parseDouble(value, &x)) {
-      c->config.byte_ns = static_cast<std::int64_t>(std::llround(x));
-    } else if (flag == "--cadence-delay-every" && parseCount(value, &n)) {
-      c->config.delay_every = n;
-    } else if (flag == "--cadence-delay-us" && parseDouble(value, &x)) {
-      c->config.delay_ns = usToNs(x);
-    } else if (flag == "--cadence-miss-every" && parseCount(value, &n)) {
-      c->config.miss_every = n;
-    } else if (flag == "--cadence-impair-from-s" && parseDouble(value, &x)) {
-      c->config.impair_from_ns = static_cast<std::int64_t>(std::llround(x * 1e9));
-    } else if (flag == "--cadence-tie-us" && parseDouble(value, &x)) {
-      c->config.tie_ns = usToNs(x);
-    } else if (flag == "--cadence-step") {
-      const std::string v = value;
-      const auto colon = v.find(':');
-      double at_s = 0.0, shift_us = 0.0;
-      if (colon == std::string::npos ||
-          !parseDouble(v.substr(0, colon).c_str(), &at_s) ||
-          !parseDouble(v.substr(colon + 1).c_str(), &shift_us)) {
-        *why = "--cadence-step: T:S (seconds after the start, a shift in us)";
-        return false;
-      }
-      if (c->config.step_count >= rtctrl::emu::CadenceConfig::kMaxSteps) {
-        *why = "--cadence-step: at most 16";
-        return false;
-      }
-      c->config.steps[c->config.step_count++] = {
-          static_cast<std::int64_t>(std::llround(at_s * 1e9)),
-          usToNs(shift_us)};
-    } else {
-      *why = flag + ": unknown, or not a number: " + value;
-      return false;
-    }
-  }
-  if (any_option && !c->on) {
-    *why = "the --cadence-* options need --cadence";
-    return false;
-  }
-  if (c->on) {
-    const std::string e = rtctrl::emu::cadenceConfigError(c->config);
-    if (!e.empty()) {
-      *why = "--cadence: " + e;
-      return false;
-    }
-  }
-  return true;
-}
+namespace cad = rtctrl::apps::dxl_emu_cadence;
 
 void writeCadenceLog(std::FILE* f, const rtctrl::emu::PtyBus& pty) {
   std::fprintf(f,
                "arrival_ns,instruction,id,data_length,bytes,ready_ns,index,"
-               "completion_ns,release_ns,delayed,missed,due_ns,written_ns\n");
+               "completion_ns,release_ns,delayed,missed,due_ns,written_ns,"
+               "written_bytes,write_error\n");
   for (const auto& r : pty.cadenceRecords()) {
-    std::fprintf(f, "%lld,%u,%u,%u,%zu,%lld,%lld,%lld,%lld,%d,%u,%lld,%lld\n",
+    std::fprintf(f,
+                 "%lld,%u,%u,%u,%zu,%lld,%lld,%lld,%lld,%d,%u,%lld,%lld,%zu,"
+                 "%d\n",
                  static_cast<long long>(r.arrival_ns), r.instruction, r.id,
                  r.data_length, r.bytes,
                  static_cast<long long>(r.release.ready_ns),
@@ -189,23 +90,22 @@ void writeCadenceLog(std::FILE* f, const rtctrl::emu::PtyBus& pty) {
                  static_cast<long long>(r.release.release_ns),
                  r.release.delayed ? 1 : 0, r.release.missed,
                  static_cast<long long>(r.due_ns),
-                 static_cast<long long>(r.written_ns));
+                 static_cast<long long>(r.written_ns), r.written_bytes,
+                 r.write_error);
   }
 }
 
-// The held replies' lateness at the write (written - due), for the exit
-// line: the emulator's own wake precision, not the pty's.
+// The exit line: the held replies' lateness at the write (written - due),
+// the emulator's own wake precision, not the pty's; and the counts of
+// replies written in full and not, the bus's rather than the record's, so
+// that they hold beyond the record's capacity too.
 void printCadenceSummary(const rtctrl::emu::PtyBus& pty) {
   std::vector<std::int64_t> late;
-  std::uint64_t delayed = 0, missed = 0, unsent = 0;
+  std::uint64_t delayed = 0, missed = 0;
   for (const auto& r : pty.cadenceRecords()) {
     if (r.release.delayed) ++delayed;
     missed += r.release.missed;
-    if (r.written_ns < 0) {
-      ++unsent;
-      continue;
-    }
-    late.push_back(r.written_ns - r.due_ns);
+    if (r.written_ns >= 0) late.push_back(r.written_ns - r.due_ns);
   }
   std::sort(late.begin(), late.end());
   const auto q = [&](double p) {
@@ -217,14 +117,29 @@ void printCadenceSummary(const rtctrl::emu::PtyBus& pty) {
   std::printf(
       "dxl_emu: cadence: %llu replies held, %zu recorded (%llu beyond the "
       "record), %llu on delayed completions, %llu missed completions passed "
-      "over, %llu unsent at exit; written after due by p50 %.1f, p99 %.1f, "
-      "max %.1f us\n",
+      "over, %llu written in full, %zu not at exit; written after due by "
+      "p50 %.1f, p99 %.1f, max %.1f us\n",
       static_cast<unsigned long long>(pty.cadenceReplies()),
       pty.cadenceRecords().size(),
       static_cast<unsigned long long>(pty.cadenceRecordsDropped()),
       static_cast<unsigned long long>(delayed),
       static_cast<unsigned long long>(missed),
-      static_cast<unsigned long long>(unsent), q(0.5), q(0.99), q(1.0));
+      static_cast<unsigned long long>(pty.cadenceWritten()),
+      pty.cadencePending(), q(0.5), q(0.99), q(1.0));
+}
+
+// Why the run stopped, when a held reply was not written in full.
+void printCadenceWriteFailure(const rtctrl::emu::CadenceWriteFailure& f,
+                              std::size_t pending) {
+  const std::string error =
+      f.error > 0 ? std::strerror(f.error) : "a write accepted nothing";
+  std::fprintf(stderr,
+               "dxl_emu: cadence: held reply %llu (counted from 0) was not "
+               "written in full: the pty accepted %zu of its %zu bytes (%s); "
+               "the cadence cannot be kept, stopping with %zu later replies "
+               "unsent\n",
+               static_cast<unsigned long long>(f.reply), f.accepted, f.bytes,
+               error.c_str(), pending > 0 ? pending - 1 : 0);
 }
 }  // namespace
 
@@ -245,10 +160,10 @@ int main(int argc, char* argv[]) {
       firmware = static_cast<int>(value);
     }
   }
-  CadenceArgs cadence;
+  cad::CadenceArgs cadence;
   {
     std::string why;
-    if (!parseCadence(argc, argv, &cadence, &why)) {
+    if (!cad::parseCadence(argc, argv, &cadence, &why)) {
       std::fprintf(stderr, "dxl_emu: %s\n", why.c_str());
       return 2;
     }
@@ -372,8 +287,12 @@ int main(int argc, char* argv[]) {
       loop_config.max_read_bytes,
       static_cast<unsigned long long>(st.limited_reads),
       static_cast<unsigned long long>(st.hangup_waits));
+  const auto write_failure = pty.cadenceWriteFailure();
   if (cadence.on) {
     printCadenceSummary(pty);
+    if (write_failure) {
+      printCadenceWriteFailure(*write_failure, pty.cadencePending());
+    }
     if (cadence_log != nullptr) {
       writeCadenceLog(cadence_log, pty);
       if (std::fclose(cadence_log) != 0) {
@@ -397,7 +316,10 @@ int main(int argc, char* argv[]) {
                    static_cast<double>(kMaxCatchUpTicks) * tick_s * 1e3);
       return 3;
     case rtctrl::emu::StandaloneLoop::Status::kIoError:
-      std::fprintf(stderr, "dxl_emu: the pseudo-terminal failed; stopping\n");
+      if (!write_failure) {  // else said above
+        std::fprintf(stderr,
+                     "dxl_emu: the pseudo-terminal failed; stopping\n");
+      }
       return 1;
   }
   return 1;

@@ -71,10 +71,13 @@ catch_discover_tests(adapter_phase_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PROPERTIES LABELS unit)
 
-# The emulator's opt-in adapter cadence (rtctrl/emu/completion_cadence.hpp,
-# dxl_emu --cadence): header-only pure logic, in its own executable too.
-add_executable(completion_cadence_tests unit/completion_cadence_test.cpp)
-target_include_directories(completion_cadence_tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+# The emulator's opt-in adapter cadence (rtctrl/emu/completion_cadence.hpp)
+# and dxl_emu's options for it (apps/bus/dxl_emu_cadence.hpp): header-only
+# pure logic, in its own executable too.
+add_executable(completion_cadence_tests unit/completion_cadence_test.cpp
+  unit/dxl_emu_cadence_test.cpp)
+target_include_directories(completion_cadence_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/apps)
 target_link_libraries(completion_cadence_tests PRIVATE Catch2::Catch2WithMain)
 catch_discover_tests(completion_cadence_tests
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

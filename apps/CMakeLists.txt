@@ -7,6 +7,7 @@
 
 add_executable(dxl_emu bus/dxl_emu.cpp)
 target_link_libraries(dxl_emu PRIVATE rtctrl::rtctrl)
+target_include_directories(dxl_emu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(dxl_inspect bus/dxl_inspect.cpp)
 target_link_libraries(dxl_inspect PRIVATE rtctrl::rtctrl)

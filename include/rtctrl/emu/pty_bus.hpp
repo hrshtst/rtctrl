@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sys/types.h>
+
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -51,7 +53,31 @@ struct CadenceRecord {
   // When it was due: the release, or the previous reply's due time if
   // that is later (replies go in order).
   std::int64_t due_ns = 0;
-  std::int64_t written_ns = -1;  // after the write returned (-1: never sent)
+  // When the pty had accepted the last of its bytes (-1: it has not; see
+  // written_bytes and write_error).
+  std::int64_t written_ns = -1;
+  std::size_t written_bytes = 0;  // of `bytes`, accepted by the pty
+  // 0, or why its write failed: the failed write(2)'s errno, or -1 for a
+  // write that accepted nothing and reported no error.
+  int write_error = 0;
+};
+
+// The held reply whose write failed (PtyBus::cadenceWriteFailure).
+struct CadenceWriteFailure {
+  std::uint64_t reply = 0;  // its place among the held replies, from 0
+  std::int64_t record = -1;  // its CadenceRecord (-1: beyond the record)
+  std::size_t bytes = 0;
+  std::size_t accepted = 0;  // bytes the pty accepted before the failure
+  int error = 0;             // as CadenceRecord::write_error
+};
+
+// A scripted outcome of one write(2) call for held replies (fault tests,
+// PtyBus::scriptCadenceWrites): error != 0 fails the call (-1, errno set
+// to error) with nothing written; otherwise at most `accept` bytes are
+// written for real, accept 0 making the call return 0.
+struct CadenceWrite {
+  std::size_t accept = std::numeric_limits<std::size_t>::max();
+  int error = 0;
 };
 
 // Serves a MotorBus over a pseudo-terminal speaking Dynamixel Protocol
@@ -116,6 +142,17 @@ class PtyBus {
   // replies go as before. The first record_capacity replies are recorded
   // (cadenceRecords); later ones are counted only. Call before serving,
   // from the thread that serves.
+  //
+  // A held reply is written in full or the run fails. After a partial
+  // write the rest is written at once, and an interrupted write (EINTR) is
+  // retried at once, at most kMaxWriteInterrupts times in a row. Any other
+  // outcome (EAGAIN: the pty is full, its client not reading; a hard
+  // error; a write that accepts nothing) fails the run explicitly: the
+  // reply's record keeps the bytes accepted and the error, it and every
+  // later reply stay unsent (no reply is written after an incomplete one),
+  // and from then on serviceIo() and poll() return !ok without reading or
+  // writing. (Without a cadence, writes are as before: what a failed write
+  // leaves is dropped.)
   void setCadence(const CadenceConfig& cadence,
                   std::chrono::steady_clock::time_point origin,
                   std::size_t record_capacity);
@@ -128,12 +165,27 @@ class PtyBus {
   std::uint64_t cadenceRecordsDropped() const {
     return cadence_records_dropped_;
   }
+  // Held replies the pty accepted in full, and held replies not (yet)
+  // written in full: cadenceReplies() is their sum.
+  std::uint64_t cadenceWritten() const { return cadence_written_; }
+  std::size_t cadencePending() const {
+    return cadence_ ? pending_.size() : 0;
+  }
+  // The write that failed the run, if one has.
+  const std::optional<CadenceWriteFailure>& cadenceWriteFailure() const {
+    return cadence_failure_;
+  }
+  static constexpr int kMaxWriteInterrupts = 3;
+  // Fault tests: outcomes for the next write(2) calls of held replies, one
+  // each, in order; later calls write for real. Appends to any pending.
+  void scriptCadenceWrites(const std::vector<CadenceWrite>& writes);
 
  private:
   struct Pending {
     std::chrono::steady_clock::time_point due;
     std::vector<std::uint8_t> bytes;
     std::size_t record = kNoRecord;  // its CadenceRecord, if any
+    std::uint64_t reply = 0;         // held replies: its place, from 0
   };
   static constexpr std::size_t kNoRecord =
       std::numeric_limits<std::size_t>::max();
@@ -147,7 +199,12 @@ class PtyBus {
                   const std::vector<std::uint8_t>& params);
   void writeBytes(const std::vector<std::uint8_t>& bytes);
   void sendSyncReadReplies(std::vector<std::uint8_t> replies);
-  void sendDueReplies();
+  // False: a held reply's write failed (cadence_failure_ set).
+  bool sendDueReplies();
+  // Cadence mode: all of p's bytes, or the failure recorded (false).
+  bool writeHeld(const Pending& p);
+  // One write(2) of held bytes, or its scripted outcome.
+  ssize_t writeHeldOnce(const std::uint8_t* data, std::size_t size);
   void extractFrames();
   // Cadence mode: hold bytes for the current request's release, its ready
   // time extra_delay later.
@@ -159,8 +216,10 @@ class PtyBus {
   std::string slave_path_;
   std::vector<std::uint8_t> rx_;
   std::vector<Pending> pending_;
-  mutable std::mutex script_mutex_;  // guards faults_ and arrivals_
+  // guards faults_, arrivals_ and write_script_
+  mutable std::mutex script_mutex_;
   std::deque<ReplyFault> faults_;
+  std::deque<CadenceWrite> write_script_;
   std::vector<Arrival> arrivals_;
   // Cadence mode only (null by default).
   std::unique_ptr<CompletionCadence> cadence_;
@@ -169,6 +228,8 @@ class PtyBus {
   std::size_t cadence_record_capacity_ = 0;
   std::uint64_t cadence_replies_ = 0;
   std::uint64_t cadence_records_dropped_ = 0;
+  std::uint64_t cadence_written_ = 0;
+  std::optional<CadenceWriteFailure> cadence_failure_;
   std::chrono::steady_clock::time_point last_due_{};
 };
 
