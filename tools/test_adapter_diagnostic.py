@@ -210,15 +210,20 @@ def toml(d: dict) -> str:
             return "true" if v else "false"
         if isinstance(v, str):
             return json.dumps(v)
+        if isinstance(v, list):
+            return "[" + ", ".join(val(x) for x in v) + "]"
         return repr(v)
 
+    def tables(v) -> bool:  # an array of tables, not a list of values
+        return isinstance(v, list) and bool(v) and isinstance(v[0], dict)
+
     def table(prefix: str, t: dict) -> list[str]:
-        out = [f"{k} = {val(v)}" for k, v in t.items() if not isinstance(v, (dict, list))]
+        out = [f"{k} = {val(v)}" for k, v in t.items() if not isinstance(v, dict) and not tables(v)]
         for k, v in t.items():
             name = f"{prefix}.{k}" if prefix else k
             if isinstance(v, dict):
                 out += ["", f"[{name}]", *table(name, v)]
-            elif isinstance(v, list):
+            elif tables(v):
                 for item in v:
                     out += ["", f"[[{name}]]", *table(name, item)]
         return out
@@ -342,6 +347,33 @@ def main() -> int:
         path = base.write(root, "plan", s)
         code, out = run("validate", "--plan", "adapter", str(path))
         check(code == 1 and "lead_us is 800" in out and "duration_s is 5" not in out, "the plan's lead is checked", out)
+
+        # The hardware latency check, on the probe's own [bounded_read] shapes (x7_bus_timing: latency_timer_ms, the
+        # measured value, when the device's timer was read; latency_timer_verified = false only when it exposes none;
+        # no other form of that field). Forged shapes are refused, never accepted.
+        lt_cases = [
+            ("read and measured at 1 ms (the producer's success shape)", {"latency_timer_ms": 1}, True, True, ""),
+            ("measured at 2 ms", {"latency_timer_ms": 2}, True, False, "the measured latency timer is 2 ms, not 1"),
+            ("no timer exposed (the producer's false flag)", {"latency_timer_verified": False}, True, False,
+             "latency_timer_verified = False"),
+            ("neither field", {}, True, False, "no measured latency timer"),
+            ("a forged true flag beside a measured 2 ms", {"latency_timer_ms": 2, "latency_timer_verified": True}, True,
+             False, "the measured latency timer is 2 ms, not 1"),
+            ("a forged true flag beside a measured 1 ms", {"latency_timer_ms": 1, "latency_timer_verified": True}, True,
+             False, "latency_timer_verified = True"),
+            ("a PTY (no timer exposed), not hardware", {"latency_timer_verified": False}, False, True, ""),
+            ("another expected timer", {"latency_timer_ms": 1, "expected_latency_timer_ms": 2}, True, False,
+             "the expected latency timer is 2 ms, not 1"),
+        ]
+        for name, extra, hw, ok_wanted, text in lt_cases:
+            s = copy.deepcopy(good)
+            s["duration_s"] = 20
+            s["bounded_read"] = {"budget_s": 0.035, "guard_s": 0.035, "window_bytes": [13, 10], "reads": len(base.rows),
+                                 "timeouts": 0, "malformed": 0, "servo_errors": 0, "recoveries": 0, "guard_waits": 0,
+                                 "inhibited": 0, "expected_latency_timer_ms": 1} | extra
+            path = base.write(root, "plan-latency", s)
+            code, out = run("validate", "--plan", "adapter", *(["--hardware"] if hw else []), str(path))
+            check((code == 0) == ok_wanted and text in out, f"the latency timer: {name}", out)
 
         # Analysis: windows, rates and the predictions' denominators (an 8 s run: 50 full-window reads in its window).
         b = locked_run(8)

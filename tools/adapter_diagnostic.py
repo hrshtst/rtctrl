@@ -192,8 +192,18 @@ def check_plan(run: Run, arm: str, hardware: bool) -> list[str]:
     br = run.s.get("bounded_read", {})
     if br.get("expected_latency_timer_ms") != 1:
         bad.append(f"the expected latency timer is {br.get('expected_latency_timer_ms')!r} ms, not 1")
-    if hardware and br.get("latency_timer_verified") is not True:
-        bad.append("the adapter's latency timer was not read and verified (a hardware run)")
+    if hardware:
+        # The probe's schema (x7_bus_timing's [bounded_read]): a device whose latency timer was read records the
+        # measured value, latency_timer_ms; one exposing none records latency_timer_verified = false, and the probe
+        # writes that field in no other form. A hardware run needs the measured 1 ms and no such field.
+        measured = br.get("latency_timer_ms")
+        if "latency_timer_verified" in br:
+            bad.append(f"latency_timer_verified = {br['latency_timer_verified']!r}: the adapter's latency timer was "
+                       "not read (the probe writes the field only when the device exposes none)")
+        if measured is None:
+            bad.append("no measured latency timer (latency_timer_ms) in the summary (a hardware run)")
+        elif measured != 1 or isinstance(measured, bool):
+            bad.append(f"the measured latency timer is {measured!r} ms, not 1")
     return bad
 
 
@@ -707,7 +717,8 @@ def main() -> int:
     v = sub.add_parser("validate")
     v.add_argument("log", type=pathlib.Path)
     v.add_argument("--plan", choices=("grid", "adapter"), help="also check the plan's settings for this arm")
-    v.add_argument("--hardware", action="store_true", help="with --plan: the latency timer must have been verified")
+    v.add_argument("--hardware", action="store_true",
+                   help="with --plan: the adapter's latency timer must have been read, and measured at 1 ms")
     a = sub.add_parser("analyze")
     a.add_argument("log", type=pathlib.Path)
     src = a.add_mutually_exclusive_group()
