@@ -2,10 +2,13 @@
 
 Usage: check_adapter_log.py LOG GRID_HEADER DEADLINE_S MIN_FITS. Used by
 bus_timing_adapter_smoke.sh and bus_timing_cadence_smoke.sh; it was the
-former's inline check, moved here unchanged below this docstring.
+former's inline check, moved here (e40875f) and since changed only in
+style (ruff's import order, a dict literal, itertools.pairwise).
 """
 import csv
+import itertools
 import sys
+
 import tomllib
 
 log, grid_header, deadline_s = sys.argv[1], sys.argv[2].split(","), float(sys.argv[3])
@@ -31,7 +34,8 @@ acq, settle = a["acquisition_s"] * 1e9, a["settling_s"] * 1e9
 
 # The declared windows and the whole run, recomputed from the rows.
 def counts(sel):
-    c = dict(cycles=0, skipped_periods=0, overruns=0, consecutive_skips=0, referenced_cycles=0, grid_cycles=0)
+    c = {"cycles": 0, "skipped_periods": 0, "overruns": 0, "consecutive_skips": 0, "referenced_cycles": 0,
+         "grid_cycles": 0}
     prev, prev_w = False, None
     for row in rows:
         t = row["scheduled_wake_ns"]
@@ -119,9 +123,9 @@ assert all(x["last_reply_ns"] >= 0 and x["read_ok"] for x in rows if x["observat
 # A lock state the published plans went through, in order.
 states = [x["lock_state"] for x in rows]
 assert states[0] == 0
-for p, q in zip(states, states[1:]):
+for p, q in itertools.pairwise(states):
     assert (p, q) in {(0, 0), (0, 1), (1, 1), (1, 0), (1, 2), (2, 2), (2, 0)}, (p, q)
-assert a["locks"] == sum(1 for p, q in zip(states, states[1:]) if (p, q) == (1, 2))
+assert a["locks"] == sum(1 for p, q in itertools.pairwise(states) if (p, q) == (1, 2))
 coupling = s["adapter"].get("coupling")
 assert (coupling is not None) == bool(D)
 print(f"{log}: {len(rows)} cycles, {r['skipped_periods']} skipped; fits {outcomes}; "
