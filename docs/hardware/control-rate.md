@@ -351,6 +351,23 @@ A phase step's lock can end by either of supervision's rules, depending on
 the pty's late stamps before the step, and the test checks each loss
 against the rows' observations.
 
+**The torque-off diagnostic's tooling (planned, not run on the arm).** The
+session runs the adapter arm as the variant `fast-motion-adapter`:
+`fast-motion` with `--timing adapter --acquisition-s 2 --settling-s 1
+--lead-us 780 --wake-to-read-us 10 --lead-alternation-us 20`, at 1000 Hz
+only. `tools/adapter_diagnostic.py validate` checks a run's records as facts
+only. A run with no lock, refused or stale fits, or a fit applied on the
+final close (a lock with no executed row) is valid when its log and summary
+agree. `tools/adapter_diagnostic.py analyze` reports the declared windows
+apart from the whole run: a window's rate is its cycles over its span, and
+the whole run's T1 to T7 are `timing_summary.py`'s. It also judges the plan's
+exploratory predictions, with counts beside every share. Its true-lock check
+takes the carriers from `trace_correlate.py --completions-csv`, the byte
+association of each read's last reply bytes, or on a PTY from
+`dxl_emu --cadence-log`. An untraced run has no carriers, so that check is
+not testable there. `x7_bus_timing_diagnostic_smoke` runs both arms over the
+cadence emulator.
+
 ### Summaries
 
 ```sh

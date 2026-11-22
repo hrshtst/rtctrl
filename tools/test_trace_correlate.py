@@ -607,6 +607,29 @@ def main() -> int:
                 "kworker_slept_before_tty_ns": "0", "kworker_first_cpu": "8", "kworker_migrated": "0"}
         for k, v in want.items():
             expect(r[k] == v, f"split reply's {k} is {v} (got {r[k]})", out)
+        # The completions with their carriers (--completions-csv): all seven of the run, status-only ones included,
+        # in order; each read's carrier is the data completion with its reply's last bytes, the split reply's the
+        # later of its two, never the status-only completion after it.
+        comp = root / "clean.completions.csv"
+        p = subprocess.run([sys.executable, "tools/trace_correlate.py", str(root / "clean.csv"),
+                            *saved_report(root, "clean"), "--adapter", "1-9", "--completions-csv", str(comp)],
+                           capture_output=True, text=True)
+        expect(p.returncode == 0, "the clean run passes with --completions-csv", p.stdout + p.stderr)
+        crow = list(csv.DictReader(open(comp)))
+        expect([c["index"] for c in crow] == [str(i) for i in range(7)], "seven completions, indexed in order", out)
+        expect([int(c["ts_ns"]) for c in crow] == sorted(int(c["ts_ns"]) for c in crow), "in time order", out)
+        expect(sum(c["data_bytes"] != "0" for c in crow) == 4, "four data completions", out)
+        carriers = [c for c in crow if c["last_of_cycle"]]
+        expect([c["last_of_cycle"] for c in carriers] == [x["cycle"] for x in rows], "one carrier per read, in order",
+               out)
+        expect(all(c["data_bytes"] != "0" and c["reply_complete"] == "1" for c in carriers),
+               "carriers are data completions of complete replies", out)
+        split = next(k for k, c in enumerate(crow) if c["last_of_cycle"] == r["cycle"])
+        before = max(k for k in range(split) if crow[k]["data_bytes"] != "0")
+        expect(crow[before]["last_of_cycle"] == "" and
+               int(crow[split]["ts_ns"]) - int(crow[before]["ts_ns"]) == int(r["between_completions_ns"]),
+               "the split reply's carrier is its later data completion", out)
+        expect(all(c["last_of_cycle"] == "" for c in crow if c["data_bytes"] == "0"), "no status-only carrier", out)
 
         # A profiled run: every sleep's call and timer arming, and a late
         # sleep with a page fault and the worker's perf samples before it.

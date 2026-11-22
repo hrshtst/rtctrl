@@ -314,8 +314,10 @@ usage: $0 [options]
                       condition idle, loaded, loaded-excl, rt-idle,
                                 rt-loaded or rt-loaded-excl
                       variant   full, motion, motion-aux0ms, fast,
-                                fast-motion or fast-motion-aux0ms (all on
-                                the bounded read path)
+                                fast-motion, fast-motion-aux0ms or
+                                fast-motion-adapter (all on the bounded
+                                read path; the last is fast-motion under
+                                adapter-referenced timing, 1000 Hz only)
   --modes LIST        untraced,traced (default), any of untraced, traced,
                       profiled (traced, plus timer arming, sleep calls, page
                       faults and perf samples of the real-time CPU; rt-*
@@ -440,6 +442,13 @@ expand_cpus() {
   echo "${out[*]}"
 }
 
+# The adapter-referenced timing of the fast-motion-adapter variant: the
+# acquisition [0, 2 s) and settling [2, 3 s) windows, the 780 us lead and
+# 10 us allowance, and the motion-only reads' +-20 us lead alternation.
+ADAPTER_TIMING=(--timing adapter --acquisition-s 2 --settling-s 1 --lead-us 780
+                --wake-to-read-us 10 --lead-alternation-us 20)
+ADAPTER_MIN_DURATION=4  # the probe needs the windows to end before --duration
+
 # The variant's probe flags (vflags) and log-name tag (vtag).
 variant_flags() {
   vflags=(--read-path bounded)
@@ -453,6 +462,12 @@ variant_flags() {
     fast-motion-aux0ms)
       vflags+=(--read-instruction fast --feedback motion --aux-interval-ms 0)
       vtag+=-fast-motion-aux0ms ;;
+    fast-motion-adapter)
+      # fast-motion, its wakes planned from the adapter's completions (the
+      # torque-off diagnostic plan's adapter arm): every timing flag given,
+      # defaults included, so that the command and the summary state them.
+      vflags+=(--read-instruction fast --feedback motion "${ADAPTER_TIMING[@]}")
+      vtag+=-fast-motion-adapter ;;
     *) return 1 ;;
   esac
 }
@@ -460,7 +475,7 @@ variant_flags() {
 IFS=, read -r -a run_list <<<"$runs"
 IFS=, read -r -a mode_list <<<"$modes"
 [ ${#run_list[@]} -gt 0 ] || die "--runs is empty"
-any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; any_timer=0; all_rt=1; max_rate=0
+any_rt=0; any_loaded=0; any_traced=0; any_profiled=0; any_timer=0; all_rt=1; max_rate=0; any_adapter=0
 for spec in "${run_list[@]}"; do
   IFS=: read -r p r c v extra <<<"$spec"
   [ -z "${extra:-}" ] && [ -n "${v:-}" ] || die "run '$spec' is not profile:rate:condition:variant"
@@ -472,6 +487,10 @@ for spec in "${run_list[@]}"; do
     *) die "run '$spec': unknown condition '$c'" ;;
   esac
   variant_flags "$v" || die "run '$spec': unknown variant '$v'"
+  if [ "$v" = fast-motion-adapter ]; then
+    [ "$r" -eq 1000 ] || die "run '$spec': the adapter variant runs at 1000 Hz only"
+    any_adapter=1
+  fi
   case "$c" in rt-*) any_rt=1 ;; *) all_rt=0 ;; esac
   case "$c" in *loaded*) any_loaded=1 ;; esac
 done
@@ -498,6 +517,8 @@ if [ -n "$latency_steps" ]; then
   done
 fi
 [[ $duration =~ ^[0-9]+$ ]] && [ "$duration" -gt 0 ] || die "--duration must be a positive integer"
+[ "$any_adapter" -eq 0 ] || [ "$duration" -ge "$ADAPTER_MIN_DURATION" ] ||
+  die "--duration $duration: the adapter variant's windows (acquisition 2 s, settling 1 s) need at least $ADAPTER_MIN_DURATION s"
 is_uint "$perf_hz" && [ "$perf_hz" -ge 100 ] && [ "$perf_hz" -le 20000 ] ||
   die "--perf-hz must be 100 to 20000"
 is_uint "$perf_stack" && [ "$perf_stack" -ge 1024 ] && [ "$perf_stack" -le 65528 ] &&
@@ -2051,6 +2072,7 @@ run_one() {
     echo "probe binary: $(stat -c %y "$PROBE")"
     echo "condition: $cond"
     echo "variant: $variant (bounded read path: the probe's 35 ms budget and equal guard)"
+    if [ "$variant" = fast-motion-adapter ]; then echo "timing: adapter (${ADAPTER_TIMING[*]})"; fi
     echo "mode: $mode"
     case "$placement" in
       confined) echo "placement: confined (observers $observers moved off CPUs $exclude_cpus, the probe started on CPUs $other_cpus)"

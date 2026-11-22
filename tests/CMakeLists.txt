@@ -334,6 +334,19 @@ set_tests_properties(adapter_log_readers PROPERTIES
   PASS_REGULAR_EXPRESSION "adapter log readers OK"
   LABELS unit)
 
+# The adapter-timing diagnostic (tools/adapter_diagnostic.py) on synthetic
+# runs: fact-only validation (no lock, refused, stale and abandoned fits, a
+# lock applied on the final close, a relock, and inconsistent records
+# refused), the windows, rates and denominators, and the true-lock carriers.
+add_test(NAME adapter_diagnostic_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_adapter_diagnostic.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(adapter_diagnostic_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "adapter diagnostic regressions OK"
+  LABELS unit)
+
 # Traced-run correlation: the association and alignment checks, each of
 # their failures, and the receive path on a synthetic probe run and trace.
 add_test(NAME trace_correlate_regressions
@@ -887,6 +900,24 @@ add_test(NAME x7_bus_timing_cadence_smoke
 set_tests_properties(x7_bus_timing_cadence_smoke PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   PASS_REGULAR_EXPRESSION "bus timing cadence smoke OK"
+  LABELS integration RUN_SERIAL TRUE TIMEOUT 300)
+
+# The torque-off adapter-timing diagnostic's two arms over dxl_emu --cadence
+# (the plan, revision 2): the session's planned commands for both arms and
+# its refusals, 20 s runs of each, and tools/adapter_diagnostic.py's
+# validation and analysis with the emulator's record as the carriers. uv runs
+# the tool (the build-local cache keeps it hermetic). RUN_SERIAL, as the
+# cadence smoke: the lock rests on an otherwise idle host's pty.
+add_test(NAME x7_bus_timing_diagnostic_smoke
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    bash ${CMAKE_SOURCE_DIR}/tests/integration/bus_timing_diagnostic_smoke.sh
+      $<TARGET_FILE:dxl_emu> $<TARGET_FILE:x7_bus_timing>
+      $<TARGET_FILE:dxl_inspect>
+      ${CMAKE_BINARY_DIR}/bus_timing_diagnostic_smoke)
+set_tests_properties(x7_bus_timing_diagnostic_smoke PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  PASS_REGULAR_EXPRESSION "bus timing diagnostic smoke OK"
   LABELS integration RUN_SERIAL TRUE TIMEOUT 300)
 
 # The E1 session scripts (tools/e1_prod.sh, tools/e1_cal.sh) over the

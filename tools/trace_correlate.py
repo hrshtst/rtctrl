@@ -3,6 +3,7 @@
 
 usage: trace_correlate.py <run>.csv [--report FILE [--report-tool FILE]]
                           [--adapter DEVICE] [--top N] [--segments-csv FILE]
+                          [--completions-csv FILE]
 
 Reads the probe's per-cycle log <run>.csv, its summary
 <run>.csv.summary.toml (worker_tid, monotonic_origin_ns, the budget's
@@ -659,8 +660,12 @@ def check_transfers(run: Run, tr: Trace, failures: list, out) -> dict:
 def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> list[dict]:
     o, rows = run.origin, run.rows
     reads = [(i, ts, done) for kind, i, ts, done in transfers["paired"] if kind == "read"]
-    data = [(ts, cpu, data_bytes(a)) for ts, cpu, a in tr.in_done]
-    data = [d for d in data if d[2] > 0]
+    data, data_index = [], []  # the data completions, and each one's place in tr.in_done
+    for k, (ts, cpu, a) in enumerate(tr.in_done):
+        n = data_bytes(a)
+        if n > 0:
+            data.append((ts, cpu, n))
+            data_index.append(k)
     data_ts = [d[0] for d in data]
     bh = {}
     for start, end, _, cpu, _, comm in tr.executions[BH_WORK]:
@@ -703,7 +708,10 @@ def receive_path(run: Run, tr: Trace, transfers: dict, failures: list, out) -> l
         x = {"cycle": int(r["cycle"]), "row": i, "read_len": int(r["read_len"]),
              "completions": len(mine), "irq_cpu": last_cpu, "read_start": o + int(r["read_start_ns"]),
              "submit": submit, "instr_done": done, "first": first, "last": last,
-             "last_reply": last_reply, "read_end": stamp(r, "read_end_ns", o)}
+             "last_reply": last_reply, "read_end": stamp(r, "read_end_ns", o),
+             # The completion that carried the reply's last bytes, as its place in tr.in_done, and
+             # whether the read's data completions add up to its reply.
+             "last_in": data_index[j1 - 1], "reply_complete": None if want is None else got == want}
         # The USB completion work on the interrupt's CPU: running then, or next.
         st = bh_starts.get(last_cpu, [])
         k = bisect.bisect_right(st, last) - 1
@@ -1352,6 +1360,27 @@ def sleep_timing(run: Run, tr: Trace, timer: dict, perf: list | None, stacks: li
                 print(f"      call context ({cnt} of {s1_ - s0_} samples): " + " < ".join(chain), file=out)
 
 
+def write_completions(path: pathlib.Path, run: Run, tr: Trace, rec: list[dict]) -> None:
+    """Every bulk IN completion of the adapter in the run (data or status only), in order, and the read whose reply's
+    last bytes each carried (the byte association of receive_path, never the nearest or latest completion): index (from
+    0, the run's first), ts_ns (the trace's monotonic clock), data_bytes, last_of_cycle (that read's cycle, or empty),
+    reply_complete (1 when that read's data completions add up to its reply, 0 when not, empty when unknown)."""
+    o, rows = run.origin, run.rows
+    lo, hi = o + int(rows[0]["wake_ns"]), o + int(rows[-1]["cycle_end_ns"])
+    carried = {x["last_in"]: x for x in rec}
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["index", "ts_ns", "data_bytes", "last_of_cycle", "reply_complete"])
+        n = 0
+        for k, (ts, _, a) in enumerate(tr.in_done):
+            if not lo <= ts <= hi:
+                continue
+            x = carried.get(k)
+            done = "" if x is None or x["reply_complete"] is None else int(x["reply_complete"])
+            w.writerow([n, ts, data_bytes(a), "" if x is None else x["cycle"], done])
+            n += 1
+
+
 def write_segments(path: pathlib.Path, rec: list[dict]) -> None:
     names = ["cycle", "read_len", "completions", "irq_cpu", "bh_comm", "tty_pid", "tty_cpu", "blocked",
              "kworker_prev", "kworker_waker", "kworker_target", "kworker_first_cpu", "kworker_migrated"]
@@ -1390,6 +1419,9 @@ def main() -> int:
                         "(default: the run record's adapter line)")
     parser.add_argument("--top", type=int, default=10, help="slowest reads and latest wakes to list")
     parser.add_argument("--segments-csv", type=pathlib.Path, help="write each read's receive path here")
+    parser.add_argument("--completions-csv", type=pathlib.Path,
+                        help="write the run's bulk IN completions here, each with the read whose last reply bytes it "
+                        "carried (the adapter diagnostic's carriers: tools/adapter_diagnostic.py)")
     parser.add_argument("--perf-txt", type=pathlib.Path,
                         help="a profiled run's worker samples (default: <run>.csv.perf.txt if it exists)")
     parser.add_argument("--exploratory-slope-ppm", type=float,
@@ -1484,6 +1516,8 @@ def main() -> int:
         observer_placement(args.csv, run, tr, out, failures)
     if args.segments_csv:
         write_segments(args.segments_csv, rec)
+    if args.completions_csv:
+        write_completions(args.completions_csv, run, tr, rec)
     if failures:
         print("association and alignment: FAIL", file=out)
         for f in failures:
