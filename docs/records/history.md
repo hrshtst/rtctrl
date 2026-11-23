@@ -1061,6 +1061,20 @@ their time, but that distribution may itself depend on placement and
 cycle skipping, so it is not an established confound. Offline analysis
 of the existing captures and logs is next; no acquisition is approved.
 
+The adapter-timing diagnostic was then rehearsed on the emulator (at
+`dd6fd3c`, 2026-11-22 and 2026-11-23). Two sittings, attempts 27 and 29,
+stopped before any invocation, each when a Ctrl-C in the emulator's
+terminal stopped the emulator; for attempt 29 the owner's account was
+copying text with Ctrl-C. Attempt 30 turned that terminal's signal keys off
+while the emulator served and stopped the emulator with a block of its own.
+It ran all four invocations, each valid, and was accepted as the complete
+rehearsal. The adapter arm locked on the modelled cadence, with its replies
+carried by the targeted completions; the grid arm ran about 253 and 263 Hz
+below it in the matched windows. Each timer run had one timed-out read,
+the PTY's known T3 chain, kept as data. The rehearsal qualifies neither
+1 kHz nor the physical adapter; preparing the hardware sitting may proceed
+as design work only.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

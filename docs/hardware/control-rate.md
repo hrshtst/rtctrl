@@ -368,6 +368,68 @@ association of each read's last reply bytes, or on a PTY from
 not testable there. `x7_bus_timing_diagnostic_smoke` runs both arms over the
 cadence emulator.
 
+**The diagnostic's emulator rehearsal (attempts 27 to 30, 2026-11-22 and
+2026-11-23; attempt 30 accepted).** The diagnostic's whole sitting was
+rehearsed on the emulator only, at the frozen candidate `dd6fd3c`, with the
+actuator power off. The emulator ran in its own terminal on CPUs 4 and 5
+with the plan's cadence (`--cadence independent --cadence-ppm -57.5
+--cadence-phase-us 900 --cadence-ready-us 500`); readiness came next, then
+four invocations (the grid and adapter arms, untraced and timer), each one's
+go given only after the developer validated the previous run. Attempts 27
+and 29 stopped before any diagnostic invocation: after readiness had
+passed, a Ctrl-C in the emulator's terminal stopped the emulator. For
+attempt 29 the owner's account is that they copied text with Ctrl-C;
+attempt 27's reason is recorded as unknown. Attempt 30's emulator block
+turned its terminal's signal keys off while the emulator served and
+restored the exact settings at its end, and a separate block stopped the
+emulator by its identity, with bounded waits and no retry or kill. The
+reviewer accepted attempt 30 as the complete emulator rehearsal:
+- all four invocations are valid captures (`validate --plan`, without
+  `--hardware`), with the emulator's identity the same at every block and
+  exempt in every run record;
+- in both adapter runs the first fit locked with no loss, and A1 and A3
+  held, the emulator's record giving the carriers; A4 ended
+  `no_coupling_detected`, which does not by itself establish uncoupled
+  timing;
+- both timer runs' clock conversions are certified (U = 1,795 and 629 ns),
+  and their correlators failed only on the PTY's zero-USB-submission line.
+
+| run | mean rate | notes |
+|---|---|---|
+| grid, untraced | 776.5 Hz | G: its matched window 262.6 Hz below the adapter run's locked window |
+| adapter, untraced | 949.0 Hz | locked window 999.6 Hz |
+| adapter, timer | 941.9 Hz | locked window 992.8 Hz; one read timed out |
+| grid, timer | 703.8 Hz | G: 253.1 Hz below the adapter run's locked window; one read timed out |
+
+The review's qualifications:
+- **Expected outcomes, not every prediction.** The plan's expected
+  outcomes on the PTY held; the hardware prediction bands were reported
+  only. A8 failed in both adapter runs, as expected for this PTY model
+  (every full-window read skip-free, outside the hardware's prospective
+  band). In the timer run A7 failed on its half-window condition (998.6
+  and 987.1 Hz, about 11.5 Hz apart against a 5 Hz limit), while its
+  992.8 Hz met the 990 Hz floor; A10 failed at a host-work p99.9 of
+  1,143.2 µs, which a single timeout does not by itself explain.
+- **The grid-versus-adapter differences** are prediction G's matched
+  comparisons over [3 s, 20 s), one pair each: not whole-run differences,
+  repeated trials or hardware effects.
+- **The two timed-out reads** (one in each timer run, none untraced) are
+  measured data under the plan's rule: T3 stays FAIL in both timer runs,
+  and no cycle or failure is excluded. Their traces show the chain of the
+  T3 diagnosis (2026-11-11): the request's tty flush work woke a
+  normal-priority worker on CPU 3 while the FIFO-80 probe spun, and ran
+  when the probe slept in its guard. Each request reached the emulator
+  about 35.034 ms late; the emulator wrote its reply 0.73 and 0.58 ms
+  after that arrival, under its configured 500 µs ready time.
+
+T1, T2 and T6a fail in all four runs; on the PTY the rates check the
+procedure, not the hardware. The rehearsal qualifies neither 1 kHz control
+nor the physical USB/RS-485 path. It is archived in `adapter_diagnostic/`,
+with attempts 27's and 29's records and the plan's, candidate's, sittings'
+and reviews' packets. Preparing the hardware sitting (the provisional
+attempt 28) may proceed as design and packet work only; no acquisition is
+approved.
+
 ### Summaries
 
 ```sh
