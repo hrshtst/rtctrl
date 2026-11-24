@@ -681,6 +681,72 @@ No 1 kHz qualification follows. Invocation 3's exit 1 and STOP, and the
 missing invocation 4, stand. The analysis and its review are archived in
 `adapter_diagnostic/packets/`.
 
+**The full-feedback diagnostic, attempt 31 (2026-11-24; torque-off, on
+the arm).** The plan (r1, with its addendum) asked whether the
+byte-arrival model of the motion-only reply carries over to the full
+13-byte window.
+- **The tools:** `adapter_diagnostic.py validate --plan full-grid`
+  (`b79ed88`) and `byte_arrival.py` (`d87a4af`). The probe's C++ is
+  unchanged since `dd6fd3c`.
+- **The run:** the candidate `rtctrl-ff` at `d87a4af` made one
+  grid-timed timer run:
+  - 999 Hz for 30 s, with the full window every cycle (a 144-byte
+    reply);
+  - the current profile and 8 servos at the accepted baud;
+  - the FTDI adapter at its 1 ms latency timer;
+  - the confined placement and the default workqueue mask, with no PTY
+    exception.
+
+999 Hz is a sampling intervention, not a 1 kHz qualification: the
+probe's period of 1,001,001 ns drifts against the adapter's 1 ms
+completions and sweeps their phase. The reviewer accepted the run as a
+valid capture and a completed single diagnostic invocation. It is
+neither a rate qualification nor a confirmation of every prediction.
+- **Validity:**
+  - torque off before and after. The capture's 144,328 goal-current
+    entries are all zero, and no write reaches Torque Enable or Drive
+    Mode;
+  - no trace, instance, recorder or capture losses, and all 18,037
+    actual sleeps paired;
+  - the clock certificate CERTIFIED and the conversion accepted
+    (U = 1,627 ns, clock alignment revision 55), and the USB
+    association PASS;
+  - placement, cleanup and controls as planned, and the full-grid
+    validator passes.
+- **Coverage:**
+  - C1 and C2 are INSUFFICIENT. Prefix 79 has 17 partial observations
+    against the 20 required, and it neighbours the section start at 76;
+  - C3 and C5 are sufficient, and C4 is descriptive.
+- **Predictions:**
+  - P1 (the common step) and P2 (the per-byte slope) are INSUFFICIENT.
+    The recorded secondary fits are not outcomes, and they establish no
+    step or slope.
+  - P3 is AS PREDICTED: the whole-delivery share crosses 50 % once,
+    rising, between the 720 and 730 µs host-observed bins after the OUT
+    completion. That is a transition between bins, not a physical
+    arrival time or a tail bound.
+  - P4 is AS PREDICTED: 214 first completions later than 750 µs carried
+    part of the reply, and none carried only a status.
+  - P5 is not as predicted, on T5.
+- **Timing at 999 Hz:**
+  - T1, T2, T5 and T6a fail; T3 passes; T4, T6b and T7 are not measured.
+  - About 601.4 Hz was achieved. The 11,790 overrunning cycles and the
+    11,929 skipped periods are distinct counts.
+  - T5 fails on its p99.9 limit alone (147 µs, against about 100.1 µs).
+    Its 202 µs maximum is within 0.5/999 s.
+- **Sleeps:** paired sleeps are not on-time service. The analysis
+  classifies 1,032 sleeps as `interrupt late from idle`, a label for the
+  recorded evidence, not a cause.
+- **Descriptive:**
+  - host transaction p50 is 1,167 µs, longer than the period;
+  - 9,020 of the 18,041 replies arrived in two adapter completions about
+    1 ms apart.
+
+No retry, extension or pooling follows the coverage shortfall. A bounded
+offline triage of the T5 failure on this capture is authorized; no
+hardware run is. The run, its sitting records and the packets are
+archived in `adapter_diagnostic/`.
+
 ### Summaries
 
 ```sh

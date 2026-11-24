@@ -1146,6 +1146,20 @@ a measured handoff delay. Both were accepted as descriptive, with their
 universal claims withdrawn, and a plan for one full-feedback,
 grid-timed diagnostic is in preparation, with no acquisition approved.
 
+The full-feedback diagnostic followed (attempt 31, 2026-11-24): one
+torque-off, grid-timed timer run at 999 Hz for 30 s, with the full
+13-byte window every cycle. It was accepted as a valid capture and a
+completed invocation:
+- coverage C1 and C2 fell short at one prefix (79: 17 of 20), so the
+  step and slope predictions P1 and P2 are INSUFFICIENT;
+- P3 (the 50 % whole-delivery crossing, between 720 and 730 us) and P4
+  (late partial first completions) held as predicted;
+- at 999 Hz, T1, T2, T5 and T6a failed and T3 passed, with about
+  601.4 Hz achieved.
+
+T5's unexpected failure, on its p99.9 limit alone, is the subject of a
+bounded offline triage. No rate qualification follows.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
