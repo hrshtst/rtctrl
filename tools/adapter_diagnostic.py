@@ -2,7 +2,7 @@
 """The torque-off adapter-timing diagnostic: fact-only validation of an x7_bus_timing run's records, and the
 analysis of its declared windows and exploratory predictions (the diagnostic plan, revision 2).
 
-usage: adapter_diagnostic.py validate LOG [--plan grid|adapter [--hardware]]
+usage: adapter_diagnostic.py validate LOG [--plan grid|adapter|full-grid [--hardware]]
        adapter_diagnostic.py analyze LOG [--completions CSV | --emulator-record CSV] [--loaded]
                                          [--compare-adapter LOG] [--json FILE]
 
@@ -179,16 +179,33 @@ PLAN_COMMON = {"rate_hz": 1000, "duration_s": 20, "profile": "current", "read_pa
                "feedback": "motion", "read_instruction": "fast_sync", "aux_interval_s": 0.1, "confirm_writes": False,
                "drain": False}
 PLAN_ADAPTER = {"lead_us": 780, "wake_to_read_us": 10, "lead_alternation_us": 20, "acquisition_s": 2, "settling_s": 1}
+# The full-feedback, grid-timed diagnostic's settings (its plan r1 and addendum, 2026-11-24): the session's variant
+# `fast` (Fast Sync Read of the full 13-byte window every cycle), 999 Hz for 30 s. A full-feedback run records no
+# motion-only cadence (aux_interval_s, full_read_every), and every row reads the full window.
+PLAN_FULL_GRID = {"rate_hz": 999, "duration_s": 30, "profile": "current", "read_path": "bounded", "feedback": "full",
+                  "read_instruction": "fast_sync", "confirm_writes": False, "drain": False}
+FULL_WINDOW_LEN = 13
 
 
 def check_plan(run: Run, arm: str, hardware: bool) -> list[str]:
-    """The run's recorded settings against the plan's for its arm (grid or adapter)."""
-    bad = [f"{k} is {run.s.get(k)!r}, the plan's {v!r}" for k, v in PLAN_COMMON.items() if run.s.get(k) != v]
-    if run.timing != arm:
-        bad.append(f"timing is {run.timing!r}, the plan's {arm!r} arm")
+    """The run's recorded settings against the plan's for its arm: the adapter-timing diagnostic's grid or adapter
+    arm, or the full-feedback diagnostic's full-grid run."""
+    plan = PLAN_FULL_GRID if arm == "full-grid" else PLAN_COMMON
+    bad = [f"{k} is {run.s.get(k)!r}, the plan's {v!r}" for k, v in plan.items() if run.s.get(k) != v]
+    timing = "grid" if arm == "full-grid" else arm
+    if run.timing != timing:
+        bad.append(f"timing is {run.timing!r}, the plan's {timing!r}" + (" (the full-feedback run)" if arm == "full-grid"
+                                                                         else " arm"))
     if arm == "adapter":
         bad += [f"[adapter] {k} is {run.adapter.get(k)!r}, the plan's {v!r}" for k, v in PLAN_ADAPTER.items()
                 if run.adapter.get(k) != v]
+    if arm == "full-grid":
+        bad += [f"{k} is recorded ({run.s[k]!r}): a full-feedback run records no motion-only cadence"
+                for k in ("aux_interval_s", "full_read_every") if k in run.s]
+        other = [x["cycle"] for x in run.rows if x["read_len"] != FULL_WINDOW_LEN]
+        if other:
+            bad.append(f"{len(other)} rows read other than the full {FULL_WINDOW_LEN}-byte window (the first, cycle "
+                       f"{other[0]})")
     br = run.s.get("bounded_read", {})
     if br.get("expected_latency_timer_ms") != 1:
         bad.append(f"the expected latency timer is {br.get('expected_latency_timer_ms')!r} ms, not 1")
@@ -716,7 +733,8 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("validate")
     v.add_argument("log", type=pathlib.Path)
-    v.add_argument("--plan", choices=("grid", "adapter"), help="also check the plan's settings for this arm")
+    v.add_argument("--plan", choices=("grid", "adapter", "full-grid"),
+                   help="also check the plan's settings for this arm (full-grid: the full-feedback diagnostic's run)")
     v.add_argument("--hardware", action="store_true",
                    help="with --plan: the adapter's latency timer must have been read, and measured at 1 ms")
     a = sub.add_parser("analyze")

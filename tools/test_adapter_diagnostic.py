@@ -375,6 +375,73 @@ def main() -> int:
             code, out = run("validate", "--plan", "adapter", *(["--hardware"] if hw else []), str(path))
             check((code == 0) == ok_wanted and text in out, f"the latency timer: {name}", out)
 
+        # The full-feedback diagnostic's run (--plan full-grid): grid timing at 999 Hz, whose probe period is the
+        # truncated 1,001,001 ns; 30 s; the session's `fast` variant, every row the full 13-byte window; no motion-only
+        # cadence recorded. Each setting off the plan is refused and named; the hardware latency check is the same.
+        def full_grid(n: int = 3000, period: int = 1_001_001) -> tuple[Builder, dict]:
+            fb = Builder(duration_s=30, timing="grid")
+            for j in range(n):
+                sched = j * period
+                fb._row(sched, sched + 850_000, 0, {})
+                fb.rows[-1]["read_len"] = 13
+            fs = fb.summary()
+            fs.update(rate_hz=999, duration_s=30, feedback="full")
+            del fs["aux_interval_s"], fs["full_read_every"]
+            fs["bounded_read"] = {"budget_s": 0.035, "guard_s": 0.035, "window_bytes": [13], "reads": n, "timeouts": 0,
+                                  "malformed": 0, "servo_errors": 0, "recoveries": 0, "guard_waits": 0, "inhibited": 0,
+                                  "expected_latency_timer_ms": 1, "latency_timer_ms": 1}
+            return fb, fs
+
+        fb, fs = full_grid()
+        path = fb.write(root, "full-grid", fs)
+        code, out = run("validate", "--plan", "full-grid", "--hardware", str(path))
+        check(code == 0 and "valid (grid timing, 3000 cycles)" in out, "a full-grid run at the plan's settings is valid", out)
+        code, out = run("validate", "--plan", "full-grid", str(path))
+        check(code == 0, "a full-grid run, without --hardware", out)
+        code, out = run("validate", "--plan", "grid", str(path))
+        check(code == 1 and "feedback is 'full', the plan's 'motion'" in out and "rate_hz is 999, the plan's 1000" in out,
+              "the adapter diagnostic's grid plan still refuses a full-feedback run", out)
+        fg_cases = [
+            ("1000 Hz", lambda s, r: s.update(rate_hz=1000), "rate_hz is 1000, the plan's 999"),
+            ("20 s", lambda s, r: s.update(duration_s=20), "duration_s is 20, the plan's 30"),
+            ("motion-only feedback", lambda s, r: s.update(feedback="motion"), "feedback is 'motion', the plan's 'full'"),
+            ("Sync Read", lambda s, r: s.update(read_instruction="sync"), "read_instruction is 'sync', the plan's 'fast_sync'"),
+            ("the position profile", lambda s, r: s.update(profile="position"), "profile is 'position', the plan's 'current'"),
+            ("the legacy read path", lambda s, r: s.update(read_path="legacy"), "read_path is 'legacy', the plan's 'bounded'"),
+            ("writes confirmed", lambda s, r: s.update(confirm_writes=True), "confirm_writes is True, the plan's False"),
+            ("a drain", lambda s, r: s.update(drain=True), "drain is True, the plan's False"),
+            ("a motion-only cadence recorded", lambda s, r: s.update(aux_interval_s=0.1),
+             "aux_interval_s is recorded (0.1): a full-feedback run records no motion-only cadence"),
+            ("a full-read cadence recorded", lambda s, r: s.update(full_read_every=100),
+             "full_read_every is recorded (100): a full-feedback run records no motion-only cadence"),
+            ("a motion-only row", lambda s, r: r[1500].update(read_len=10),
+             "1 rows read other than the full 13-byte window (the first, cycle 1501)"),
+        ]
+        for name, mutate, text in fg_cases:
+            fb, fs = full_grid()
+            mutate(fs, fb.rows)
+            path = fb.write(root, "full-grid-mutant", fs)
+            code, out = run("validate", "--plan", "full-grid", str(path))
+            check(code == 1 and "NOT valid" in out and text in out, f"full-grid refuses: {name}", out)
+        # A summary that cannot be read as a run (no rate, or adapter timing without its [adapter] section) is refused
+        # before any plan check: exit 2, the missing key named.
+        for name, mutate, key in [("no rate recorded", lambda s: s.pop("rate_hz"), "'rate_hz'"),
+                                  ("adapter timing without its section", lambda s: s.update(timing="adapter"),
+                                   "'acquisition_s'")]:
+            fb, fs = full_grid()
+            mutate(fs)
+            path = fb.write(root, "full-grid-unreadable", fs)
+            code, out = run("validate", "--plan", "full-grid", str(path))
+            check(code == 2 and key in out and "valid (" not in out, f"full-grid refuses an unreadable summary: {name}", out)
+        for name, extra, text in [("measured at 2 ms", {"latency_timer_ms": 2}, "the measured latency timer is 2 ms, not 1"),
+                                  ("no timer exposed", {"latency_timer_verified": False, "latency_timer_ms": None},
+                                   "latency_timer_verified = False")]:
+            fb, fs = full_grid()
+            fs["bounded_read"] = {k: v for k, v in (fs["bounded_read"] | extra).items() if v is not None}
+            path = fb.write(root, "full-grid-latency", fs)
+            code, out = run("validate", "--plan", "full-grid", "--hardware", str(path))
+            check(code == 1 and text in out, f"full-grid's hardware latency check: {name}", out)
+
         # Analysis: windows, rates and the predictions' denominators (an 8 s run: 50 full-window reads in its window).
         b = locked_run(8)
         lattice = [x for x in b.rows if x.get("schedule") == 1]
