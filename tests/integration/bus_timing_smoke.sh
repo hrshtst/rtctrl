@@ -23,9 +23,11 @@ mkdir -p "$ROOT"
 EMU_PID=$!
 PROBE_PID=
 EMU47_PID=
+EMUS_PID=
 # A probe left stopped by an interrupted stall check is resumed and ended.
 trap 'kill "$EMU_PID" 2>/dev/null || true
   if [ -n "$EMU47_PID" ]; then kill "$EMU47_PID" 2>/dev/null || true; fi
+  if [ -n "$EMUS_PID" ]; then kill "$EMUS_PID" 2>/dev/null || true; fi
   if [ -n "$PROBE_PID" ]; then
     kill -CONT "$PROBE_PID" 2>/dev/null || true
     kill "$PROBE_PID" 2>/dev/null || true
@@ -474,6 +476,205 @@ for profile in current position; do
   grep -q '^ack_invalid = 0' "$ROOT/cal47-$profile.csv.summary.toml"
   test "$(cut -d, -f18 "$ROOT/cal47-$profile.csv" | sed 1d | sort -u)" = 1
 done
+
+# --read-ids (the traffic-reduction diagnostic's subset read). Every
+# refusal comes before the port is opened: the port named here does not
+# exist, so a refusal after opening it would be a different error (exit 1).
+NOPORT="$ROOT/no-such-tty"
+refused() {  # the expected message, then the probe's arguments
+  want=$1
+  shift
+  st=0
+  "$PROBE" --port "$NOPORT" --duration 5 --log "$ROOT/subset-refused.csv" \
+    "$@" >"$ROOT/subset-refused.log" 2>&1 || st=$?
+  test "$st" = 2 || fail "--read-ids refusal exited $st: $*" "$ROOT/subset-refused.log"
+  grep -qF -- "$want" "$ROOT/subset-refused.log" ||
+    fail "--read-ids refusal without '$want': $*" "$ROOT/subset-refused.log"
+  test ! -e "$ROOT/subset-refused.csv"
+}
+FAST=(--rate-hz 100 --read-path bounded --read-instruction fast --profile current)
+refused "needs --read-path bounded" --rate-hz 100 --profile current --read-ids 2,3
+refused "needs --read-instruction fast" --rate-hz 100 --read-path bounded \
+  --profile current --read-ids 2,3
+for profile in position cbp; do
+  refused "needs --profile current" --rate-hz 100 --read-path bounded \
+    --read-instruction fast --profile "$profile" --read-ids 2,3
+  # A list naming every servo is held to the same rules.
+  refused "needs --profile current" --rate-hz 100 --read-path bounded \
+    --read-instruction fast --profile "$profile" --read-ids 2,3,4,5,6,7,8,9
+done
+refused "grid timing only" --rate-hz 1000 --read-path bounded \
+  --read-instruction fast --feedback motion --profile current \
+  --timing adapter --read-ids 2,3,4,5
+refused "grid timing only" --rate-hz 1000 --read-path bounded \
+  --read-instruction fast --feedback motion --profile current \
+  --timing adapter --read-ids 2,3,4,5,6,7,8,9
+refused "production traffic only" "${FAST[@]}" --confirm-writes --read-ids 2,3
+refused "production traffic only" "${FAST[@]}" --drain --read-ids 2,3
+for bad in "" "3,2" "2,2" "2,,3" ",2" "2," "+2" " 2" "2.0" "x" "0x2" "253" "1000"; do
+  refused "strictly increasing" "${FAST[@]}" --read-ids "$bad"
+done
+refused "id 10 is not a configured servo" "${FAST[@]}" --read-ids 2,10
+refused "id 1 is not a configured servo" "${FAST[@]}" --read-ids 1,2
+st=0
+"$PROBE" --port "$NOPORT" --inventory --read-ids 2 >"$ROOT/subset-inventory.log" 2>&1 || st=$?
+test "$st" = 2 || fail "--read-ids with --inventory exited $st" "$ROOT/subset-inventory.log"
+grep -q 'for a timing run, not --inventory' "$ROOT/subset-inventory.log"
+
+# The runs, on a v45 bus whose emulator records every instruction it
+# received (--arrival-log, written when it stops).
+LINKS="$ROOT/ttys"
+"$EMU" --link "$LINKS" --firmware 45 --arrival-log "$ROOT/arrivals.csv" \
+  >"$ROOT/emus.log" 2>&1 &
+EMUS_PID=$!
+for _ in $(seq 1 50); do
+  [ -e "$LINKS" ] && break
+  sleep 0.1
+done
+[ -e "$LINKS" ] || { echo "arrival-log emulator link never appeared"; exit 1; }
+for id in 2 3 4 5 6 7 8 9; do
+  "$INSPECT" --port "$LINKS" write "$id" return_delay_time 0 >/dev/null
+done
+
+# An unread servo's torque and Drive Mode are still checked before any write.
+"$INSPECT" --port "$LINKS" write 8 torque_enable 1 >/dev/null
+if "$PROBE" --port "$LINKS" "${FAST[@]}" --duration 0.2 --read-ids 2,3,4,5 \
+    --log "$ROOT/subset-torqued.csv" >"$ROOT/subset-torqued.log" 2>&1; then
+  fail "a torqued unread servo was accepted"
+fi
+grep -q 'id 8 has torque enabled' "$ROOT/subset-torqued.log"
+test ! -e "$ROOT/subset-torqued.csv"
+"$INSPECT" --port "$LINKS" write 8 torque_enable 0 >/dev/null
+"$INSPECT" --port "$LINKS" write 9 drive_mode 8 >/dev/null
+if "$PROBE" --port "$LINKS" "${FAST[@]}" --duration 0.2 --read-ids 2,3,4,5 \
+    --log "$ROOT/subset-drive.csv" >"$ROOT/subset-drive.log" 2>&1; then
+  fail "an unread servo's Torque On by Goal Update was accepted"
+fi
+grep -q 'id 9 has Drive Mode 8 with bit 3' "$ROOT/subset-drive.log"
+test ! -e "$ROOT/subset-drive.csv"
+"$INSPECT" --port "$LINKS" write 9 drive_mode 0 >/dev/null
+
+# Each run's span on CLOCK_MONOTONIC, for its part of the arrival log.
+mono() { python3 -c 'import time; print(time.monotonic_ns())'; }
+SPANS="$ROOT/spans.txt"
+: >"$SPANS"
+subset_run() {  # name, then the probe's arguments
+  name=$1
+  shift
+  before=$(mono)
+  "$PROBE" --port "$LINKS" --duration 0.5 --log "$ROOT/$name.csv" "$@" \
+    >"$ROOT/$name.log" 2>&1 || fail "the $name run failed" "$ROOT/$name.log"
+  echo "$name $before $(mono)" >>"$SPANS"
+}
+MOTION=("${FAST[@]}" --feedback motion --aux-interval-ms 0)
+subset_run r2345 "${MOTION[@]}" --read-ids 2,3,4,5
+subset_run r2 "${MOTION[@]}" --read-ids 2
+subset_run r2345-full "${FAST[@]}" --read-ids 2,3,4,5
+subset_run r6789 "${MOTION[@]}" --read-ids 6,7,8,9
+subset_run all-listed "${MOTION[@]}" --read-ids 2,3,4,5,6,7,8,9
+subset_run default "${MOTION[@]}"
+grep -q '^read set (--read-ids): ids 2,3,4,5, 4 of 8 servos; the goal write (zero current) and every check: all 8$' \
+  "$ROOT/r2345.log"
+if grep -q '^read set' "$ROOT/default.log"; then
+  fail "a run without --read-ids reported a read set" "$ROOT/default.log"
+fi
+kill -TERM "$EMUS_PID"
+wait "$EMUS_PID" || fail "the arrival-log emulator failed" "$ROOT/emus.log"
+EMUS_PID=
+
+# Per run, in the emulator's order:
+# - before the initial Sync Read, Torque Enable and Drive Mode of every servo
+#   are read, and the indirect setup writes every servo;
+# - the initial read is a Sync Read of every servo's full window;
+# - then each cycle is one Fast Sync Read of the read set and one Sync Write
+#   of zero goal current (addr 237) to all eight, as many as the log's rows;
+# - after it, Torque Enable and Drive Mode of every servo are read again;
+# - nothing writes Torque Enable, Drive Mode or the Bus Watchdog.
+# The summary records the read set and counts the read's servos apart from
+# the write's; the log's header and every row's read_len are the run's.
+python3 - "$ROOT/arrivals.csv" "$SPANS" "$ROOT" <<'EOF_PY'
+import csv
+import sys
+import tomllib
+
+FAST_SYNC_READ, SYNC_READ, SYNC_WRITE, READ, WRITE = 0x8A, 0x82, 0x83, 0x02, 0x03
+ALL = [2, 3, 4, 5, 6, 7, 8, 9]
+TORQUE, DRIVE, WATCHDOG, GOAL = 64, 10, 98, 237
+HEADER = ("cycle,scheduled_wake_ns,wake_ns,read_start_ns,instr_return_ns,"
+          "first_reply_ns,last_reply_ns,read_end_ns,limit_start_ns,"
+          "bus_write_start_ns,write_return_ns,drain_return_ns,ack_return_ns,"
+          "completion_upper_ns,cycle_end_ns,read_ok,write_ok,ack_ok,"
+          "skipped_periods,read_len").split(",")
+WANT = {  # name: (the read set, read_len, summary keys present)
+    "r2345": ([2, 3, 4, 5], 10, True),
+    "r2": ([2], 10, True),
+    "r2345-full": ([2, 3, 4, 5], 13, True),
+    "r6789": ([6, 7, 8, 9], 10, True),
+    "all-listed": (ALL, 10, True),
+    "default": (ALL, 10, False),
+}
+with open(sys.argv[1], newline="") as f:
+    arrivals = list(csv.DictReader(f))
+for a in arrivals:
+    a["at"], a["instruction"], a["id"] = int(a["arrival_ns"]), int(a["instruction"]), int(a["id"])
+    a["addr"], a["data_length"] = int(a["addr"]), int(a["data_length"])
+    a["ids"] = [int(x) for x in a["ids"].split()]
+
+
+
+spans = [line.split() for line in open(sys.argv[2])]
+assert [s[0] for s in spans] == list(WANT), spans
+root = sys.argv[3]
+for name, before, after in spans:
+    read_set, read_len, keyed = WANT[name]
+    part = [a for a in arrivals if int(before) <= a["at"] <= int(after)]
+    with open(f"{root}/{name}.csv.summary.toml", "rb") as f:
+        s = tomllib.load(f)
+    with open(f"{root}/{name}.csv", newline="") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == HEADER, (name, reader.fieldnames)
+        rows = list(reader)
+    cycles = s["result"]["cycles"]
+    assert len(rows) == cycles > 0, (name, len(rows), cycles)
+    assert {int(r["read_len"]) for r in rows} == {read_len}, name
+    assert all(r["read_ok"] == "1" and r["write_ok"] == "1" for r in rows), name
+    assert s["result"]["torque_off_before"] is True and s["result"]["torque_off_after"] is True, name
+    initial = [i for i, a in enumerate(part) if a["instruction"] == SYNC_READ]
+    assert len(initial) == 1, (name, initial)
+    k = initial[0]
+    assert part[k]["ids"] == ALL and part[k]["data_length"] == 13, (name, part[k])
+    cyc = part[k + 1:k + 1 + 2 * cycles]
+    for j in range(cycles):
+        r, w = cyc[2 * j], cyc[2 * j + 1]
+        assert r["instruction"] == FAST_SYNC_READ and r["ids"] == read_set, (name, j, r)
+        assert r["data_length"] == read_len and r["addr"] == 224, (name, j, r)
+        assert w["instruction"] == SYNC_WRITE and w["ids"] == ALL, (name, j, w)
+        assert w["addr"] == GOAL and w["data"] == "00" * 16, (name, j, w)
+    pre, post = part[:k], part[k + 1 + 2 * cycles:]
+    assert post and all(a["instruction"] == READ for a in post), (name, post[:3])
+    for where, seq in (("before", pre), ("after", post)):
+        for addr in (TORQUE, DRIVE):
+            read = {a["id"] for a in seq if a["instruction"] == READ and a["addr"] == addr}
+            assert read == set(ALL), (name, where, addr, read)
+    # The indirect setup writes every servo's indirect-address slots (168 on).
+    assert {a["id"] for a in pre if a["instruction"] == WRITE} == set(ALL), name
+    assert all(a["addr"] >= 168 for a in pre if a["instruction"] == WRITE), name
+    writes = [a for a in part if a["instruction"] in (WRITE, SYNC_WRITE)]
+    assert not [a for a in writes if a["addr"] in (TORQUE, DRIVE, WATCHDOG)], name
+    assert {a["addr"] for a in writes if a["instruction"] == SYNC_WRITE} == {GOAL}, name
+    b = s["budget"]
+    n = len(read_set)
+    assert b["read_instruction_bytes"] == 14 + n, (name, b)
+    assert b["read_reply_bytes"] == 8 + n * (read_len + 4), (name, b)
+    assert b["write_bytes"] == 38, (name, b)
+    if keyed:
+        assert s["read_ids"] == read_set, (name, s.get("read_ids"))
+        assert (b["read_servos"], b["write_servos"]) == (n, 8), (name, b)
+    else:
+        assert "read_ids" not in s and "read_servos" not in b and "write_servos" not in b, name
+    assert len(s["servo"]) == 8, name
+    print(f"{name}: {cycles} cycles, each a read of {read_set} and a zero write to all eight")
+EOF_PY
 
 scratch_release
 echo "bus timing probe OK"

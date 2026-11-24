@@ -247,6 +247,29 @@ Sync Read. It combines with `--feedback motion`. The scripts take
 names gain `-fast`. A powered session selects it with
 `CraneX7::Options::feedback_read.instruction`.
 
+**A subset read (the traffic-reduction diagnostic, torque-off).**
+`x7_bus_timing --read-ids 2,3,4,5` makes each cycle's grouped read list
+only those servos.
+- **Everything else stays on all eight:** the inventory, the torque and
+  Drive Mode checks before and after the run, the bus profile check, the
+  indirect-address setup, the initial read and each cycle's goal write of
+  zero current. The probe never writes the Bus Watchdog.
+- **It needs** production traffic on grid timing, with `--read-path
+  bounded`, `--read-instruction fast` and `--profile current` (a write
+  that never depends on the read). The list holds configured servos'
+  IDs, comma-separated and strictly increasing. The probe refuses
+  anything else before it opens the port, a list naming all eight
+  included.
+- **The records:** the CSV is unchanged. The summary records `read_ids`,
+  and its `[budget]` counts the read's servos apart from the write's
+  (`read_servos`, `write_servos`); the read's instruction and reply bytes
+  are the subset's. Without the flag, nothing changes.
+
+It is a measurement condition, not a feedback schedule: a controller needs
+every joint's feedback every cycle. `dxl_emu --arrival-log F` records every
+instruction the emulator received, which the probe's smoke test uses to show
+each cycle's read set and its zero write to all eight.
+
 **Adapter-referenced timing (a torque-off diagnostic, emulator only so
 far).** `x7_bus_timing --timing adapter` plans each wake from the USB
 adapter's completion lattice instead of the fixed grid. Grid timing

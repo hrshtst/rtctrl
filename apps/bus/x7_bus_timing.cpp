@@ -45,6 +45,22 @@
 //        [--read-instruction sync|fast] [--expect-latency-timer-ms L]]
 //       [--timing grid|adapter [--lead-us L] [--wake-to-read-us W]
 //        [--acquisition-s A] [--settling-s S] [--lead-alternation-us D]]
+//       [--read-ids LIST]
+//
+// --read-ids LIST (the traffic-reduction diagnostic's Stage A, torque-off)
+// makes each cycle's grouped read list only the servos in LIST: IDs of
+// configured joints, comma-separated and strictly increasing (2,3,4,5 or
+// 2). Everything else stays on every configured servo: the inventory, the
+// torque and Drive Mode checks before and after, the bus profile check,
+// the indirect-address setup, the initial read and each cycle's goal write
+// (zero goal current). It needs production traffic on grid timing with
+// --read-path bounded, --read-instruction fast and --profile current (the
+// write never depends on the read), and is refused otherwise, or for a
+// malformed or unconfigured ID, before the port is opened; a list naming
+// every servo is held to the same rules. The CSV is unchanged; the summary
+// records read_ids, and its [budget] counts the read's servos and the
+// write's apart (read_servos, write_servos). Without the flag every cycle
+// reads every servo, as before, and the outputs carry none of these keys.
 //
 // --timing chooses how each cycle's wake is planned. grid (the default) is
 // the fixed grid of --rate-hz periods from the run's start, as always.
@@ -225,7 +241,33 @@ struct Args {
   // --timing (grid by default) and the adapter timing's values; their
   // combination rules are bus_timing::timingChoiceError's.
   bus_timing::TimingChoice timing;
+  // --read-ids: the servos each cycle's grouped read lists (every
+  // configured servo when not given). Checked against the configuration in
+  // main, before the port is opened.
+  std::vector<std::uint8_t> read_ids;
+  bool read_ids_given = false;
 };
+
+// --read-ids' list: decimal IDs (digits only, at most 252), comma-separated,
+// strictly increasing (so none repeats). False on anything else.
+bool parseIdList(const std::string& text, std::vector<std::uint8_t>* out) {
+  out->clear();
+  std::size_t start = 0;
+  for (;;) {
+    const std::size_t comma = text.find(',', start);
+    const std::string item = text.substr(
+        start, comma == std::string::npos ? std::string::npos : comma - start);
+    if (item.empty() || item.size() > 3 ||
+        item.find_first_not_of("0123456789") != std::string::npos) {
+      return false;
+    }
+    const int id = std::stoi(item);
+    if (id > 252 || (!out->empty() && id <= out->back())) return false;
+    out->push_back(static_cast<std::uint8_t>(id));
+    if (comma == std::string::npos) return true;
+    start = comma + 1;
+  }
+}
 
 // How often a cycle reads the full window: every cycle (1), every n cycles,
 // or never after the initial read (0); as CraneX7 rounds it.
@@ -358,6 +400,16 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
       }
       (flag == "--rt-priority" ? a->realtime.priority : a->realtime.cpu) =
           static_cast<int>(n);
+    } else if (flag == "--read-ids") {
+      if (!value(&v)) return false;
+      if (!parseIdList(v, &a->read_ids)) {
+        std::fprintf(stderr,
+                     "--read-ids: servo IDs, comma-separated and strictly "
+                     "increasing (for example 2,3,4,5): %s\n",
+                     v);
+        return false;
+      }
+      a->read_ids_given = true;
     } else if (flag == "--profile") {
       if (!value(&v)) return false;
       const std::string p = v;
@@ -377,7 +429,13 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
       return false;
     }
   }
-  if (a->inventory) return true;
+  if (a->inventory) {
+    if (a->read_ids_given) {
+      std::fprintf(stderr, "--read-ids is for a timing run, not --inventory\n");
+      return false;
+    }
+    return true;
+  }
   if (!(a->rate_hz >= 1.0 && a->rate_hz <= 2000.0)) {
     std::fprintf(stderr, "--rate-hz must be within [1, 2000]\n");
     return false;
@@ -444,6 +502,28 @@ bool parseArgs(const std::vector<const char*>& rest, Args* a) {
   if (!timing_why.empty()) {
     std::fprintf(stderr, "%s\n", timing_why.c_str());
     return false;
+  }
+  // A subset read: production traffic on grid timing, the bounded Fast Sync
+  // Read and a write that never depends on the read. Every rule holds for
+  // any list, one naming every servo included.
+  if (a->read_ids_given) {
+    const char* why =
+        !a->bounded ? "--read-ids needs --read-path bounded"
+        : !a->fast  ? "--read-ids needs --read-instruction fast"
+        : a->profile != Profile::kCurrent
+            ? "--read-ids needs --profile current (its write is zero "
+              "current, whatever the read returns)"
+        : a->timing.adapter
+            ? "--read-ids runs on grid timing only (adapter timing with a "
+              "subset read is not supported)"
+        : (a->confirm_writes || a->drain)
+            ? "--read-ids runs production traffic only (no --confirm-writes "
+              "or --drain)"
+            : nullptr;
+    if (why != nullptr) {
+      std::fprintf(stderr, "%s\n", why);
+      return false;
+    }
   }
   return true;
 }
@@ -749,13 +829,16 @@ double threadCpuSeconds() {
 
 class Probe {
  public:
-  // adapter: adapter timing's driver, or null for grid timing.
+  // adapter: adapter timing's driver, or null for grid timing. read_ids:
+  // the servos each cycle's grouped read lists; the goal write lists every
+  // configured servo whatever they are.
   Probe(dxl::PacketIO& io, const hw::Config& config, const Args& args,
-        int baudrate, int last_servo_return_delay,
-        std::uint16_t last_servo_model, int drain_fd,
-        bus_timing::AdapterCycles* adapter)
+        const std::vector<std::uint8_t>& read_ids, int baudrate,
+        int last_servo_return_delay, std::uint16_t last_servo_model,
+        int drain_fd, bus_timing::AdapterCycles* adapter)
       : io_(io),
-        group_(io, ids(config)),
+        read_group_(io, read_ids),
+        write_group_(io, ids(config)),
         args_(args),
         baudrate_(baudrate),
         last_return_delay_us_(2 * last_servo_return_delay),
@@ -766,7 +849,9 @@ class Probe {
         ring_(std::max<std::size_t>(
             4096, static_cast<std::size_t>(args.rate_hz * 4.0))) {
     // The run's reads go through the armed bounded windows.
-    if (args.fast) group_.setReadInstruction(dxl::GroupedRead::kFastSync);
+    if (args.fast) {
+      read_group_.setReadInstruction(dxl::GroupedRead::kFastSync);
+    }
   }
 
   // How often a cycle reads the full window: every cycle (1), every n
@@ -792,14 +877,16 @@ class Probe {
     result->scheduler =
         util::describeRealtimeState(util::currentRealtimeState());
 
-    const std::size_t n = initial.size();
+    // The write's servos (every configured one); fb holds the read set's
+    // feedback once the first cycle has read.
+    const std::size_t n = write_group_.ids().size();
     std::vector<dxl::Feedback> fb = initial;
     std::vector<double> zeros(n, 0.0);
     std::vector<double> positions(n, 0.0);
     std::vector<double> currents(n, 0.0);
     const auto period = std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(1.0 / args_.rate_hz));
-    const std::uint8_t last_id = group_.ids().back();
+    const std::uint8_t last_id = write_group_.ids().back();
     const double byte_s = wire::byteTimeS(baudrate_);
     // The acknowledgement reads a register whose value never changes, so
     // its value checks the response, not the write.
@@ -860,8 +947,9 @@ class Probe {
           full ? dxl::SyncGroup::kFeedbackSlots
                : dxl::SyncGroup::kMotionSlots);
       c.read_start_ns = ns(Clock::now());
-      c.read_ok = (full ? group_.readAll(fb) : group_.readMotionWindow(fb))
-                      .ok();
+      c.read_ok =
+          (full ? read_group_.readAll(fb) : read_group_.readMotionWindow(fb))
+              .ok();
       c.read_end_ns = ns(Clock::now());
       if (full_every_ > 1) {
         if (!full) {
@@ -879,21 +967,25 @@ class Probe {
       }
       if (!c.read_ok) ++result->read_failures;
 
-      // The production write, unchanged in calibration runs too.
+      // The production write, unchanged in calibration runs too. Only the
+      // position profiles write the positions just read, and they read every
+      // servo (--read-ids needs --profile current).
       for (std::size_t i = 0; i < n; ++i) {
-        positions[i] = fb[i].position;
+        if (args_.profile != Profile::kCurrent) positions[i] = fb[i].position;
         currents[i] = 0.0;
       }
       c.limit_start_ns = ns(Clock::now());
       c.bus_write_start_ns = ns(Clock::now());
       dxl::IoResult w;
       switch (args_.profile) {
-        case Profile::kCurrent: w = group_.writeGoalCurrents(currents); break;
+        case Profile::kCurrent:
+          w = write_group_.writeGoalCurrents(currents);
+          break;
         case Profile::kPosition:
-          w = group_.writeGoalPositions(positions);
+          w = write_group_.writeGoalPositions(positions);
           break;
         case Profile::kCurrentBasedPosition:
-          w = group_.writeGoals(currents, zeros, positions);
+          w = write_group_.writeGoals(currents, zeros, positions);
           break;
       }
       c.write_return_ns = ns(Clock::now());
@@ -980,7 +1072,8 @@ class Probe {
   }
 
   dxl::PacketIO& io_;
-  dxl::SyncGroup group_;
+  dxl::SyncGroup read_group_;   // the read set
+  dxl::SyncGroup write_group_;  // every configured servo
   const Args& args_;
   int baudrate_;
   int last_return_delay_us_;
@@ -1288,6 +1381,22 @@ int main(int argc, char* argv[]) {
   }
   const std::string port_path =
       cli.port_override.empty() ? config.port : cli.port_override;
+  // Every configured servo; the read set is every one unless --read-ids
+  // names configured servos, checked here, before the port is opened.
+  const std::vector<std::uint8_t> ids = [&] {
+    std::vector<std::uint8_t> out;
+    for (const auto& j : config.joints) out.push_back(j.id);
+    return out;
+  }();
+  const std::vector<std::uint8_t> read_ids =
+      args.read_ids_given ? args.read_ids : ids;
+  for (const std::uint8_t id : read_ids) {
+    if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
+      std::fprintf(stderr, "--read-ids: id %u is not a configured servo\n",
+                   static_cast<unsigned>(id));
+      return 2;
+    }
+  }
 
   std::unique_ptr<dxl::Port> port;
   try {
@@ -1326,11 +1435,6 @@ int main(int argc, char* argv[]) {
     std::fprintf(stderr, "refusing: %s\n", error.c_str());
     return 1;
   }
-  const std::vector<std::uint8_t> ids = [&] {
-    std::vector<std::uint8_t> out;
-    for (const auto& j : config.joints) out.push_back(j.id);
-    return out;
-  }();
   // The bounded read's bus profile, read-only and before the probe's first
   // write: a refusal leaves every servo as it was.
   hw::BusProfileReport profile_report;
@@ -1397,7 +1501,7 @@ int main(int argc, char* argv[]) {
       bounded.windows.push_back({dxl::SyncGroup::kFeedbackAddr,
                                  dxl::SyncGroup::kMotionSlots, instruction});
     }
-    bounded.ids = ids;
+    bounded.ids = read_ids;
     bounded.budget = to_ns(args.budget_ms);
     bounded.guard = to_ns(args.guard_ms);
     port->armBoundedSyncRead(bounded);
@@ -1434,9 +1538,10 @@ int main(int argc, char* argv[]) {
   // cadence has it: the full read's when any cycle reads the full window,
   // the motion-only read's when none does (--aux-interval-ms 0).
   const int n_servos = static_cast<int>(config.joints.size());
+  const int n_read = static_cast<int>(read_ids.size());  // n_servos unless --read-ids
   const double byte_s = wire::byteTimeS(config.baudrate);
   const auto bytesFor = [&](int read_len) {
-    return wire::cycleBytes(n_servos,
+    return wire::cycleBytes(n_read, n_servos,
                             args.fast ? wire::ReadVariant::kFastSync
                                       : wire::ReadVariant::kSync,
                             read_len, writeWidth(args.profile));
@@ -1488,6 +1593,15 @@ int main(int argc, char* argv[]) {
               "Sync Read on the legacy path (%.3f ms with worst-case "
               "stuffing)\n",
               1e3 * startup_s);
+  if (args.read_ids_given) {
+    std::string list;
+    for (const std::uint8_t id : read_ids) {
+      list += (list.empty() ? "" : ",") + std::to_string(id);
+    }
+    std::printf("read set (--read-ids): ids %s, %d of %d servos; the goal "
+                "write (zero current) and every check: all %d\n",
+                list.c_str(), n_read, n_servos, n_servos);
+  }
 
   // Adapter timing: the schedule's configuration, the fit exchange this
   // thread shares with the worker, and the worker's driver, all made (and
@@ -1521,7 +1635,7 @@ int main(int argc, char* argv[]) {
     std::printf("timing: grid (the default)\n");
   }
 
-  Probe probe(*port, config, args, config.baudrate,
+  Probe probe(*port, config, args, read_ids, config.baudrate,
               servos.back().return_delay_time, servos.back().model, drain_fd,
               adapter.get());
   RunResult result;
@@ -1600,6 +1714,17 @@ int main(int argc, char* argv[]) {
                "# how each wake was planned: grid (the default) or adapter "
                "(see [adapter])\ntiming = \"%s\"\n",
                adapter_mode ? "adapter" : "grid");
+  if (args.read_ids_given) {
+    std::fprintf(summary,
+                 "# --read-ids: the servos each cycle's grouped read listed; "
+                 "the goal write and\n# every check listed every configured "
+                 "servo ([[servo]] below)\nread_ids = [");
+    for (std::size_t i = 0; i < read_ids.size(); ++i) {
+      std::fprintf(summary, "%s%u", i == 0 ? "" : ", ",
+                   static_cast<unsigned>(read_ids[i]));
+    }
+    std::fprintf(summary, "]\n");
+  }
   if (args.motion_only) {
     std::fprintf(summary, "aux_interval_s = %.9g\nfull_read_every = %llu\n",
                  args.aux_interval_ms * 1e-3,
@@ -1715,6 +1840,12 @@ int main(int argc, char* argv[]) {
                "the full window's when\n# any cycle reads it, else the "
                "motion-only window's\n");
   std::fprintf(summary, "read_len = %d\n", budget_len);
+  if (args.read_ids_given) {
+    std::fprintf(summary,
+                 "# --read-ids: the read lists read_servos, the write "
+                 "write_servos\nread_servos = %d\nwrite_servos = %d\n",
+                 n_read, n_servos);
+  }
   std::fprintf(summary, "read_instruction_bytes = %d\n",
                bytes.read_instruction);
   std::fprintf(summary, "read_reply_bytes = %d\n", bytes.read_reply);

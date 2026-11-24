@@ -3,10 +3,18 @@
 // (dxl_inspect, the bring-up apps, rt tools) can run without hardware.
 //
 // Usage: dxl_emu [--config config/crane_x7.toml] [--link /tmp/ttyDXL]
-//                [--firmware N]
+//                [--firmware N] [--arrival-log F]
 //
 // --firmware sets every motor's Firmware Version (default 44); 45 and
 // later enable Drive Mode's Torque On by Goal Update.
+//
+// --arrival-log F (for tests) writes every instruction the emulator
+// received, in order, as CSV at exit (created exclusively; exit status 2
+// if it exists): arrival_ns (CLOCK_MONOTONIC, when the emulator extracted
+// it), instruction, id, addr (a single read's or write's, or a grouped
+// instruction's), data_length (a grouped read's), and for a grouped
+// instruction its listed IDs (space-separated) and a Sync Write's data
+// bytes (hex, each listed servo's in turn).
 //
 // Timing (emu::StandaloneLoop): input is read when it arrives, not on a
 // polling sleep; the motor model ticks every 1 ms of wall time (steady
@@ -72,6 +80,28 @@ volatile std::sig_atomic_t g_stop = 0;
 void onSignal(int) { g_stop = 1; }
 
 namespace cad = rtctrl::apps::dxl_emu_cadence;
+
+void writeArrivalLog(std::FILE* f, const rtctrl::emu::PtyBus& pty) {
+  std::fprintf(f, "arrival_ns,instruction,id,addr,data_length,ids,data\n");
+  for (const auto& a : pty.arrivals()) {
+    std::string ids, data;
+    for (const std::uint8_t id : a.ids) {
+      ids += (ids.empty() ? "" : " ") + std::to_string(id);
+    }
+    for (const std::uint8_t b : a.data) {
+      char hex[3];
+      std::snprintf(hex, sizeof hex, "%02x", b);
+      data += hex;
+    }
+    std::fprintf(f, "%lld,%u,%u,%u,%u,%s,%s\n",
+                 static_cast<long long>(
+                     std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         a.at.time_since_epoch())
+                         .count()),
+                 a.instruction, a.id, a.addr, a.data_length, ids.c_str(),
+                 data.c_str());
+  }
+}
 
 void writeCadenceLog(std::FILE* f, const rtctrl::emu::PtyBus& pty) {
   std::fprintf(f,
@@ -146,10 +176,14 @@ void printCadenceWriteFailure(const rtctrl::emu::CadenceWriteFailure& f,
 int main(int argc, char* argv[]) {
   std::string config_path = "config/crane_x7.toml";
   std::string link_path;
+  std::string arrival_log_path;
   int firmware = rtctrl::emu::MotorEmulator::Config{}.firmware_version;
   for (int i = 1; i < argc - 1; ++i) {
     if (std::strcmp(argv[i], "--config") == 0) config_path = argv[i + 1];
     if (std::strcmp(argv[i], "--link") == 0) link_path = argv[i + 1];
+    if (std::strcmp(argv[i], "--arrival-log") == 0) {
+      arrival_log_path = argv[i + 1];
+    }
     if (std::strcmp(argv[i], "--firmware") == 0) {
       char* end = nullptr;
       const long value = std::strtol(argv[i + 1], &end, 10);
@@ -200,6 +234,17 @@ int main(int argc, char* argv[]) {
     if (cadence_log == nullptr) {
       std::fprintf(stderr, "dxl_emu: cannot create %s (it must not exist)\n",
                    cadence.log_path.c_str());
+      return 2;
+    }
+  }
+
+  std::FILE* arrival_log = nullptr;
+  if (!arrival_log_path.empty()) {
+    arrival_log = std::fopen(arrival_log_path.c_str(), "wx");
+    if (arrival_log == nullptr) {
+      std::fprintf(stderr, "dxl_emu: cannot create %s (it must not exist)\n",
+                   arrival_log_path.c_str());
+      if (cadence_log != nullptr) std::fclose(cadence_log);
       return 2;
     }
   }
@@ -300,6 +345,14 @@ int main(int argc, char* argv[]) {
                      cadence.log_path.c_str());
         return 1;
       }
+    }
+  }
+  if (arrival_log != nullptr) {
+    writeArrivalLog(arrival_log, pty);
+    if (std::fclose(arrival_log) != 0) {
+      std::fprintf(stderr, "dxl_emu: writing %s failed\n",
+                   arrival_log_path.c_str());
+      return 1;
     }
   }
   std::fflush(stdout);

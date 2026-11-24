@@ -376,6 +376,22 @@ void PtyBus::extractFrames() {
             body.size() >= 4) {
           arrival.data_length =
               static_cast<std::uint16_t>(body[2] | (body[3] << 8));
+          arrival.addr = static_cast<std::uint16_t>(body[0] | (body[1] << 8));
+          arrival.ids.assign(body.begin() + 4, body.end());
+        } else if ((instruction == kInstRead || instruction == kInstWrite) &&
+                   body.size() >= 2) {
+          arrival.addr = static_cast<std::uint16_t>(body[0] | (body[1] << 8));
+        } else if (instruction == kInstSyncWrite && body.size() >= 4) {
+          // Each listed servo: its ID, then len data bytes. data_length
+          // stays 0 (a grouped read's only); len is data.size() / ids.size().
+          arrival.addr = static_cast<std::uint16_t>(body[0] | (body[1] << 8));
+          const std::size_t stride =
+              1u + static_cast<std::uint16_t>(body[2] | (body[3] << 8));
+          for (std::size_t i = 4; i + stride <= body.size(); i += stride) {
+            arrival.ids.push_back(body[i]);
+            arrival.data.insert(arrival.data.end(), body.begin() + i + 1,
+                                body.begin() + i + stride);
+          }
         }
         {
           const std::lock_guard<std::mutex> lock(script_mutex_);

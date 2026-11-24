@@ -37,6 +37,14 @@ struct Arrival {
   std::uint8_t instruction = 0;
   std::uint8_t id = 0;
   std::uint16_t data_length = 0;  // a grouped read's data length, else 0
+  // The start address of a single Read or Write, or of a grouped
+  // instruction (Sync Read, Fast Sync Read, Sync Write); a grouped one's
+  // listed IDs, in order; and a Sync Write's data bytes, each listed servo's
+  // in turn (its length per servo is data.size() / ids.size(); data_length
+  // stays 0). 0 and empty otherwise.
+  std::uint16_t addr = 0;
+  std::vector<std::uint8_t> ids;
+  std::vector<std::uint8_t> data;
   // When poll() extracted it: at or after its transmission.
   std::chrono::steady_clock::time_point at{};
 };

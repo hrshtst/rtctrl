@@ -59,18 +59,27 @@ struct CycleBytes {
   }
 };
 
+// A cycle whose grouped read lists read_n servos and whose sync write lists
+// write_n: the two counts are separate (the bus timing probe's --read-ids
+// reads a subset and still writes every servo).
+constexpr CycleBytes cycleBytes(int read_n, int write_n, ReadVariant variant,
+                                int read_len, int write_width) {
+  CycleBytes b;
+  b.read_instruction = syncReadInstructionBytes(read_n);
+  if (variant == ReadVariant::kSync) {
+    b.read_reply = syncReadReplyBytes(read_n, read_len);
+    b.read_stuffing_max = syncReadStuffingMaxBytes(read_n, read_len);
+  } else {
+    b.read_reply = fastSyncReadReplyBytes(read_n, read_len);
+  }
+  b.write = syncWriteBytes(write_n, write_width);
+  return b;
+}
+
+// The same n servos read and written.
 constexpr CycleBytes cycleBytes(int n, ReadVariant variant, int read_len,
                                 int write_width) {
-  CycleBytes b;
-  b.read_instruction = syncReadInstructionBytes(n);
-  if (variant == ReadVariant::kSync) {
-    b.read_reply = syncReadReplyBytes(n, read_len);
-    b.read_stuffing_max = syncReadStuffingMaxBytes(n, read_len);
-  } else {
-    b.read_reply = fastSyncReadReplyBytes(n, read_len);
-  }
-  b.write = syncWriteBytes(n, write_width);
-  return b;
+  return cycleBytes(n, n, variant, read_len, write_width);
 }
 
 // Seconds per byte: start bit, 8 data bits, stop bit.

@@ -657,3 +657,152 @@ TEST_CASE("servos older than Fast Sync Read leave it unanswered",
   CHECK(fastReadPositions(port, out).comm != 0);
   CHECK(port.boundedReadStats().timeouts == 1);
 }
+
+// A subset read (the bus timing probe's --read-ids, the traffic-reduction
+// diagnostic): the grouped read lists the read set, armed with it, while the
+// zero-current goal write lists every servo, as the probe's two groups do.
+
+namespace {
+
+const std::vector<std::uint8_t> kSubset{2, 3, 4, 5};
+constexpr std::uint16_t kGoalCurrentAddr = reg::kIndirectDataBase + 13;
+
+// The probe's windows for --read-ids on the motion-only read: both lengths
+// by Fast Sync Read, armed with the read set.
+dxl::BoundedReadConfig subsetRead(const std::vector<std::uint8_t>& ids) {
+  dxl::BoundedReadConfig config = positionRead();
+  config.windows = {{reg::kIndirectDataBase, 13, dxl::GroupedRead::kFastSync},
+                    {reg::kIndirectDataBase, 10, dxl::GroupedRead::kFastSync}};
+  config.ids = ids;
+  return config;
+}
+
+void checkRead(const emu::Arrival& a, const std::vector<std::uint8_t>& ids,
+               std::uint16_t length) {
+  CHECK(a.instruction == kFastSyncRead);
+  CHECK(a.addr == reg::kIndirectDataBase);
+  CHECK(a.ids == ids);
+  CHECK(a.data_length == length);
+}
+
+void checkZeroWriteToAll(const emu::Arrival& a) {
+  CHECK(a.instruction == kSyncWrite);
+  CHECK(a.addr == kGoalCurrentAddr);
+  CHECK(a.ids == kIds);
+  CHECK(a.data == std::vector<std::uint8_t>(kIds.size() * 2, 0));
+}
+
+}  // namespace
+
+TEST_CASE("a subset Fast Sync Read lists only its servos, and the goal "
+          "write after it lists all eight with zero current",
+          "[pty][subset]") {
+  FaultBus bus(47);
+  bus.setPositions(1700);
+  dxl::Port port(bus.path(), 3000000);
+  dxl::SyncGroup write_group(port, kIds);
+  REQUIRE(write_group.setupIndirect().ok());
+  dxl::SyncGroup read_group(port, kSubset);
+  read_group.setReadInstruction(dxl::GroupedRead::kFastSync);
+  port.armBoundedSyncRead(subsetRead(kSubset));
+  const std::size_t before = bus.pty().arrivals().size();
+
+  std::vector<dxl::Feedback> fb(kIds.size());  // the probe's initial read
+  REQUIRE(read_group.readMotionWindow(fb).ok());
+  REQUIRE(fb.size() == kSubset.size());
+  for (std::size_t i = 0; i < kSubset.size(); ++i) {
+    CHECK(fb[i].position == dxl::pulseToRad(1700 + kSubset[i]));
+  }
+  CHECK(port.lastSyncReadTiming().replies == 4);
+  REQUIRE(write_group.writeGoalCurrents(std::vector<double>(kIds.size(), 0.0))
+              .ok());
+  REQUIRE(read_group.readAll(fb).ok());
+  REQUIRE(fb.size() == kSubset.size());
+  CHECK(port.boundedReadStats().reads == 2);
+
+  const auto arrivals = bus.waitArrivals(before + 3);
+  REQUIRE(arrivals.size() == before + 3);
+  checkRead(arrivals[before], kSubset, 10);
+  checkZeroWriteToAll(arrivals[before + 1]);
+  checkRead(arrivals[before + 2], kSubset, 13);
+
+  // A grouped read listing other servos than the armed read set is not sent.
+  std::vector<std::uint8_t> out;
+  CHECK(port.fastSyncRead(reg::kIndirectDataBase, 10, kIds, out).comm ==
+        dxl::kCommNotAvailable);
+  std::this_thread::sleep_for(milliseconds(20));
+  CHECK(bus.pty().arrivals().size() == before + 3);
+}
+
+TEST_CASE("a single-servo read set reads one section", "[pty][subset]") {
+  FaultBus bus(47);
+  bus.setPositions(1600);
+  dxl::Port port(bus.path(), 3000000);
+  dxl::SyncGroup write_group(port, kIds);
+  REQUIRE(write_group.setupIndirect().ok());
+  const std::vector<std::uint8_t> one{2};
+  dxl::SyncGroup read_group(port, one);
+  read_group.setReadInstruction(dxl::GroupedRead::kFastSync);
+  port.armBoundedSyncRead(subsetRead(one));
+  const std::size_t before = bus.pty().arrivals().size();
+  std::vector<dxl::Feedback> fb;
+  REQUIRE(read_group.readMotionWindow(fb).ok());
+  REQUIRE(fb.size() == 1);
+  CHECK(fb[0].position == dxl::pulseToRad(1600 + 2));
+  REQUIRE(write_group.writeGoalCurrents(std::vector<double>(kIds.size(), 0.0))
+              .ok());
+  const auto arrivals = bus.waitArrivals(before + 2);
+  REQUIRE(arrivals.size() == before + 2);
+  checkRead(arrivals[before], one, 10);
+  checkZeroWriteToAll(arrivals[before + 1]);
+}
+
+TEST_CASE("a failed subset read: the all-eight write waits for the guard, "
+          "and the recovery read asks the read set for one byte more",
+          "[pty][subset]") {
+  FaultBus bus(47);
+  bus.setPositions(1800);
+  dxl::Port port(bus.path(), 3000000);
+  dxl::SyncGroup write_group(port, kIds);
+  REQUIRE(write_group.setupIndirect().ok());
+  dxl::SyncGroup read_group(port, kSubset);
+  read_group.setReadInstruction(dxl::GroupedRead::kFastSync);
+  port.armBoundedSyncRead(subsetRead(kSubset));
+  const std::size_t before = bus.pty().arrivals().size();
+  const std::vector<double> zeros(kIds.size(), 0.0);
+
+  // The read's reply never comes: it times out, as the probe's cycle would,
+  // and the cycle's write goes after the guard.
+  bus.pty().scriptSyncReadFaults(
+      {{emu::ReplyFault::Kind::kDrop, milliseconds(0), 0, {}}});
+  std::vector<dxl::Feedback> fb;
+  CHECK_FALSE(read_group.readMotionWindow(fb).ok());
+  CHECK(port.boundedReadStats().timeouts == 1);
+  REQUIRE(port.quietGuardPending());
+  CHECK(port.inRecovery());
+  const auto quiet_until = port.quietUntil();
+  REQUIRE(write_group.writeGoalCurrents(zeros).ok());
+  CHECK(port.boundedReadStats().guard_waits == 1);
+  CHECK(port.lastGuardRelease() >= quiet_until);
+
+  // The recovery read, then a normal one: fresh values, the read set only.
+  bus.setPositions(1900);
+  REQUIRE(read_group.readMotionWindow(fb).ok());
+  CHECK_FALSE(port.inRecovery());
+  REQUIRE(write_group.writeGoalCurrents(zeros).ok());
+  REQUIRE(read_group.readMotionWindow(fb).ok());
+  REQUIRE(fb.size() == kSubset.size());
+  for (std::size_t i = 0; i < kSubset.size(); ++i) {
+    CHECK(fb[i].position == dxl::pulseToRad(1900 + kSubset[i]));
+  }
+  CHECK(port.boundedReadStats().recoveries == 1);
+
+  const auto arrivals = bus.waitArrivals(before + 5);
+  REQUIRE(arrivals.size() == before + 5);
+  checkRead(arrivals[before], kSubset, 10);
+  checkZeroWriteToAll(arrivals[before + 1]);
+  CHECK(arrivals[before + 1].at >= quiet_until);
+  checkRead(arrivals[before + 2], kSubset, 11);
+  checkZeroWriteToAll(arrivals[before + 3]);
+  checkRead(arrivals[before + 4], kSubset, 10);
+}

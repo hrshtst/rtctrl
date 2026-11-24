@@ -71,3 +71,32 @@ TEST_CASE("fast sync read variants match the plan's budget table", "[dxl]") {
   CHECK(wire::cycleBytes(kServos, ReadVariant::kFastSync, 13, 2)
             .read_stuffing_max == 0);
 }
+
+TEST_CASE("a subset read keeps the write's own servo count", "[dxl]") {
+  // The probe's --read-ids: a Fast Sync Read of read_n servos, then the
+  // zero-current sync write to all eight.
+  const auto four = wire::cycleBytes(4, kServos, ReadVariant::kFastSync, 10,
+                                     wire::kWriteWidthCurrent);
+  CHECK(four.read_instruction == 18);
+  CHECK(four.read_reply == 8 + 4 * 14);
+  CHECK(four.read_stuffing_max == 0);
+  CHECK(four.write == 38);
+  CHECK(four.total(true) == 18 + 64 + 38);
+  const auto one = wire::cycleBytes(1, kServos, ReadVariant::kFastSync, 10,
+                                    wire::kWriteWidthCurrent);
+  CHECK(one.read_instruction == 15);
+  CHECK(one.read_reply == 22);
+  CHECK(one.write == 38);
+  const auto full = wire::cycleBytes(4, kServos, ReadVariant::kFastSync, 13,
+                                     wire::kWriteWidthCurrent);
+  CHECK(full.read_reply == 76);
+  // The same counts give the one-count form exactly.
+  const auto same = wire::cycleBytes(kServos, kServos, ReadVariant::kSync, 13,
+                                     wire::kWriteWidthPosition);
+  const auto one_count = wire::cycleBytes(kServos, ReadVariant::kSync, 13,
+                                          wire::kWriteWidthPosition);
+  CHECK(same.read_instruction == one_count.read_instruction);
+  CHECK(same.read_reply == one_count.read_reply);
+  CHECK(same.read_stuffing_max == one_count.read_stuffing_max);
+  CHECK(same.write == one_count.write);
+}
