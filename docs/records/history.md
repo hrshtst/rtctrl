@@ -1117,6 +1117,14 @@ single timer and left 28,099 INDETERMINATE, none of them to the probe's
 own sleep timer; an offline audit of that rule is authorized, with the
 rule unchanged.
 
+The audit found why: the trace records the clock a timer requested, and
+the kernel queues a relative CLOCK_REALTIME timer, as the probe's sleeps
+are, on CLOCK_MONOTONIC, while the rule kept one clock per address and
+read those sleeps as CLOCK_REALTIME. Attribution revision 2, accepted on
+2026-11-24, takes each arming's clock from the setup in effect at it under
+the kernel's rule. Revision 1's counts stay as recorded; a separately
+labelled revision-2 reanalysis of invocation 3 follows.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

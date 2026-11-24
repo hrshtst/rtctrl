@@ -570,6 +570,17 @@ owner, and the rule uses the overall U of 1,823 ns. No write is attributed
 to the probe's own sleep timer. An offline audit of the attribution rule
 is authorized; the rule is unchanged.
 
+**The attribution audit (2026-11-24).** The audit found the cause:
+attribution revision 1 read the probe's relative CLOCK_REALTIME sleeps in
+the wrong clock (the attribution's description, under the timer service
+diagnostics' design below). In this run, all 28,949 expired relative
+CLOCK_REALTIME timer generations ran on the monotonic base, as measured
+from each expiry against the trace clock. The review accepted attribution
+revision 2. The counts above are revision 1's and stay as recorded. A
+separately labelled revision-2 reanalysis of invocation 3 follows, and its
+counts are recorded only with it. They will be counts of writes, not of
+distinct sleeps. Nothing else in this analysis changes.
+
 No 1 kHz qualification follows. Invocation 3's exit 1 and STOP, and the
 missing invocation 4, stand. The analysis and its review are archived in
 `adapter_diagnostic/packets/`.
@@ -1687,6 +1698,33 @@ within U of it. A timer resident elsewhere cannot be it; a matching timer
 of unknown residency, a pending one whose clock cannot be converted, no
 match and several leave the write INDETERMINATE. Timers armed before the
 trace began are not seen.
+
+Attribution revision 2 (accepted 2026-11-24; the reports name it)
+converts each arming's expiry by the clock in effect at that arming: the
+latest `hrtimer_init` or `hrtimer_setup` of its address at or before it.
+The setup tracepoint records the clock requested. The kernel then queues a
+relative CLOCK_REALTIME timer on CLOCK_MONOTONIC (`__hrtimer_setup` of the
+audited 7.0.0-42.42), so such a timer's printed expiry is monotonic.
+- **No setup before the arming:** the clock comes from the expiry's
+  magnitude, as before, and never from a later setup.
+- **A CLOCK_REALTIME setup whose mode is not printed or not understood:**
+  the expiry is unconvertible. Its base is never guessed.
+
+Revision 1 kept one clock per address, the last setup's. It read the
+probe's relative CLOCK_REALTIME sleeps (`std::this_thread::sleep_until`) as
+CLOCK_REALTIME, so none of their deadline writes could match. A write for
+which the probe's timer was a second candidate could also be reported as a
+single match.
+
+The rest of the rule is unchanged, so an ambiguity the correction reveals
+stays INDETERMINATE. The report prints no arming's mode, so in practice a
+pinned arming is never residency evidence: a conservative limit. A match is
+a match under the stated pending-timer, residency and conversion rule, not
+proof of ownership, and a count of matched writes is not a count of
+distinct sleeps. Attribution counts reported under revision 1 stay as
+recorded; any reanalysis under revision 2 is labelled separately. The
+attribution does not enter the conversion, U, the slot accounting, the
+sleeps' classification or the wake accounting.
 
 **Classes.** For each paired sleep: the worker's sleep call, the arming of
 its timer (its expiry E), the deadline whose interrupt served it (the one

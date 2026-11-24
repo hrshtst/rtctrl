@@ -16,7 +16,7 @@ that keeps an overwritten due deadline's interrupt as possibly pending; the
 deadline writes' attribution, which needs the timer's residency on the
 real-time CPU (its expiry there or a pinned arming; a matching write after
 an arming is a hint only), never a matching expiry alone, and converts
-other clocks by their recorded offsets, each arming by the clock in effect at it (PROPOSED: its
+other clocks by their recorded offsets, each arming by the clock in effect at it (attribution revision 2: its
 address's latest setup, a relative CLOCK_REALTIME timer being on CLOCK_MONOTONIC, an unknown base never guessed,
 a revealed ambiguity kept); the exerciser's actions followed through
 each arming's lifetime (a needed write, a legitimate no-write, re-arms
@@ -309,10 +309,10 @@ def residency() -> None:
 
 
 def clock_domains() -> None:
-    """PROPOSED, not accepted: each arming's clock is the one in effect at it, its address's latest setup at or before
-    it, under the kernel's rule that a relative CLOCK_REALTIME timer is on CLOCK_MONOTONIC (attempt 28's probe sleeps:
-    set up CLOCK_REALTIME 0x1, armed and expiring in CLOCK_MONOTONIC). Never a later setup's clock, never a guessed
-    base, and an ambiguity it reveals stays one."""
+    """Attribution revision 2 (accepted 2026-11-24): each arming's clock is the one in effect at it, its address's
+    latest setup at or before it, under the kernel's rule that a relative CLOCK_REALTIME timer is on CLOCK_MONOTONIC
+    (attempt 28's probe sleeps: set up CLOCK_REALTIME 0x1, armed and expiring in CLOCK_MONOTONIC). Never a later
+    setup's clock, never a guessed base, and an ambiguity it reveals stays one."""
     ev, conv, u = base_events()
     t = ev.anchors[20] + 100_000
     e = t + 400_000

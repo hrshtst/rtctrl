@@ -45,7 +45,7 @@ trace's evidence: its expiry's CPU, or a pinned arming's CPU (a matching
 write after an arming is a hint only). Its expiry is put in CLOCK_MONOTONIC by
 the clock in effect at the arming: its address's latest hrtimer_init/setup
 before it, a relative CLOCK_REALTIME timer being on CLOCK_MONOTONIC as the
-kernel queues it (PROPOSED, not accepted), or by its magnitude when no setup
+kernel queues it (attribution revision 2), or by its magnitude when no setup
 precedes it. A deadline write is attributed to the one pending
 timer resident on the real-time CPU at its value; a matching timer of
 unknown residency leaves it INDETERMINATE. A rehearsal's exerciser
@@ -557,11 +557,12 @@ def relative(mode: str | None) -> bool | None:
 
 
 def clock_in_effect(ev: TimerEvents, addr: str, at: int) -> str | None:
-    """PROPOSED, not accepted: the clock base of an arming of addr at time at. The latest hrtimer_init/setup of the
-    address at or before the arming, under the kernel's rule (kernel/time/hrtimer.c, __hrtimer_setup): a relative
-    CLOCK_REALTIME timer is queued on CLOCK_MONOTONIC, though the setup tracepoint records the clock requested. None
-    when no setup of the address precedes the arming: its clock is then inferred from its expiry, never taken from a
-    later setup. UNKNOWN_BASE for a CLOCK_REALTIME setup whose mode is not printed or not understood."""
+    """Attribution revision 2 (accepted 2026-11-24): the clock base of an arming of addr at time at. The latest
+    hrtimer_init/setup of the address at or before the arming, under the kernel's rule (kernel/time/hrtimer.c,
+    __hrtimer_setup): a relative CLOCK_REALTIME timer is queued on CLOCK_MONOTONIC, though the setup tracepoint records
+    the clock requested. None when no setup of the address precedes the arming: its clock is then inferred from its
+    expiry, never taken from a later setup. UNKNOWN_BASE for a CLOCK_REALTIME setup whose mode is not printed or not
+    understood."""
     v = ev.setups.get(addr, [])
     k = bisect.bisect_right(v, at, key=lambda s: s[0])
     if not k:
@@ -580,7 +581,7 @@ def mono_values(ev: TimerEvents, addr: str, x: int, offsets: dict, at: int | Non
     else MONOTONIC or BOOTTIME), None when an offset needed is not recorded
     or the base is unknown. With at (the arming's time) and the address's
     setups recorded, the clock is the one in effect at the arming
-    (clock_in_effect, PROPOSED); otherwise the address's recorded clock.
+    (clock_in_effect, attribution revision 2); otherwise the address's recorded clock.
     offsets: REALTIME, BOOTTIME and TAI minus MONOTONIC, in ns."""
     c = clock_in_effect(ev, addr, at) if at is not None and addr in ev.setups else ev.clockid.get(addr)
     if c == UNKNOWN_BASE:
@@ -1172,7 +1173,7 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
         att = attribute(ev, lt, conv, u)
         ind = sum(1 for a in att if a[2].startswith("INDETERMINATE"))
         print(f"    deadline writes: {len(att)}, {sum(1 for a in att if a[2] == 'disarmed')} disarming, "
-              f"{ind} INDETERMINATE in attribution (each arming's clock in effect: PROPOSED, not accepted)", file=out)
+              f"{ind} INDETERMINATE in attribution (attribution revision 2: each arming's clock in effect)", file=out)
     # Idle states, NMIs and SMIs.
     states: dict[int, int] = {}
     for _, s in ev.idle:
