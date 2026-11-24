@@ -42,7 +42,11 @@ late service is a result, not a failure.
 Each timer arming is followed to its end (its cancellation, expiry or next
 arming), and its residency (the CPU it is queued on) is taken only from the
 trace's evidence: its expiry's CPU, or a pinned arming's CPU (a matching
-write after an arming is a hint only). A deadline write is attributed to the one pending
+write after an arming is a hint only). Its expiry is put in CLOCK_MONOTONIC by
+the clock in effect at the arming: its address's latest hrtimer_init/setup
+before it, a relative CLOCK_REALTIME timer being on CLOCK_MONOTONIC as the
+kernel queues it (PROPOSED, not accepted), or by its magnitude when no setup
+precedes it. A deadline write is attributed to the one pending
 timer resident on the real-time CPU at its value; a matching timer of
 unknown residency leaves it INDETERMINATE. A rehearsal's exerciser
 (tools/timer_exerciser.py) arms, replaces and cancels timerfd timers (its
@@ -123,6 +127,7 @@ class TimerEvents:
         self.cancels: list[tuple] = []    # (ts, cpu, pid, addr, in an interrupt)
         self.expiries: list[tuple] = []   # (ts, cpu, addr, now, function)
         self.clockid: dict[str, str] = {}  # hrtimer -> its clock, from hrtimer_init/setup
+        self.setups: dict[str, list[tuple]] = {}  # hrtimer -> each hrtimer_init/setup: (ts, clock, mode or None)
         self.forks: list[tuple] = []      # (ts, parent pid, parent comm, child pid, child comm)
         self.execs: list[tuple] = []      # (ts, pid, filename)
         self.exits: list[tuple] = []      # (ts, pid, comm)
@@ -190,6 +195,8 @@ class TimerEvents:
             a, c = ADDR.search(rest), CLOCKID.search(rest)
             if a and c:
                 self.clockid[a[1]] = c[1]
+                m = MODE.search(rest)
+                self.setups.setdefault(a[1], []).append((ts, c[1], m[1] if m else None))
         elif ev == "sched_process_fork":
             f = FORK.search(rest)
             if f:
@@ -533,13 +540,51 @@ def classify(ev: TimerEvents, tl: Timeline, arm: tuple, expiry: tuple, smi: list
 # --- Timer lifetimes ---------------------------------------------------------------------------
 
 
-def mono_values(ev: TimerEvents, addr: str, x: int, offsets: dict) -> list[float] | None:
+UNKNOWN_BASE = "unknown base"
+MODE_NAMES = {"ABS", "REL", "PINNED", "SOFT", "HARD"}
+
+
+def relative(mode: str | None) -> bool | None:
+    """Whether a printed hrtimer mode is relative: the report's hex (HRTIMER_MODE_REL is 0x1) or the symbolic
+    names; None when it is not printed or not understood."""
+    if not mode:
+        return None
+    try:
+        return bool(int(mode, 16) & 1)
+    except ValueError:
+        names = set(mode.split("|"))
+        return "REL" in names if names <= MODE_NAMES else None
+
+
+def clock_in_effect(ev: TimerEvents, addr: str, at: int) -> str | None:
+    """PROPOSED, not accepted: the clock base of an arming of addr at time at. The latest hrtimer_init/setup of the
+    address at or before the arming, under the kernel's rule (kernel/time/hrtimer.c, __hrtimer_setup): a relative
+    CLOCK_REALTIME timer is queued on CLOCK_MONOTONIC, though the setup tracepoint records the clock requested. None
+    when no setup of the address precedes the arming: its clock is then inferred from its expiry, never taken from a
+    later setup. UNKNOWN_BASE for a CLOCK_REALTIME setup whose mode is not printed or not understood."""
+    v = ev.setups.get(addr, [])
+    k = bisect.bisect_right(v, at, key=lambda s: s[0])
+    if not k:
+        return None
+    _, clock, mode = v[k - 1]
+    if clock != "CLOCK_REALTIME":
+        return clock
+    r = relative(mode)
+    return UNKNOWN_BASE if r is None else "CLOCK_MONOTONIC" if r else clock
+
+
+def mono_values(ev: TimerEvents, addr: str, x: int, offsets: dict, at: int | None = None) -> list[float] | None:
     """A timer's expiry in CLOCK_MONOTONIC: one value for a clock known from
     its hrtimer_init/setup, the values of both possible clocks for one
     inferred from the expiry's magnitude (past 1e18 ns: REALTIME or TAI;
-    else MONOTONIC or BOOTTIME), None when an offset needed is not recorded.
+    else MONOTONIC or BOOTTIME), None when an offset needed is not recorded
+    or the base is unknown. With at (the arming's time) and the address's
+    setups recorded, the clock is the one in effect at the arming
+    (clock_in_effect, PROPOSED); otherwise the address's recorded clock.
     offsets: REALTIME, BOOTTIME and TAI minus MONOTONIC, in ns."""
-    c = ev.clockid.get(addr)
+    c = clock_in_effect(ev, addr, at) if at is not None and addr in ev.setups else ev.clockid.get(addr)
+    if c == UNKNOWN_BASE:
+        return None
     names = [c] if c else (["REALTIME", "TAI"] if x > 10**18 else ["MONOTONIC", "BOOTTIME"])
     out = []
     for n in names:
@@ -591,7 +636,7 @@ class Lifetimes:
                     continue
                 nxt = lst[i + 1] if i + 1 < len(lst) else None
                 g = {"start": s, "end": None, "end_ts": None, "end_cpu": None,
-                     "x": mono_values(ev, addr, s[6], offsets)}
+                     "x": mono_values(ev, addr, s[6], offsets, s[0])}
                 if nxt:
                     g["end"] = "rearm" if nxt[2] == "start" else nxt[2]
                     g["end_ts"], g["end_cpu"] = nxt[0], nxt[3][1]
@@ -1127,7 +1172,7 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
         att = attribute(ev, lt, conv, u)
         ind = sum(1 for a in att if a[2].startswith("INDETERMINATE"))
         print(f"    deadline writes: {len(att)}, {sum(1 for a in att if a[2] == 'disarmed')} disarming, "
-              f"{ind} INDETERMINATE in attribution", file=out)
+              f"{ind} INDETERMINATE in attribution (each arming's clock in effect: PROPOSED, not accepted)", file=out)
     # Idle states, NMIs and SMIs.
     states: dict[int, int] = {}
     for _, s in ev.idle:

@@ -16,7 +16,9 @@ that keeps an overwritten due deadline's interrupt as possibly pending; the
 deadline writes' attribution, which needs the timer's residency on the
 real-time CPU (its expiry there or a pinned arming; a matching write after
 an arming is a hint only), never a matching expiry alone, and converts
-other clocks by their recorded offsets; the exerciser's actions followed through
+other clocks by their recorded offsets, each arming by the clock in effect at it (PROPOSED: its
+address's latest setup, a relative CLOCK_REALTIME timer being on CLOCK_MONOTONIC, an unknown base never guessed,
+a revealed ambiguity kept); the exerciser's actions followed through
 each arming's lifetime (a needed write, a legitimate no-write, re-arms
 earlier and after an expiry, cancellations with and without a write and
 after an expiry, an expiry inside the arming call, a missing write, a timer
@@ -306,6 +308,114 @@ def residency() -> None:
     expect(ts.mono_values(ev, "0xnone", 2 * 10**18, {"REALTIME": 10**18, "TAI": None}) is None, "TAI offset missing")
 
 
+def clock_domains() -> None:
+    """PROPOSED, not accepted: each arming's clock is the one in effect at it, its address's latest setup at or before
+    it, under the kernel's rule that a relative CLOCK_REALTIME timer is on CLOCK_MONOTONIC (attempt 28's probe sleeps:
+    set up CLOCK_REALTIME 0x1, armed and expiring in CLOCK_MONOTONIC). Never a later setup's clock, never a guessed
+    base, and an ambiguity it reveals stays one."""
+    ev, conv, u = base_events()
+    t = ev.anchors[20] + 100_000
+    e = t + 400_000
+    real = 1_700_000_000_000_000_000
+    recorded = {"REALTIME": real, "BOOTTIME": 0, "TAI": real + 37_000_000_000}
+    sleep, tick = "0xffff0000a001", "0xffff0000a002"
+    ev.writes = [(t + 10_000, tsc(e), False)]
+    mine = f"hrtimer_wakeup of x7_bus_timing ({TID})"
+    none = "INDETERMINATE (no pending timer on this CPU at that expiry)"
+
+    def att():
+        return ts.attribute(ev, ts.Lifetimes(ev, conv, u, recorded), conv, u)[0][2]
+
+    def worker(x=e, at=t):
+        """The worker's sleep, armed on CPU 3 and expiring there (its residency), no mode printed (as the report)."""
+        ev.starts = [(at, RT, TID, "x7_bus_timing", sleep, "hrtimer_wakeup", x, x, "?")]
+        ev.expiries = [(e + 1_000, RT, sleep, x + 900, "hrtimer_wakeup")]
+
+    # The modes as the report prints them (hex) or by name.
+    for m, want in (("0x1", True), ("0x0", False), ("0x9", True), ("0x6", False), ("0x7", True), ("REL", True),
+                    ("REL|HARD", True), ("ABS|PINNED", False), (None, None), ("?", None), ("", None), ("BOGUS", None)):
+        expect(ts.relative(m) is want, f"relative({m!r}): {ts.relative(m)}")
+    # 1. The probe's case: a relative CLOCK_REALTIME sleep, its expiry in CLOCK_MONOTONIC.
+    ev.clockid = {sleep: "CLOCK_REALTIME"}
+    worker()
+    ev.setups = {}
+    r = att()
+    expect(r == none, f"the accepted reading (the address's clock, the REALTIME offset applied): {r}")
+    for m in ("0x1", "0x9", "REL", "REL|HARD"):
+        ev.setups = {sleep: [(t - 100, "CLOCK_REALTIME", m)]}
+        r = att()
+        expect(r == mine, f"relative CLOCK_REALTIME ({m}) is CLOCK_MONOTONIC: {r}")
+    # 2. An absolute CLOCK_REALTIME sleep: its expiry is in CLOCK_REALTIME, the recorded offset applies.
+    for m in ("0x0", "0x6", "ABS|PINNED"):
+        ev.setups = {sleep: [(t - 100, "CLOCK_REALTIME", m)]}
+        worker(x=e + real)
+        r = att()
+        expect(r == mine, f"absolute CLOCK_REALTIME ({m}): {r}")
+        worker()
+        r = att()
+        expect(r == none, f"absolute CLOCK_REALTIME ({m}) whose expiry only looks monotonic: {r}")
+    # Other clocks keep their recorded offsets, relative or not.
+    for c in ("CLOCK_MONOTONIC", "CLOCK_BOOTTIME", "CLOCK_TAI"):
+        ev.setups = {sleep: [(t - 100, c, "0x1")]}
+        expect(ts.clock_in_effect(ev, sleep, t) == c, f"relative {c} stays {c}: {ts.clock_in_effect(ev, sleep, t)}")
+    # 3. A CLOCK_REALTIME setup whose mode is not printed or not understood: the base is unknown, never guessed.
+    for m in (None, "?"):
+        ev.setups = {sleep: [(t - 100, "CLOCK_REALTIME", m)]}
+        worker()
+        r = att()
+        expect(r == "INDETERMINATE (1 pending timers whose clock cannot be converted)", f"mode {m!r}: {r}")
+    # 4. Address reuse: this arming's setup (CLOCK_MONOTONIC, absolute), then a CLOCK_REALTIME absolute setup at the
+    # same address after it: the arming keeps its own; the address's last clock would have missed it.
+    ev.setups = {sleep: [(t - 100, "CLOCK_MONOTONIC", "0x0"), (e + 50_000, "CLOCK_REALTIME", "0x0")]}
+    ev.clockid = {sleep: "CLOCK_REALTIME"}
+    worker()
+    r = att()
+    expect(r == mine, f"the setup in effect, not the later one: {r}")
+    expect(ts.mono_values(ev, sleep, e, recorded) == [float(e - real)], "without the arming's time: the address's clock")
+    # 5. An arming before any setup of its address: its clock from its magnitude, not from the later setup.
+    ev.setups = {sleep: [(e + 50_000, "CLOCK_REALTIME", "0x0")]}
+    r = att()
+    expect(r == mine, f"no setup before the arming: by magnitude: {r}")
+    expect(ts.mono_values(ev, sleep, e, recorded, t) == [float(e), float(e)], "by magnitude: MONOTONIC or BOOTTIME")
+    # 6. A false single match revealed: the tick (no setup, by magnitude) and the probe's relative sleep at the same
+    # expiry, both resident on CPU 3, are two pending timers; neither is chosen as the nearest.
+    ev.setups = {sleep: [(t - 100, "CLOCK_REALTIME", "0x1")]}
+    worker()
+    ev.starts.append((t + 1_000, RT, 0, "swapper/3", tick, "tick_nohz_handler", e + 300, e + 300, "?"))
+    ev.expiries.append((e + 1_200, RT, tick, e + 1_100, "tick_nohz_handler"))
+    r = att()
+    expect(r == "INDETERMINATE (2 pending timers at that expiry)", f"two on CPU 3, the ambiguity kept: {r}")
+    ev.setups = {}
+    r = att()
+    expect(r == "tick_nohz_handler of swapper/3 (0)", f"the accepted reading: the tick alone, a false single match: {r}")
+    # 7. Residency is unchanged: a relative CLOCK_REALTIME arming on CPU 3, cancelled, with a matching CPU-3 write
+    # 10 us later: a hint only, now computed on the right expiry.
+    ev2, _, _ = base_events()
+    ev2.anchors = []
+    ev2.clockid = {sleep: "CLOCK_REALTIME"}
+    ev2.setups = {sleep: [(t - 100, "CLOCK_REALTIME", "0x1")]}
+    ev2.starts = [(t, RT, TID, "x7_bus_timing", sleep, "hrtimer_wakeup", e, e, "?")]
+    ev2.cancels = [(t + 100_000, RT, TID, sleep, False)]
+    ev2.writes = [(t + 10_000, tsc(e), False)]
+    lt2 = ts.Lifetimes(ev2, conv, u, recorded)
+    g = lt2.gens[0]
+    expect(g["cpu"] is None and g["evidence"] == "unknown" and g["hint"], f"unknown residency, a hint: {g}")
+    r = ts.attribute(ev2, lt2, conv, u)[0][2]
+    expect(r == "INDETERMINATE (1 matching timers of unknown residency; 1 followed by a matching write on this CPU, "
+           "a hint only)", f"the hint does not attribute: {r}")
+    # 8. The parser keeps every setup with its time and mode.
+    ev3 = ts.TimerEvents(TID, RT)
+    ev3.feed(100, RT, TID, "x7_bus_timing", "hrtimer_setup", f"hrtimer={sleep} clockid=CLOCK_REALTIME mode=0x1", "....")
+    ev3.feed(200, RT, TID, "x7_bus_timing", "hrtimer_setup", f"hrtimer={sleep} clockid=CLOCK_MONOTONIC mode=0x0", "....")
+    ev3.feed(300, 5, 9, "other", "hrtimer_init", f"hrtimer={tick} clockid=CLOCK_REALTIME", "....")
+    expect(ev3.setups == {sleep: [(100, "CLOCK_REALTIME", "0x1"), (200, "CLOCK_MONOTONIC", "0x0")],
+                          tick: [(300, "CLOCK_REALTIME", None)]}, f"the setups: {ev3.setups}")
+    expect(ev3.clockid == {sleep: "CLOCK_MONOTONIC", tick: "CLOCK_REALTIME"}, f"the address's last clock: {ev3.clockid}")
+    expect(ts.clock_in_effect(ev3, sleep, 150) == "CLOCK_MONOTONIC" and ts.clock_in_effect(ev3, sleep, 250) == "CLOCK_MONOTONIC"
+           and ts.clock_in_effect(ev3, sleep, 50) is None and ts.clock_in_effect(ev3, tick, 400) == ts.UNKNOWN_BASE,
+           "in effect: relative REALTIME at 150, MONOTONIC at 250, none at 50, unknown base without a mode")
+
+
 def exerciser() -> None:
     ev, conv, u = base_events()
     base = ev.anchors[20]
@@ -530,6 +640,7 @@ def main() -> int:
     ledger()
     classes()
     residency()
+    clock_domains()
     exerciser()
     load()
     files()
