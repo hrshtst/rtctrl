@@ -16,7 +16,8 @@ emulator rehearsal, taken 2026-11-07; `timer_torque_off/`, taken 2026-11-08;
 10 and 11, 2026-11-10; `stage1_hardware/`, taken 2026-11-10 and, for the
 revised H2's attempts 24 to 26, 2026-11-20;
 `clock_validation/`, an emulator validation, taken 2026-11-11;
-`adapter_diagnostic/`, an emulator rehearsal, taken 2026-11-23)
+`adapter_diagnostic/`, an emulator rehearsal, taken 2026-11-23, and the
+diagnostic's partial hardware sitting, taken 2026-11-24)
 are kept on a separate volume of the
 same private archive; their paths are
 relative to that volume's project folder. A citation in the project records
@@ -4383,34 +4384,105 @@ passes under revision 54. The revision-53 analyses and failures stay intact besi
 | `t3-diagnosis-15/timeline15.py` | attempt 15's timeout diagnosis script (timeline15.py) | `cecc768995b8e246058b78ab49ee34293645e6ede6214544f5117ab17f353a0c` |
 | `t3-diagnosis-15/window15.py` | attempt 15's timeout diagnosis script (window15.py) | `8a5919de262900466dd7e826ee1e93606f6c7ddc77c0220a838e51c940f59ced` |
 
-## `adapter_diagnostic/` — the adapter-timing diagnostic's emulator rehearsal (2026-11-22 and 2026-11-23)
+## `adapter_diagnostic/` — the adapter-timing diagnostic's emulator rehearsal (2026-11-22 and 2026-11-23) and partial hardware sitting (2026-11-24)
 
-The torque-off adapter-timing diagnostic's sitting, rehearsed over `dxl_emu` with the plan's cadence (emulated
-servos on a pty: no servo and no USB adapter), the actuator power off, at the candidate `dd6fd3c` on Linux
-7.0.0-42-generic #42. Emulator data, not hardware telemetry, kept with checksums. Attempts 27 and 29 stopped before
-any diagnostic invocation, when a Ctrl-C in the emulator's terminal stopped the emulator after readiness had passed;
-for attempt 29 the owner's account is copying text with Ctrl-C, and attempt 27's reason is recorded as unknown.
-Attempt 30 ran all four invocations and was accepted (reviewer, 2026-11-23) as the complete emulator rehearsal; it
-qualifies neither 1 kHz control nor the physical adapter. Described in
-[control-rate.md](../hardware/control-rate.md).
+The torque-off adapter-timing diagnostic at the candidate `dd6fd3c` on Linux 7.0.0-42-generic #42, first rehearsed
+and then acquired in part on the arm. Described in [control-rate.md](../hardware/control-rate.md). Nothing here
+qualifies 1 kHz control.
 
+**The emulator rehearsal.** It ran over `dxl_emu` with the plan's cadence (emulated servos on a pty: no servo and no
+USB adapter), with the actuator power off. This is emulator data, not hardware telemetry, kept with checksums.
+Attempts 27 and 29 stopped before any diagnostic invocation, when a Ctrl-C in the emulator's terminal stopped the
+emulator after readiness had passed. For attempt 29 the owner's account is copying text with Ctrl-C; attempt 27's
+reason is recorded as unknown. Attempt 30 ran all four invocations and was accepted (reviewer, 2026-11-23) as the
+complete emulator rehearsal. It qualifies neither 1 kHz control nor the physical adapter.
+
+**The hardware sitting, attempt 28 (2026-11-24).** It ran on the real arm through the FTDI adapter at USB 1-9, every
+servo torque-off with the owner at the robot. The reviewer (2026-11-24) accepted it as a correctly stopped partial
+sitting:
+- invocations 1 and 2 (the untraced pair) are valid;
+- invocation 3 (the adapter arm's timer run) is void under the frozen revision-54 conversion rule (validity items 4
+  and 7): its analysis failed on the clock alignment's slot accounting. It is kept as diagnostic evidence only;
+- invocation 4 was not run.
+
+**The folders:**
 - **Attempt 30's invocations:** `d1-30-1-grid-untraced/`, `d1-30-2-adapter-untraced/`, `d1-30-3-adapter-timer/`
-  and `d1-30-4-grid-timer/`, each the session directory's files unchanged with a `README.md` (its verdict) and a
-  `SHA256SUMS`. All four are valid captures; each timer run's one timed-out read is kept as data (T3 FAIL), no cycle
-  excluded.
-- **`sittings/`:** the files each sitting wrote beside the runs: attempts 27's and 29's emulator logs and header-only
-  cadence records, and attempt 30's emulator record (`d1-30-block-e.txt`), log and cadence record (the true-lock
-  check's carriers), identity record and interrupt records.
+  and `d1-30-4-grid-timer/`. Each holds the session directory's files unchanged, with a `README.md` (its verdict)
+  and a `SHA256SUMS`. All four are valid captures. Each timer run's one timed-out read is kept as data (T3 FAIL),
+  with no cycle excluded.
+- **Attempt 28's invocations:** `d1-28-1-grid-untraced/`, `d1-28-2-adapter-untraced/` and
+  `d1-28-3-adapter-timer/`, laid out the same way. The void run is kept whole: its capture, traces, timekeeping
+  record and the procedure's analysis.
+- **`sittings/`:** the files each sitting wrote beside the runs:
+  - attempts 27's and 29's emulator logs and header-only cadence records;
+  - attempt 30's emulator record (`d1-30-block-e.txt`), log and cadence record (the true-lock check's carriers),
+    identity record and interrupt records;
+  - attempt 28's identity record, the procedure's stop record and the interrupt records. Its readiness and guard
+    records are kept with its hardware packet.
 - **`packets/`:** the sealed packets of the plan (draft r1 to r3), the candidate, each sitting and every review,
-  verbatim with the records written beside them; each packet's own `SHA256SUMS` still verifies. The results packet
-  `2026-11-23-d1-attempt30-sitting/` is qualified by `2026-11-23-d1-attempt30-sitting-addendum/`.
+  verbatim with the records written beside them. Each packet's own `SHA256SUMS` still verifies.
+  - The results packet `2026-11-23-d1-attempt30-sitting/` is qualified by
+    `2026-11-23-d1-attempt30-sitting-addendum/`.
+  - Attempt 28's results packet `2026-11-24-d1-attempt28-sitting/` is corrected by
+    `2026-11-24-d1-attempt28-sitting-addendum/` (the validity numbering, and the readiness delay with the
+    developer's host checks).
+  - The section's README versions of 2026-11-23, which this extension replaced, stay verbatim in
+    `packets/2026-11-23-d1-archive/section/`.
 
 The copies were compared byte for byte with the originals, which stay in the operator's `~/rtctrl-hw/` and the
 project's review notes.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | Adapter diagnostic rehearsal, the section's verdicts and provenance | `a7fae045993fd9c8f8997b5ce66c4f129e40d443ea642751dcba6f0e7165cad9` |
+| `README.md` | Adapter diagnostic, the section's verdicts and provenance (the emulator rehearsal and the hardware sitting) | `87969f30a4472118e7a7256f06fdb46ca41668d4ba290159e38838571d61931c` |
+| `d1-28-1-grid-untraced/README.md` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), verdict and provenance note | `0458d0d37c3d55e33cd8b279725cec54449066c1ecd6ba6431950e9eb5f34651` |
+| `d1-28-1-grid-untraced/SHA256SUMS` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), the folder's SHA256SUMS | `5e7015ef7d77e485ea5794e2b604f2b61bce93a0a6eb2a16632df0b9a72369b8` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `8d1fce9bba98e10b2b0e0b52bca2b09a977b6eb399a80bbe2e4d9e1ed381d811` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.observers.jsonl` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `4753807d903ddefb8ba008cd02ddb4377e0d47dfd26f61af05523d488c9ce025` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.run.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `746876219295b13407e9d554425dec61f0e187d5a3cbfef2a28c282c6e8dc015` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.staging.inventory.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `242ea61b235afbb8f3974248b4e20c3119b24bb3a8eace5a332c65e617d0a920` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.staging.sha256` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `3573e1259f467f57888639e64f43b5630f8fb1308690d3f481ffe17dea3db409` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.summary.toml` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `1fce664e3ca0f2736bb0df1834a0d3a8de4de46f7fd5589081f3daa304c61477` |
+| `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.tasks.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `d51086a51dcf9f995b8986da8376240ca4382840f1d3fec0209505aa96f4e2a7` |
+| `d1-28-2-adapter-untraced/README.md` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), verdict and provenance note | `60800add087d23d7d07472cf16adfad5134fa38e5683b41fa2595690f34fcb53` |
+| `d1-28-2-adapter-untraced/SHA256SUMS` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), the folder's SHA256SUMS | `9ebfe029a43b39d5ed9d8837bb807e941b156f77a76c50645381cc7a18dda86c` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `3f52239c4767cb85364f862be37576838d790bfd8f3e2169d17360819e9fb1df` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.observers.jsonl` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `374ec5e3ff7876ae89f80a8dcd686d675c6d22a11544abde8397e7fe8e42a562` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.run.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `583f117389c26068398c77b21b9aa224ed308e01f3e408fee5b0bdb68e7eb004` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.staging.inventory.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `55a36be12299a65b16c89b7ea7037b8cf81a36d8c11160675a1d365c681110ef` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.staging.sha256` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `69cd7eadce5f0fd2c30f4ca9c8f34937d57230ee2af4db2e74ab1812f24f38ee` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.summary.toml` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `5c7f4e3d45864d380b83bca305a05ee3f94a16ab470924bbc3d16a322053930f` |
+| `d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.tasks.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 2, adapter untraced, valid), session file | `08ec77b6feb082ca213eff4a2033faf64cb75dfc87a9d3ec3e79a80790514351` |
+| `d1-28-3-adapter-timer/README.md` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), verdict and provenance note | `e49406b0b8f99221f06c6f6870103acac121543aeb784b806a23291f22038c3a` |
+| `d1-28-3-adapter-timer/SHA256SUMS` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), the folder's SHA256SUMS | `4288a4612e2e319f5f2a453b50f7dca0bc34a93c75741a634e61380d3ac1a2bf` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `5aca441855ccb9e754fbaab94a7384b51aa7fbd041b8d58871ef001cc1cdf9ad` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.correlate.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `bc13fb104ae372911cb3ec44bb50fb6097ebf3cde34014f214441c3f0560641f` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.lineage.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `1936e4f7e7de0d407481b3906535db5df11ef3cedee140288223e50568397de6` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.observers.jsonl` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `b806a107955ee5c3ee6d715f82394f574ca9f78679e9849e7ac2451752abe1ad` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.procs.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `3d88acb476243d2f3b5a165bab3002bf3c7e6ae81455ffcc0cf82a16aee7e82e` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.run.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `e09679976520010c3d4bd502d8e37677fc537b2319812f36ba2fdd8548019fe2` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.smi.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `b9e187c9ef07042e6cafc6b209abf3ebab4db7058a23364978e0604d8d380950` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.staging.inventory.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `6b985116b0b8d3aba0777bff730e36b83c943a17e8464b037118d95ac4b923b2` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.staging.sha256` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `fafa3e9bd1a450adb6151609b72dc73931eaa946b2d34784947eaa7b989d46a7` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.summary.toml` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `67b17453b227fedbaf26ce9985b20aa40150949dc6b7c9734b46c47fb5220f53` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tasks.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `f6360624a6f165a6d7710b900627c65749d914cb188d2bfbe4950770736a2295` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-after.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `84cfc9012cdafd21b1cf8760838c449423acb25c4dee5ddeee55c398dec22632` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-before.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `ee425b653f6b56932ba02644163f7ae9c3b73ebb57c6136217f7edb79e573121` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-enable-after.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `75c666d56b4df6a15e9982629c20fa2202f63ba66a50cdef713c8243b47930f2` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-enable-before.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `75c666d56b4df6a15e9982629c20fa2202f63ba66a50cdef713c8243b47930f2` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-journal.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `17a748d9c14bb6ac81d850b01b84740ba225b2f59baaf77cf389237f354580de` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-log.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `c9a1195c2bd34ccaab22cb560ad5e23e94ae5be089218ea6a80892dae22f7de7` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-profile.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `a68fa321f66ef86375dc7953dc1348165fb9c9fc4f47629ab59d659535ea83ba` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-stats.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `a52afd20aa3d1247535341c558dde4c1e0bb7d352630cdd05fe54a92681315bb` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-times.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `60c1786419839726832f89c4c9bcd6134efcd406573a568341e51b7bf83d397e` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-tool-after.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk-tool-before.json` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `e42deda5d02a882520b36dd607cec643534ce8b3c78dba70b760d637d641f414` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk.dat` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `96b823677dc47596cab3287e6130f93399a1ee916def301a3012e97bb774c54d` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tk.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `320d631a3893db5a184641a05a6547a4e0457c9bfab2c76456f215faba5177d6` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.trace.dat` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `7a0291e4c7378a39a91d13ad1c11725448f2b0ff1ed6e30a80784c5be3a71fd5` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tsc-pairs.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `067ed44e6f5a88c1bac61e469a27194f83a06aed696b2781e2085fbe343ebd03` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.tsc.txt` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `2fef72240e3c8303e602adbcea07c5c6091497feaffff4514dd6182b3cd9b280` |
+| `d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.usbmon.pcap` | Adapter diagnostic hardware sitting (attempt 28 invocation 3, adapter timer, void under revision 54), session file | `c0735dc60baac40a71481b76de084612c10808668fdd0593cec7b7123317b1b2` |
 | `d1-30-1-grid-untraced/README.md` | Adapter diagnostic rehearsal (attempt 30 invocation 1, grid untraced, valid), verdict and provenance note | `9f70b29baebf13ba65c09bbaf2c1931bcafe5a1ff0e0118f817864a8e4fd8cc4` |
 | `d1-30-1-grid-untraced/SHA256SUMS` | Adapter diagnostic rehearsal (attempt 30 invocation 1, grid untraced, valid), the folder's SHA256SUMS | `dbcd253d9cbce8e09f288cc07558a61a467ebbd60bb6feb17075b7bc58d6bc0e` |
 | `d1-30-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261123-30.csv` | Adapter diagnostic rehearsal (attempt 30 invocation 1, grid untraced, valid), session file | `71d32ba42d6501a4524e6ac3f640330f6fc711cf23cc373f1b827bf5b24a16bd` |
@@ -4746,6 +4818,71 @@ project's review notes.
 | `packets/2026-11-22-d1-stopped-sittings-addendum/README.md` | Adapter diagnostic packet 2026-11-22-d1-stopped-sittings-addendum, README.md | `df2697177833e9e7364b9bb18a5c8225e5cb0ff3e0c47397036023a91e1c5b46` |
 | `packets/2026-11-22-d1-stopped-sittings-addendum/SHA256SUMS` | Adapter diagnostic packet 2026-11-22-d1-stopped-sittings-addendum, SHA256SUMS | `90f1fd49cea1f5b877f427b4e904edb86e485219b5df92e5ace1e6d515d7c556` |
 | `packets/2026-11-22-d1-stopped-sittings-addendum/setsid-help.txt` | Adapter diagnostic packet 2026-11-22-d1-stopped-sittings-addendum, setsid-help.txt | `93a92c9691326dc918f4417f137acbc85811fed873763967303f5c4b3128ad84` |
+| `packets/2026-11-23-d1-archive-and-stop-fix-review/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive-and-stop-fix-review, README.md | `7b73c6bd3a8f4c82e627b094b1356a7d0e839a8044924d9399203907bd927577` |
+| `packets/2026-11-23-d1-archive-and-stop-fix-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-23-d1-archive-and-stop-fix-review, SHA256SUMS | `375b3bce21778c2698c3015fd89f930413ec60e7a1a054c771122196796736c9` |
+| `packets/2026-11-23-d1-archive-and-stop-fix-review/check_large_wait.py` | Adapter diagnostic packet 2026-11-23-d1-archive-and-stop-fix-review, check_large_wait.py | `b9cf7e62b5b2c92ac76e53c0c76f5f614202e8285f4d580327679729d50bda32` |
+| `packets/2026-11-23-d1-archive/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, README.md | `36f9a36d03afac3adbaa00a70506ff07be6e11aab8c0883e0a221125c669fd88` |
+| `packets/2026-11-23-d1-archive/SHA256SUMS` | Adapter diagnostic packet 2026-11-23-d1-archive, SHA256SUMS | `1543b22ba80597cd10dd71814eca825ef186d69c1bab59ea02e9428b92901561` |
+| `packets/2026-11-23-d1-archive/archive-check.txt` | Adapter diagnostic packet 2026-11-23-d1-archive, archive-check.txt | `417eda64776a8e3b06e9a40dd8d3b6466988d42529a74a69e5bb91176775572a` |
+| `packets/2026-11-23-d1-archive/archive-copy.txt` | Adapter diagnostic packet 2026-11-23-d1-archive, archive-copy.txt | `fb37ccd34e4e1c66b20d6f1a6abbbac4f3033b4377e6a750952e6f576b003cb8` |
+| `packets/2026-11-23-d1-archive/archive.sh` | Adapter diagnostic packet 2026-11-23-d1-archive, archive.sh | `6d698147f4c019ef309a668eb553c13b3d75ed24f6657740913a89419daaf7ea` |
+| `packets/2026-11-23-d1-archive/check_archive.py` | Adapter diagnostic packet 2026-11-23-d1-archive, check_archive.py | `f8d489e448de00fd60e48339ac0c404b20f538ea79a82b3c39bc98bec061f2e1` |
+| `packets/2026-11-23-d1-archive/manifest_rows.py` | Adapter diagnostic packet 2026-11-23-d1-archive, manifest_rows.py | `97dcfa03ace07b18aa3e3478456df87e7b72e58fc230dd9235e9aaea38fc163e` |
+| `packets/2026-11-23-d1-archive/record-checks.txt` | Adapter diagnostic packet 2026-11-23-d1-archive, record-checks.txt | `1d1e0374fb71e5895dc340f2c47524ec5812c52c5b87dd1dd23da935e5830c69` |
+| `packets/2026-11-23-d1-archive/record-commit.diff` | Adapter diagnostic packet 2026-11-23-d1-archive, record-commit.diff | `09084f90575b620ddd5ae662240cb9139df312b5c40f7ce2bc8538c5062358f3` |
+| `packets/2026-11-23-d1-archive/rows.md` | Adapter diagnostic packet 2026-11-23-d1-archive, rows.md | `55273469ef6877669f07caa200b79e584800a220388a8443e227fcd657d20332` |
+| `packets/2026-11-23-d1-archive/section/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/README.md | `a7fae045993fd9c8f8997b5ce66c4f129e40d443ea642751dcba6f0e7165cad9` |
+| `packets/2026-11-23-d1-archive/section/d1-30-1-grid-untraced/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/d1-30-1-grid-untraced/README.md | `9f70b29baebf13ba65c09bbaf2c1931bcafe5a1ff0e0118f817864a8e4fd8cc4` |
+| `packets/2026-11-23-d1-archive/section/d1-30-2-adapter-untraced/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/d1-30-2-adapter-untraced/README.md | `f6a0dbeb228fed695bebbbd84b13442b4dfccb024d5859c9c74199d805334a00` |
+| `packets/2026-11-23-d1-archive/section/d1-30-3-adapter-timer/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/d1-30-3-adapter-timer/README.md | `0577cd06383b7fef34d5d65d2ba60356f37c0012ae04b7fd03ebab26c899af85` |
+| `packets/2026-11-23-d1-archive/section/d1-30-4-grid-timer/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/d1-30-4-grid-timer/README.md | `f067984ba7dc030c1d89445842c91d411a528dea9f9bfb588526af70c11182c1` |
+| `packets/2026-11-23-d1-archive/section/packets/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/packets/README.md | `87580f91bc71972de45a32f918854724d20114a714d2d3c8e72532682e78d666` |
+| `packets/2026-11-23-d1-archive/section/sittings/README.md` | Adapter diagnostic packet 2026-11-23-d1-archive, section/sittings/README.md | `299d6235e318030759ae2a65a80c1ea6d4a53a4b744165782827ec00cce03bac` |
+| `packets/2026-11-23-d1-attempt28-hw-review/README.md` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw-review, README.md | `42d814538f32ab3a1dfe0ff46c51da76cc3aa573a0a175358b00779f9a8f8f26` |
+| `packets/2026-11-23-d1-attempt28-hw-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw-review, SHA256SUMS | `b5d37994c004f39b124a87f326bcfb4dcec774cfab89ff31d0f0a4c71aa6853b` |
+| `packets/2026-11-23-d1-attempt28-hw/BLOCKS.md` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, BLOCKS.md | `ad17ab2f510c58fc47e5d6d39fb6818baaf5e69137247bf11ab2afd8c55a3e43` |
+| `packets/2026-11-23-d1-attempt28-hw/READINESS-BLOCK.md` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, READINESS-BLOCK.md | `19612fea78732e3649e6113a84b1221f62640ee0728084099c1f8472e1418b6c` |
+| `packets/2026-11-23-d1-attempt28-hw/README.md` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, README.md | `0a4acd7a50ea8981e2c65e9d6d7adc41246762dab64305f07f58ec132a3a558e` |
+| `packets/2026-11-23-d1-attempt28-hw/SHA256SUMS` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, SHA256SUMS | `8d77a0e9dbce47774657c0a2522f89e06ad979e68b12267f17bc69b66aa14427` |
+| `packets/2026-11-23-d1-attempt28-hw/accepted-maintenance.tsv` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, accepted-maintenance.tsv | `6e80f92e389fc0fb906796d6eb84971c788115cb9a7221fa263bc9e6bfbb5b77` |
+| `packets/2026-11-23-d1-attempt28-hw/block-checks.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, block-checks.txt | `8edfaa6f960b757884b8df9ff6504c56a1ca335c3c2132b966697c01df594abf` |
+| `packets/2026-11-23-d1-attempt28-hw/blocks-from-accepted.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, blocks-from-accepted.txt | `58473c7844f16986e8b23d6301aead2e652da00e12a04c00f5879452fa1a7c96` |
+| `packets/2026-11-23-d1-attempt28-hw/blocks_from_accepted.py` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, blocks_from_accepted.py | `280f7d6a9c28ba1ed44691f830ce095cecc01d0012096d2f098fda838ca8458d` |
+| `packets/2026-11-23-d1-attempt28-hw/builds.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, builds.sh | `7205f609d37bd83e5301ba9faac77b39e90ad0635769ef5c08ec7d5bd89c76b6` |
+| `packets/2026-11-23-d1-attempt28-hw/builds.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, builds.txt | `b9a12616d22b3c83a5d7c74d057ef5c3a9e7a8d2855427e184d73ba187389cf9` |
+| `packets/2026-11-23-d1-attempt28-hw/check_blocks.diff` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, check_blocks.diff | `a4a64ceca7852a702b98f0ab065b15e0819895e9d02db0efbf90d366f4dee95d` |
+| `packets/2026-11-23-d1-attempt28-hw/check_blocks.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, check_blocks.sh | `c667d13686752ef9ea901a11b664bc760fe6b7b43f5125f13584025cbc51dc8c` |
+| `packets/2026-11-23-d1-attempt28-hw/compare_controls.py` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, compare_controls.py | `5ef610795d48c8b344d52a8f5ddaa369f3a09c47733d5ce33e8272cdce97c206` |
+| `packets/2026-11-23-d1-attempt28-hw/dry-run.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, dry-run.txt | `779c934b3f4d9e25324335fab753e423b24e37d66c1c66188f4c692569af79b2` |
+| `packets/2026-11-23-d1-attempt28-hw/dry_runs.diff` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, dry_runs.diff | `5330cc99b48794eb72c9536d62086d8a85c811ce114b172abdaa9b9ef2823f23` |
+| `packets/2026-11-23-d1-attempt28-hw/dry_runs.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, dry_runs.sh | `3a4ed2fb724d66857d87481dd4f6850f20168ca02dd6f6578d58aa2ad71a5c08` |
+| `packets/2026-11-23-d1-attempt28-hw/emulator_binding.py` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, emulator_binding.py | `7dae51f2983d504c02649fd47e2d08a09e00a299c534a47ad36286b5d9a14c0f` |
+| `packets/2026-11-23-d1-attempt28-hw/h2r-procedure.bash` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, h2r-procedure.bash | `df1f512408590e743b6152ea80c37769392c6f00b0b63e1edb50149684b8b898` |
+| `packets/2026-11-23-d1-attempt28-hw/irq_affinity.py` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, irq_affinity.py | `64c74b36e3a21f581460f276139a1268001cbefeb03da906f171f0726296a6f9` |
+| `packets/2026-11-23-d1-attempt28-hw/launch-env-hardware-20261124T101408.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, launch-env-hardware-20261124T101408.txt | `8f06f376617d0d804efb195a0fb370f402202666299760846e904edf0705fead` |
+| `packets/2026-11-23-d1-attempt28-hw/launch-env-hardware-20261124T101819.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, launch-env-hardware-20261124T101819.txt | `2e26234e0e468409a0ea53767145922bd55c45ef9b6ea696bc240f8a0be0f807` |
+| `packets/2026-11-23-d1-attempt28-hw/launch-env-hardware-20261124T102706.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, launch-env-hardware-20261124T102706.txt | `9dec1e6633e46e4bf1fddf532bc203cc869b15330ce76c6e73ddf21fe69b4811` |
+| `packets/2026-11-23-d1-attempt28-hw/launch-env-hardware-20261124T103246.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, launch-env-hardware-20261124T103246.txt | `0f3da9c35851b50a2cfb7f1544e2352b18270afa3d28d2ff8850ac81d2071b5c` |
+| `packets/2026-11-23-d1-attempt28-hw/launch_env_check.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, launch_env_check.sh | `ce52cc57a1c3dd87f16eb048dac4a21f01b637beec4aed6bcb1764d903e603a8` |
+| `packets/2026-11-23-d1-attempt28-hw/lint.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, lint.txt | `3f762c631f32722304e8f157d743b7c0fb0d77faea25a507d1253ba2d6c05d6d` |
+| `packets/2026-11-23-d1-attempt28-hw/mutation-controls.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, mutation-controls.txt | `15cd9626579d609301517bd6dce71872b7fc43add93e0989468373bea1755f11` |
+| `packets/2026-11-23-d1-attempt28-hw/mutation_controls.diff` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, mutation_controls.diff | `d60a74cad7b9650e6a228c269c57bda12d9adb87bfda4bff2253f90a7d0bdc0f` |
+| `packets/2026-11-23-d1-attempt28-hw/mutation_controls.py` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, mutation_controls.py | `ddbfc56d994f4c8175dde771d2e2cb213d4ad3a6b94a34efc855ead22239f76d` |
+| `packets/2026-11-23-d1-attempt28-hw/names-check.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, names-check.txt | `a8c29b76744a4e193274b2e130ed77f11f2befdf3360749515a98bb656fed1e8` |
+| `packets/2026-11-23-d1-attempt28-hw/names_check.diff` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, names_check.diff | `9a2059018fb4870cedcdea328ab1ca840a8c3f7bfb0b7c1b9501b755fcdc7d6b` |
+| `packets/2026-11-23-d1-attempt28-hw/names_check.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, names_check.sh | `279c24e4a5d7780233125290d110b6b5e55d212a4e497bda1617ebdcccc54ed0` |
+| `packets/2026-11-23-d1-attempt28-hw/observers.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, observers.sh | `2740823ea6b857319459109b767780d34add8d62b26e02f96bc41b475ec5df7a` |
+| `packets/2026-11-23-d1-attempt28-hw/package_rule.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, package_rule.sh | `c036c178c1c4b7733ea261499141ad471f4b0da561961514ddf5618ac39f053f` |
+| `packets/2026-11-23-d1-attempt28-hw/pinned-libraries.expected` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, pinned-libraries.expected | `60da6493fcec10d9f629f206f447c3fd62fe0cc57b1a70629f6745706f1e4c7e` |
+| `packets/2026-11-23-d1-attempt28-hw/post_run_state.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, post_run_state.sh | `cc5b7b5291718de4a7d5bba84a3d1b8550b4b44d9a169e53799cb7de50697ba4` |
+| `packets/2026-11-23-d1-attempt28-hw/readiness-block.diff` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, readiness-block.diff | `dde76472a117f45e9a483cb7c6a4efaab37744f486e2a987b16da9ede67b48dd` |
+| `packets/2026-11-23-d1-attempt28-hw/readiness-d1-final-20261124T095505.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, readiness-d1-final-20261124T095505.txt | `7ff3b55ebe47e7ca06149ca98e0b660e61f400959feeaa8d87f14c95d9047575` |
+| `packets/2026-11-23-d1-attempt28-hw/readiness-d1-r7.diff` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, readiness-d1-r7.diff | `ea5e339a226e2a2ffd927c33886076b562616ef18454c5915359ccae2d6e1165` |
+| `packets/2026-11-23-d1-attempt28-hw/readiness-d1.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, readiness-d1.sh | `3276d6e9dfc2073dbcc54f13c045f2ba978d095ca92f630c10bfe523f336881f` |
+| `packets/2026-11-23-d1-attempt28-hw/trial-before-seal-run1.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, trial-before-seal-run1.txt | `416c0dbbbc327dacfb3dd405dc63f63c55426c6c5bcdaef08fb0f3aaed3eca4d` |
+| `packets/2026-11-23-d1-attempt28-hw/trial-before-seal.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, trial-before-seal.txt | `c4f9d7438fd4c184d77c7da8632f3a57f7f3f757e221a6f46c738d1d1e1e6e01` |
+| `packets/2026-11-23-d1-attempt28-hw/trial-d1-20261123T103218.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, trial-d1-20261123T103218.txt | `7c1fb5a8e15ff07edc410ed1b5f3831f44d1d18b0d0429cfd901d86bb47c907f` |
+| `packets/2026-11-23-d1-attempt28-hw/write_scan.py` | Adapter diagnostic packet 2026-11-23-d1-attempt28-hw, write_scan.py | `18004fced0c577755e7628ad4e814d5741b7267b4d1f494efc07c1eb425a3fc3` |
 | `packets/2026-11-23-d1-attempt30-review/README.md` | Adapter diagnostic packet 2026-11-23-d1-attempt30-review, README.md | `8daf8a91394fb0d85d9834a94379bdb1415d1f934f2bab626cf55d7735bbbcae` |
 | `packets/2026-11-23-d1-attempt30-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-23-d1-attempt30-review, SHA256SUMS | `0192d6a66a9ee6ce29f77586d4f4f17d9d9eabe8cc6cf77e58cd6ed0876b26ff` |
 | `packets/2026-11-23-d1-attempt30-review/check_restore.py` | Adapter diagnostic packet 2026-11-23-d1-attempt30-review, check_restore.py | `a885138be7d1974878847c94697af19b0fd35b6e6d4770143da7247d326f2c15` |
@@ -4811,12 +4948,86 @@ project's review notes.
 | `packets/2026-11-23-d1-attempt30-sitting/validate-3.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt30-sitting, validate-3.txt | `d173df6ba46c4236929d98fdad9038ad74421447cdc32c7bd52ca2d28ca42893` |
 | `packets/2026-11-23-d1-attempt30-sitting/validate-4.txt` | Adapter diagnostic packet 2026-11-23-d1-attempt30-sitting, validate-4.txt | `6ac0e30718b5249d937b0579bebda62072a101d39a1233ef8a6b61ae99dfa863` |
 | `packets/2026-11-23-d1-attempt30-sitting/validate.sh` | Adapter diagnostic packet 2026-11-23-d1-attempt30-sitting, validate.sh | `e858c4a89efdc9d219063550fc7bc0aaecfb46430728cefa14b6fc2555f6dcc0` |
-| `packets/README.md` | Adapter diagnostic packets, the list | `87580f91bc71972de45a32f918854724d20114a714d2d3c8e72532682e78d666` |
-| `packets/SHA256SUMS` | Adapter diagnostic packets, the folder's SHA256SUMS | `4f08bfb830a932a636000c37ddf45b23717bc47ba1045f667b816bffe2885407` |
-| `sittings/README.md` | Adapter diagnostic rehearsal, the sittings' note | `299d6235e318030759ae2a65a80c1ea6d4a53a4b744165782827ec00cce03bac` |
-| `sittings/SHA256SUMS` | Adapter diagnostic rehearsal, the sittings' SHA256SUMS | `eab86b193f5215aba1d755adb900248876ce600a9e44bb0e17a77d824dc9c4a9` |
+| `packets/2026-11-23-emu-stop-wait-fix/README.md` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, README.md | `2c8927319fde2ea22513e8a9f7d6fea62bd3fe31910f0c1fa101ccbb4dd421e4` |
+| `packets/2026-11-23-emu-stop-wait-fix/SHA256SUMS` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, SHA256SUMS | `5da7742d94abe4aa4ec2c265125a83c43fe3637269a78d98b5ac5a8a10031658` |
+| `packets/2026-11-23-emu-stop-wait-fix/check_emu_stop_waits.py` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, check_emu_stop_waits.py | `478026b0c1aa6fdda55d34adc1b62486ffff8f68b0351c680a7850ad41d2fa76` |
+| `packets/2026-11-23-emu-stop-wait-fix/emu-stop-check.txt` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, emu-stop-check.txt | `f8499c9f0b4ac815c3f1e1cf93a9efa63c0512609e7216de8766d3c10739d14e` |
+| `packets/2026-11-23-emu-stop-wait-fix/emu_stop.diff` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, emu_stop.diff | `b97e474c5ff27873db383b4ed1ed814234628ccfc13dfe69540d262eaa200f9a` |
+| `packets/2026-11-23-emu-stop-wait-fix/emu_stop.py` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, emu_stop.py | `9e0964af56210739e78ccdd177394e9287923780c0808915786e36726641d804` |
+| `packets/2026-11-23-emu-stop-wait-fix/emu_stop_check.sh` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, emu_stop_check.sh | `8bfc724af8fa8db6fdda782563060c86d6931b6d0ab8a75a5d47fc7127892193` |
+| `packets/2026-11-23-emu-stop-wait-fix/lint.txt` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, lint.txt | `aca5272e6740b7211712521f378c3f8698cc1c25efade16223564e0334cd8e93` |
+| `packets/2026-11-23-emu-stop-wait-fix/wait-checks.txt` | Adapter diagnostic packet 2026-11-23-emu-stop-wait-fix, wait-checks.txt | `faa378153252b245b0a4eb4ef917fbfd04d4da7089a353c2bb2f742551d44cf5` |
+| `packets/2026-11-24-d1-attempt28-sitting-addendum/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, README.md | `28321b64b61d5fb8bc83275fea319ea68d2579ef3d346024232608d7dadbf191` |
+| `packets/2026-11-24-d1-attempt28-sitting-addendum/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, SHA256SUMS | `5ca631641b1c1505e3a412a2f13422f05ed833b7c00b9507826192166ef99d38` |
+| `packets/2026-11-24-d1-attempt28-sitting-addendum/extract_host_checks.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, extract_host_checks.py | `bcecab0c8aca67c1b5518c4b12fad6b62fc574282262c7b272d6521d70ecfcdc` |
+| `packets/2026-11-24-d1-attempt28-sitting-addendum/host-checks.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, host-checks.txt | `aa38897944fffecf1773218458b9fc91b5cae4c903e38bf58d5fafc29ac770b1` |
+| `packets/2026-11-24-d1-attempt28-sitting-review/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-review, README.md | `8fdb282de015d13a234bcfb21cfbec9d6dd17771872672ce323b20aa4e38af5e` |
+| `packets/2026-11-24-d1-attempt28-sitting-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-review, SHA256SUMS | `d72ac6030408f70e65918fc0d0b59cc8e84010c9a329666a6a378d4a5b1b2542` |
+| `packets/2026-11-24-d1-attempt28-sitting/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, README.md | `1ba982b54a001b74559d88f989a3a2a5f8e4ea7e2a264dcce6a27a48aadf3120` |
+| `packets/2026-11-24-d1-attempt28-sitting/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, SHA256SUMS | `3b5dda41d0821afa27c39c212b4b0468d5b3814b17936770010fb3bc56ce9ac2` |
+| `packets/2026-11-24-d1-attempt28-sitting/analysis-1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, analysis-1.txt | `7f4359e64b4ab5b23bf997d0952e468ce5325d8b586aaea3fb701c478f638745` |
+| `packets/2026-11-24-d1-attempt28-sitting/analysis-2.json` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, analysis-2.json | `2c0c9e6a26f636b6cf64ce4d958cd191a695b6b24211fbc69cc5ad9ce34a08ce` |
+| `packets/2026-11-24-d1-attempt28-sitting/analysis-2.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, analysis-2.txt | `241e476e3f00f487bd621202329e2d0c368c7750500534a53511be9f9b3c640b` |
+| `packets/2026-11-24-d1-attempt28-sitting/analyze.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, analyze.sh | `90a6fa216dad2457542c4f6666d2f660df3f39326154ecbb7e22b175d3f7430c` |
+| `packets/2026-11-24-d1-attempt28-sitting/checks-1-run1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, checks-1-run1.txt | `94fe2996232ce6f63acb237ab5aa3f4f7ccff8c488ecd3917c142f2b8fbcaad3` |
+| `packets/2026-11-24-d1-attempt28-sitting/checks-1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, checks-1.txt | `b4033a8747751a440dac460e054f74ee077ba1cd18ece152dfa0038af7b8f8a3` |
+| `packets/2026-11-24-d1-attempt28-sitting/checks-2.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, checks-2.txt | `d8e065f6ae25220048c29360ddafa51185f22a26f37b7dd2d034dae6e64ae665` |
+| `packets/2026-11-24-d1-attempt28-sitting/checks-3.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, checks-3.txt | `e421f690d69e1d6dbf5eb978d34c102025636629417e84f77a4cbe53e38fa4c3` |
+| `packets/2026-11-24-d1-attempt28-sitting/checks.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, checks.sh | `ff87bf10e073d07bc345b0e4b08365e1125dfe7f3a3c723e9ee7e0a9aa79b765` |
+| `packets/2026-11-24-d1-attempt28-sitting/developer-reviews.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, developer-reviews.md | `cd2432904949cd49036dd1586de04d8468476229dc5ba3f1c1cf5328acf254ad` |
+| `packets/2026-11-24-d1-attempt28-sitting/extract-outputs.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, extract-outputs.txt | `82ab7acba934f4b33dfa50fd50bcd1bd39bcae0299f774157c8c9b68543c9913` |
+| `packets/2026-11-24-d1-attempt28-sitting/extract_outputs.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, extract_outputs.py | `ed3912ab13a1b633c1a8c1811ffcd0478d94fe3b9803db51b9d8243fb7dd4e8c` |
+| `packets/2026-11-24-d1-attempt28-sitting/gather.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, gather.sh | `ccc01ffee3adaca4b92f8864e8c36d738d1a344b15f1110e301aeb3f3ff4613a` |
+| `packets/2026-11-24-d1-attempt28-sitting/gather.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, gather.txt | `70acbcba6a047b1c5ed76e986b50806ef40cf219ffe8bf30c054bb03f37a0bd8` |
+| `packets/2026-11-24-d1-attempt28-sitting/handed-blocks.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, handed-blocks.txt | `9b54c38a04893550846ff014583ec415db705026e64bf205791ca99dee039033` |
+| `packets/2026-11-24-d1-attempt28-sitting/handed_blocks.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, handed_blocks.sh | `d2186238c4285430db4bec2e78c7afd28b44020761db5b111bfe9481b6b50406` |
+| `packets/2026-11-24-d1-attempt28-sitting/lint.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, lint.txt | `85a45e820d4173c958e2fa256e68fe04b69ee8a3e203a9e379e42d975a06f72f` |
+| `packets/2026-11-24-d1-attempt28-sitting/operator-block-1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, operator-block-1.txt | `b9103973c65e732b0adf271012b5fd937715e0df9e8a6a6cf559b24f8adbd3c1` |
+| `packets/2026-11-24-d1-attempt28-sitting/operator-block-2.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, operator-block-2.txt | `b15e75f1a232bcc0e77634deb7e109bb3ba130b125e13567431433963711d4de` |
+| `packets/2026-11-24-d1-attempt28-sitting/operator-block-3.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, operator-block-3.txt | `93f4f192272b0f89a84cb43ca5dfeed5690a47592bdce8da2d8967d9310a55fa` |
+| `packets/2026-11-24-d1-attempt28-sitting/operator-block-4.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, operator-block-4.txt | `7a2a531cfb64fbb4bb5550e995cc76320024c9bddbbb275fbce3583163604d54` |
+| `packets/2026-11-24-d1-attempt28-sitting/raw-manifest.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, raw-manifest.txt | `28d1ae22732cc9288e8c3ab86b39fc6607af3db479e496ec92bbe2b52cb4463a` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-identity-20261124-28.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-identity-20261124-28.txt | `135d70afba502f20003a1ffd4d8ddc81d20b353be7a6986d252990127b13ebda` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-identity-20261124-28.txt.stopped` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-identity-20261124-28.txt.stopped | `2f36d3b3e355169ad217030206f9084b33004d6a86945535a957c12470a7acd3` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-irq-after-28-1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-irq-after-28-1.txt | `1807c8d2b9562ae84c4d80f8c181dab6c06727fba97acf708db7630d00a9d8b5` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-irq-after-28-2.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-irq-after-28-2.txt | `aa6dcb66fe7ff083df323b8c0539c1873e3db3a6be77215b8fd174be29a5360a` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-irq-after-28-3.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-irq-after-28-3.txt | `eb643052d6a8172ae1aac5dedcdb49d7ef1fc6f6c6a1eda9d9fd2c4477f1daa7` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-irq-before-28-1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-irq-before-28-1.txt | `2cb8d40f0cb3496abf99fefb979390c4d4f24d0eedf612006b3f0a60507b92e4` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-irq-before-28-2.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-irq-before-28-2.txt | `09d504f07d36f13dfa7be84c0402ad744b5b379049fdc24278b40620084cca63` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/d1-irq-before-28-3.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/d1-irq-before-28-3.txt | `637ddcdc0004615fd0a55cb5628c238af97e4c6452eecb5b450b0f51f290af41` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/launch-env-hardware-20261124T101408.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/launch-env-hardware-20261124T101408.txt | `8f06f376617d0d804efb195a0fb370f402202666299760846e904edf0705fead` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/launch-env-hardware-20261124T101819.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/launch-env-hardware-20261124T101819.txt | `2e26234e0e468409a0ea53767145922bd55c45ef9b6ea696bc240f8a0be0f807` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/launch-env-hardware-20261124T102706.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/launch-env-hardware-20261124T102706.txt | `9dec1e6633e46e4bf1fddf532bc203cc869b15330ce76c6e73ddf21fe69b4811` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/launch-env-hardware-20261124T103246.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/launch-env-hardware-20261124T103246.txt | `0f3da9c35851b50a2cfb7f1544e2352b18270afa3d28d2ff8850ac81d2071b5c` |
+| `packets/2026-11-24-d1-attempt28-sitting/records/readiness-d1-final-20261124T095505.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, records/readiness-d1-final-20261124T095505.txt | `7ff3b55ebe47e7ca06149ca98e0b660e61f400959feeaa8d87f14c95d9047575` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.run.txt | `746876219295b13407e9d554425dec61f0e187d5a3cbfef2a28c282c6e8dc015` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.summary.toml` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv.summary.toml | `1fce664e3ca0f2736bb0df1834a0d3a8de4de46f7fd5589081f3daa304c61477` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.run.txt | `583f117389c26068398c77b21b9aa224ed308e01f3e408fee5b0bdb68e7eb004` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.summary.toml` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-2-adapter-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-untraced-20261124-28.csv.summary.toml | `5c7f4e3d45864d380b83bca305a05ee3f94a16ab470924bbc3d16a322053930f` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.correlate.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.correlate.txt | `bc13fb104ae372911cb3ec44bb50fb6097ebf3cde34014f214441c3f0560641f` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.run.txt | `e09679976520010c3d4bd502d8e37677fc537b2319812f36ba2fdd8548019fe2` |
+| `packets/2026-11-24-d1-attempt28-sitting/runs/d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.summary.toml` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, runs/d1-28-3-adapter-timer/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-adapter-obs-confined-timer-20261124-28.csv.summary.toml | `67b17453b227fedbaf26ce9985b20aa40150949dc6b7c9734b46c47fb5220f53` |
+| `packets/2026-11-24-d1-attempt28-sitting/slot-detail-3.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, slot-detail-3.txt | `89dbacdabd44d26565360b43d0bd5935bdfd413b4b528b84f7888c67825eca24` |
+| `packets/2026-11-24-d1-attempt28-sitting/slot_detail.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, slot_detail.py | `69395fa4fc1db368513cc7068eb1dd811c0336fa9f2e97eb2d4b28e6dc37f19f` |
+| `packets/2026-11-24-d1-attempt28-sitting/trial-timer-checks-26.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, trial-timer-checks-26.txt | `2f827c844b24478642fa4281c5feb1f6959737332fbf9710174188308ff93cda` |
+| `packets/2026-11-24-d1-attempt28-sitting/validate-1.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, validate-1.txt | `1eb2e872810111ef6f042ca52b4ec91c2193e2cb94e116c44e61058b6af699c6` |
+| `packets/2026-11-24-d1-attempt28-sitting/validate-2.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, validate-2.txt | `1bc1b52157b6741df398b970ed6ddcccc6148dfdfe96e636e77c88023f26896e` |
+| `packets/2026-11-24-d1-attempt28-sitting/validate-3.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, validate-3.txt | `fd81d95767b6065e655092f30f566e319f65e1de46fdf17c84c352efd2c6896e` |
+| `packets/2026-11-24-d1-attempt28-sitting/validate.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting, validate.sh | `ca370f49564a1325d7b38260110e4b807299d70f7312e0a4270dae147d482c31` |
+| `packets/README.md` | Adapter diagnostic packets, the list | `bccfa66b8638b6b490540c218ee3a8147aa5b77bc8486d181035700314e72929` |
+| `packets/SHA256SUMS` | Adapter diagnostic packets, the folder's SHA256SUMS | `0d2f28c188a2608a6895f65fd531417afcbecbace589638c8df955756ce3f295` |
+| `sittings/README.md` | Adapter diagnostic, the sittings' note | `98976ca1a43af0db98a67c605a91e61cd5f97616ffbd6f8b0f0961f286c6539b` |
+| `sittings/SHA256SUMS` | Adapter diagnostic, the sittings' SHA256SUMS | `2d7aca8b3e00021961b12ae9e8d016196df048a2523c9937bf674b28967c8832` |
 | `sittings/attempt-27/d1-27-cadence.csv` | Adapter diagnostic rehearsal (attempt 27, stopped before any invocation), sitting record d1-27-cadence.csv | `6c8613974398b9752d38bedd0f191aa41c5918cbf46a85cc85c3e4f2e0fe88ec` |
 | `sittings/attempt-27/d1-27-emulator.log` | Adapter diagnostic rehearsal (attempt 27, stopped before any invocation), sitting record d1-27-emulator.log | `d8f7dbfa40143c6de1caffdf3665ec14ddda6a9fb03391cacd231f14fe1866cf` |
+| `sittings/attempt-28/d1-identity-20261124-28.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-identity-20261124-28.txt | `135d70afba502f20003a1ffd4d8ddc81d20b353be7a6986d252990127b13ebda` |
+| `sittings/attempt-28/d1-identity-20261124-28.txt.stopped` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-identity-20261124-28.txt.stopped | `2f36d3b3e355169ad217030206f9084b33004d6a86945535a957c12470a7acd3` |
+| `sittings/attempt-28/d1-irq-after-28-1.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-irq-after-28-1.txt | `1807c8d2b9562ae84c4d80f8c181dab6c06727fba97acf708db7630d00a9d8b5` |
+| `sittings/attempt-28/d1-irq-after-28-2.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-irq-after-28-2.txt | `aa6dcb66fe7ff083df323b8c0539c1873e3db3a6be77215b8fd174be29a5360a` |
+| `sittings/attempt-28/d1-irq-after-28-3.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-irq-after-28-3.txt | `eb643052d6a8172ae1aac5dedcdb49d7ef1fc6f6c6a1eda9d9fd2c4477f1daa7` |
+| `sittings/attempt-28/d1-irq-before-28-1.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-irq-before-28-1.txt | `2cb8d40f0cb3496abf99fefb979390c4d4f24d0eedf612006b3f0a60507b92e4` |
+| `sittings/attempt-28/d1-irq-before-28-2.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-irq-before-28-2.txt | `09d504f07d36f13dfa7be84c0402ad744b5b379049fdc24278b40620084cca63` |
+| `sittings/attempt-28/d1-irq-before-28-3.txt` | Adapter diagnostic hardware sitting (attempt 28, stopped at invocation 3, accepted as a partial sitting), sitting record d1-irq-before-28-3.txt | `637ddcdc0004615fd0a55cb5628c238af97e4c6452eecb5b450b0f51f290af41` |
 | `sittings/attempt-29/d1-29-cadence.csv` | Adapter diagnostic rehearsal (attempt 29, stopped before any invocation), sitting record d1-29-cadence.csv | `6c8613974398b9752d38bedd0f191aa41c5918cbf46a85cc85c3e4f2e0fe88ec` |
 | `sittings/attempt-29/d1-29-emulator.log` | Adapter diagnostic rehearsal (attempt 29, stopped before any invocation), sitting record d1-29-emulator.log | `f815d12601b65a073412bb61584ea70b154f0abf2bd8cc2af118f0e0b8711090` |
 | `sittings/attempt-30/d1-30-block-e.txt` | Adapter diagnostic rehearsal (attempt 30, accepted), sitting record d1-30-block-e.txt | `6fb10f8570d75ae00f168e3d92ab7942cfbab3c8aec377df52018af6d5a16c42` |

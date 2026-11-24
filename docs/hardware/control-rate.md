@@ -430,6 +430,62 @@ and reviews' packets. Preparing the hardware sitting (the provisional
 attempt 28) may proceed as design and packet work only; no acquisition is
 approved.
 
+**The diagnostic's hardware sitting (attempt 28, 2026-11-24; a correctly
+stopped partial sitting).** The sitting ran at the same frozen candidate on
+the real arm, through the FTDI adapter at USB 1-9 with its latency timer at
+1 ms. Every servo was torque-off, with the owner at the robot. Its blocks
+were the rehearsal's without the emulator's arguments (no `--port`,
+`--no-usbmon`, `--exclude-cpus` or exemption), with:
+- the default exclusion of CPUs 2 and 3;
+- the workqueue mask `ffffffff` and the xHCI interrupt on CPU 7;
+- no PTY exception.
+
+Block 0's readiness passed, but it ran about 18 minutes before block 1,
+while the developer reviewed it. The review accepted this documented
+deviation on two grounds: the developer's read-only recheck before any bus
+traffic, and the guards before every invocation. The reviewer accepted the
+sitting as a correctly stopped partial acquisition, not a completed
+validation:
+- **Invocations 1 and 2, the untraced pair, are valid.** Both pass
+  `validate --plan grid|adapter --hardware`; torque was off before and
+  after; placement and restoration held.
+- **Invocation 3, the adapter arm's timer run, is void** under the frozen
+  revision-54 conversion rule. The run completed, but the procedure's
+  analysis failed on the clock alignment's slot accounting. All three
+  failure counts (one decrease of the deadline ladder, one slot with two
+  instance anchors and two with none) come from one local event about
+  12.19 s into the run. So the certified conversion was not accepted
+  (validity item 4), and the invocation returned 1 (item 7). Its
+  recording and sleep accounting (item 3) hold. Its USB association
+  counts, zero goal currents and restoration stand as the facts they
+  establish. Its candidate U, any timer-service attribution and any
+  prediction are not taken from it.
+- **Invocation 4, the grid timer run, was not run.** The procedure stopped
+  the sitting, with no retry.
+
+| run | mean rate | notes |
+|---|---|---|
+| grid, untraced | 561.4 Hz | G: its matched window 572.2 Hz, 424.9 Hz below the adapter run's locked window |
+| adapter, untraced | 947.0 Hz | locked window 997.2 Hz (halves 995.8 and 998.6 Hz); one lock, no loss |
+| adapter, timer | void | the analysis failed on the slot accounting |
+| grid, timer | not run | |
+
+The untraced comparison is descriptive: one unrepeated pair, which
+attributes no effect to a single component of the timing bundle. In the
+adapter run:
+- **Held:** A1, A2, A4 (`no_coupling_detected`), A5, A6, A7, A9 and W.
+- **Failed:** A8 (97.06 % of full-window reads skip-free, outside its
+  prospective band) and A10 (host work p99.9 1,801.9 µs).
+- **Not testable:** A3 has no carriers in an untraced run.
+
+The lock and `no_coupling_detected` do not by themselves establish carrier
+targeting or independent adapter timing. T1, T2 and T6a fail in both valid
+runs, and no 1 kHz control qualification follows. The sitting is archived
+in `adapter_diagnostic/`, the void run included. An offline investigation
+of invocation 3's interrupt and deadline sequence is authorized, with
+revision 54 and the candidate unchanged. No further hardware sitting is
+approved.
+
 ### Summaries
 
 ```sh

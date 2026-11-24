@@ -1075,6 +1075,17 @@ the PTY's known T3 chain, kept as data. The rehearsal qualifies neither
 1 kHz nor the physical adapter; preparing the hardware sitting may proceed
 as design work only.
 
+The diagnostic then ran on the arm, torque-off, as attempt 28
+(2026-11-24). The untraced pair is valid: over the matched window the
+adapter arm held 997.2 Hz where the grid arm ran at 572.2 Hz. That is one
+unrepeated pair, and it is descriptive only. The adapter arm's timer run
+completed, but its analysis failed on the clock alignment's slot
+accounting, at one local event: an interrupt that served no timer, then a
+timer armed earlier than that interrupt's slot delimiter. Revision 54 does
+not identify that shape. The run is void, and the procedure stopped the
+sitting before the grid timer run. No 1 kHz qualification follows. An
+offline investigation of the event is authorized; no hardware sitting is.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
