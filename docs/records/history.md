@@ -1125,6 +1125,15 @@ read those sleeps as CLOCK_REALTIME. Attribution revision 2, accepted on
 the kernel's rule. Revision 1's counts stay as recorded; a separately
 labelled revision-2 reanalysis of invocation 3 follows.
 
+That reanalysis was accepted and recorded beside revision 1's counts:
+50,763 uniquely matched deadline writes and 9,228 INDETERMINATE, the 30
+newly ambiguous writes among them. Of the probe's 18,962 sleep
+generations, 18,888 have at least one uniquely matched write. The other
+74 are not untraced or unserved: 31 are candidates of ambiguous writes,
+and 43 were served by a deadline already programmed, needing no write of
+their own as far as the timeline shows (39 of them within U, their order
+unresolved). Nothing else changed, and hardware stays on hold.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

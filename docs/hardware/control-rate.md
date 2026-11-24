@@ -581,6 +581,48 @@ separately labelled revision-2 reanalysis of invocation 3 follows, and its
 counts are recorded only with it. They will be counts of writes, not of
 distinct sleeps. Nothing else in this analysis changes.
 
+**Invocation 3 under attribution revision 2 (2026-11-24; versioned).** The
+separately labelled reanalysis ran the procedure's analysis command at
+`2072598` on the unchanged capture. Its report differs from the revision-55
+reanalysis only in the attribution line. The review accepted it, recorded
+beside revision 1's 31,892 single matches and 28,099 INDETERMINATE:
+- **50,763** uniquely matched deadline writes;
+- **9,228** INDETERMINATE, including 30 writes that the correction made
+  ambiguous, which stay INDETERMINATE.
+
+A unique attribution is a match under the stated rule, not proof of
+causal ownership.
+
+**Deadline-write coverage of the probe's sleeps.** Of the 18,962 sleep
+generations:
+- **18,888** have at least one uniquely matched deadline write: 18,875 have
+  one and 13 have two, for 18,901 writes;
+- **74** have no uniquely matched write. That does not mean they were
+  untraced, unserved or failed sleeps. Of them:
+  - 31 are candidates of ambiguous writes: 30 with two resident
+    candidates, and one involving another timer of unknown residency;
+  - for the other 43, no write occurs while the sleep is pending, and an
+    already programmed deadline's interrupt serves its expiry, as far as
+    the recorded timeline shows. This supports the qualified statement that
+    these 43 needed no additional write of their own.
+
+For 39 of those 43, the mapped deadline and the timer's expiry lie within
+U, so the conversion leaves their order unresolved; for the other four,
+the deadline is earlier by more than U. No unconvertible pending write
+limits this reconciliation, and the expiry establishes residency for every
+probe sleep. The audit's count of 61 uncovered sleeps is qualified by its
+addendum, which replaces it with these figures.
+
+Unchanged:
+- the conversion and U, and the slot accounting;
+- all 18,962 on-time sleeps and the wake accounting;
+- the USB association, the carriers and A1 to A10;
+- invocation 3's exit 1 and STOP, and the invocation 4 that never ran.
+
+No completed sitting, timer comparison or control-rate qualification
+follows. The audit, its addendum, the reanalysis and their reviews are
+archived in `adapter_diagnostic/packets/`.
+
 No 1 kHz qualification follows. Invocation 3's exit 1 and STOP, and the
 missing invocation 4, stand. The analysis and its review are archived in
 `adapter_diagnostic/packets/`.
