@@ -67,7 +67,7 @@ from typing import NamedTuple
 import timer_clock
 import tk_record
 
-ANALYSIS_REVISION = "clock alignment revision 54"
+ANALYSIS_REVISION = "clock alignment revision 54, with revision 55's repair PROPOSED (not accepted)"
 U_LIMIT_NS = int(timer_clock.U_LIMIT)  # the provisional bound on the validated uncertainty
 LATE_NS = 50_000         # a timer service this late is classified
 RES_NS = 1               # timestamp resolution added to U (mono 1 ns; the TSC finer)
@@ -141,7 +141,7 @@ class TimerEvents:
     def feed(self, ts: int, cpu: int, pid: int, comm: str, ev: str, rest: str, flags: str) -> None:
         rt = cpu == self.rt_cpu
         if rt and ev in timer_clock.KIND:
-            self.ledger.feed(ts, ev, rest)
+            self.ledger.feed(ts, ev, rest, (comm.strip(), pid, flags) if flags else None)
         if ev == "write_msr":
             w = WRITE.match(rest)
             if rt and w and w[1] == MSR_TSC_DEADLINE:
@@ -1022,10 +1022,10 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
     if not inst.exists() or not pairs_file.exists():
         failures.append("timer service: no TSC instance or sampler pairs")
     else:
-        tsc, inst_problems = timer_clock.parse_instance(inst.read_text(errors="replace"), rt)
+        tsc, inst_problems, inst_ctx = timer_clock.parse_instance_contexts(inst.read_text(errors="replace"), rt)
         samp, pair_problems = timer_clock.parse_pairs(pairs_file.read_text(errors="replace"))
         model = timer_clock.Model(exploratory_ppm * 1e-6) if exploratory_ppm is not None else None
-        r = timer_clock.analyze((ev.ledger.events, ev.ledger.problems), (tsc, inst_problems + pair_problems),
+        r = timer_clock.analyze((ev.ledger.events, ev.ledger.problems, ev.ledger.contexts), (tsc, inst_problems + pair_problems, inst_ctx),
                                 reference_pairs(samp, rt), window=ev.window,
                                 evidence=tk_record.load(csv_path, report_tool=report_tool), model=model)
         for why in r["why"]:
@@ -1047,8 +1047,12 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
             if und:
                 print(f"    entries no deadline delimits, identified by order (nothing expired in them; between "
                       f"delimited neighbours; not used in the conversion): {len(und)}", file=out)
+                rep_ = [x for x in und if x.get("repaired")]
+                if rep_:
+                    print(f"    of them stamped before their own delimiter and identified once it was set aside (revision 55, "
+                          f"PROPOSED, not accepted): {len(rep_)}", file=out)
                 for x in und[:top]:
-                    print(f"      the entry at {x['t']} ns: e {x['e']:+.0f} ns, its own bound {x['B']:.0f} ns "
+                    print(f"      the entry at {x['t']} ns{' (revision 55, proposed)' if x.get('repaired') else ''}: e {x['e']:+.0f} ns, its own bound {x['B']:.0f} ns "
                           f"({'met' if x['own'] else 'EXCEEDED'}); {'within' if x['in_range'] else 'OUTSIDE'} the "
                           f"retained deadline-identified pairs' range [{x['lo']:+.0f}, {x['hi']:+.0f}] ns widened by "
                           f"its bound", file=out)

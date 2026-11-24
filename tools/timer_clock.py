@@ -2,7 +2,9 @@
 every converted value and a certificate of the clock model it rests on
 (tools/timer_service.py; docs/hardware/control-rate.md, the frozen design of
 revision 53 of the clock-alignment work, with revision 54's identification by
-order of an entry no deadline delimits, accepted 2026-11-20).
+order of an entry no deadline delimits, accepted 2026-11-20; and, PROPOSED
+for review and not accepted, revision 55's repair of an entry stamped before
+its own delimiter, attempt 28's case: see repair_undelimited).
 
 Three separate results. status PASS or FAIL: the slot accounting, the sign
 checks, the coverage and the model-consistency check. U: a bound on the error
@@ -27,6 +29,7 @@ analysis read, a later replay's included).
 from __future__ import annotations
 
 import bisect
+import copy
 import heapq
 import re
 import statistics as st
@@ -42,6 +45,10 @@ SHIFT_PLL = 2           # kernel/time: include/linux/timex.h
 # --- Strict parsing -----------------------------------------------------------------------------------------------
 
 INST_LINE = re.compile(r"\[(\d{3})\]\s+\S+\s+(\d+):\s+(\w+):\s*(.*)$")
+# An interrupt's context as trace-cmd report prints it: the task's name (which may hold spaces, dashes and digits: the
+# last "-PID" before the CPU field ends it), its PID and the flags field. Revision 55's repair compares it between the
+# main trace and the TSC instance.
+CTX_LINE = re.compile(r"^\s*(?P<comm>.+)-(?P<pid>\d+)\s+\[(?P<cpu>\d{3})\]\s+(?P<flags>\S+)\s+\d+(?:\.\d+)?:\s")
 MSR_BODY = re.compile(r"^6e0, value ([0-9a-f]+)$")
 VEC_BODY = re.compile(r"^vector=236$")
 EXP_BODY = re.compile(r"^hrtimer=(0x[0-9a-f]+) now=\d+ function=(\S+)$")
@@ -55,11 +62,12 @@ class Ledger:
 
     def __init__(self, back_ns: int = 0) -> None:
         self.events: list[tuple] = []
+        self.contexts: dict[int, tuple] = {}  # an entry's time -> (task, PID, flags), when the report gave them
         self.problems: list[str] = []
         self.backward_steps = 0
         self.back_ns = back_ns
 
-    def feed(self, t: int, name: str, body: str) -> None:
+    def feed(self, t: int, name: str, body: str, ctx: tuple | None = None) -> None:
         where = f"{name} at {t}"
         k, v = KIND[name], None
         if k == "W":
@@ -88,11 +96,20 @@ class Ledger:
                     return
                 self.backward_steps += 1
         self.events.append((t, k, v))
+        if k == "E" and ctx is not None:
+            self.contexts[t] = ctx
 
 
 def parse_instance(text, rt_cpu=3):
     """The x86-tsc instance's anchors. Comment rows are headers; every other row is parsed or reported."""
-    tsc, problems = [], []
+    tsc, problems, _ = parse_instance_contexts(text, rt_cpu)
+    return tsc, problems
+
+
+def parse_instance_contexts(text, rt_cpu=3):
+    """parse_instance, with each anchor's context: (task, PID, flags) from its row, or None where the row does not give
+    them in the report's form (a missing context, which revision 55's repair refuses on)."""
+    tsc, problems, ctx = [], [], []
     for n, ln in enumerate(text.splitlines(), 1):
         if ln.startswith("#"):
             e = re.search(r"entries-in-buffer/entries-written:\s*(\d+)/(\d+)", ln)
@@ -117,7 +134,9 @@ def parse_instance(text, rt_cpu=3):
             problems.append(f"line {n}: out of order")
             continue
         tsc.append(t)
-    return tsc, problems
+        c = CTX_LINE.match(ln)
+        ctx.append((c["comm"].strip(), int(c["pid"]), c["flags"]) if c and int(c["cpu"]) == rt_cpu else None)
+    return tsc, problems, ctx
 
 
 def parse_pairs(text):
@@ -236,6 +255,96 @@ def resolve_undelimited(sl, tsc, r):
     return out
 
 
+def repair_undelimited(sl, tsc, r, und, M, main_ctx=None, inst_ctx=None):
+    """Revision 55, PROPOSED for review and not accepted (attempt 28's invocation 3, 2026-11-24): an entry stamped
+    before its own delimiter, identified by order once that delimiter is set aside.
+
+    Revision 54 identifies an entry no deadline raised only where its neighbours hold (2, 0, 1) anchors. Its slot still
+    has a delimiter, the earliest deadline written since the previous entry, which did not raise it. When a timer armed
+    after the entry is earlier than that delimiter, the ladder decreases there and the anchors fall (3, 0, 0).
+
+    Setting a delimiter aside can itself make (2, 0, 1): an ordinary timer-free entry's own anchor would move into its
+    predecessor's slot. So the evidence for a candidate is taken before anything is set aside, and the pattern after
+    is never evidence on its own. An entry j is a candidate only if, on the frozen slots and assignment:
+    - it holds no anchor and revision 54 did not identify it (a failed region), and is inside the span;
+    - it served no hrtimer, is closed, not nested and not pending, and has a delimiter;
+    - its delimiter, mapped through the sampler pairs (independent of every anchor), lies after the entry's main stamp
+      by more than the map's bound: the deadline was not due when the interrupt came, so it did not raise it. (An
+      ordinary timer-free entry fails this: the deadline that raised it was due.)
+
+    The repair sets the candidates' delimiters aside, assigns again and resolves by revision 54's rule, unchanged. It
+    is refused, leaving the frozen result as it is, unless every one of these holds:
+    - no two candidates are neighbours, and no candidate neighbours an entry revision 54 identified;
+    - the ladder no longer decreases anywhere;
+    - revision 54's rule identifies every candidate, and exactly the entries it identified before besides;
+    - for each candidate j, explicitly and not by bisection: the delimiters around it increase, and its three anchors lie
+      between them in order (A[j-1] <= the two of slot j-1 < A[j+1] <= the one of slot j+1 < the next delimiter);
+    - each of the three entries' context in the main trace (task, PID, flags) equals its anchor's in the TSC instance;
+      a missing context refuses as a mismatch does. This is additional evidence; it decides nothing alone.
+
+    The identified pair then meets everything revision 54's do: its own bound (e <= B), the retained range, the single
+    index offset, and it stays out of the conversion. Returns (slots, assignment, identified, repaired, refusals): the
+    repaired ones with the candidates listed, or the frozen ones with the reasons for refusing. With no candidate,
+    the frozen ones and two empty lists: nothing changes."""
+    hit, first, last = r["hit"], r["first"], r["last"]
+    cands = []
+    for j in range(first + 1, last):
+        s = sl[j]
+        if j in hit or j in und or s["served"] or not s["closed"] or s["nested"] or s["pending"] or s["A"] is None:
+            continue
+        a = M.at(s["A"])
+        if a is not None and a[0] - a[1] > s["t"]:
+            cands.append(j)
+    if not cands:
+        return sl, r, und, [], []
+    why = []
+    near = sum(1 for a, b in zip(cands, cands[1:]) if b - a < 2) + sum(1 for j in cands if j - 1 in und or j + 1 in und)
+    if near:
+        why.append(f"{near} candidates neighbour another candidate or an entry identified by order")
+    sl2 = copy.deepcopy(sl)
+    for j in cands:
+        sl2[j]["A"] = None
+    r2 = assign(sl2, tsc)
+    if r2["first"] is None:
+        return sl, r, und, [], why + ["no anchor falls in any slot once the candidates' delimiters are set aside"]
+    if r2["notinc"]:
+        why.append(f"the ladder still decreases {r2['notinc']} times once the candidates' delimiters are set aside")
+    und2 = resolve_undelimited(sl2, tsc, r2)
+    missing = [j for j in cands if j not in und2]
+    if missing:
+        pat = [tuple(len(r2["hit"].get(k, [])) for k in (j - 1, j, j + 1)) for j in missing[:3]]
+        why.append(f"{len(missing)} candidates are not identified by order once their delimiters are set aside (anchors {pat})")
+    if set(und2) != set(und) | set(cands):
+        why.append("the entries identified by order change beyond the candidates")
+    lad = [k for k, s in enumerate(sl2) if s["A"] is not None]
+    nctx = bad_ctx = bad_br = 0
+    for j in cands:
+        if j not in und2:
+            continue
+        hp, hn = r2["hit"].get(j - 1, []), r2["hit"].get(j + 1, [])
+        nxt = next((k for k in lad if k > j + 1), None)
+        ok = (len(hp) == 2 and len(hn) == 1 and sl2[j - 1]["A"] < sl2[j + 1]["A"]
+              and sl2[j - 1]["A"] <= tsc[hp[0]] < tsc[hp[1]] < sl2[j + 1]["A"] <= tsc[hn[0]]
+              and (nxt is None or tsc[hn[0]] < sl2[nxt]["A"]))
+        bad_br += not ok
+        for k, i in ((j - 1, hp[0] if hp else None), (j, und2[j]), (j + 1, hn[0] if hn else None)):
+            mc = (main_ctx or {}).get(sl2[k]["t"])
+            ic = inst_ctx[i] if inst_ctx is not None and i is not None and i < len(inst_ctx) else None
+            if mc is None or ic is None:
+                nctx += 1
+            elif tuple(mc) != tuple(ic):
+                bad_ctx += 1
+    if bad_br:
+        why.append(f"{bad_br} candidates' anchors do not lie in order between the delimiters around them")
+    if nctx:
+        why.append(f"{nctx} contexts of the candidates' entries or anchors are missing")
+    if bad_ctx:
+        why.append(f"{bad_ctx} entries' contexts differ between the main trace and the TSC instance")
+    if why:
+        return sl, r, und, [], why
+    return sl2, r2, und2, cands, []
+
+
 # --- The clock model ------------------------------------------------------------------------------------------------
 
 class Model:
@@ -340,14 +449,17 @@ class Conversion:
         return m0 + (m1 - m0) * (x - t0) / (t1 - t0), self.b[k - 1]
 
 
-def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
-    """ev: time-ordered (t, 'W'|'E'|'X', value)."""
+def rule(ev, tsc, samp_pairs, model, window=None, cap=None, main_ctx=None, inst_ctx=None):
+    """ev: time-ordered (t, 'W'|'E'|'X', value). main_ctx: an entry's time -> (task, PID, flags); inst_ctx: each
+    anchor's (task, PID, flags) or None. Both are read only by revision 55's proposed repair."""
     why = []
     sl, tail_orphan, head_orphan = build_slots(ev)
     r = assign(sl, tsc)
     if r["first"] is None:
         return dict(status="FAIL", why=r["why"], U=None)
     und = resolve_undelimited(sl, tsc, r)
+    M = SamplerMap(samp_pairs, model)
+    sl, r, und, repaired, refused = repair_undelimited(sl, tsc, r, und, M, main_ctx, inst_ctx)
     if und:
         # The ladder is the delimiting slots': an identified entry's delimiter delimits nothing (it was not due at the
         # entry; in attempt 13 the deadline written early was rewritten 10 counts lower after the entry).
@@ -360,7 +472,7 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
             why.append(f"{r[key]} {msg}")
     if tail_orphan:
         why.append(f"{tail_orphan} exits with no entry")
-    M = SamplerMap(samp_pairs, model)
+    why += [f"revision 55 (proposed): the repair of entries stamped before their own delimiter is refused: {x}" for x in refused]
     items, offs, bad_e, bad_dl, nomap, bad_pending = [], set(), 0, 0, 0, 0
     for j, i in sorted(r["pairs"].items()):
         offs.add(j - i)
@@ -389,7 +501,8 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
             und_none += 1
             continue
         e = sl[j]["t"] - v[0]
-        und_items.append(dict(j=j, i=i, t=sl[j]["t"], tsc=tsc[i], e=e, B=v[1], own=e <= v[1], in_range=False, ok=False))
+        und_items.append(dict(j=j, i=i, t=sl[j]["t"], tsc=tsc[i], e=e, B=v[1], own=e <= v[1], in_range=False, ok=False,
+                              repaired=j in repaired))
         und_after += e > v[1]
     if und_none:
         why.append(f"{und_none} entries no deadline delimits have no independent check of their anchor by order")
@@ -406,7 +519,8 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
     # Coverage comes first and does not depend on which pairs are retained.
     if len(items) < 2:
         why.append(f"no usable conversion pairs ({len(items)} verified, {nomap} without an independent check)")
-        return dict(status="FAIL", why=why, U=None, paired=len(r["pairs"]), used=0, nomap=nomap, ladder=r, slots=sl, undelimited=und_items)
+        return dict(status="FAIL", why=why, U=None, paired=len(r["pairs"]), used=0, nomap=nomap, ladder=r, slots=sl, undelimited=und_items,
+                    repaired=repaired, repair_refused=refused)
     items.sort(key=lambda x: x["tsc"])
     cap_n = int((CAP if cap is None else cap) * len(r["pairs"]))
     kept, out, bounds = select(items, model, cap_n)
@@ -448,7 +562,7 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None):
     return dict(status="FAIL" if why else "PASS", why=why, U=U, U_label=model.label, dependency=dict(sampler=(M.dep_lo, M.dep_hi), span=(kept[0]["t"], kept[-1]["t"])),
                 paired=len(r["pairs"]), used=len(kept), left_out=[round(x["e"]) for x in out], nomap=nomap, Bmax=max(k["B"] for k in kept), Emax=max(k["E"] for k in kept), emin=min(k["e"] for k in kept), emax=max(k["e"] for k in kept),
                 g_conv_ms=max(gaps) / 1e6, Imax=model.ds * max(gaps) / 4, offsets=sorted(offs)[:3], pairs=[(k["tsc"], k["t"]) for k in kept], conv=conv, ladder=r, unclosed_tail=r["unclosed_tail"], head_orphan=head_orphan, slope_statistic=M.slope_statistic(), residual_margin=worst,
-                undelimited=und_items)
+                undelimited=und_items, repaired=repaired, repair_refused=refused)
 
 
 # --- Certification: whether the acquisition establishes the model the calculation uses ---------------------------------
@@ -819,7 +933,8 @@ def analyze(main_parse, inst_parse, samp_pairs, window=None, evidence=None, mode
     else:
         return dict(status="NOT ANALYSED", why=["no certificate and no exploratory model"], accepted=False, U=None, U_label=None, cert="UNSUPPORTED", cert_reasons=reasons, model=None)
     problems = list(main_parse[1]) + list(inst_parse[1])
-    r = rule(main_parse[0], inst_parse[0], samp_pairs, use, window=window, cap=cap)
+    r = rule(main_parse[0], inst_parse[0], samp_pairs, use, window=window, cap=cap,
+             main_ctx=main_parse[2] if len(main_parse) > 2 else None, inst_ctx=inst_parse[2] if len(inst_parse) > 2 else None)
     r["why"] = problems + r["why"]
     if problems:
         r["status"] = "FAIL"

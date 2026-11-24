@@ -902,5 +902,165 @@ print("the ledger takes hrtimer expiries strictly:")
 lg = led([(100, "local_timer_entry", "vector=236"), (150, "hrtimer_expire_entry", "hrtimer=0xffff8c577efa2098 now=358688588000915 function=tick_nohz_handler/0x0"), (300, "local_timer_exit", "vector=236")])
 claim("a well-formed expiry is taken", [k for _, k, _ in lg.events] == ["E", "H", "X"] and not lg.problems)
 claim("a malformed expiry is reported", any("malformed hrtimer expiry" in x for x in led([(150, "hrtimer_expire_entry", "hrtimer=0x1 function=f")]).problems))
+print("revision 55, PROPOSED (not accepted): an entry stamped before its own delimiter (attempt 28's invocation 3):")
+E, D, W, X, tau, samp = gen()
+r0 = check("baseline with expiries recorded (again)", "PASS", served(events(E, D, W, X)), tau, samp)
+xe = E[K] + 40_000                  # the extra interrupt, 40 us after the tick's (attempt 28: +39.951 us)
+EARLY = (E[K] + EXIT + 60, "W", D[K + 1] - 1)  # the next tick deadline written in entry K: the extra entry's delimiter, not due
+pe = E[K] + 220_000                 # the probe's own timer interrupt, 220 us after the tick's
+P = (xe + 7_600, "W", pe - LAT)     # its sleep, armed after the extra entry, earlier than the extra entry's delimiter
+IDLE, NEED, PROBE = ("<idle>", 0, "d.h1."), ("<idle>", 0, "dNh1."), ("x7_bus_timing", 3134348, "d.h..")
+
+
+def shape28(anchor_x=True, anchor_p=True, more=(), more_tau=(), shift=0, extra_writes=(), Dv=None):
+    """Attempt 28's sequence on the synthetic ledger: entry K (the tick), the extra entry (nothing expired), the
+    probe's timer (expired), then entry K+1. Returns the ledger, the anchors, the main contexts and the anchors'."""
+    Dd = D if Dv is None else Dv
+    add = [EARLY, (xe, "E", None), (xe + EXIT, "X", None), P, (pe, "E", None), (pe + EXIT, "X", None)] + list(extra_writes) + list(more)
+    ev = served(events(E, Dd, W, X, extra=add), skip=(xe,) + tuple(x for x, k, _ in more if k == "E"))
+    t2 = sorted(tau + ([xe + DELAY + shift] if anchor_x else []) + ([pe + DELAY] if anchor_p else []) + list(more_tau))
+    mctx = {x: (NEED if x == xe else PROBE if x == E[K] else IDLE) for x, k, _ in ev if k == "E"}
+    by_tsc = {x + DELAY: c for x, c in mctx.items()}
+    if anchor_x and shift:
+        by_tsc[xe + DELAY + shift] = NEED
+    ictx = [by_tsc.get(a) for a in t2]
+    return ev, t2, mctx, ictx
+
+
+def rep28(name, want, ev, t2, mctx, ictx, must=None, sampler=None):
+    return check(name, want, ev, t2, samp if sampler is None else sampler, must, main_ctx=mctx, inst_ctx=ictx)
+
+
+ev, t2, mc, ic = shape28()
+check("attempt 28's shape without contexts: the frozen failure stands, the repair refused", "FAIL", ev, t2, samp, "contexts")
+r = check("  ... and its frozen counts kept", "FAIL", ev, t2, samp, "ladder decreases")
+claim("  ... nothing repaired", r["repaired"] == [] and r["repair_refused"], str(r["repair_refused"])[:80])
+r = rep28("attempt 28's shape, contexts agreeing: identified once its delimiter is set aside", "PASS", ev, t2, mc, ic)
+x = und(r)
+kept_tsc = {k for k, _ in r["pairs"]}
+claim("  ... one entry, repaired, own bound met, within range, out of the conversion",
+      len(x) == 1 and x[0]["repaired"] and x[0]["own"] and x[0]["in_range"] and x[0]["tsc"] not in kept_tsc and r["repaired"] == [x[0]["j"]],
+      f"{[(y['j'], round(y['e']), y['own'], y['in_range']) for y in x]}, repaired {r['repaired']}")
+claim("  ... every other entry deadline-paired: the probe's timer a pair, one index offset",
+      r["paired"] == r0["paired"] + 1 and len(r["offsets"]) == 1, f"paired {r['paired']}/{r0['paired']}, offsets {r['offsets']}")
+bad = list(ic)
+bad[t2.index(xe + DELAY)] = IDLE
+rep28("contexts differ at the extra entry (flags)", "FAIL", ev, t2, mc, bad, "contexts differ")
+bad = list(ic)
+bad[t2.index(pe + DELAY)] = ("x7_bus_timing", 3134348, "d.h1.")
+rep28("contexts differ at the following neighbour", "FAIL", ev, t2, mc, bad, "contexts differ")
+bad = list(ic)
+bad[t2.index(E[K] + DELAY)] = None
+rep28("an anchor's context missing (the preceding neighbour)", "FAIL", ev, t2, mc, bad, "missing")
+mc2 = dict(mc)
+del mc2[pe]
+rep28("an entry's context missing in the main trace", "FAIL", ev, t2, mc2, ic, "missing")
+ev, t2, mc, ic = shape28(anchor_p=False)
+rep28("the probe timer's anchor missing", "FAIL", ev, t2, mc, ic, "not identified by order")
+ev, t2, mc, ic = shape28(more_tau=[xe + 100_000])
+rep28("an extra anchor in the region", "FAIL", ev, t2, mc, ic, "not identified by order")
+ev, t2, mc, ic = shape28(anchor_x=False)
+rep28("the extra entry's anchor missing", "FAIL", ev, t2, mc, ic, "not identified by order")
+x2 = xe + 5_000
+ev, t2, mc, ic = shape28(more=[(x2, "E", None), (x2 + EXIT, "X", None)], more_tau=[x2 + DELAY])
+rep28("two extra entries in a row, the second with no deadline written", "FAIL", ev, t2, mc, ic, "not identified by order")
+ev, t2, mc, ic = shape28(more=[(xe + EXIT + 10, "W", D[K + 1] - 2), (x2, "E", None), (x2 + EXIT, "X", None)], more_tau=[x2 + DELAY])
+rep28("two adjacent candidates, each stamped before its own delimiter", "FAIL", ev, t2, mc, ic, "neighbour another candidate")
+Dl = list(D)
+Dl[K + 50] = D[K + 49] - 10
+ev, t2, mc, ic = shape28(Dv=Dl)
+rep28("a residual decrease elsewhere: refused, the decrease reported", "FAIL", ev, t2, mc, ic, "ladder decreases")
+ev, t2, mc, ic = shape28(extra_writes=[(xe + 7_700, "W", 0)])
+rep28("the following neighbour pending (its deadline disarmed after it was written)", "FAIL", ev, t2, mc, ic, "not identified by order")
+xn = E[K] + 100  # inside entry K's interrupt (its exit at +320 ns)
+evn = served(events(E, D, W, X, extra=[EARLY, (xn, "E", None), (xn + EXIT, "X", None), P, (pe, "E", None), (pe + EXIT, "X", None)]), skip=(xn,))
+t2n = sorted(tau + [xn + DELAY, pe + DELAY])
+mcn = {x: (NEED if x == xn else IDLE) for x, k, _ in evn if k == "E"}
+byn = {x + DELAY: c for x, c in mcn.items()}
+r = check("the extra entry nested inside the previous interrupt: no candidate, fails", "FAIL", evn, t2n, samp, "inside the previous",
+          main_ctx=mcn, inst_ctx=[byn.get(a) for a in t2n])
+claim("  ... nothing repaired", r.get("repaired") == [], str(r.get("repair_refused"))[:80])
+for sh in (1000, -1000, 200, -200):
+    ev, t2, mc, ic = shape28(shift=sh)
+    rep28(f"the extra entry's anchor {sh:+d} ns from its stamp", "FAIL", ev, t2, mc, ic)
+
+print("revision 55, PROPOSED: ordinary timer-free entries stay ordinary (the next-step review's counterexample):")
+ev = served(events(E, D, W, X), skip=(E[K],))
+r = check("an ordinary timer-free entry, deadline-raised, holding its anchor (1, 1, 1)", "PASS", ev, tau, samp)
+claim("  ... not a candidate: nothing repaired, no entry identified by order, the pairs unchanged",
+      r["repaired"] == [] and not r["repair_refused"] and und(r) == [] and r["paired"] == r0["paired"] and r["used"] == r0["used"] and r["U"] == r0["U"],
+      f"repaired {r['repaired']}, und {len(und(r))}, paired {r['paired']}/{r0['paired']}, U {r['U']:.1f}/{r0['U']:.1f}")
+mc = {x: IDLE for x, k, _ in ev if k == "E"}
+r = check("  ... the same with contexts given: unchanged", "PASS", ev, tau, samp, main_ctx=mc, inst_ctx=[IDLE] * len(tau))
+claim("  ... nothing repaired", r["repaired"] == [] and und(r) == [] and r["U"] == r0["U"])
+ev = served(events(E, D, W, X), skip=(E[K],))
+r = check("an ordinary timer-free entry whose anchor is lost (its delimiter was due): not a candidate, fails", "FAIL", ev, without(tau, K), samp,
+          main_ctx={x: IDLE for x, k, _ in ev if k == "E"}, inst_ctx=[IDLE] * (len(tau) - 1))
+claim("  ... nothing repaired, nothing refused (no candidate)", r.get("repaired") == [] and not r.get("repair_refused"), str(r.get("repair_refused")))
+sl = [dict(A=v, t=v, pending=False, nested=False, closed=True, served=0 if i == 2 else 1) for i, v in enumerate((100, 200, 300, 400, 500))]
+an = [110, 210, 310, 410, 510]
+fr = R.assign(sl, an)
+out = R.repair_undelimited(sl, an, fr, {}, R.SamplerMap([(c - 1, c, c + 1, 0) for c in range(0, 1000, 50)], M2))
+claim("the review's own example: the (1, 1, 1) entry is no candidate; the frozen slots come back unchanged",
+      out[3] == [] and out[4] == [] and out[0] is sl and out[1] is fr, f"repaired {out[3]}, refused {out[4]}")
+
+print("revision 55, PROPOSED: the identified pair's own bound and the range, as revision 54's:")
+MIXED = [(c - 1200, c, c + 1200, z) if E[400] < c < E[1200] else (a, c, b, z) for a, c, b, z in samp]
+ev, t2, mc, ic = shape28()
+r = rep28("mixed brackets elsewhere, attempt 28's shape intact", "PASS", ev, t2, mc, ic, sampler=MIXED)
+claim("  ... repaired, own bound met", r["repaired"] and und(r)[0]["own"], f"e {und(r)[0]['e']:.0f}, B {und(r)[0]['B']:.1f}")
+
+
+def at_e28(e, sampler):
+    t2b = sorted(tau + [round(xe - e), pe + DELAY])
+    byt = {x + DELAY: c for x, c in mc.items()}
+    byt[round(xe - e)] = NEED
+    return R.rule(ev, t2b, sampler, M2, main_ctx=mc, inst_ctx=[byt.get(a) for a in t2b])
+
+
+r = at_e28(240, MIXED)
+claim("mixed brackets: the extra entry's main stamp 240 ns after its anchor fails on its own bound",
+      r["status"] == "FAIL" and any("own bound" in w for w in r["why"]), f"{r['status']}; {r['why'][:1]}")
+B0 = und(at_e28(0, MIXED))[0]["B"]
+r1 = at_e28(math.floor(B0), MIXED)
+claim("boundary: e at the pair's own bound passes", r1["status"] == "PASS", f"e {und(r1)[0]['e']:.1f}, B {und(r1)[0]['B']:.2f}")
+r2 = at_e28(math.floor(und(r1)[0]["B"]) + 1, MIXED)
+claim("boundary: e 1 ns beyond its own bound fails, in range or not", r2["status"] == "FAIL" and any("own bound" in w for w in r2["why"]),
+      f"e {und(r2)[0]['e']:.1f}, B {und(r2)[0]['B']:.2f}, in range {und(r2)[0]['in_range']}")
+r3 = at_e28(40, samp)
+claim("the range check still applies when the own bound holds (tight brackets)",
+      r3["status"] == "FAIL" and und(r3)[0]["own"] and not und(r3)[0]["in_range"], f"e {und(r3)[0]['e']:.1f}, B {und(r3)[0]['B']:.1f}")
+WIN_X = (E[100], E[3900])
+EV_X = evidence_for(*WIN_X)
+r = R.analyze((ev, [], mc), (t2, [], ic), samp, window=WIN_X, evidence=EV_X)
+claim("certified analyze(): attempt 28's shape, contexts agreeing: accepted, the repaired entry reported",
+      r["status"] == "PASS" and r["accepted"] is True and r["U_label"] == "validated" and r["repaired"] and und(r)[0]["ok"], f"{r['status']}, {r['U_label']}")
+bad = list(ic)
+bad[t2.index(xe + DELAY)] = IDLE
+r = R.analyze((ev, [], mc), (t2, [], bad), samp, window=WIN_X, evidence=EV_X)
+claim("certified analyze(): contexts differing: not accepted, a candidate U", r["status"] == "FAIL" and r["accepted"] is False
+      and r["cert"] == "CERTIFIED" and r["U_label"] == "candidate U; conversion not accepted", f"{r['status']}, {r['U_label']}")
+r = R.analyze((ev, []), (t2, []), samp, window=WIN_X, evidence=EV_X)
+claim("certified analyze(): no contexts given (revision 54's call): not accepted", r["status"] == "FAIL" and r["accepted"] is False, r["status"])
+
+print("revision 55, PROPOSED: the contexts as the reports give them:")
+rows = "\n".join([
+    "# tracer: nop",
+    "   Isolated Web Co-2711452 [003] d.h1. 100: local_timer_entry: vector=236",
+    "   kworker/u128:2-3133692 [003] dNh1. 200: local_timer_entry: vector=236",
+    "   a-1-5 [003] d.h.. 300: local_timer_entry: vector=236",
+    "          <idle>-0       [003] d.h1. 400: local_timer_entry: vector=236",
+    "   [003] d.h1. 500: local_timer_entry: vector=236",
+])
+tsc_c, prob_c, ctx_c = R.parse_instance_contexts(rows)
+claim("task names with spaces, dashes and digits; the idle task; a row with no task field (its context missing)",
+      tsc_c == [100, 200, 300, 400, 500] and not prob_c and ctx_c == [("Isolated Web Co", 2711452, "d.h1."), ("kworker/u128:2", 3133692, "dNh1."),
+                                                                   ("a-1", 5, "d.h.."), ("<idle>", 0, "d.h1."), None], str(ctx_c))
+claim("parse_instance still returns its two lists, the same", R.parse_instance(rows) == (tsc_c, prob_c))
+lg = R.Ledger()
+lg.feed(100, "local_timer_entry", "vector=236", ("<idle>", 0, "dNh1."))
+lg.feed(150, "write_msr", "6e0, value 2723d67a9bc2", ("<idle>", 0, "dNh1."))
+lg.feed(300, "local_timer_exit", "vector=236", ("<idle>", 0, "dNh1."))
+claim("the ledger keeps an entry's context, and only an entry's", lg.contexts == {100: ("<idle>", 0, "dNh1.")} and [k for _, k, _ in lg.events] == ["E", "W", "X"])
 print(f"\n{COUNT} cases. {'ALL OK' if not FAILS else 'FAILED: ' + '; '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)
