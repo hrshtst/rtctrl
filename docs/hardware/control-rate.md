@@ -270,6 +270,13 @@ every joint's feedback every cycle. `dxl_emu --arrival-log F` records every
 instruction the emulator received, which the probe's smoke test uses to show
 each cycle's read set and its zero write to all eight.
 
+`tools/trace_session.sh --read-ids LIST` passes the flag to every run of
+the session. Each run must use the current profile and a grid-timed Fast
+Sync Read variant (`fast`, `fast-motion` or `fast-motion-aux0ms`), and the
+IDs are the arm's (2 to 9), strictly increasing; the session refuses
+anything else before it sends anything. The log names gain `-r` and the
+IDs (`-r2345`), and each run record a `read set:` line.
+
 **Adapter-referenced timing (a torque-off diagnostic, emulator only so
 far).** `x7_bus_timing --timing adapter` plans each wake from the USB
 adapter's completion lattice instead of the fixed grid. Grid timing

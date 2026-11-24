@@ -1266,6 +1266,53 @@ for bad in 1,256 1,x 1,,0; do
   grep -q 'is not a latency timer of 0 to 255 ms' "$ROOT/latency-bad.log"
 done
 
+# The subset read (--read-ids): the plan names the read set in the log name
+# and passes it to the probe; a bad list, or a run whose profile or variant
+# cannot take it, is refused before anything is sent; an untraced run reads
+# the set, writes every servo, and records it.
+SUBSET=(--read-ids "2,3,4,5" --runs current:100:idle:fast-motion-aux0ms --attempt 41)
+setsid tools/trace_session.sh "${COMMON[@]}" --dry-run "${SUBSET[@]}" \
+  </dev/null >"$ROOT/subset-plan.log" 2>&1 || fail "the subset plan failed" "$ROOT/subset-plan.log"
+# The plan and the record print the command shell-quoted (2\,3\,4\,5).
+grep -Eq 'rate-trace-current-100hz-idle-bounded-fast-motion-aux0ms-r2345-traced-.*--read-ids 2\\?,3\\?,4\\?,5( |$)' \
+  "$ROOT/subset-plan.log" || fail "the plan does not show the read set" "$ROOT/subset-plan.log"
+subset_refused() {  # the expected message, then the session's arguments
+  want=$1
+  shift
+  st=0
+  setsid tools/trace_session.sh "${COMMON[@]}" --dry-run "$@" </dev/null \
+    >"$ROOT/subset-refused.log" 2>&1 || st=$?
+  [ "$st" -eq 2 ] || fail "--read-ids refusal: status $st ($*)" "$ROOT/subset-refused.log"
+  grep -qF -- "$want" "$ROOT/subset-refused.log" ||
+    fail "--read-ids refusal without '$want' ($*)" "$ROOT/subset-refused.log"
+}
+for bad in "3,2" "2,2" "1,2" "2,10" "x" "2,,3" ",2" "2," "" " 2"; do
+  subset_refused "--read-ids:" --read-ids "$bad" --runs current:100:idle:fast
+done
+subset_refused "needs the current profile" --read-ids 2,3 --runs position:100:idle:fast
+subset_refused "needs the current profile" --read-ids 2,3,4,5,6,7,8,9 --runs cbp:100:idle:fast-motion
+for v in full motion motion-aux0ms; do
+  subset_refused "needs a grid-timed Fast Sync Read variant" --read-ids 2,3 --runs "current:100:idle:$v"
+done
+subset_refused "needs a grid-timed Fast Sync Read variant" --read-ids 2,3 \
+  --runs current:100:idle:fast,current:1000:rt-idle:fast-motion-adapter --duration 4
+setsid tools/trace_session.sh "${COMMON[@]}" --yes --modes untraced "${SUBSET[@]}" \
+  </dev/null >"$ROOT/subset-session.log" 2>&1 || fail "the subset session failed" "$ROOT/subset-session.log"
+b=$(base current-100hz-idle-bounded-fast-motion-aux0ms-r2345-untraced 41)
+for f in "$b" "$b.summary.toml" "$b.run.txt"; do
+  [ -f "$f" ] || fail "missing $f" "$ROOT/subset-session.log"
+done
+grep -q '^read set: 2,3,4,5 (--read-ids; every check and the zero-current write still cover every servo)$' "$b.run.txt" ||
+  fail "no read set in the record" "$b.run.txt"
+grep -Eq '^command: .* --read-ids 2\\?,3\\?,4\\?,5( |$)' "$b.run.txt" ||
+  fail "the probe was not given the read set" "$b.run.txt"
+grep -q '^read_ids = \[2, 3, 4, 5\]$' "$b.summary.toml" || fail "the summary has no read set" "$b.summary.toml"
+grep -q '^read_servos = 4$' "$b.summary.toml"
+grep -q '^write_servos = 8$' "$b.summary.toml"
+if grep -q '^read set' "$(base current-100hz-idle-bounded-fast-motion-untraced 1).run.txt"; then
+  fail "a run without --read-ids recorded a read set"
+fi
+
 # The profiled mode: a traced run plus the probe threads' timer arming,
 # sleep calls and page faults (filtered to the probe's comm) and perf
 # samples of the real-time CPU, written as text for the worker. It needs

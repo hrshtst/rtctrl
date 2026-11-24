@@ -158,6 +158,16 @@
 # 100 Hz path does not read the timer: the restoration is what keeps the
 # host's setting. Without --latency-steps the timer is left alone.
 #
+# The traffic-reduction diagnostic's subset read: --read-ids LIST (for
+# example 2,3,4,5) passes the probe's --read-ids, so that every run's
+# grouped read lists only those servos; the probe still checks every servo
+# and writes zero goal current to every one, every cycle. Each run must use
+# the current profile and a grid-timed Fast Sync Read variant (fast,
+# fast-motion or fast-motion-aux0ms), and the IDs are the arm's (2 to 9),
+# strictly increasing; anything else is refused before anything is sent.
+# The log names gain -r and the IDs (-r2345), and each run record a read
+# set line. Without --read-ids nothing changes.
+#
 # Exit status: 0 the session completed; 1 a run stopped it (the stop rule);
 # 2 it was refused before anything was sent; 3 it completed but its cleanup
 # failed (the adapter's latency timer, the trace instance, the observers, the
@@ -284,6 +294,7 @@ runs+=,current:1000:rt-loaded:fast-motion,current:1000:rt-loaded-excl:fast-motio
 runs+=,cbp:1000:rt-idle:fast
 modes=untraced,traced
 latency_steps=
+read_ids=; read_ids_given=0
 perf_hz=999
 perf_stack=4096
 duration=60
@@ -349,6 +360,11 @@ usage: $0 [options]
   --perf-hz N         a profiled run's perf sampling frequency (default $perf_hz)
   --perf-stack B      bytes of user stack perf copies per sample for its DWARF
                       unwinding, a multiple of 8 (default $perf_stack)
+  --read-ids LIST     the subset read: every run's grouped read lists only
+                      these servos (2 to 9, strictly increasing, for example
+                      2,3,4,5); the current profile and the fast, fast-motion
+                      or fast-motion-aux0ms variant only. Every check and the
+                      zero-current write still cover every servo
   --latency-steps L   the adapter experiment: each run once per step of the
                       adapter's USB latency timer in ms, 0 to 255 (for
                       example 1,0,1), restored on every exit (default: the
@@ -386,12 +402,14 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --runs|--modes|--duration|--rt-priority|--rt-cpu|--exclude-cpus|--probe|\
     --port|--usb-device|--buffer-kb|--date|--attempt|--manifest|--outdir|--max-runnable|\
-    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls|--placements|--observers|--exempt)
+    --stress-dir|--load-tail|--latency-steps|--perf-hz|--perf-stack|--fs-controls|--placements|--observers|--exempt|\
+    --read-ids)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --runs) runs=$2 ;;
         --modes) modes=$2 ;;
         --latency-steps) latency_steps=$2 ;;
+        --read-ids) read_ids=$2; read_ids_given=1 ;;
         --perf-hz) perf_hz=$2 ;;
         --perf-stack) perf_stack=$2 ;;
         --duration) duration=$2 ;;
@@ -503,6 +521,28 @@ for m in "${mode_list[@]}"; do
     *) die "unknown mode '$m'" ;;
   esac
 done
+# The subset read: the arm's servo IDs, strictly increasing, for the current
+# profile's grid-timed Fast Sync Read variants only; its log-name tag (rtag).
+rtag=
+if [ "$read_ids_given" -eq 1 ]; then
+  [[ $read_ids =~ ^[2-9](,[2-9])*$ ]] ||
+    die "--read-ids: the arm's servo IDs (2 to 9), comma-separated, not '$read_ids'"
+  prev=0
+  IFS=, read -r -a rid_list <<<"$read_ids"
+  for rid in "${rid_list[@]}"; do
+    [ "$rid" -gt "$prev" ] || die "--read-ids: the IDs must be strictly increasing, not '$read_ids'"
+    prev=$rid
+  done
+  for spec in "${run_list[@]}"; do
+    IFS=: read -r p r c v <<<"$spec"
+    [ "$p" = current ] || die "run '$spec': --read-ids needs the current profile"
+    case "$v" in
+      fast|fast-motion|fast-motion-aux0ms) ;;
+      *) die "run '$spec': --read-ids needs a grid-timed Fast Sync Read variant (fast, fast-motion or fast-motion-aux0ms)" ;;
+    esac
+  done
+  rtag=-r${read_ids//,/}
+fi
 # The latency steps, as ms:index (one empty step without the experiment).
 lt_list=()
 step_list=("")
@@ -829,7 +869,7 @@ log_base() {  # profile rate condition variant mode [ms:step]; the placement fro
   variant_flags "$4"
   [ -n "${6:-}" ] && lt="-lt${6%%:*}-s${6##*:}"
   [ -n "$placement" ] && pl="-obs-$placement"
-  echo "rate-trace-$1-${2}hz-$3$vtag$lt$pl-$5-$date_tag-$attempt"
+  echo "rate-trace-$1-${2}hz-$3$vtag$rtag$lt$pl-$5-$date_tag-$attempt"
 }
 
 probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
@@ -841,6 +881,7 @@ probe_cmd() {  # profile rate condition variant mode [ms:step] -> cmd[]
         --log "${logdir:-$outdir}/$base.csv")
   case "$3" in rt-*) cmd+=(--rt-priority "$rt_priority" --rt-cpu "$rt_cpu") ;; esac
   cmd+=("${vflags[@]}")
+  [ -n "$read_ids" ] && cmd+=(--read-ids "$read_ids")
   [ -n "${6:-}" ] && cmd+=(--expect-latency-timer-ms "${6%%:*}")
   return 0
 }
@@ -2073,6 +2114,9 @@ run_one() {
     echo "condition: $cond"
     echo "variant: $variant (bounded read path: the probe's 35 ms budget and equal guard)"
     if [ "$variant" = fast-motion-adapter ]; then echo "timing: adapter (${ADAPTER_TIMING[*]})"; fi
+    if [ -n "$read_ids" ]; then
+      echo "read set: $read_ids (--read-ids; every check and the zero-current write still cover every servo)"
+    fi
     echo "mode: $mode"
     case "$placement" in
       confined) echo "placement: confined (observers $observers moved off CPUs $exclude_cpus, the probe started on CPUs $other_cpus)"
