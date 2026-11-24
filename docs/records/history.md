@@ -1101,6 +1101,12 @@ revision-55 reanalysis of invocation 3 comes next. Invocation 3's exit 1,
 the STOP and the unrun invocation 4 stand, and no hardware sitting is
 approved.
 
+That reanalysis accepted invocation 3's conversion under revision 55
+(U = 1,823 ns), and the review recorded it beside the original revision-54
+failure as a versioned, retrospective verdict. Invocation 3's exit 1, the
+STOP and the unrun invocation 4 still stand: the sitting stays partial,
+with no timer-mode comparison, and no 1 kHz qualification follows.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

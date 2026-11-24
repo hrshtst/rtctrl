@@ -500,6 +500,33 @@ comparison or four-invocation hardware validation follows. The frozen
 candidate `dd6fd3c` and its builds are unchanged, and no hardware sitting
 is approved.
 
+**Invocation 3's conversion under revision 55 (2026-11-24; a versioned,
+retrospective verdict).** The separately labelled reanalysis ran the
+procedure's analysis command at `8a2fe52` on the unchanged capture (its 28
+files checked against the archive's ledger before and after). It identified
+the one entry by order, stamped before its own delimiter. That pair met its
+own bound (e −108 ns against B 18 ns, a signed test) and, separately, the
+retained range [−1,804, −31] ns, and it stays outside the conversion. The
+certificate is CERTIFIED, the conversion is accepted with U = 1,823 ns
+(limit 5,000 ns), and the analysis's association and alignment pass. Its
+report differs from the original exactly as the reviewed proposal's control
+did. The reviewer accepted the conversion under revision 55, beside the
+original failure:
+- **as the sitting ran, under revision 54:** the conversion was not
+  accepted, and the procedure stopped the sitting;
+- **retrospectively, under revision 55:** the conversion is accepted, with
+  U = 1,823 ns;
+- **unchanged:** invocation 3 returned 1 and wrote the STOP record,
+  validity item 7 was not met, and invocation 4 never ran.
+
+So the sitting is not a completed four-invocation validation: there is no
+timer-mode comparison, and no 1 kHz qualification follows. Invocations 1
+and 2 keep their accepted untraced results. A retrospective attribution
+and prediction analysis of invocation 3 under revision 55 is authorized,
+separate from the plan's valid-run comparison, and is recorded only after
+its own review. The reanalysis and its reviews are archived in
+`adapter_diagnostic/packets/`.
+
 ### Summaries
 
 ```sh
