@@ -747,6 +747,64 @@ offline triage of the T5 failure on this capture is authorized; no
 hardware run is. The run, its sitting records and the packets are
 archived in `adapter_diagnostic/`.
 
+**The T5 triage (offline, this capture only, descriptive).** One export
+pass ran the correlator unchanged; its report and exports came out
+byte-identical. Each sleep's wake lateness splits exactly into the
+timer's service, the dispatch to the waking, the waking to the worker's
+switch-in, and the stamp.
+- **What sets T5's p99.9:** the nearest-rank p99.9 (146.9 µs, the 19th
+  largest of 18,041) is set by timer-service delay. Of the 138 sleeps
+  beyond 0.1/999 s:
+  - 136 are classified `interrupt late from idle`;
+  - 2 had on-time service followed by about 150 µs of unexplained
+    wake-up and interrupt processing (mostly between `sched_waking` and
+    `sched_wakeup`, inside the timer interrupt), not a runnable wait.
+- **The 1,032 late sleeps:** the delay lies mostly before CPU 3's
+  recorded idle exit, 58 to 188 µs after the due deadline, with another
+  0.2 to 6.0 µs before the interrupt's entry. No other recorded local
+  timer entry, device interrupt or NMI lies in that interval, which does
+  not establish that nothing else happened.
+- **Idle state 2 recorded at the due time:** the interrupt came under
+  5 µs after the due deadline in 1,560 sleeps, and 50 to 190 µs after it
+  in 1,116.
+  - Of those 1,116, 1,031 are late sleeps and 85 were served by an
+    earlier deadline; those 85 are not late sleeps.
+  - The delays came in episodes over the run.
+  - The kernel's declared table (C2_ACPI, 127 µs exit latency) is not a
+    measurement, and the index establishes no mechanism.
+- **The export helper:** it wrote −1 for empty intervals. Its revision 2
+  counts nothing there, and the corrected fields (16,869 cells, none in
+  a late sleep) are disclosed separately.
+
+**The CPU-2 comparison (offline, this capture only, descriptive).**
+- **What was traced:** CPU 2 is CPU 3's SMT sibling, per the run
+  record's topology. The recording filtered CPU 2's idle states, NMIs
+  and deadline writes out of the trace. So CPU 2's idle task, or an
+  interval with no recorded CPU-2 event, is not evidence of a hardware
+  idle state or of the absence of all activity.
+- **The method:** one selective pass over CPU 2's events gave its state
+  at every sleep's deadline and due time. That state comes from
+  preceding events only, and is ambiguous within U of a transition.
+- **Every delayed interrupt had a quiet CPU 2:** all 1,116 had CPU 2's
+  idle task scheduled, with no recorded CPU-2 event in the delay window,
+  nor for about 116 µs before the due time (115,864 ns at the shortest).
+- **Recent CPU-2 activity, no delay:** of the 444 state-2 sleeps with a
+  recorded CPU-2 event within 50 µs before the due time, none was
+  delayed.
+- **Coincident next events:** CPU 2's next recorded event came within
+  2 µs after CPU 3's recorded idle exit in 411 of the 1,116 delayed, and
+  in 3 of 1,019 fast sleeps with CPU 2 equally quiet. These are recorded
+  timestamp coincidences, not a simultaneous physical wakeup or a common
+  cause.
+- **The time of the run still matters:** with CPU 2 equally quiet, no
+  sleep before 5 s or after 26 s into the run was delayed.
+
+What selects the two modes is unknown, and no power-policy or placement
+change follows. A further offline check of CPU-2 timer callbacks against
+their armed expiries is authorized; it cannot show when CPU 2's hardware
+interrupts arrived. The triage, the comparison and their reviews are
+archived in `adapter_diagnostic/packets/`.
+
 ### Summaries
 
 ```sh

@@ -1160,6 +1160,19 @@ completed invocation:
 T5's unexpected failure, on its p99.9 limit alone, is the subject of a
 bounded offline triage. No rate qualification follows.
 
+The triage found T5's tail set by late timer service. In 1,032 sleeps,
+CPU 3 left its recorded idle state 2 only 58 to 188 us after the
+deadline, in episodes over the run. Two more sleeps lost about 150 us
+inside the timer interrupt after an on-time service.
+
+An offline comparison with CPU 2, CPU 3's SMT sibling, followed. CPU 2's
+idle states were never traced. Every delayed interrupt had CPU 2's idle
+task scheduled and no recorded CPU-2 event for about 116 us before it.
+CPU 2's next recorded event often came within 2 us of CPU 3's exit.
+
+These are associations, and what selects the delayed mode is unknown. No
+power-policy or placement change follows.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

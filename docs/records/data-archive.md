@@ -4458,6 +4458,24 @@ capture and a completed single diagnostic invocation:
   not on-time service, and the tool's label `interrupt late from idle` (1,032 sleeps) names no cause.
 - **Next:** a bounded offline triage of the T5 failure on this capture is authorized.
 
+**The T5 triage and the CPU-2 comparison (2026-11-24; offline, this capture only, descriptive).**
+- **T5's p99.9** (146.9 µs) is set by timer-service delay. Of the 138 sleeps beyond 0.1/999 s:
+  - 136 are classified `interrupt late from idle`;
+  - 2 had on-time service, then about 150 µs of unexplained wake-up and interrupt processing.
+- **Before the recorded idle exit:** in the 1,032 late sleeps, the delay lies mostly before CPU 3's recorded idle
+  exit, 58 to 188 µs after the due deadline.
+- **Idle state 2:** with state 2 recorded at the due time, the interrupt came either under 5 µs after the due deadline
+  (1,560 sleeps) or 50 to 190 µs after it (1,116), in episodes over the run. Of those 1,116, 1,031 are late sleeps
+  and 85 were served by an earlier deadline.
+- **The sibling CPU 2** (its idle states not traced):
+  - All 1,116 delayed interrupts had CPU 2's idle task scheduled, with no recorded CPU-2 event for about 116 µs
+    before the due time.
+  - CPU 2's next recorded event came within 2 µs after CPU 3's recorded exit in 411 of them. These are recorded
+    timestamp coincidences, not a cause.
+  - What selects the two modes is unknown, and no power-policy or placement change follows.
+- **The export helper's** empty-interval defect is corrected, and the corrected fields are disclosed separately.
+- **Next:** a further offline check of CPU-2 timer callbacks is authorized.
+
 **The folders:**
 - **Attempt 30's invocations:** `d1-30-1-grid-untraced/`, `d1-30-2-adapter-untraced/`, `d1-30-3-adapter-timer/`
   and `d1-30-4-grid-timer/`. Each holds the session directory's files unchanged, with a `README.md` (its verdict)
@@ -4518,16 +4536,26 @@ capture and a completed single diagnostic invocation:
     The results are qualified by `2026-11-24-ff-attempt31-sitting-addendum/`: P5 not as predicted on T5, paired sleeps
     not on-time service, overruns and skips distinct, and the raw manifest's timing. The candidate packet holds its
     ledger's files only; the records written beside it are in `sittings/attempt-31/candidate-packet-records/`.
-  - The section's top and `packets/` README versions of the bottleneck archiving, which this extension replaced, stay
-    verbatim in `packets/2026-11-24-d1-attempt28-bottleneck-study-archive/section/`. The `sittings/` README version
-    it replaced stays in `packets/2026-11-24-d1-attempt28-archive/section/`.
+  - The section's top and `packets/` README versions of the bottleneck archiving, which attempt 31's extension
+    replaced, stay verbatim in `packets/2026-11-24-d1-attempt28-bottleneck-study-archive/section/`. The `sittings/`
+    README version it replaced stays in `packets/2026-11-24-d1-attempt28-archive/section/`.
+  - The T5 triage `2026-11-24-ff-attempt31-t5-triage/` and the CPU-2 comparison
+    `2026-11-24-ff-attempt31-cpu2-comparison/` are kept with:
+    - their reviews;
+    - the comparison's addendum (the 0/444 denominator, the exact 115,864 ns, "next recorded event");
+    - attempt 31's archiving packet.
+
+    The comparison holds the export helper's correction, its known-answer tests and the corrected fields. The
+    triage's original export is unchanged.
+  - The section's top and `packets/` README versions of attempt 31's archiving, which this extension replaced, stay
+    verbatim in `packets/2026-11-24-ff-attempt31-archive/section/`.
 
 The copies were compared byte for byte with the originals, which stay in the operator's `~/rtctrl-hw/` and the
 project's review notes.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | Adapter diagnostic, the section's verdicts and provenance (the emulator rehearsal, the hardware sitting and the full-feedback diagnostic's sitting) | `952a7e0b87c8a5984f5a2de5667d8f8e33896523ff72e636593e4c40771ac728` |
+| `README.md` | Adapter diagnostic, the section's verdicts and provenance (the emulator rehearsal, the hardware sitting and the full-feedback diagnostic's sitting) | `448e6710dbe0bbf945d65db5ab75e17b516ae4b0997d35bb75be8d181c96b34e` |
 | `d1-28-1-grid-untraced/README.md` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), verdict and provenance note | `0458d0d37c3d55e33cd8b279725cec54449066c1ecd6ba6431950e9eb5f34651` |
 | `d1-28-1-grid-untraced/SHA256SUMS` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), the folder's SHA256SUMS | `5e7015ef7d77e485ea5794e2b604f2b61bce93a0a6eb2a16632df0b9a72369b8` |
 | `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `8d1fce9bba98e10b2b0e0b52bca2b09a977b6eb399a80bbe2e4d9e1ed381d811` |
@@ -5415,6 +5443,54 @@ project's review notes.
 | `packets/2026-11-24-d1-attempt28-slot-investigation/window-run-13-23.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-slot-investigation, window-run-13-23.txt | `8320a925e75e463cfbee31fbf3a20ccca6f90b5a6c7da3edddd04644075fa17b` |
 | `packets/2026-11-24-d1-attempt28-slot-investigation/window-run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-slot-investigation, window-run.txt | `19a8ea4d24cf0a135b0599a2288197d24fb8ec7ed9532091c5672e1fe6013e36` |
 | `packets/2026-11-24-d1-attempt28-slot-investigation/window.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-slot-investigation, window.py | `1111d9c68ba8dec671b19ce9cb140dfad709e6a9c82159938941042975107784` |
+| `packets/2026-11-24-ff-attempt31-archive-t5-review/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive-t5-review, README.md | `ceb9f85f4b34f5f58b021526db958530c977cf08d24a1533752c1bcd44c12c11` |
+| `packets/2026-11-24-ff-attempt31-archive-t5-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive-t5-review, SHA256SUMS | `ac0b3ac37ca4f32aa44a5442333b3f994c00d3f69058857e8529ff11652f1885` |
+| `packets/2026-11-24-ff-attempt31-archive-t5-review/check_empty_interval.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive-t5-review, check_empty_interval.py | `624a2823c8753140d19220c049242a5524a5fd7e2f860a0e5057cc94b180721d` |
+| `packets/2026-11-24-ff-attempt31-archive/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, README.md | `9069ec879eb256bfa2a502996054cf97e96c229974e4ab5da9ace1c95dd428dd` |
+| `packets/2026-11-24-ff-attempt31-archive/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, SHA256SUMS | `763b213d9ab6da7c5472080ba7722791271908c2bec7d7f8244967d367430106` |
+| `packets/2026-11-24-ff-attempt31-archive/archive-check.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, archive-check.txt | `16a7bab8756b708948c295eef6574012fc0e3a83b8981b2b1b33848709dde992` |
+| `packets/2026-11-24-ff-attempt31-archive/archive-copy.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, archive-copy.txt | `a0e4a6be633ab8907551b15a7241f6b57e7d5c27edb089fe7d22be396a176acc` |
+| `packets/2026-11-24-ff-attempt31-archive/archive.sh` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, archive.sh | `e62bdda3480d18b8a618d42a7a60d523a58ea530df7da849be8fc4985059f73a` |
+| `packets/2026-11-24-ff-attempt31-archive/check_archive.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, check_archive.py | `fc88f54a30245a3c0ef844263126f16ecb53e5da1adbcc1238dfd2fa783af367` |
+| `packets/2026-11-24-ff-attempt31-archive/lint.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, lint.txt | `ca4101e3a3bc53f8a59fafba55ff2e72e9913337e281662b7f165f149db81634` |
+| `packets/2026-11-24-ff-attempt31-archive/manifest_rows.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, manifest_rows.py | `66dd1a503c570b921aa80f464b19545203d9f1182cbb0b83976d8ed606365699` |
+| `packets/2026-11-24-ff-attempt31-archive/record-checks.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, record-checks.txt | `3f664fbc26aa4c841ddb082e31f2ef0a94ae61dfb426d3f777e7ef36b88d7757` |
+| `packets/2026-11-24-ff-attempt31-archive/record-commit.diff` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, record-commit.diff | `6e55f5481695500d51472fe97fa462c8c9cc36a2a89443a0e4670159ac3e9971` |
+| `packets/2026-11-24-ff-attempt31-archive/record_checks.sh` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, record_checks.sh | `553750c716b6db24750dfa86c26d52c32df061cadddb1cb82b0c11d38867138c` |
+| `packets/2026-11-24-ff-attempt31-archive/rows.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, rows.md | `38adfdb2500970bb88ff541361ba89ae96d479c0dc502c7cb582c3b16cc27366` |
+| `packets/2026-11-24-ff-attempt31-archive/section/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, section/README.md | `952a7e0b87c8a5984f5a2de5667d8f8e33896523ff72e636593e4c40771ac728` |
+| `packets/2026-11-24-ff-attempt31-archive/section/ff-31-1-grid-timer/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, section/ff-31-1-grid-timer/README.md | `68c16ec2883d153700e26937d84d8af2d579d46e0a1973272a070271270c1d93` |
+| `packets/2026-11-24-ff-attempt31-archive/section/packets/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, section/packets/README.md | `cb0aacb66c6e12c8e672125638c5fa7439bfc1f52aebd5bd53db14dfe1a24e82` |
+| `packets/2026-11-24-ff-attempt31-archive/section/sittings/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, section/sittings/README.md | `accb034d36549b07c261b0facc7b187fac82daea1fa1866a5fde5bce3314d735` |
+| `packets/2026-11-24-ff-attempt31-archive/splice.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, splice.txt | `8321a41c9e94deecc24134f3b6931b197e2d280a3203453479a221ec7a341eb4` |
+| `packets/2026-11-24-ff-attempt31-archive/splice_rows.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-archive, splice_rows.py | `437f3b8d0740b43311dfbeedb966c42287e39dfdf846e105ecff4b6e004e75df` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-addendum/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-addendum, README.md | `d821308a618fe549b2e6971d835f7c0ea3e09f3b69918953a505ee02f1e5a82b` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-addendum/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-addendum, SHA256SUMS | `e112ee600b1d5ab1bd2335e7a6d121352e8aca86afd1573c96d44b82a5da3421` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-addendum/check_figures.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-addendum, check_figures.py | `2dcbc3c9be1449b25a97f80c168dcc7c5733f6998ec2a011b2b9885d90b12edc` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-addendum/figures.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-addendum, figures.txt | `ba22f5cb99850125b553ea665ec095ef8e72ee894e11c2a40c2e0014b48f6615` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-addendum/lint.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-addendum, lint.txt | `660bb5d9bf3ca263d872fadca544575fa10bf114db0cd69da083555758a1940b` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-review/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-review, README.md | `747deef5650ccf423366b167c8b4f0bfb0f1e1eae25b2587dd518028d076f3b9` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison-review, SHA256SUMS | `c71643156525acf90170bb8a6d4e48c004d1ccecdcd38ee1e0e474cade9bdfe7` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, README.md | `af954d32df4ef09879b388c52b8f9b95577b7b13802724f95db25964c5c45e9f` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, SHA256SUMS | `6c41cc0d651377cf846e0dc24ef85d601e34acbf55e50f58eed40db2b8c7d115` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/analysis.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, analysis.txt | `143db7e0f78eb6768eb1e7aa5ee95056430d59209cc531f304956cca09562126` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/analyze_cpu2.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, analyze_cpu2.py | `201a6b04ac3add8908fb53a89848e945900d661789c1687c37f46a0251820bb8` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/corrections.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, corrections.py | `0e01642318b5cccf78ac218b2abc80d90c3ca37d8b7f746787cdbb2015a6ba75` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/corrections.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, corrections.txt | `bec995176fdc1fc4d4a4d4accab02994d43337d404c5bcfa378ec96cd87f6219` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/cpu2-state-checks.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, cpu2-state-checks.txt | `54c5f3f58c2d9f95b282159a90982f7b5aca1b71bc47305a1e7e2a2fa2f30708` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/cpu2_state.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, cpu2_state.py | `ed1690df08640ad8bfce627d31940f89cd6a213c6c2ffb1d8908787664f72812` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export-run1.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export-run1.txt | `40ba0ee44cbfda6630dad1b6e9b2a30e131778642bea80621b466fc9ab4a725a` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export.txt | `f77a92eb5fc1010c5a5630bda4e0e19f1560c120b790e89cf602c5b751dfbd71` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export/cpu2-cases.jsonl` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export/cpu2-cases.jsonl | `dda5c04d783f1ae8fc910b2b0026142200e4d579cafcd38281e696f39f108516` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export/cpu2.csv` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export/cpu2.csv | `e4df43820a37796c88f40815f7c8bc9a172f8623828a9c450a442f145fbae6f7` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export_cpu2.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export_cpu2.py | `a63cfd8e2e5e7ae3d8b2c98efa143e5fe7604f03b2f1a38a30d76096c06c60f1` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export_t5-r2.diff` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export_t5-r2.diff | `c17af2cf58256f30fdc3e50f991c9b8d55e1a0d1053cd1ba5092c49c0345c4bc` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/export_t5.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, export_t5.py | `590f41d74a118fe897cfcf1497123a50f656c31c6ac7f02826b161007b175fc0` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/helper-checks.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, helper-checks.txt | `b792c9e75609cadf8845d1dbaf96b7543f5a10935be2c2991c00e5037f9ca1c0` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/lint.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, lint.txt | `c21010401a2a8341234d0862ffeb42a36de6d6363895beada1e071fb1f89c1a9` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/sleeps-corrections.csv` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, sleeps-corrections.csv | `44506771ed4f80e49628c6492a09c9a4dd1268c58125dbbebc45ff17e70073d5` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/test_cpu2_state.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, test_cpu2_state.py | `947db474c6199bcd7537fa0cfbb863d564d6b625a1df27386f3391f70d3ecd00` |
+| `packets/2026-11-24-ff-attempt31-cpu2-comparison/test_export_helpers.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-cpu2-comparison, test_export_helpers.py | `c7ca2b4d12735213b8ec3a65e4c55bfaa465b5c869c3651a2fd8be2fc53b76aa` |
 | `packets/2026-11-24-ff-attempt31-review/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-review, README.md | `623099376cba731483096b14ead5052018125dbb3939c96b5b14613896445d72` |
 | `packets/2026-11-24-ff-attempt31-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-review, SHA256SUMS | `46be6941917c84f9c8b30582473e93786134df66e77524d0f5e6827142008765` |
 | `packets/2026-11-24-ff-attempt31-sitting-addendum/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-sitting-addendum, README.md | `f89a839cb2a1b6751510b14f0e6111cf4377e426ee6786055e8d5d220528d703` |
@@ -5454,6 +5530,16 @@ project's review notes.
 | `packets/2026-11-24-ff-attempt31-sitting/runs/ff-31-1-grid-timer/rate-trace-current-999hz-rt-loaded-excl-bounded-fast-obs-confined-timer-20261124-31.csv.summary.toml` | Adapter diagnostic packet 2026-11-24-ff-attempt31-sitting, runs/ff-31-1-grid-timer/rate-trace-current-999hz-rt-loaded-excl-bounded-fast-obs-confined-timer-20261124-31.csv.summary.toml | `008932b074b6cd0022172456ae0218b71be735d9cb22565228efd16a1dd8c9fc` |
 | `packets/2026-11-24-ff-attempt31-sitting/validate.sh` | Adapter diagnostic packet 2026-11-24-ff-attempt31-sitting, validate.sh | `166929af57e2302410dd64014ad7ceaa69b94f7f557b019b0bc2631659c0f755` |
 | `packets/2026-11-24-ff-attempt31-sitting/validate.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-sitting, validate.txt | `a34796e9654845cba7773bdcb319367e2bc3a366d04d06f9e6793c29ad58546c` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/README.md` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, README.md | `7960ac2ad1abb33eb25eeb3351f7386dd887bb96d6655b2541105ece652931bb` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, SHA256SUMS | `4a09c2b7a18dc3cbece300497d767aa29a6e1ad52847f03b8760515eaddcd74e` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/analysis.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, analysis.txt | `1aa3f67690c46ea1ba296006d74e377447879d7974e63b37c277f1870ca3ac6d` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/analyze_t5.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, analyze_t5.py | `f54a691010cea2805659cf98d0c7d7fd43bc68b4cd223dc462a056e8ec20040c` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/export.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, export.txt | `b1663e1d63603a4e55c15f08ae0d1f680d0fca7b9ea0d151da1f58d9d8b9801f` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/export/cases.jsonl` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, export/cases.jsonl | `de9681cb60ffda925707706e39ef32f5e456d1bafb89a15fee6dcbe9dfac3b2c` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/export/sleeps.csv` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, export/sleeps.csv | `d55fcbfa8d177fe5c144b004a22e6e9dba90ce6409de4a071584f68b93aec149` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/export_t5.py` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, export_t5.py | `8e908960bcc9d9787849ae15cedfcd263175365a377a4fd93948745e5365ab68` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/lint.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, lint.txt | `1db1cbb3fb656aa01b415a91a7147bc395b961f9af338ee16fd2fdfb14986afd` |
+| `packets/2026-11-24-ff-attempt31-t5-triage/provenance.txt` | Adapter diagnostic packet 2026-11-24-ff-attempt31-t5-triage, provenance.txt | `1c448ca665b59980635eceed47b92abf1d9abec854d65f7abdd6dbbb0cd77cde` |
 | `packets/2026-11-24-ff-candidate-review/README.md` | Adapter diagnostic packet 2026-11-24-ff-candidate-review, README.md | `ac2db1c762a3e82967568113d629993118470fb584d91db47f22346b4bee047f` |
 | `packets/2026-11-24-ff-candidate-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-ff-candidate-review, SHA256SUMS | `6ae654a2c5259f6c95bfd27bcb68cd36fc1f191b5c71978b72e1bdbc12b9f03f` |
 | `packets/2026-11-24-ff-candidate/BLOCKS.md` | Adapter diagnostic packet 2026-11-24-ff-candidate, BLOCKS.md | `ccc1d65fe25edfd592671660116326dac018347e43b56cd24a4d0f2ee4ec873f` |
@@ -5561,8 +5647,8 @@ project's review notes.
 | `packets/2026-11-24-proposal-worktrees-removed/removal-run1.txt` | Adapter diagnostic packet 2026-11-24-proposal-worktrees-removed, removal-run1.txt | `ec271b38d76b68d063b1b40839b522189f4b0d11d5cc15ec3aab3387659a39cf` |
 | `packets/2026-11-24-proposal-worktrees-removed/removal.txt` | Adapter diagnostic packet 2026-11-24-proposal-worktrees-removed, removal.txt | `3e71c17d48026d91677373de87c4d3062d8e66a18e66cb85c48bfc8223f5cd1b` |
 | `packets/2026-11-24-proposal-worktrees-removed/remove.sh` | Adapter diagnostic packet 2026-11-24-proposal-worktrees-removed, remove.sh | `d4f83d13e9de5e4c7a05cd93d7a287168d7456eb2ddadfed1211ae16bbb63348` |
-| `packets/README.md` | Adapter diagnostic packets, the list | `cb0aacb66c6e12c8e672125638c5fa7439bfc1f52aebd5bd53db14dfe1a24e82` |
-| `packets/SHA256SUMS` | Adapter diagnostic packets, the folder's SHA256SUMS | `23dc9a4207f83a4f8803440fbeea218b6ff62ed42962a0c38674a19087c1925a` |
+| `packets/README.md` | Adapter diagnostic packets, the list | `4f9120304bb8bc76b79abcf836d4c1c466da495a3d2a911036b6e4efc497701d` |
+| `packets/SHA256SUMS` | Adapter diagnostic packets, the folder's SHA256SUMS | `4575432facb08085ca77f250c6a3f43c78ee94d208df9095566076824742475d` |
 | `sittings/README.md` | Adapter diagnostic, the sittings' note | `accb034d36549b07c261b0facc7b187fac82daea1fa1866a5fde5bce3314d735` |
 | `sittings/SHA256SUMS` | Adapter diagnostic, the sittings' SHA256SUMS | `d0e7c197e428f9d4cbdec06e20a4e8dfa3f398e29b4b90bc17e0874c2c293b2e` |
 | `sittings/attempt-27/d1-27-cadence.csv` | Adapter diagnostic rehearsal (attempt 27, stopped before any invocation), sitting record d1-27-cadence.csv | `6c8613974398b9752d38bedd0f191aa41c5918cbf46a85cc85c3e4f2e0fe88ec` |
