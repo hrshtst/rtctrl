@@ -800,9 +800,58 @@ switch-in, and the stamp.
   sleep before 5 s or after 26 s into the run was delayed.
 
 What selects the two modes is unknown, and no power-policy or placement
-change follows. A further offline check of CPU-2 timer callbacks against
-their armed expiries is authorized; it cannot show when CPU 2's hardware
-interrupts arrived. The triage, the comparison and their reviews are
+change follows. The triage, the comparison and their reviews are
+archived in `adapter_diagnostic/packets/`.
+
+**The CPU-2 timer check (offline, this capture only, descriptive).** The
+comparison asked what CPU 2's recorded state was at CPU 3's due times.
+This check asked when CPU 2's own timer callbacks ran, against the
+expiries they were armed for. One selective pass followed every hrtimer
+arming, rearm, cancel and callback on every CPU, with CPU 2's interrupt
+contexts.
+- **What it measures:** a callback's lateness is the tracepoint's
+  timer-base `now` minus that arming's hard expiry. The kernel samples
+  `now` once per timer-queue pass, not at each callback's entry. The
+  callback-entry trace stamp, used for the coincidences, is a separate
+  measurement. A negative lateness is service within the timer's slack.
+- **CPU 2 over the run:** it ran 32,878 callbacks, all in hard-interrupt
+  context, 7 of them without an established arming. 221 were served
+  50 µs or more beyond their hard expiry. Of those, 166 have trace stamps
+  within 2 µs after a delayed CPU-3 exit: recorded timestamp
+  coincidences, not simultaneous physical wakeups or a shared cause.
+- **During CPU 3's delays:** 253 distinct generations (address and
+  arming time) were armed to expire between CPU 3's due time and its
+  recorded idle exit. They lie in 251 of the 1,116 delayed windows, all
+  among the 411 coincident sleeps, so they are not 253 independent
+  episodes.
+  - None ran before CPU 3's recorded exit. 250 ran within 2 µs after it,
+    and the other three within 7,083 ns.
+  - Their lateness ran from 3,012 to 173,677 ns: 4 under 5 µs, 85 at 5
+    to 50 µs and 164 at 50 to 200 µs.
+- **The controls:** of the callbacks due in the 200 µs after the due
+  time, 164 of 375 were 50 µs or more late in the delayed sleeps. None
+  were in the fast sleeps with CPU 2 equally quiet (0 of 424), or in CPU
+  3's state-1 fast sleeps (0 of 1,542).
+  - These are fixed windows. The controls' own delay windows are far
+    shorter (p50 258 ns and 215 ns, against 80.6 µs).
+  - The populations are exploratory and serially clustered. They give
+    no independent-trial rate or causal estimate.
+- **Clock placement:** 251 of the 253 use the inferred
+  MONOTONIC-or-BOOTTIME class, and 2 a known CLOCK_MONOTONIC base. For
+  the inferred class, the trace time and `now` agree within 0 to 6.0 µs.
+  That supports the placement conditionally, but identifies no base and
+  sets no general bound. The lateness itself needs no conversion.
+- **None left unserved, within its scope:** 328 placed generations due
+  in the delay windows did not run. Each had been rearmed or cancelled
+  before the due time. 11 callbacks stay unknown: 1 without an
+  established arming, and 10 on CLOCK_REALTIME, not placed.
+
+CPU 2's deadline writes and idle-state events were not recorded. So the
+check measures timer service, not when CPU 2's hardware interrupt
+arrived. It establishes no programmed deadline, power state, cause or
+remedy. It strengthens the association between delayed timer service on
+both CPUs. No further trace pass is needed, and no hardware or
+host-policy change follows. The check, its addendum and its review are
 archived in `adapter_diagnostic/packets/`.
 
 ### Summaries

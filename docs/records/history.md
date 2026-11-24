@@ -1174,6 +1174,13 @@ CPU 2's next recorded event often came within 2 us of CPU 3's exit.
 These are associations, and what selects the delayed mode is unknown. No
 power-policy or placement change follows.
 
+An offline check of CPU 2's timer callbacks followed. In 251 delayed
+windows, 253 CPU-2 callbacks were due before CPU 3's recorded idle exit.
+None ran before that exit, and 250 ran within 2 us after it; they were
+3,012 to 173,677 ns late. In the fast controls, no callback due in the
+same fixed 200 us span was 50 us late. This measures timer service, not
+CPU-2 interrupt delivery, and establishes no cause or power state.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
