@@ -347,6 +347,19 @@ set_tests_properties(adapter_diagnostic_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "adapter diagnostic regressions OK"
   LABELS unit)
 
+# The reply's byte arrival (tools/byte_arrival.py) on synthetic exports:
+# the protocol map against wire_budget.hpp, the coverage predicates at their
+# exact thresholds, reconstruction and every exclusion in the denominator,
+# the step model's known answers and refusals, and the predictions' rules.
+add_test(NAME byte_arrival_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_byte_arrival.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(byte_arrival_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "byte arrival regressions OK"
+  LABELS unit)
+
 # Traced-run correlation: the association and alignment checks, each of
 # their failures, and the receive path on a synthetic probe run and trace.
 add_test(NAME trace_correlate_regressions
