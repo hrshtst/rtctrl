@@ -772,9 +772,9 @@ switch-in, and the stamp.
   - The delays came in episodes over the run.
   - The kernel's declared table (C2_ACPI, 127 µs exit latency) is not a
     measurement, and the index establishes no mechanism.
-- **The export helper:** it wrote −1 for empty intervals. Its revision 2
-  counts nothing there, and the corrected fields (16,869 cells, none in
-  a late sleep) are disclosed separately.
+- **The export helper:** it wrote −1 or −2 for empty or reversed
+  intervals. Its revision 2 counts nothing there, and the corrected
+  fields (16,869 cells, none in a late sleep) are disclosed separately.
 
 **The CPU-2 comparison (offline, this capture only, descriptive).**
 - **What was traced:** CPU 2 is CPU 3's SMT sibling, per the run

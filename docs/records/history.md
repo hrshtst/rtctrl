@@ -1161,8 +1161,9 @@ T5's unexpected failure, on its p99.9 limit alone, is the subject of a
 bounded offline triage. No rate qualification follows.
 
 The triage found T5's tail set by late timer service. In 1,032 sleeps,
-CPU 3 left its recorded idle state 2 only 58 to 188 us after the
-deadline, in episodes over the run. Two more sleeps lost about 150 us
+CPU 3's recorded idle exit was 58 to 188 us after the due deadline, in
+episodes over the run. State 2 was recorded at the due time in 1,031 of
+those sleeps, and state 1 in one. Two more sleeps lost about 150 us
 inside the timer interrupt after an on-time service.
 
 An offline comparison with CPU 2, CPU 3's SMT sibling, followed. CPU 2's
