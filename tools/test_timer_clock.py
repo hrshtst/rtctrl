@@ -902,7 +902,7 @@ print("the ledger takes hrtimer expiries strictly:")
 lg = led([(100, "local_timer_entry", "vector=236"), (150, "hrtimer_expire_entry", "hrtimer=0xffff8c577efa2098 now=358688588000915 function=tick_nohz_handler/0x0"), (300, "local_timer_exit", "vector=236")])
 claim("a well-formed expiry is taken", [k for _, k, _ in lg.events] == ["E", "H", "X"] and not lg.problems)
 claim("a malformed expiry is reported", any("malformed hrtimer expiry" in x for x in led([(150, "hrtimer_expire_entry", "hrtimer=0x1 function=f")]).problems))
-print("revision 55, PROPOSED (not accepted): an entry stamped before its own delimiter (attempt 28's invocation 3):")
+print("revision 55: an entry stamped before its own delimiter (attempt 28's invocation 3):")
 E, D, W, X, tau, samp = gen()
 r0 = check("baseline with expiries recorded (again)", "PASS", served(events(E, D, W, X)), tau, samp)
 xe = E[K] + 40_000                  # the extra interrupt, 40 us after the tick's (attempt 28: +39.951 us)
@@ -984,7 +984,7 @@ for sh in (1000, -1000, 200, -200):
     ev, t2, mc, ic = shape28(shift=sh)
     rep28(f"the extra entry's anchor {sh:+d} ns from its stamp", "FAIL", ev, t2, mc, ic)
 
-print("revision 55, PROPOSED: ordinary timer-free entries stay ordinary (the next-step review's counterexample):")
+print("revision 55: ordinary timer-free entries stay ordinary (the next-step review's counterexample):")
 ev = served(events(E, D, W, X), skip=(E[K],))
 r = check("an ordinary timer-free entry, deadline-raised, holding its anchor (1, 1, 1)", "PASS", ev, tau, samp)
 claim("  ... not a candidate: nothing repaired, no entry identified by order, the pairs unchanged",
@@ -1004,7 +1004,7 @@ out = R.repair_undelimited(sl, an, fr, {}, R.SamplerMap([(c - 1, c, c + 1, 0) fo
 claim("the review's own example: the (1, 1, 1) entry is no candidate; the frozen slots come back unchanged",
       out[3] == [] and out[4] == [] and out[0] is sl and out[1] is fr, f"repaired {out[3]}, refused {out[4]}")
 
-print("revision 55, PROPOSED: the identified pair's own bound and the range, as revision 54's:")
+print("revision 55: the identified pair's own bound and the range, as revision 54's:")
 MIXED = [(c - 1200, c, c + 1200, z) if E[400] < c < E[1200] else (a, c, b, z) for a, c, b, z in samp]
 ev, t2, mc, ic = shape28()
 r = rep28("mixed brackets elsewhere, attempt 28's shape intact", "PASS", ev, t2, mc, ic, sampler=MIXED)
@@ -1043,7 +1043,7 @@ claim("certified analyze(): contexts differing: not accepted, a candidate U", r[
 r = R.analyze((ev, []), (t2, []), samp, window=WIN_X, evidence=EV_X)
 claim("certified analyze(): no contexts given (revision 54's call): not accepted", r["status"] == "FAIL" and r["accepted"] is False, r["status"])
 
-print("revision 55, PROPOSED: the contexts as the reports give them:")
+print("revision 55: the contexts as the reports give them:")
 rows = "\n".join([
     "# tracer: nop",
     "   Isolated Web Co-2711452 [003] d.h1. 100: local_timer_entry: vector=236",

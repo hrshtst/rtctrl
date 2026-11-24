@@ -2,9 +2,9 @@
 every converted value and a certificate of the clock model it rests on
 (tools/timer_service.py; docs/hardware/control-rate.md, the frozen design of
 revision 53 of the clock-alignment work, with revision 54's identification by
-order of an entry no deadline delimits, accepted 2026-11-20; and, PROPOSED
-for review and not accepted, revision 55's repair of an entry stamped before
-its own delimiter, attempt 28's case: see repair_undelimited).
+order of an entry no deadline delimits, accepted 2026-11-20, and revision
+55's repair of an entry stamped before its own delimiter, attempt 28's case,
+accepted 2026-11-24: see repair_undelimited).
 
 Three separate results. status PASS or FAIL: the slot accounting, the sign
 checks, the coverage and the model-consistency check. U: a bound on the error
@@ -256,8 +256,8 @@ def resolve_undelimited(sl, tsc, r):
 
 
 def repair_undelimited(sl, tsc, r, und, M, main_ctx=None, inst_ctx=None):
-    """Revision 55, PROPOSED for review and not accepted (attempt 28's invocation 3, 2026-11-24): an entry stamped
-    before its own delimiter, identified by order once that delimiter is set aside.
+    """Revision 55 (accepted 2026-11-24; attempt 28's invocation 3): an entry stamped before its own delimiter,
+    identified by order once that delimiter is set aside.
 
     Revision 54 identifies an entry no deadline raised only where its neighbours hold (2, 0, 1) anchors. Its slot still
     has a delimiter, the earliest deadline written since the previous entry, which did not raise it. When a timer armed
@@ -451,7 +451,7 @@ class Conversion:
 
 def rule(ev, tsc, samp_pairs, model, window=None, cap=None, main_ctx=None, inst_ctx=None):
     """ev: time-ordered (t, 'W'|'E'|'X', value). main_ctx: an entry's time -> (task, PID, flags); inst_ctx: each
-    anchor's (task, PID, flags) or None. Both are read only by revision 55's proposed repair."""
+    anchor's (task, PID, flags) or None. Both are read only by revision 55's repair."""
     why = []
     sl, tail_orphan, head_orphan = build_slots(ev)
     r = assign(sl, tsc)
@@ -472,7 +472,7 @@ def rule(ev, tsc, samp_pairs, model, window=None, cap=None, main_ctx=None, inst_
             why.append(f"{r[key]} {msg}")
     if tail_orphan:
         why.append(f"{tail_orphan} exits with no entry")
-    why += [f"revision 55 (proposed): the repair of entries stamped before their own delimiter is refused: {x}" for x in refused]
+    why += [f"revision 55: the repair of entries stamped before their own delimiter is refused: {x}" for x in refused]
     items, offs, bad_e, bad_dl, nomap, bad_pending = [], set(), 0, 0, 0, 0
     for j, i in sorted(r["pairs"].items()):
         offs.add(j - i)

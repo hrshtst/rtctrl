@@ -1086,6 +1086,21 @@ not identify that shape. The run is void, and the procedure stopped the
 sitting before the grid timer run. No 1 kHz qualification follows. An
 offline investigation of the event is authorized; no hardware sitting is.
 
+The investigation found an entry of the kind revision 54 identifies, in a
+shape it does not: the scheduler tick's next deadline, already replaced by
+the stopped tick's far deadline, delimited the entry, and the probe's sleep,
+armed just after it, was earlier, so the ladder decreased. (The sitting's
+packet had called the tick's deadlines the probe's; the timer about 220 us
+after the tick was the probe's own sleep.) Clock alignment revision 55,
+accepted 2026-11-24, identifies such an entry by order. The candidate is
+decided before any change, by its own delimiter lying after its stamp
+beyond the sampler's bound; only that delimiter is set aside; revision 54's
+rule and checks then apply unchanged, and any inconsistency refuses. The
+cause of the interrupt is not established. A separately labelled
+revision-55 reanalysis of invocation 3 comes next. Invocation 3's exit 1,
+the STOP and the unrun invocation 4 stand, and no hardware sitting is
+approved.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

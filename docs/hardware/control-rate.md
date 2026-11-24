@@ -454,12 +454,12 @@ validation:
   analysis failed on the clock alignment's slot accounting. All three
   failure counts (one decrease of the deadline ladder, one slot with two
   instance anchors and two with none) come from one local event about
-  12.19 s into the run. So the certified conversion was not accepted
-  (validity item 4), and the invocation returned 1 (item 7). Its
-  recording and sleep accounting (item 3) hold. Its USB association
-  counts, zero goal currents and restoration stand as the facts they
-  establish. Its candidate U, any timer-service attribution and any
-  prediction are not taken from it.
+  12.19 s into the run. So, though the certificate is CERTIFIED, the
+  conversion was not accepted (validity item 4), and the invocation
+  returned 1 (item 7). Its recording and sleep accounting (item 3) hold.
+  Its USB association counts, zero goal currents and restoration stand as
+  the facts they establish. Its candidate U, any timer-service attribution
+  and any prediction are not taken from it.
 - **Invocation 4, the grid timer run, was not run.** The procedure stopped
   the sitting, with no retry.
 
@@ -485,6 +485,20 @@ in `adapter_diagnostic/`, the void run included. An offline investigation
 of invocation 3's interrupt and deadline sequence is authorized, with
 revision 54 and the candidate unchanged. No further hardware sitting is
 approved.
+
+**The investigation and revision 55 (2026-11-24).** The offline
+investigation found that invocation 3's event is an entry of the kind
+revision 54 identifies, in a shape it does not. The conversion's
+description, under the timer service diagnostics' design below, gives the
+sequence with the corrected attribution: the millisecond deadlines are the
+scheduler tick's, and the timer about 220 µs after the tick is the probe's
+own sleep. The review accepted clock alignment revision 55 for it. A
+separately labelled revision-55 reanalysis of invocation 3 follows, for its
+own verdict and record decision. Whatever it shows, invocation 3's exit 1
+and the STOP stand, and invocation 4 never ran: no completed timer
+comparison or four-invocation hardware validation follows. The frozen
+candidate `dd6fd3c` and its builds are unchanged, and no hardware sitting
+is approved.
 
 ### Summaries
 
@@ -1447,6 +1461,61 @@ substitution cases still fail with expiries recorded. Accepting the method
 promotes no historical result: reanalyses under it are labelled separately,
 and the original analyses and failures stay intact.
 
+Revision 55 (accepted 2026-11-24; the reports name it) accounts for an
+entry stamped before its own delimiter. Attempt 28's invocation 3 holds one
+entry of the same kind, about 40 µs after a scheduler tick's deadline (the
+millisecond deadlines are the tick's, `tick_nohz_handler`). Its delimiter,
+the earliest deadline written since the previous entry, is the tick's next
+deadline: about 0.96 ms away, and already replaced by the stopped tick's far
+deadline. The probe's own sleep (`hrtimer_wakeup`, about 220 µs after the
+tick's deadline), armed just after the entry, is earlier. So the ladder
+decreases there, and the entry's anchor and the probe timer's fall into the
+previous slot: the three slots hold (3, 0, 0) anchors, where revision 54
+needs (2, 0, 1). The stopped tick has two different intervals: its hrtimer's
+logical expiry was 68.644 s after its re-arm, and the value programmed into
+the TSC-deadline register lay 193.247 ms after the tick's deadline. Both lie
+far after the entry. Why the interrupt comes with nothing due is not
+established. An entry is a candidate only on evidence taken before anything
+changes, on revision 54's slots and assignment:
+
+- it holds no anchor, revision 54 did not identify it, and it lies inside
+  the span;
+- it served no hrtimer, is closed, not nested or pending, and has a
+  delimiter;
+- its delimiter, mapped through the sampler pairs (independent of every
+  anchor), lies after its main stamp by more than the map's bound: that
+  deadline was not due. This is the test the rule applies to deadline pairs.
+
+An ordinary timer-free entry holds its own anchor and its deadline was due,
+so it is never a candidate. Setting its delimiter aside could manufacture
+the (2, 0, 1) shape, which is why the candidate is decided before any
+change. The repair sets only the candidates' delimiters aside, assigns
+again and resolves by revision 54's rule, unchanged. It is refused, and
+revision 54's result stands with the reasons reported, unless all of these
+hold:
+
+- no candidate neighbours another candidate or an entry revision 54
+  identified;
+- the ladder then decreases nowhere;
+- revision 54's rule identifies every candidate, and no other entry newly;
+- checked explicitly, the three anchors lie in order between the
+  surrounding delimiters;
+- each of the three entries' task, PID and flags in the main trace equal
+  its anchor's in the TSC instance; a missing context refuses.
+
+The identified pair then meets revision 54's checks: its own bound (a
+signed test of the main stamp against the mapped anchor, not a bound on the
+absolute error), the retained range, the single index offset and the
+completeness counts. It stays outside the conversion. The contexts are
+additional evidence and decide nothing alone. A candidate needs a slot
+revision 54 left empty, so revision 55 changes only analyses that revision
+54 fails. Its controls (attempts 13, 21 and 23 and attempt 30's two timer
+runs) came out unchanged in every pairing, conversion-membership and
+exclusion field, and none of the 201 ordinary timer-free entries in those
+runs and attempt 28's was reclassified. As with revision 54, reanalyses
+under it are labelled separately, and the original analyses and failures
+stay intact.
+
 U bounds the error of every converted value, not a sample of them. For each
 interval it is the larger of the two anchors' measured stamp differences plus
 the sampler's bound, plus the chord over the interval and the clock-read
@@ -2390,7 +2459,9 @@ are archived in `stage1_hardware/`, each with its own verdict.
 
 That design was frozen as revision 53 on 2026-11-11, and the session and the
 analysis now implement it (the conversion and the timekeeping record, above;
-revision 54, accepted 2026-11-20, adds the identification by order there).
+revision 54, accepted 2026-11-20, adds the identification by order there,
+and revision 55, accepted 2026-11-24, its repair for an entry stamped before
+its own delimiter).
 The implementation review of 2026-11-11 requested three corrections, which its
 re-review accepted: the cleanup's existence checks answer only from a listing
 read in full, the evidence files are read strictly, and the audited trace-cmd

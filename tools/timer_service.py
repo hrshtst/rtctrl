@@ -67,7 +67,7 @@ from typing import NamedTuple
 import timer_clock
 import tk_record
 
-ANALYSIS_REVISION = "clock alignment revision 54, with revision 55's repair PROPOSED (not accepted)"
+ANALYSIS_REVISION = "clock alignment revision 55"
 U_LIMIT_NS = int(timer_clock.U_LIMIT)  # the provisional bound on the validated uncertainty
 LATE_NS = 50_000         # a timer service this late is classified
 RES_NS = 1               # timestamp resolution added to U (mono 1 ns; the TSC finer)
@@ -1049,10 +1049,10 @@ def report(csv_path: pathlib.Path, ev: TimerEvents, pairs_of_sleeps: list[tuple]
                       f"delimited neighbours; not used in the conversion): {len(und)}", file=out)
                 rep_ = [x for x in und if x.get("repaired")]
                 if rep_:
-                    print(f"    of them stamped before their own delimiter and identified once it was set aside (revision 55, "
-                          f"PROPOSED, not accepted): {len(rep_)}", file=out)
+                    print(f"    of them stamped before their own delimiter and identified once it was set aside (revision 55): "
+                          f"{len(rep_)}", file=out)
                 for x in und[:top]:
-                    print(f"      the entry at {x['t']} ns{' (revision 55, proposed)' if x.get('repaired') else ''}: e {x['e']:+.0f} ns, its own bound {x['B']:.0f} ns "
+                    print(f"      the entry at {x['t']} ns{' (revision 55)' if x.get('repaired') else ''}: e {x['e']:+.0f} ns, its own bound {x['B']:.0f} ns "
                           f"({'met' if x['own'] else 'EXCEEDED'}); {'within' if x['in_range'] else 'OUTSIDE'} the "
                           f"retained deadline-identified pairs' range [{x['lo']:+.0f}, {x['hi']:+.0f}] ns widened by "
                           f"its bound", file=out)
