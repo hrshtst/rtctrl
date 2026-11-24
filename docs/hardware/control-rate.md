@@ -623,6 +623,60 @@ No completed sitting, timer comparison or control-rate qualification
 follows. The audit, its addendum, the reanalysis and their reviews are
 archived in `adapter_diagnostic/packets/`.
 
+**The bottleneck analysis (2026-11-24; offline, descriptive).** The
+reviewer recommended it before preparing any further sitting. It used
+invocation 3's own capture.
+- **The decomposition:** each of the 16,976 locked reads splits exactly
+  into the lead to its targeted completion, the gap from that to the
+  carrying completion, the receive delay, and the work after the reply.
+  Every observed lead exceeds 700 µs (minimum 745.7 µs). So this captured
+  configuration's selected leads fail T6a's percentile, whatever is done
+  about its exceptional delays. That does not show that every timing or
+  transport choice on this read path must fail.
+- **The 25 skipped periods:**
+  - 8 full-window reads carried by a later completion. Their targeted
+    completions carried 140 to 143 of the 144 reply bytes;
+  - 17 motion-only reads carried on target, then delayed in the receive
+    path before the TTY flush work started. Another task was on the
+    kworker's CPU, which is evidence of occupancy, not of cause.
+- **The tail:** these are 0.147 % of the reads (25 of 16,976), and 0.100 %
+  for the 17 stalls alone. T6a's p99.9 rank, its 700 µs threshold and its
+  separate under-1 ms maximum stay distinct.
+- **The counterfactual:** with every read's additional time capped at its
+  p99, host work's p99.9 would be 866.4 µs. That is descriptive, on the
+  same rows, and simulates no change.
+- **Not accepted:** the analysis's universal claims. No physical readiness
+  reduction is established as required, transport alone is not shown
+  insufficient, and its byte timings derived from host stamps are
+  inferred, not measured.
+
+**The byte-arrival study (2026-11-24; offline, descriptive and
+model-dependent).** It used the archived grid-timed timer runs of
+attempts 26 (confined and open) and 25 (open), each kept separate, from
+one correlator export per run. A Fast Sync Read reply to 8 servos of len
+bytes each is 8 + 8 (len + 4) bytes, so its sections start at known byte
+positions.
+- **The step:** in the two usable motion-only fits, the host-observed
+  arrival of the reply's prefixes shows a fitted common step of about 17
+  to 20 µs at those section starts. That is a step in host observations
+  associated with the protocol's sections, not a measured servo-handoff
+  delay. Its quoted errors are conditional on the model, and the residual
+  is least at the protocol's positions.
+- **The whole reply:** in attempt 25 open, the whole motion-only reply is
+  a model endpoint estimate of about 650 µs after the instruction's USB OUT
+  completion, not a readiness tail bound. 295 of 307 first completions in
+  its 640 to 650 µs bin were whole, and partial ones occurred as late as
+  713.9 µs.
+- **Coverage:** the drift did not sample every prefix in the other two
+  runs.
+- **Not measured:** the response to another servo count, baud or
+  transport.
+
+The review authorized preparing a plan for one torque-off, grid-timed
+timer diagnostic with full feedback, as plan preparation only; no
+acquisition is approved. Both studies are archived in
+`adapter_diagnostic/packets/`.
+
 No 1 kHz qualification follows. Invocation 3's exit 1 and STOP, and the
 missing invocation 4, stand. The analysis and its review are archived in
 `adapter_diagnostic/packets/`.

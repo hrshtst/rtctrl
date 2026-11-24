@@ -1134,6 +1134,18 @@ and 43 were served by a deadline already programmed, needing no write of
 their own as far as the timeline shows (39 of them within U, their order
 unresolved). Nothing else changed, and hardware stays on hold.
 
+An offline bottleneck analysis of invocation 3 followed. Every observed
+lead to the targeted completion exceeded 700 us, so this configuration's
+selected leads fail T6a's percentile by themselves. Of its 25 skips, 8
+came from full-window replies missing their completion by a few bytes,
+and 17 from receive-path delays before the TTY flush work started. A
+byte-arrival study of the archived grid-timed timer runs of attempts 26
+and 25 then found, in host observations, a fitted step of about 17 to
+20 us at the reply's protocol section starts. It is model-dependent, not
+a measured handoff delay. Both were accepted as descriptive, with their
+universal claims withdrawn, and a plan for one full-feedback,
+grid-timed diagnostic is in preparation, with no acquisition approved.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
