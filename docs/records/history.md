@@ -1107,6 +1107,16 @@ failure as a versioned, retrospective verdict. Invocation 3's exit 1, the
 STOP and the unrun invocation 4 still stand: the sitting stays partial,
 with no timer-mode comparison, and no 1 kHz qualification follows.
 
+A retrospective analysis of invocation 3 under revision 55 followed, and
+was accepted as such. Its locked window ran 998.6 Hz with 25 skipped
+slots, and host work p99.9 was 1,188.2 us. A3 held: 16,968 of 16,976
+replies rode on their targeted completion. A8 and A10 failed, the other
+predictions held, and there is no timer G. All 18,962 sleeps were on
+time. The attribution rule matched 31,892 of 59,991 deadline writes to a
+single timer and left 28,099 INDETERMINATE, none of them to the probe's
+own sleep timer; an offline audit of that rule is authorized, with the
+rule unchanged.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)

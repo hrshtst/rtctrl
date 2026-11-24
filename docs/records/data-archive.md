@@ -4412,6 +4412,13 @@ accepted it as a versioned, retrospective verdict, beside the original revision-
 Invocation 3's exit 1 and STOP record, and the unrun invocation 4, stand: the sitting is not a completed validation,
 and there is no timer-mode comparison. The run folder is unchanged; the reanalysis and its reviews are in `packets/`.
 
+**Invocation 3's retrospective analysis (2026-11-24).** The planned after-sitting analysis then ran on invocation 3
+under revision 55, at `8a2fe52`: a completions export and the diagnostic's analysis. It was accepted as a separately
+labelled retrospective result, not the plan's valid-run comparison. Its locked window ran 998.6 Hz with 25 skipped
+slots. A3 held (16,968 of 16,976 replies carried by their target); A8 and A10 failed; and there is no timer G. The
+existing attribution rule's 28,099 INDETERMINATE deadline writes are kept as such. Its packet and review are in
+`packets/`.
+
 **The folders:**
 - **Attempt 30's invocations:** `d1-30-1-grid-untraced/`, `d1-30-2-adapter-untraced/`, `d1-30-3-adapter-timer/`
   and `d1-30-4-grid-timer/`. Each holds the session directory's files unchanged, with a `README.md` (its verdict)
@@ -4441,13 +4448,17 @@ and there is no timer-mode comparison. The run folder is unchanged; the reanalys
     `2026-11-24-d1-attempt28-inv3-rev55-reanalysis/` and their reviews.
   - The section's top and `packets/` README versions of attempt 28's archiving, which the revision-55 extension
     replaced, stay verbatim in `packets/2026-11-24-d1-attempt28-archive/section/`.
+  - Invocation 3's retrospective analysis, `2026-11-24-d1-attempt28-inv3-rev55-retrospective/`, and its review.
+    That review narrows the packet's sentence on denominators to A3: A6, A8 and A9 count their own subsets.
+  - The section's top and `packets/` README versions of revision 55's verdict, which the retrospective extension
+    replaced, stay verbatim in `packets/2026-11-24-d1-attempt28-rev55-archive/section/`.
 
 The copies were compared byte for byte with the originals, which stay in the operator's `~/rtctrl-hw/` and the
 project's review notes.
 
 | file | role | sha256 |
 |---|---|---|
-| `README.md` | Adapter diagnostic, the section's verdicts and provenance (the emulator rehearsal and the hardware sitting) | `e334fe9105f84284f69567477f72cf4c88d0af60d9768f9b2edd512605eb0dc5` |
+| `README.md` | Adapter diagnostic, the section's verdicts and provenance (the emulator rehearsal and the hardware sitting) | `b022fe54e5a087847d7941f4607ceedc549657982bb107983dd3a4313a4bffe8` |
 | `d1-28-1-grid-untraced/README.md` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), verdict and provenance note | `0458d0d37c3d55e33cd8b279725cec54449066c1ecd6ba6431950e9eb5f34651` |
 | `d1-28-1-grid-untraced/SHA256SUMS` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), the folder's SHA256SUMS | `5e7015ef7d77e485ea5794e2b604f2b61bce93a0a6eb2a16632df0b9a72369b8` |
 | `d1-28-1-grid-untraced/rate-trace-current-1000hz-rt-loaded-excl-bounded-fast-motion-obs-confined-untraced-20261124-28.csv` | Adapter diagnostic hardware sitting (attempt 28 invocation 1, grid untraced, valid), session file | `8d1fce9bba98e10b2b0e0b52bca2b09a977b6eb399a80bbe2e4d9e1ed381d811` |
@@ -5033,10 +5044,40 @@ project's review notes.
 | `packets/2026-11-24-d1-attempt28-inv3-rev55-reanalysis/outputs/diff-rev54-original-vs-rev55.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-reanalysis, outputs/diff-rev54-original-vs-rev55.txt | `24cccb204474897deb79d0436b5ead9c3293217c71c2b8e864ffb9b5257536e0` |
 | `packets/2026-11-24-d1-attempt28-inv3-rev55-reanalysis/outputs/run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-reanalysis, outputs/run.txt | `37ca6162533afdbe1ac691964fdfc7747a8df002639bd25dc4624024abe3db22` |
 | `packets/2026-11-24-d1-attempt28-inv3-rev55-reanalysis/reanalyze.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-reanalysis, reanalyze.sh | `713859641f07640b6288f0fc359d30eada5cf1e8b95b7d51236c71b29ba5e426` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, README.md | `234183b6f138c52f19e5ba4532abc31056b082a0217a3395adb3400de7b486b5` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, SHA256SUMS | `6f8e4724cb29a532638dc706f206b3179cb97e72410b5c4c39ca8e0266087fdf` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/export_pass.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, export_pass.py | `014aad77aac4b82464da34c60496fc75342ae35b20cc3b300331005f05cde107` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/lint.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, lint.txt | `9ae39eecebcba441bdbe215236c3a68dd14f94d73e882d56e873c7302c4a9d2b` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/analysis-28-3-rev55.json` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/analysis-28-3-rev55.json | `4e0a5cf920a695c6221a2ed8198bff1d09fef827952c6d95b68e202b1a62233a` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/analysis-28-3-rev55.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/analysis-28-3-rev55.txt | `f3853c5f12843c0630e5612dd7ca93fbdc34a5def8092e539cd06ea2b7d08351` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/attribution-28-3-rev55.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/attribution-28-3-rev55.txt | `3d7a53cbcef7e237c1c26290d39342d663a472281a7e74f3288a31a4f0a9e122` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/completions-28-3-rev55.csv` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/completions-28-3-rev55.csv | `1363ba4a2184320d33951c33dbc71f9d18cdba3bd75ec996c7ebde2ecd63e807` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/correlate-28-3-rev55-export.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/correlate-28-3-rev55-export.txt | `d1eb99cb9b71b6805378aef2ab5eeacf911bee9ac5e4fc394285bbdf273d6df7` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/export.stderr.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/export.stderr.txt | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/outputs/run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, outputs/run.txt | `f500395327e9a15b1f8aea39555f714e5c776aa63dee16c76e44be62d53fd400` |
+| `packets/2026-11-24-d1-attempt28-inv3-rev55-retrospective/retrospective.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-inv3-rev55-retrospective, retrospective.sh | `26c1e0da2db428baf39de5ed15ab7fb7e6b0c24a0a0e3ed27374d77b0489e96b` |
 | `packets/2026-11-24-d1-attempt28-next-step-review/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-next-step-review, README.md | `f30cccbc54730d2496e2a7f9a963a4cf52cf5bd622ef9db24307a99a1a197ef3` |
 | `packets/2026-11-24-d1-attempt28-next-step-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-next-step-review, SHA256SUMS | `a306c5394b76084b8136fa81a0a471b83667094173c0a2c087d5a9559b0ae75d` |
 | `packets/2026-11-24-d1-attempt28-next-step-review/check_delimiter_removal.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-next-step-review, check_delimiter_removal.py | `eff2792d67a5ebbdf729c803c0151b388838d1740e58f4201ba0bbbcf0220dc3` |
 | `packets/2026-11-24-d1-attempt28-next-step-review/delimiter-removal-result.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-next-step-review, delimiter-removal-result.txt | `239dd62177d3ae3aac261608134f3de06cd8a22ee8437e87b7ea20a27de9a1d2` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, README.md | `c7cdb052d4ad4e1ecaeec7d4bf526726aa0bf160b6a72617b2d079f7c97b4dac` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, SHA256SUMS | `744e4c108059be01f26bd84fb3f3abb267ffe9ea52f2470dfa8493afae379085` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/archive-check.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, archive-check.txt | `4986d9bc7389cefe63f3a9948df2adfb330c30489b5dfc81e98556cc4b1b532c` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/archive-copy.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, archive-copy.txt | `60608937d94e69cf9a07c354cab60623c670fb8b8e825fa40f566b8682557860` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/archive.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, archive.sh | `033ab7aaf7e383da6ffe1ec21eea99ee7e8eb761e9e96d2e1ac9d8b3b7a2f06c` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/check_archive.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, check_archive.py | `a8d12afe748053e1bdd273f220903180eec90f84e015abf6d1e0d8b2a701c37a` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/lint.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, lint.txt | `c9f8a57b94d93f6df93579283fa5f61a3fcd01be628b4521c552f59f50c23e39` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/manifest_rows.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, manifest_rows.py | `597648e6712ee76b9a86cf82e174f709b5b2a3df1911c0afac36d8de6e7f7c12` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/record-checks.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, record-checks.txt | `a55c34210c8289f219e37cad046bb74e0cb5e41cda2b4f80d3684b1e8f766a6b` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/record-commit.diff` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, record-commit.diff | `e165afc1a971271c85a1d4e8184bf2199fb6cf84e383bb8d1c72cd7276c51211` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/record_checks.sh` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, record_checks.sh | `138ec80258d53005ec81ca8d5a9e2cd2715eb679770712583f67c7645045f903` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/rows.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, rows.md | `07d1912b537326bf90c3edbfe08f86cdead58484021dea0e86ff0cd4229abdd6` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/section/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, section/README.md | `e334fe9105f84284f69567477f72cf4c88d0af60d9768f9b2edd512605eb0dc5` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/section/packets/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, section/packets/README.md | `ce58cdadeca289911a98f37e7806af2cd1b9bf3187cc06958a1110bed1fa0d29` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/splice.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, splice.txt | `f870a88495c6d7b42494db80702523c1da7d25e274d041bbf771c206727a4b2a` |
+| `packets/2026-11-24-d1-attempt28-rev55-archive/splice_rows.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-archive, splice_rows.py | `c4580f9fbad79215a4786a15da53de330ad184d913b0f392ad42dbaee297e0ef` |
+| `packets/2026-11-24-d1-attempt28-rev55-retrospective-review/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-retrospective-review, README.md | `2b966e1017c2a87bdefde3d6178d6ddb56ced364b6ec90e06d6350ecb5fb3fdd` |
+| `packets/2026-11-24-d1-attempt28-rev55-retrospective-review/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-rev55-retrospective-review, SHA256SUMS | `2bc66a8d349ed38a22807c54ec97fe2e56455d9509fc77904ce7bec5dc21175f` |
 | `packets/2026-11-24-d1-attempt28-sitting-addendum/README.md` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, README.md | `28321b64b61d5fb8bc83275fea319ea68d2579ef3d346024232608d7dadbf191` |
 | `packets/2026-11-24-d1-attempt28-sitting-addendum/SHA256SUMS` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, SHA256SUMS | `5ca631641b1c1505e3a412a2f13422f05ed833b7c00b9507826192166ef99d38` |
 | `packets/2026-11-24-d1-attempt28-sitting-addendum/extract_host_checks.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-sitting-addendum, extract_host_checks.py | `bcecab0c8aca67c1b5518c4b12fad6b62fc574282262c7b272d6521d70ecfcdc` |
@@ -5118,8 +5159,8 @@ project's review notes.
 | `packets/2026-11-24-d1-attempt28-slot-investigation/window-run-13-23.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-slot-investigation, window-run-13-23.txt | `8320a925e75e463cfbee31fbf3a20ccca6f90b5a6c7da3edddd04644075fa17b` |
 | `packets/2026-11-24-d1-attempt28-slot-investigation/window-run.txt` | Adapter diagnostic packet 2026-11-24-d1-attempt28-slot-investigation, window-run.txt | `19a8ea4d24cf0a135b0599a2288197d24fb8ec7ed9532091c5672e1fe6013e36` |
 | `packets/2026-11-24-d1-attempt28-slot-investigation/window.py` | Adapter diagnostic packet 2026-11-24-d1-attempt28-slot-investigation, window.py | `1111d9c68ba8dec671b19ce9cb140dfad709e6a9c82159938941042975107784` |
-| `packets/README.md` | Adapter diagnostic packets, the list | `ce58cdadeca289911a98f37e7806af2cd1b9bf3187cc06958a1110bed1fa0d29` |
-| `packets/SHA256SUMS` | Adapter diagnostic packets, the folder's SHA256SUMS | `523b134dff132c1bba7b8855ddf77311451dbd9efa7f9c239c797e88db782bde` |
+| `packets/README.md` | Adapter diagnostic packets, the list | `0fcefc230aea163187e3cbbeef63eef3796c03c78028ec6abc83fece846bedde` |
+| `packets/SHA256SUMS` | Adapter diagnostic packets, the folder's SHA256SUMS | `b4414ba38bec55e031ad1e0ed8f0358152c1a28cc807adcb2f53b68c30e0b2bc` |
 | `sittings/README.md` | Adapter diagnostic, the sittings' note | `98976ca1a43af0db98a67c605a91e61cd5f97616ffbd6f8b0f0961f286c6539b` |
 | `sittings/SHA256SUMS` | Adapter diagnostic, the sittings' SHA256SUMS | `2d7aca8b3e00021961b12ae9e8d016196df048a2523c9937bf674b28967c8832` |
 | `sittings/attempt-27/d1-27-cadence.csv` | Adapter diagnostic rehearsal (attempt 27, stopped before any invocation), sitting record d1-27-cadence.csv | `6c8613974398b9752d38bedd0f191aa41c5918cbf46a85cc85c3e4f2e0fe88ec` |

@@ -527,6 +527,53 @@ separate from the plan's valid-run comparison, and is recorded only after
 its own review. The reanalysis and its reviews are archived in
 `adapter_diagnostic/packets/`.
 
+**Invocation 3's retrospective analysis under revision 55 (2026-11-24).**
+The planned after-sitting analysis of an adapter timer run then ran on
+invocation 3, at `8a2fe52`. It used one export pass of the run's bulk IN
+completions, whose report is byte-identical to the reanalysis's, then
+`adapter_diagnostic.py analyze --completions --loaded`. The reviewer
+accepted it as a separately labelled retrospective result: not the plan's
+valid-run comparison, and not a completed protocol.
+- **Windows,** by scheduled wake and fixed as declared:
+  - the locked window [3, 20 s): 16,976 cycles, 998.6 Hz (both halves
+    998.6 Hz), with 25 skipped slots;
+  - the whole run: 948.1 Hz, with 1,039 skips.
+- **Held:** A1 to A7, A9 and W.
+  - A3: 16,968 of 16,976 last-byte replies (99.95 %) rode on their
+    targeted completion, and eight on a later one. In this capture the
+    logged plans align with the measured carriers. That does not prove
+    independent adapter timing, and `no_coupling_detected` stays the
+    reviewed detector's observation.
+- **Failed:** A8 and A10.
+  - A8: 162 of 170 full-window reads (95.29 %) were skip-free, just above
+    its prospective band of 60 to 95 %. Its failure is not evidence of
+    worse deadline performance, though eight such reads skipped a slot.
+  - A10: host work p99.9 1,188.2 µs, outside its band of 780 to 900 µs.
+- **Criteria:** T1, T2 and T6a fail; T3 and T5 pass; T4, T6b and T7 are
+  not measured.
+- **Denominators:** each prediction keeps its own. A3 counts every
+  lattice read of the locked window; A6, A8 and A9 count its motion-only,
+  full-window and sign-specific subsets.
+- **No timer G:** invocation 4 never ran, and no untraced run, earlier
+  sitting or emulator run stands in for it.
+
+**The timer-service attribution.** All 18,962 sleeps are classified on
+time. The extra interrupt's cause stays unknown, and no causation follows
+from the matched conversion. Of the 59,991 deadline writes on CPU 3, the
+existing attribution rule reports:
+- 31,892 single-timer matches;
+- 28,099 INDETERMINATE.
+
+These are neither established owners nor late sleeps. The task shown is
+the one current when the arming was traced, not necessarily the timer's
+owner, and the rule uses the overall U of 1,823 ns. No write is attributed
+to the probe's own sleep timer. An offline audit of the attribution rule
+is authorized; the rule is unchanged.
+
+No 1 kHz qualification follows. Invocation 3's exit 1 and STOP, and the
+missing invocation 4, stand. The analysis and its review are archived in
+`adapter_diagnostic/packets/`.
+
 ### Summaries
 
 ```sh
