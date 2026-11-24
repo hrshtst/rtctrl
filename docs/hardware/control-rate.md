@@ -296,10 +296,19 @@ IDs (`-r2345`), and each run record a `read set:` line.
 - `tools/adapter_diagnostic.py validate --plan C` checks a run's settings,
   read set, window, cadence and byte counts against its condition.
 - `tools/write_scan.py CAPTURE --cycles N [--read-ids LIST]` checks a timer
-  run's usbmon capture cycle by cycle: after the initial Sync Read of every
-  servo, N cycles of one Fast Sync Read of the read set and one zero Goal
-  Current Sync Write to every servo, and nothing else grouped. Without
-  `--cycles` it is the write scan the sittings used.
+  run's whole instruction sequence in its usbmon capture, every packet's
+  recipient and every parameter block's exact length:
+  - the startup: only pings, single reads and the indirect setup as
+    `SyncGroup::setupIndirect` writes it, each unicast to a servo, with
+    every servo's Torque Enable and Drive Mode read;
+  - the initial Sync Read of every servo, broadcast;
+  - N cycles, each exactly a broadcast Fast Sync Read of the read set and
+    a broadcast zero Goal Current Sync Write to every servo;
+  - after them, only the torque checks' reads of every servo.
+
+  Any other instruction, recipient or length fails (exit 1); a capture
+  that cannot be read whole exits 2. Without `--cycles` it is the write
+  scan the sittings used, which now also fails a malformed write.
 
 **Adapter-referenced timing (a torque-off diagnostic, emulator only so
 far).** `x7_bus_timing --timing adapter` plans each wake from the USB
