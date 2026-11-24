@@ -442,6 +442,92 @@ def main() -> int:
             code, out = run("validate", "--plan", "full-grid", "--hardware", str(path))
             check(code == 1 and text in out, f"full-grid's hardware latency check: {name}", out)
 
+        # The traffic-reduction diagnostic's Stage A (--plan R8-10 ... R8-10'): grid timing at 999 Hz for 40 s, the
+        # condition's read set (the summary's read_ids, or every inventoried servo for an eight-servo run without it),
+        # one window every cycle, and the byte counts of a read of the set and a zero write to all eight.
+        def stage_a(label: str, n_rows: int = 3000) -> tuple[Builder, dict]:
+            ids, length = ad.STAGE_A_PLANS[label]
+            sb = Builder(duration_s=40, timing="grid")
+            for j in range(n_rows):
+                sched = j * 1_001_001
+                sb._row(sched, sched + 450_000, 0, {})
+                sb.rows[-1]["read_len"] = length
+            ss = sb.summary()
+            ss.update(rate_hz=999, duration_s=40, feedback="full" if length == 13 else "motion")
+            if length == 13:
+                del ss["aux_interval_s"], ss["full_read_every"]
+            else:
+                ss.update(aux_interval_s=0, full_read_every=0)
+            ss["read_ids"] = list(ids)
+            ss["bounded_read"] = {"budget_s": 0.035, "guard_s": 0.035, "window_bytes": [length], "reads": n_rows,
+                                  "timeouts": 0, "malformed": 0, "servo_errors": 0, "recoveries": 0, "guard_waits": 0,
+                                  "inhibited": 0, "expected_latency_timer_ms": 1, "latency_timer_ms": 1}
+            ss["budget"] = {"read_len": length, "read_servos": len(ids), "write_servos": 8,
+                            "read_instruction_bytes": 14 + len(ids), "read_reply_bytes": 8 + len(ids) * (length + 4),
+                            "read_stuffing_max_bytes": 0, "write_bytes": 38}
+            ss["servo"] = [{"id": i} for i in range(2, 10)]
+            return sb, ss
+
+        sys.path.insert(0, str(TOOL.parent))
+        import adapter_diagnostic as ad  # noqa: PLC0415
+        import byte_arrival as ba  # noqa: PLC0415
+        check({k: (v[0], v[1]) for k, v in ba.STAGE_A.items()} == ad.STAGE_A_PLANS,
+              "the validator's Stage A read sets and windows are byte_arrival's", ad.STAGE_A_PLANS)
+        for label in ad.STAGE_A_PLANS:
+            sb, ss = stage_a(label)
+            path = sb.write(root, f"stage-a-{label}", ss)
+            code, out = run("validate", "--plan", label, "--hardware", str(path))
+            check(code == 0 and "valid (grid timing, 3000 cycles)" in out, f"{label} at its condition is valid", out)
+        for label in ("R8-10", "R8-10'"):
+            sb, ss = stage_a(label)
+            del ss["read_ids"], ss["budget"]["read_servos"], ss["budget"]["write_servos"]
+            path = sb.write(root, "stage-a-eight-default", ss)
+            code, out = run("validate", "--plan", label, str(path))
+            check(code == 0, f"{label} made without --read-ids (every inventoried servo read) is valid", out)
+        sa_cases = [
+            ("R4a-10", "another read set", lambda s, r: s.update(read_ids=[2, 3, 4]),
+             "the read set is [2, 3, 4], condition R4a-10's [2, 3, 4, 5]"),
+            ("R4b-10", "the first group's servos", lambda s, r: s.update(read_ids=[2, 3, 4, 5]),
+             "condition R4b-10's [6, 7, 8, 9]"),
+            ("R1-10", "no read_ids for a subset", lambda s, r: s.pop("read_ids"),
+             "the read set is not recorded (no read_ids), condition R1-10's [2]"),
+            ("R4a-10", "the write's count taken for the read's", lambda s, r: s["budget"].update(write_servos=4),
+             "write_servos 4, not 4 and 8"),
+            ("R4a-10", "a write to the read set only", lambda s, r: s["budget"].update(write_bytes=26),
+             "write_bytes is 26, not 38 (the zero write to all eight)"),
+            ("R4a-10", "an instruction for eight", lambda s, r: s["budget"].update(read_instruction_bytes=22),
+             "read_instruction_bytes is 22, not 18"),
+            ("R4a-13", "a 10-byte reply budget", lambda s, r: s["budget"].update(read_reply_bytes=64),
+             "read_reply_bytes is 64, not 76"),
+            ("R4a-10", "an inventory of four", lambda s, r: s.update(servo=[{"id": i} for i in (2, 3, 4, 5)]),
+             "the inventory lists [2, 3, 4, 5], not every servo"),
+            ("R4a-10", "full reads every 100th", lambda s, r: s.update(aux_interval_s=0.1, full_read_every=100),
+             "aux_interval_s is 0.1, the plan's 0"),
+            ("R4a-10", "a full-window row", lambda s, r: r[700].update(read_len=13),
+             "1 rows read other than the 10-byte window (the first, cycle 701)"),
+            ("R4a-13", "a motion-only cadence recorded", lambda s, r: s.update(full_read_every=1),
+             "full_read_every is recorded (1)"),
+            ("R4a-13", "the motion-only feedback", lambda s, r: s.update(feedback="motion"),
+             "feedback is 'motion', the plan's 'full'"),
+            ("R1-10", "30 s", lambda s, r: s.update(duration_s=30), "duration_s is 30, the plan's 40"),
+            ("R1-10", "1000 Hz", lambda s, r: s.update(rate_hz=1000), "rate_hz is 1000, the plan's 999"),
+            ("R8-10", "the position profile", lambda s, r: s.update(profile="position"),
+             "profile is 'position', the plan's 'current'"),
+            ("R8-10", "Sync Read", lambda s, r: s.update(read_instruction="sync"),
+             "read_instruction is 'sync', the plan's 'fast_sync'"),
+        ]
+        for label, name, mutate, text in sa_cases:
+            sb, ss = stage_a(label)
+            mutate(ss, sb.rows)
+            path = sb.write(root, "stage-a-mutant", ss)
+            code, out = run("validate", "--plan", label, str(path))
+            check(code == 1 and "NOT valid" in out and text in out, f"{label} refuses: {name}", out)
+        sb, ss = stage_a("R4a-10")
+        ss["bounded_read"]["latency_timer_ms"] = 2
+        path = sb.write(root, "stage-a-latency", ss)
+        code, out = run("validate", "--plan", "R4a-10", "--hardware", str(path))
+        check(code == 1 and "the measured latency timer is 2 ms, not 1" in out, "Stage A's hardware latency check", out)
+
         # Analysis: windows, rates and the predictions' denominators (an 8 s run: 50 full-window reads in its window).
         b = locked_run(8)
         lattice = [x for x in b.rows if x.get("schedule") == 1]

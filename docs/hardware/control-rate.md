@@ -277,6 +277,30 @@ IDs are the arm's (2 to 9), strictly increasing; the session refuses
 anything else before it sends anything. The log names gain `-r` and the
 IDs (`-r2345`), and each run record a `read set:` line.
 
+**The subset read's analysis (Stage A).**
+- `tools/byte_arrival.py --condition C` (C is R8-10, R4a-10, R1-10, R4a-13,
+  R4b-10 or R8-10′) analyses one Stage A run against its condition:
+  - the run's read set (the summary's `read_ids`, else its every servo)
+    and every row's window must be the condition's;
+  - the reconstruction, coverage and model are for its n servos, and C3's
+    bins are the condition's declared 200 µs window;
+  - C2 and Q2 are not applicable to one servo, whose model is the rank-2
+    fit (no step term by construction);
+  - Q1 to Q3 are scored, each needing its coverage explicitly
+    established: a missing, not applicable or failed item makes it
+    INSUFFICIENT.
+
+  `byte_arrival.py contrast Q4|Q5` scores the two contrasts from two runs'
+  `--json` reports. Without `--condition`, a run whose summary records a
+  subset read is refused; an eight-servo run's analysis is unchanged.
+- `tools/adapter_diagnostic.py validate --plan C` checks a run's settings,
+  read set, window, cadence and byte counts against its condition.
+- `tools/write_scan.py CAPTURE --cycles N [--read-ids LIST]` checks a timer
+  run's usbmon capture cycle by cycle: after the initial Sync Read of every
+  servo, N cycles of one Fast Sync Read of the read set and one zero Goal
+  Current Sync Write to every servo, and nothing else grouped. Without
+  `--cycles` it is the write scan the sittings used.
+
 **Adapter-referenced timing (a torque-off diagnostic, emulator only so
 far).** `x7_bus_timing --timing adapter` plans each wake from the USB
 adapter's completion lattice instead of the fixed grid. Grid timing

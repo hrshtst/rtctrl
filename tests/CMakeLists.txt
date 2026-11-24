@@ -360,6 +360,19 @@ set_tests_properties(byte_arrival_regressions PROPERTIES
   PASS_REGULAR_EXPRESSION "byte arrival regressions OK"
   LABELS unit)
 
+# The write scan (tools/write_scan.py) on synthetic usbmon captures: the
+# Torque Enable, Drive Mode, indirect-slot and CRC rules, and the per-cycle
+# check of a probe run (each cycle a Fast Sync Read of the read set and a
+# zero Goal Current write to every servo), with each way it fails.
+add_test(NAME write_scan_regressions
+  COMMAND ${CMAKE_COMMAND} -E env
+    UV_CACHE_DIR=${CMAKE_BINARY_DIR}/uv-cache
+    uv run --project tools python tools/test_write_scan.py
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(write_scan_regressions PROPERTIES
+  PASS_REGULAR_EXPRESSION "write scan regressions OK"
+  LABELS unit)
+
 # Traced-run correlation: the association and alignment checks, each of
 # their failures, and the receive path on a synthetic probe run and trace.
 add_test(NAME trace_correlate_regressions

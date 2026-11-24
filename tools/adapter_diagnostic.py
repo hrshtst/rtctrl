@@ -2,7 +2,8 @@
 """The torque-off adapter-timing diagnostic: fact-only validation of an x7_bus_timing run's records, and the
 analysis of its declared windows and exploratory predictions (the diagnostic plan, revision 2).
 
-usage: adapter_diagnostic.py validate LOG [--plan grid|adapter|full-grid [--hardware]]
+usage: adapter_diagnostic.py validate LOG [--plan grid|adapter|full-grid|R8-10|R4a-10|R1-10|R4a-13|R4b-10|R8-10'
+                                           [--hardware]]
        adapter_diagnostic.py analyze LOG [--completions CSV | --emulator-record CSV] [--loaded]
                                          [--compare-adapter LOG] [--json FILE]
 
@@ -185,11 +186,75 @@ PLAN_ADAPTER = {"lead_us": 780, "wake_to_read_us": 10, "lead_alternation_us": 20
 PLAN_FULL_GRID = {"rate_hz": 999, "duration_s": 30, "profile": "current", "read_path": "bounded", "feedback": "full",
                   "read_instruction": "fast_sync", "confirm_writes": False, "drain": False}
 FULL_WINDOW_LEN = 13
+# The traffic-reduction diagnostic's Stage A (proposal r2, accepted 2026-11-24): one grid-timed timer run per
+# condition at 999 Hz for 40 s (the intended duration; to be frozen with the candidate), its grouped read listing the
+# condition's read set (x7_bus_timing --read-ids) and every cycle reading one window: the motion-only window with no
+# full read after the initial one (fast-motion-aux0ms), or for R4a-13 the full window every cycle (fast). The write
+# and every check stay on all eight servos. label: (the read set, the window).
+STAGE_A_PLANS = {
+    "R8-10": ((2, 3, 4, 5, 6, 7, 8, 9), 10),
+    "R4a-10": ((2, 3, 4, 5), 10),
+    "R1-10": ((2,), 10),
+    "R4a-13": ((2, 3, 4, 5), 13),
+    "R4b-10": ((6, 7, 8, 9), 10),
+    "R8-10'": ((2, 3, 4, 5, 6, 7, 8, 9), 10),
+}
+PLAN_STAGE_A = {"rate_hz": 999, "duration_s": 40, "profile": "current", "read_path": "bounded",
+                "read_instruction": "fast_sync", "confirm_writes": False, "drain": False}
+ALL_SERVOS = [2, 3, 4, 5, 6, 7, 8, 9]
+CURRENT_WRITE_BYTES = 14 + 8 * 3  # the zero-goal-current Sync Write to all eight
+
+
+def check_stage_a(run: Run, label: str) -> list[str]:
+    """A Stage A run's read set, window, cadence and byte counts against its condition. The read set is the summary's
+    read_ids, or every inventoried servo for an eight-servo run made without --read-ids; a subset needs read_ids."""
+    ids, length = STAGE_A_PLANS[label]
+    s, b = run.s, run.s.get("budget", {})
+    bad = [f"{k} is {s.get(k)!r}, the plan's {v!r}" for k, v in PLAN_STAGE_A.items() if s.get(k) != v]
+    if run.timing != "grid":
+        bad.append(f"timing is {run.timing!r}, the plan's 'grid' (condition {label})")
+    inventory = [int(x.get("id", -1)) for x in s.get("servo", [])]
+    if inventory != ALL_SERVOS:
+        bad.append(f"the inventory lists {inventory}, not every servo {ALL_SERVOS}")
+    if "read_ids" in s:
+        got = list(s["read_ids"])
+        if (b.get("read_servos"), b.get("write_servos")) != (len(got), len(ALL_SERVOS)):
+            bad.append(f"[budget] read_servos {b.get('read_servos')!r} and write_servos {b.get('write_servos')!r}, not "
+                       f"{len(got)} and {len(ALL_SERVOS)}")
+    elif list(ids) == ALL_SERVOS:
+        got = inventory
+    else:
+        got = None
+    if got != list(ids):
+        bad.append(f"the read set is {got if got is not None else 'not recorded (no read_ids)'}, condition {label}'s "
+                   f"{list(ids)}")
+    if b.get("read_instruction_bytes") != 14 + len(ids):
+        bad.append(f"[budget] read_instruction_bytes is {b.get('read_instruction_bytes')!r}, not {14 + len(ids)}")
+    if b.get("read_reply_bytes") != 8 + len(ids) * (length + 4):
+        bad.append(f"[budget] read_reply_bytes is {b.get('read_reply_bytes')!r}, not {8 + len(ids) * (length + 4)}")
+    if b.get("write_bytes") != CURRENT_WRITE_BYTES:
+        bad.append(f"[budget] write_bytes is {b.get('write_bytes')!r}, not {CURRENT_WRITE_BYTES} (the zero write to all "
+                   "eight)")
+    if length == FULL_WINDOW_LEN:
+        if s.get("feedback") != "full":
+            bad.append(f"feedback is {s.get('feedback')!r}, the plan's 'full' (condition {label})")
+        bad += [f"{k} is recorded ({s[k]!r}): a full-window run records no motion-only cadence"
+                for k in ("aux_interval_s", "full_read_every") if k in s]
+    else:
+        want = {"feedback": "motion", "aux_interval_s": 0, "full_read_every": 0}
+        bad += [f"{k} is {s.get(k)!r}, the plan's {v!r} (condition {label}: the motion-only window every cycle)"
+                for k, v in want.items() if s.get(k) != v]
+    other = [x["cycle"] for x in run.rows if x["read_len"] != length]
+    if other:
+        bad.append(f"{len(other)} rows read other than the {length}-byte window (the first, cycle {other[0]})")
+    return bad
 
 
 def check_plan(run: Run, arm: str, hardware: bool) -> list[str]:
     """The run's recorded settings against the plan's for its arm: the adapter-timing diagnostic's grid or adapter
-    arm, or the full-feedback diagnostic's full-grid run."""
+    arm, the full-feedback diagnostic's full-grid run, or a traffic-reduction Stage A condition."""
+    if arm in STAGE_A_PLANS:
+        return check_stage_a(run, arm) + check_latency(run, hardware)
     plan = PLAN_FULL_GRID if arm == "full-grid" else PLAN_COMMON
     bad = [f"{k} is {run.s.get(k)!r}, the plan's {v!r}" for k, v in plan.items() if run.s.get(k) != v]
     timing = "grid" if arm == "full-grid" else arm
@@ -206,6 +271,12 @@ def check_plan(run: Run, arm: str, hardware: bool) -> list[str]:
         if other:
             bad.append(f"{len(other)} rows read other than the full {FULL_WINDOW_LEN}-byte window (the first, cycle "
                        f"{other[0]})")
+    return bad + check_latency(run, hardware)
+
+
+def check_latency(run: Run, hardware: bool) -> list[str]:
+    """The expected latency timer (1 ms), and on hardware the measured one."""
+    bad: list[str] = []
     br = run.s.get("bounded_read", {})
     if br.get("expected_latency_timer_ms") != 1:
         bad.append(f"the expected latency timer is {br.get('expected_latency_timer_ms')!r} ms, not 1")
@@ -733,8 +804,9 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("validate")
     v.add_argument("log", type=pathlib.Path)
-    v.add_argument("--plan", choices=("grid", "adapter", "full-grid"),
-                   help="also check the plan's settings for this arm (full-grid: the full-feedback diagnostic's run)")
+    v.add_argument("--plan", choices=("grid", "adapter", "full-grid", *STAGE_A_PLANS),
+                   help="also check the plan's settings for this arm (full-grid: the full-feedback diagnostic's run; "
+                        "R8-10 ... R8-10': a traffic-reduction Stage A condition)")
     v.add_argument("--hardware", action="store_true",
                    help="with --plan: the adapter's latency timer must have been read, and measured at 1 ms")
     a = sub.add_parser("analyze")

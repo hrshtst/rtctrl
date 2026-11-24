@@ -425,6 +425,25 @@ def guard_case(change=None) -> tuple[list, str]:
     return failures, out.getvalue()
 
 
+def subset_reply_bytes() -> None:
+    """A subset read (x7_bus_timing --read-ids): the reply size comes from the summary's read instruction bytes,
+    14 + the read set's count, never from the write's (unchanged rule; the traffic-reduction diagnostic)."""
+    import trace_correlate as tc  # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as tmp:
+        log = pathlib.Path(tmp) / "run.csv"
+        log.write_text("cycle,read_len\n1,10\n")
+        for instr, want10, want13 in ((22, 120, 144), (18, 64, 76), (15, 22, 25)):
+            pathlib.Path(str(log) + ".summary.toml").write_text(
+                'format = "rtctrl-bus-timing"\nkind = "production-traffic"\nrate_hz = 999\n'
+                'read_instruction = "fast_sync"\nread_ids = [2, 3, 4, 5]\n\n[result]\nworker_tid = 1\n'
+                f"monotonic_origin_ns = 0\n\n[budget]\nread_servos = {instr - 14}\nwrite_servos = 8\n"
+                f"read_instruction_bytes = {instr}\nwrite_bytes = 38\n")
+            run = tc.Run(log)
+            expect(run.reply_bytes(10) == want10 and run.reply_bytes(13) == want13 and run.write_bytes == 38,
+                   f"a {instr - 14}-servo read: replies of {want10} and {want13} bytes, the write still 38",
+                   str((run.reply_bytes(10), run.reply_bytes(13), run.write_bytes)))
+
+
 def guard_wakes() -> None:
     """The bounded read's guard sleeps are accounted by their own evidence; anything less, or anything else, still fails
     (the validation review of 2026-11-11: neither subtract a count nor pass every wake after a timeout)."""
@@ -551,6 +570,7 @@ def main() -> int:
         print(" ".join(sorted(Run(timer=True).names)))
         return 0
     guard_wakes()
+    subset_reply_bytes()
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
 

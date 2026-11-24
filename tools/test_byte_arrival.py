@@ -9,7 +9,13 @@
   denominator (failed, unassociated, incomplete, completeness unknown, segments missing, not reconstructed);
 - the model: a known 18 us step at every section start (pooled and local), no step, a rank-deficient fit refused;
 - P3's crossing rule: one rising crossing inside [700, 780), one outside, a nonmonotonic share with three crossings;
-- the command line: a report on good input, exit 2 on inconsistent input.
+- the command line: a report on good input, exit 2 on inconsistent input;
+- the traffic-reduction diagnostic's Stage A (--condition): the protocol map for 4 and 1 servos; a subset run's
+  reconstruction and common-step model; one servo's rank-2 fit with Q2 not dispatched; the read set and window
+  checked against the condition; the Q1 to Q5 scorers at their edges, every required coverage item explicitly
+  established (missing, None and False all INSUFFICIENT; the r2 review's required-coverage cases), R1's not
+  applicable C2 irrelevant to Q1 and Q3; the contrast's pair; the command line, and the refusal of a subset run
+  without --condition.
 
 The generator builds each read from the model's arrival times and a flush lattice, independently of the tool."""
 
@@ -37,8 +43,8 @@ def check(cond: bool, what: str, detail: object = "") -> None:
         print(f"FAILED: {what}\n{detail}")
 
 
-def arrival(j: int, length: int, T0: float, w: float, g: float) -> float:
-    return T0 + w * (j + 1) + g * sum(1 for b in ba.section_starts(length) if b <= j)
+def arrival(j: int, length: int, T0: float, w: float, g: float, servos: int = 8) -> float:
+    return T0 + w * (j + 1) + g * sum(1 for b in ba.section_starts(length, servos) if b <= j)
 
 
 class Run:
@@ -72,14 +78,14 @@ class Run:
         return cyc
 
     def modelled(self, n: int, length: int = 13, T0: float = 130.0, w: float = 10 / 3, g: float = 18.0,
-                 flush_us: float = 37.0, seed: int = 3) -> None:
+                 flush_us: float = 37.0, seed: int = 3, servos: int = 8) -> None:
         """n reads from the model: a flush lattice of the given period at a random phase, each flush delivering the
         bytes that arrived since the last (a status-only completion before the first byte)."""
         rng = random.Random(seed)
-        N = ba.reply_bytes(length)
+        N = ba.reply_bytes(length, servos)
         for _ in range(n):
             jit = rng.uniform(-3, 3)
-            arr = [arrival(j, length, T0, w, g) + jit for j in range(N)]
+            arr = [arrival(j, length, T0, w, g, servos) + jit for j in range(N)]
             f = rng.uniform(0, flush_us)
             got, dl = 0, []
             while got < N:
@@ -320,8 +326,169 @@ def main() -> int:
                             str(comps), "--segments", str(segs)], capture_output=True, text=True)
         check(p.returncode == 2, "an absent log: exit 2", p.stderr)
 
+    stage_a()
     print(f"byte arrival regressions {'OK' if FAILED == 0 else f'{FAILED} FAILED'}")
     return 1 if FAILED else 0
+
+
+def cr(*items: tuple[int, int, str]) -> list[dict]:
+    return [{"from_bin": f, "to_bin": t, "direction": d} for f, t, d in items]
+
+
+def stage_a() -> None:
+    """The traffic-reduction diagnostic's Stage A (--condition)."""
+    # The protocol map for subsets (wire_budget.hpp's 8 + n (len + 4)).
+    check(ba.reply_bytes(10, 4) == 64 and ba.reply_bytes(13, 4) == 76 and ba.reply_bytes(10, 1) == 22,
+          "64, 76 and 22 bytes for 4 servos (10, 13) and 1 servo (10)")
+    check(ba.section_starts(10, 4) == [22, 36, 50] and ba.section_starts(13, 4) == [25, 42, 59]
+          and ba.section_starts(10, 1) == [], "the starts of 4 servos, and none for 1")
+    check(ba.STAGE_A["R1-10"][0] == (2,) and ba.STAGE_A["R4b-10"][0] == (6, 7, 8, 9)
+          and ba.STAGE_A["R4a-13"][1] == 13 and ba.STAGE_A["R8-10"][3] == 540 and ba.STAGE_A["R1-10"][3] == 110,
+          "the conditions' read sets, windows and C3 windows as r2 declares them")
+    eight = {"servo": [{"id": i} for i in range(2, 10)]}
+
+    # A subset run's reconstruction and common-step model: a known 18 us step at 22, 36 and 50.
+    r = Run()
+    r.modelled(2500, length=10, g=18.0, servos=4)
+    rep = ba.analyze_condition(r.log, r.comps, r.segs, {"read_ids": [2, 3, 4, 5]}, "R4a-10")
+    check(rep["N"] == 64 and rep["excluded"] == {} and rep["section_starts"] == [22, 36, 50],
+          "R4a-10: every read reconstructed exactly as a 64-byte reply", rep["excluded"])
+    p = rep["model"]["pooled"]
+    check(abs(p["beta"][2] - 18.0) < 1.0 and abs(p["beta"][1] - 10 / 3) < 0.05, "R4a-10: the step 18 us recovered",
+          p.get("beta"))
+    check(min(rep["model"]["shifts"], key=lambda s: rep["model"]["shifts"][s]) == 0,
+          "R4a-10: the residual least at the protocol's starts", rep["model"]["shifts"])
+    check(rep["predictions"]["Q2"]["outcome"] == "AS PREDICTED" and rep["predictions"]["Q3"]["outcome"] == "AS PREDICTED",
+          "R4a-10: Q2 and Q3 as predicted on covered model data", rep["predictions"])
+    check(rep["predictions"]["Q1"]["outcome"] == "INSUFFICIENT" and rep["coverage_scored"]["C3"] is False,
+          "R4a-10: Q1 insufficient when C3's window holds no first completion", rep["coverage_scored"])
+
+    # One servo: no section start, a rank-2 fit, Q2 not dispatched.
+    r1 = Run()
+    r1.modelled(2500, length=10, g=18.0, servos=1)
+    rep1 = ba.analyze_condition(r1.log, r1.comps, r1.segs, {"read_ids": [2]}, "R1-10")
+    m1 = rep1["model"]
+    check(rep1["N"] == 22 and m1["no_section_start"] and m1["pooled"]["rank"] == 2 and m1["shifts"] is None,
+          "R1-10: a 22-byte reply, the rank-2 fit", m1["pooled"])
+    check(abs(m1["pooled"]["beta"][1] - 10 / 3) < 0.05, "R1-10: the slope recovered", m1["pooled"].get("beta"))
+    check(rep1["coverage"]["C2"]["ok"] is None and rep1["coverage_scored"]["C2"] is None, "R1-10: C2 not applicable")
+    check(rep1["predictions"]["Q2"]["outcome"] == "NOT APPLICABLE", "R1-10: Q2 not dispatched", rep1["predictions"]["Q2"])
+    check(rep1["predictions"]["Q3"]["outcome"] == "AS PREDICTED", "R1-10: Q3 scored without C2", rep1["predictions"]["Q3"])
+    out = io_report(rep1)
+    check("C2: not applicable (no section start)" in out and "one servo, no section start" in out
+          and "C3 (each bin [110, 310)" in out, "R1-10's report", out)
+
+    # The read set and the window are the condition's.
+    for summary, label, why in (({"read_ids": [2, 3, 4]}, "R4a-10", "read set"),
+                                (eight, "R4a-10", "read set"),
+                                ({"read_ids": [2, 3, 4, 5]}, "R4a-13", "13 only")):
+        try:
+            ba.analyze_condition(r.log, r.comps, r.segs, summary, label)
+            check(False, f"{label} accepted a mismatched run ({why})")
+        except ba.InputError as e:
+            check(why in str(e), f"{label}: the mismatch named ({why})", e)
+    check(ba.read_set(eight) == list(range(2, 10)) and ba.read_set({"read_ids": [6, 7, 8, 9], **eight}) == [6, 7, 8, 9],
+          "the read set: read_ids, else every inventoried servo")
+
+    # The scorers: every required coverage item explicitly True (the r2 review's required-coverage cases).
+    OK = {"C1": True, "C2": True, "C3": True, "C5": True}
+    a, b = cr((380, 390, "rising")), cr((420, 430, "rising"))
+    cases = [("Q1", ("C3", "C5"), lambda c: ba.score_q1(a, (370, 420), c)),
+             ("Q2", ("C1", "C2", "C5"), lambda c: ba.score_q2(18.0, 0, c)),
+             ("Q3", ("C1", "C5"), lambda c: ba.score_q3(3.2, c)),
+             ("Q4 left", ("C3", "C5"), lambda c: ba.score_q4(a, c, b, OK)),
+             ("Q4 right", ("C3", "C5"), lambda c: ba.score_q4(a, OK, b, c)),
+             ("Q5 left", ("C3", "C5"), lambda c: ba.score_q5(a, c, a, OK)),
+             ("Q5 right", ("C3", "C5"), lambda c: ba.score_q5(a, OK, a, c))]
+    for name, keys, call in cases:
+        check(call(OK) == "AS PREDICTED", f"{name}: established prerequisites", call(OK))
+        for key in keys:
+            for state in ("missing", None, False):
+                cov = dict(OK)
+                if state == "missing":
+                    cov.pop(key)
+                else:
+                    cov[key] = state
+                check(call(cov) == "INSUFFICIENT", f"{name}, {key}={state!r}: INSUFFICIENT", call(cov))
+    check(ba.score_q1(a, (370, 420), {**OK, "C2": None}) == "AS PREDICTED", "Q1: R1's not applicable C2 is not required")
+    check(ba.score_q3(3.2, {**OK, "C2": None}) == "AS PREDICTED", "Q3: R1's not applicable C2 is not required")
+    check(ba.score_q1(a, (370, 420), {**OK, "C1": False}) == "AS PREDICTED", "Q1: C1 is not required")
+
+    # The scorers' edges (r2's check_predictions.py cases).
+    band = (370, 420)
+    for crs, want, what in ((cr((370, 380, "rising")), "AS PREDICTED", "from_bin at the lower limit"),
+                            (cr((400, 410, "rising")), "AS PREDICTED", "to_bin + 10 at the upper limit"),
+                            (cr((360, 370, "rising")), "NOT AS PREDICTED", "from_bin below the limit"),
+                            (cr((410, 420, "rising")), "NOT AS PREDICTED", "to_bin + 10 past the limit"),
+                            (cr((380, 390, "falling")), "NOT AS PREDICTED", "one falling crossing"),
+                            (cr((380, 390, "rising"), (390, 400, "falling"), (400, 410, "rising")), "NOT AS PREDICTED",
+                             "three crossings, every one kept"),
+                            ([], "NOT AS PREDICTED", "no crossing")):
+        check(ba.score_q1(crs, band, OK) == want, f"Q1: {what}: {want}")
+    for g, least, want in ((12.0, 0, "AS PREDICTED"), (25.0, 0, "AS PREDICTED"), (11.99, 0, "NOT AS PREDICTED"),
+                           (25.01, 0, "NOT AS PREDICTED"), (18.0, 1, "NOT AS PREDICTED"), (None, 0, "INSUFFICIENT"),
+                           (18.0, None, "INSUFFICIENT")):
+        check(ba.score_q2(g, least, OK) == want, f"Q2: g {g}, least {least}: {want}")
+    for w, want in ((3.0, "AS PREDICTED"), (3.4, "AS PREDICTED"), (3.41, "NOT AS PREDICTED"),
+                    (2.99, "NOT AS PREDICTED"), (None, "INSUFFICIENT")):
+        check(ba.score_q3(w, OK) == want, f"Q3: w {w}: {want}")
+    base = cr((390, 400, "rising"))
+    for d, want in ((20, "NOT AS PREDICTED"), (30, "AS PREDICTED"), (40, "AS PREDICTED"), (50, "AS PREDICTED"),
+                    (60, "NOT AS PREDICTED")):
+        check(ba.score_q4(base, OK, cr((390 + d, 400 + d, "rising")), OK) == want, f"Q4: later by {d}: {want}")
+    for d, want in ((-20, "NOT AS PREDICTED"), (-10, "AS PREDICTED"), (0, "AS PREDICTED"), (10, "AS PREDICTED"),
+                    (20, "NOT AS PREDICTED")):
+        check(ba.score_q5(base, OK, cr((390 + d, 400 + d, "rising")), OK) == want, f"Q5: differs by {d:+d}: {want}")
+    check(ba.score_q4(base, OK, cr((420, 430, "rising"), (430, 440, "falling")), OK) == "NOT AS PREDICTED",
+          "Q4: two crossings in one run")
+
+    # The contrast's pair, from two reports.
+    def fake(label: str, crs: list[dict]) -> dict:
+        return {"condition": label, "transition": {"crossings": crs}, "coverage_scored": dict(OK)}
+    out = ba.contrast("Q4", fake("R4a-10", base), fake("R4a-13", cr((430, 440, "rising"))))
+    check(out["outcome"] == "AS PREDICTED" and out["from_bins"] == [390, 430], "Q4 from two reports", out)
+    for which, x, y in (("Q4", "R4a-10", "R4b-10"), ("Q5", "R4a-13", "R4a-10"), ("Q5", "R4b-10", "R4a-10")):
+        try:
+            ba.contrast(which, fake(x, base), fake(y, base))
+            check(False, f"{which} accepted {x} against {y}")
+        except ba.InputError:
+            pass
+
+    # The command line.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        log, comps, segs = r.write(root, "subset")
+        pathlib.Path(str(log) + ".summary.toml").write_text("read_ids = [2, 3, 4, 5]\n")
+        exe = [sys.executable, str(HERE / "byte_arrival.py")]
+        p = subprocess.run([*exe, str(log), "--completions", str(comps), "--segments", str(segs)],
+                           capture_output=True, text=True)
+        check(p.returncode == 2 and "a subset read needs --condition" in p.stderr,
+              "a subset run without --condition: refused, exit 2", p.stderr)
+        p = subprocess.run([*exe, str(log), "--completions", str(comps), "--segments", str(segs), "--condition",
+                            "R4a-10", "--len", "10"], capture_output=True, text=True)
+        check(p.returncode == 2 and "no --len" in p.stderr, "--condition with --len: exit 2", p.stderr)
+        js = root / "R4a-10.json"
+        p = subprocess.run([*exe, str(log), "--completions", str(comps), "--segments", str(segs), "--condition",
+                            "R4a-10", "--json", str(js)], capture_output=True, text=True)
+        check(p.returncode == 0 and "condition R4a-10 (the traffic-reduction diagnostic's Stage A): read set [2, 3, 4, 5]"
+              in p.stdout and "Q2: AS PREDICTED" in p.stdout and "C3 (each bin [290, 490)" in p.stdout and js.exists(),
+              "--condition R4a-10: the report and its JSON", p.stdout + p.stderr)
+        p = subprocess.run([*exe, "contrast", "Q5", str(js), str(js)], capture_output=True, text=True)
+        check(p.returncode == 2 and "Q5 compares R4a-10 with R4b-10" in p.stderr, "contrast: a wrong pair, exit 2",
+              p.stderr)
+        bare = root / "bare.csv"
+        bare.write_text(log.read_text())
+        p = subprocess.run([*exe, str(bare), "--completions", str(comps), "--segments", str(segs), "--condition",
+                            "R4a-10"], capture_output=True, text=True)
+        check(p.returncode == 2 and "needs the run's summary" in p.stderr, "--condition without a summary: exit 2",
+              p.stderr)
+
+
+def io_report(rep: dict) -> str:
+    import io
+    buf = io.StringIO()
+    ba.print_report(rep, out=buf)
+    return buf.getvalue()
 
 
 if __name__ == "__main__":
