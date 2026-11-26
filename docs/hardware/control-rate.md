@@ -985,6 +985,91 @@ check, rehearsal and sitting, with their reviews. The hardware sitting
 (attempts 32 and 33) and any powered work stay on hold, and any hardware
 go is a separate decision.
 
+**The traffic-reduction diagnostic's Stage A hardware sitting (attempt
+32, 2026-11-26; stopped after its second invocation).** The go approved
+one torque-off sitting on the arm, attempts 32 and 33, with the bound
+packet and the frozen candidate `53572af` unchanged:
+- the FTDI adapter at USB 1-9 with its 1 ms latency timer;
+- every servo torque-off, and the owner at the arm with the cutoff
+  within reach;
+- the default exclusion, the workqueue mask `ffffffff` and the xHCI
+  interrupt on CPU 7.
+
+Readiness ran immediately before the sitting's start (0 NOT), and the
+identity record named the hardware. Each block's go was given only after
+the developer had validated the previous run with the hardware
+validator. The sitting stopped at its second invocation.
+
+| run | condition | cycles | validity |
+|---|---|---|---|
+| 1 | R8-10 | 26,271 | valid |
+| 2 | R4a-10 | 31,649 | void: the clock certificate UNSUPPORTED |
+
+- **Run 1 (R8-10) is valid.** It met all 63 hardware validity checks:
+  - complete reads and writes, with zero transport failures and
+    timeouts;
+  - the strict zero-write scan over the whole sequence;
+  - torque off before and after, and no recording losses;
+  - clock alignment revision 55, with the certificate CERTIFIED and
+    U = 1,542 ns validated, and attribution revision 2;
+  - the real USB association, the placement, the controls and the
+    restoration.
+- **Run 1's coverage:** C1, all seven C2 section starts, C3 and C5 are
+  sufficient, with no exclusions; C4 is descriptive.
+- **Run 1's predictions:** Q1, Q2, Q3 and Q6 are AS PREDICTED.
+  - Q1: the one rising crossing lies between the 630 and 640 µs bins,
+    inside the frozen band [620, 670).
+  - Q2: the common-step fit gives g = 17.293 µs, with the least residual
+    at the unshifted boundaries.
+  - Q3: the slope is w = 3.3857 µs per byte.
+  - These are host-observed and model quantities under the analysis's
+    assumptions, not direct physical handoff or UART timing.
+  - Q6 applies the frozen table by hand: T1, T2 and T6a fail, and T3
+    passes. T5 is not predicted by Q6.
+  - Q4 and Q5 are not computed.
+- **Run 1's timing at 999 Hz:** T1, T2, T5 and T6a fail (656.766 Hz,
+  13,689 skipped periods, T5 p99.9 0.143 ms, T6a p99.9 1.704 ms); T3
+  passes; T4, T6b and T7 are not established. This is not a 1 kHz
+  qualification, and it does not establish that a reduced read set
+  improves performance.
+- **Run 2 (R4a-10) is void under this procedure.** Its certificate was
+  UNSUPPORTED, and its conversion was not analysed.
+  - The cause: `systemd-timesyncd` made a modifying `ntp_adjtimex` call
+    inside the recorder's window, about 0.318 s after the log's origin.
+    The kernel's frequency field moved from 1,563,796 to 1,789,723.
+  - The certificate rejects any modifying timekeeping call in its window
+    by design, as at attempt 19 (in the timer service diagnostics below).
+    This is not the earlier case of a certified certificate with an
+    unaccepted conversion, and no clock-alignment repair or exception is
+    indicated.
+  - The physical run and the restoration finished. But the analysis
+    returned 1, the procedure stopped the sitting, and the validation
+    released no go. Its six failed checks are consequences of that one
+    change, not six incidents.
+  - Its coverage, predictions and timing are not scored, and it enters no
+    contrast.
+- **The sitting is incomplete.** The stop was correct and nothing was
+  retried: runs 3 to 6 did not run. No repeated R8 baseline or completed
+  traffic comparison exists, and run 1 is not to be pooled with a later
+  sitting's.
+- **Safety:** every servo read torque off before and after both runs,
+  zero current was written to all eight every cycle, and the host was
+  restored. The owner at the arm reported no motion seen.
+- **timesyncd** stays active under the accepted clock policy. Its poll
+  interval after the stop was 34 min 8 s. That is an observation: it
+  fixes no update time and guarantees no quiet recording interval.
+
+The sitting is archived in `adapter_diagnostic/`, with:
+- the two run folders;
+- the sitting's records, with the four records written beside the bound
+  packet kept apart;
+- the packets of the direction, the go request, the go, the sitting and
+  the verdict.
+
+A fresh-label, complete six-condition sitting may be prepared. It needs
+its own go, and a timekeeping change may again invalidate one of its
+runs.
+
 ### Summaries
 
 ```sh

@@ -1195,6 +1195,20 @@ rehearsal qualifies no physical USB/RS-485 path, servo behavior,
 traffic-reduction hypothesis or control rate. The hardware sitting
 (attempts 32 and 33) stays on hold.
 
+Its hardware sitting followed on the arm, torque-off (attempt 32,
+2026-11-26), and stopped at its second invocation. The first, R8-10,
+was accepted as valid on all 63 hardware checks:
+- its coverage is sufficient;
+- Q1, Q2, Q3 and Q6 hold as predicted;
+- at 999 Hz, T1, T2, T5 and T6a fail and T3 passes (656.766 Hz).
+
+The second, R4a-10, is void. `systemd-timesyncd` adjusted the kernel's
+frequency inside its recording window, so its clock certificate was
+UNSUPPORTED, by design; the procedure then stopped the sitting. Runs 3
+to 6 did not run, and nothing was retried. No repeated baseline or
+traffic comparison exists, and nothing here qualifies 1 kHz control. A
+fresh-label complete sitting may be prepared, under its own go.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
