@@ -917,6 +917,74 @@ both CPUs. No further trace pass is needed, and no hardware or
 host-policy change follows. The check, its addendum and its review are
 archived in `adapter_diagnostic/packets/`.
 
+**The traffic-reduction diagnostic's emulator rehearsal (attempts 34 and
+35, 2026-11-26; accepted).** Stage A's six invocations were rehearsed on
+the emulator only, in their declared conditions and order, at the frozen
+candidate `53572af`, with the robot unpowered and the real adapter never
+opened. The emulator served in its own protected terminal on CPUs 4 and
+5 with the declared cadence, and recorded every instruction it received
+(`--arrival-log`). Readiness came next, then the six invocations in one
+shell, each block's go given only after the developer validated the
+previous run with the rehearsal-only validator. Each run was 40 s at
+999 Hz in the timer mode, with the observers confined and zero current
+written to all eight emulated servos every cycle. The reviewer accepted
+attempts 34 and 35 as the completed six-invocation emulator rehearsal
+under the predeclared rule B.
+
+| run | condition | cycles | mean rate | PTY timeouts |
+|---|---|---|---|---|
+| 1 | R8-10 | 29,526 | 738.1 Hz | 0 |
+| 2 | R4a-10 | 29,462 | 736.5 Hz | 0 |
+| 3 | R1-10 | 29,530 | 738.2 Hz | 0 |
+| 4 | R4a-13 | 29,591 | 739.8 Hz | 0 |
+| 5 | R4b-10 | 29,487 | 737.2 Hz | 0 |
+| 6 | R8-10′ | 29,529 | 738.2 Hz | 1 |
+
+- **Validity:** all six are valid rehearsal invocations after the final
+  arrival and reply scan, which resolved their intermediate provisional
+  status. Each validation met its 64 checks. The six hardware-only
+  checks were UNAVAILABLE on the PTY each time and are not passed
+  hardware checks: the measured latency timer, the strict write scan,
+  tcpdump's drops, the real USB association, the reply coverage from USB
+  data and the exports' USB content. Each analysis failed only on the
+  PTY's zero-USB-submission line.
+- **The final scan** (of the emulator's records, written when it was
+  stopped) has no NOT. It confirms the declared cadence and all 179,115
+  reply records, each condition's instruction sequence, zero current
+  written to all eight, and a complete reply bound to each of the
+  177,125 cycles. The reply records outnumber the cycles because they
+  include the exchanges outside the cycles.
+- **Rule B:** a bounded read's PTY timeout is reported, at most 40 per
+  invocation, with only its own consequences, and continuing stays
+  provisional until the final attribution. The one timeout (run 6,
+  cycle 1) is accepted. Its request reached the emulator after the read
+  had ended: the recomputed configured release came 893.421 µs after the
+  read's end, and the actual write 899.989 µs after it. T3 stays FAIL as
+  measured. Under the hardware rule that invocation would have stopped,
+  and the hardware rule is unchanged.
+- **The trace** of that read is consistent with the known T3 PTY
+  mechanism, reported only. The instruction-side flush work was queued,
+  and its normal-priority worker was woken onto CPU 3. The FIFO probe
+  remained scheduled while repeatedly reading, and the flush ran after
+  the probe slept; its barrier then woke the emulator. The emulator's
+  switch-out to switch-in interval, after it left in D state, was
+  34.654 ms. A scheduled span need not be uninterrupted execution, and
+  this is not a diagnosis of the physical adapter.
+- **Timing:** about 738 Hz in every run. T1, T2 and T6a fail in all six,
+  T5 in five and T3 in the sixth. These stay PTY observations: the
+  rehearsal promotes no timing verdict.
+- **Cleanup** completed and is recorded separately: the emulator was
+  stopped by its identity (exit 0), and its terminal was restored
+  exactly.
+
+The rehearsal qualifies no physical USB/RS-485 path, servo behavior,
+traffic-reduction hypothesis or control rate. It is archived in
+`adapter_diagnostic/`: the six run folders, the sitting's records, and
+the packets of the proposal, implementation, candidate, host audit, perf
+check, rehearsal and sitting, with their reviews. The hardware sitting
+(attempts 32 and 33) and any powered work stay on hold, and any hardware
+go is a separate decision.
+
 ### Summaries
 
 ```sh

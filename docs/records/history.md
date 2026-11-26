@@ -1181,6 +1181,20 @@ None ran before that exit, and 250 ran within 2 us after it; they were
 same fixed 200 us span was 50 us late. This measures timer service, not
 CPU-2 interrupt delivery, and establishes no cause or power state.
 
+The traffic-reduction diagnostic's Stage A was then rehearsed on the
+emulator (attempts 34 and 35, 2026-11-26): its six torque-off
+invocations at 999 Hz for 40 s, in their declared order, at the frozen
+candidate `53572af`. All six were accepted as valid rehearsal
+invocations after a final scan of the emulator's records. One read
+timed out, at the sixth run's first cycle. Under the predeclared
+rehearsal rule it is attributed to its request reaching the emulator
+after the read had ended, consistent with the PTY's known flush
+mechanism. Its T3 failure stays as measured, and the hardware rule
+would have stopped that run. About 738 Hz was achieved on the PTY. The
+rehearsal qualifies no physical USB/RS-485 path, servo behavior,
+traffic-reduction hypothesis or control rate. The hardware sitting
+(attempts 32 and 33) stays on hold.
+
 ## `x7_float_log_smoke` intermittent failure (open, 2026-11-05)
 
 The pty smoke of `x7_float` (`tests/integration/float_log_smoke.sh`)
